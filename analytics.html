@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evolution Simulation Analytics</title>
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        background-color: #0f1525;
+        color: #fff;
+      }
+
+      .dashboard {
+        display: flex;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .sidebar {
+        width: 200px;
+        background-color: #1a2335;
+        padding: 20px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+      }
+
+      .content {
+        flex: 1;
+        padding: 20px;
+        overflow-y: auto;
+      }
+
+      .tab-button {
+        display: block;
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 10px;
+        background-color: #2a3345;
+        border: none;
+        border-radius: 4px;
+        color: white;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .tab-button.active {
+        background-color: #3a5999;
+      }
+
+      h1,
+      h2,
+      h3 {
+        color: #88aaff;
+      }
+
+      .panel {
+        background-color: #1a2335;
+        border-radius: 5px;
+        padding: 15px;
+        margin-bottom: 20px;
+      }
+
+      .stat-row {
+        display: flex;
+        margin-bottom: 5px;
+      }
+
+      .stat-label {
+        width: 150px;
+        color: #aabbcc;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 15px 0;
+      }
+
+      th,
+      td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #2a3345;
+      }
+
+      th {
+        background-color: #2a3345;
+      }
+      .neural-structure {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 20px 0;
+        padding: 20px;
+        background-color: #1c2840;
+        border-radius: 5px;
+      }
+
+      .layer {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .layer-name {
+        margin-bottom: 10px;
+        color: #88aaff;
+      }
+
+      .neurons {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+
+      .neuron {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background-color: #4477dd;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="dashboard">
+      <div class="sidebar">
+        <h2>Analytics</h2>
+        <button class="tab-button active" data-tab="overview">Overview</button>
+        <button class="tab-button" data-tab="agents">Agents</button>
+        <button class="tab-button" data-tab="species">Species</button>
+        <button class="tab-button" data-tab="evolution">Evolution</button>
+        <button class="tab-button" data-tab="neural">Neural Networks</button>
+        <button class="tab-button" data-tab="environment">Environment</button>
+        <button class="tab-button" id="refresh-btn">Refresh Data</button>
+      </div>
+
+      <div class="content">
+        <div id="tab-overview" class="tab-content">
+          <h1>Simulation Overview</h1>
+          <div class="panel" id="overview-stats">Loading...</div>
+        </div>
+
+        <div id="tab-agents" class="tab-content" style="display: none">
+          <h1>Agent Analysis</h1>
+          <div class="panel" id="agent-list">Loading...</div>
+        </div>
+
+        <div id="tab-species" class="tab-content" style="display: none">
+          <h1>Species Analysis</h1>
+          <div class="panel" id="species-list">Loading...</div>
+        </div>
+
+        <div id="tab-evolution" class="tab-content" style="display: none">
+          <h1>Evolution Metrics</h1>
+          <div class="panel" id="evolution-stats">Loading...</div>
+        </div>
+
+        <div id="tab-neural" class="tab-content" style="display: none">
+          <h1>Neural Network Analysis</h1>
+          <div class="panel" id="neural-networks">Loading...</div>
+        </div>
+
+        <div id="tab-environment" class="tab-content" style="display: none">
+          <h1>Environment Analysis</h1>
+          <div class="panel" id="environment-stats">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Tab switching
+      document.querySelectorAll('.tab-button').forEach((button) => {
+        button.addEventListener('click', () => {
+          const tabId = button.getAttribute('data-tab');
+
+          // Skip for refresh button
+          if (tabId === null) return;
+
+          // Hide all content
+          document.querySelectorAll('.tab-content').forEach((tab) => {
+            tab.style.display = 'none';
+          });
+
+          // Show selected content
+          const selectedTab = document.getElementById(`tab-${tabId}`);
+          if (selectedTab) {
+            selectedTab.style.display = 'block';
+          }
+
+          // Update active button
+          document.querySelectorAll('.tab-button').forEach((btn) => {
+            btn.classList.remove('active');
+          });
+          button.classList.add('active');
+        });
+      });
+
+      // We'll need to use localStorage to pass data from the simulation to this page
+      // For now, let's just show a message
+      document.getElementById('overview-stats').innerHTML = `
+      <h3>Data Sharing Setup Required</h3>
+      <p>To view simulation data, we need to implement a data sharing mechanism.</p>
+      <p>The simulation needs to store data in localStorage which this dashboard will read.</p>
+    `;
+
+      function updateDashboard() {
+        // Get data from localStorage
+        const dataString = localStorage.getItem('evolutionSimData');
+
+        if (!dataString) {
+          document.getElementById('overview-stats').innerHTML = `
+      <h3>No Data Available</h3>
+      <p>Make sure the simulation is running and recording data.</p>
+    `;
+          return;
+        }
+
+        try {
+          const data = JSON.parse(dataString);
+
+          // Update overview tab
+          const overviewHtml = `
+      <h3>Simulation Status</h3>
+      <div class="stat-row">
+        <div class="stat-label">Generation:</div>
+        <div>${data.generation}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Tick:</div>
+        <div>${data.tick}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Agents:</div>
+        <div>${data.agents.count}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Species:</div>
+        <div>${data.species.count}</div>
+      </div>
+      
+      <h3>Fitness Stats</h3>
+      <div class="stat-row">
+        <div class="stat-label">Average Fitness:</div>
+        <div>${data.agents.fitness.avg.toFixed(2)}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Max Fitness:</div>
+        <div>${data.agents.fitness.max.toFixed(2)}</div>
+      </div>
+      
+      <h3>Environment</h3>
+      <div class="stat-row">
+        <div class="stat-label">Time of Day:</div>
+        <div>${data.environment.timeOfDay}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Food Available:</div>
+        <div>${data.environment.foodCounts.total}</div>
+      </div>
+    `;
+          document.getElementById('overview-stats').innerHTML = overviewHtml;
+
+          // Update agents tab
+          const agentsHtml = `
+      <h3>Top Performing Agents</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Species</th>
+            <th>Fitness</th>
+            <th>Energy</th>
+            <th>Age</th>
+            <th>Mutation Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.agents.topAgents
+            .map(
+              (agent) => `
+            <tr>
+              <td>${agent.id}</td>
+              <td>${agent.speciesName || 'Unknown'}</td>
+              <td>${agent.fitness.toFixed(2)}</td>
+              <td>${agent.energy.toFixed(2)}</td>
+              <td>${agent.age}</td>
+              <td>${agent.mutationRate.toFixed(4)}</td>
+            </tr>
+          `
+            )
+            .join('')}
+        </tbody>
+      </table>
+    `;
+          document.getElementById('agent-list').innerHTML = agentsHtml;
+
+          // Update species tab
+          const speciesHtml = `
+      <h3>Species Distribution</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Members</th>
+            <th>Best Fitness</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.species.distribution
+            .map(
+              (species) => `
+            <tr>
+              <td>${species.id}</td>
+              <td style="color: ${species.color}">${species.name}</td>
+              <td>${species.count}</td>
+              <td>${species.bestFitness.toFixed(2)}</td>
+              <td>Gen ${species.creationGen}</td>
+            </tr>
+          `
+            )
+            .join('')}
+        </tbody>
+      </table>
+    `;
+          document.getElementById('species-list').innerHTML = speciesHtml;
+
+          // Add these calls:
+          updateEvolutionTab(data);
+          updateNeuralNetworkTab(data);
+          updateEnvironmentTab(data);
+        } catch (error) {
+          console.error('Error parsing simulation data:', error);
+        }
+      }
+
+      function updateEnvironmentTab(data) {
+        // Food distribution visualization
+        const foodData = data.environment.foodCounts;
+        const foodHtml = `
+    <h3>Food Distribution</h3>
+    <div class="stat-row">
+      <div class="stat-label">Basic Food:</div>
+      <div>${foodData.byType.basic || 0}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Super Food:</div>
+      <div>${foodData.byType.super || 0}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Poison:</div>
+      <div>${foodData.byType.poison || 0}</div>
+    </div>
+    
+    <h3>Zone Population</h3>
+    ${Object.entries(data.environment.zonePopulation || {})
+      .map(
+        ([zone, count]) => `
+      <div class="stat-row">
+        <div class="stat-label">${zone}:</div>
+        <div>${count} agents</div>
+      </div>
+    `
+      )
+      .join('')}
+    
+    <h3>Time of Day</h3>
+    <div class="stat-row">
+      <div class="stat-label">Current:</div>
+      <div>${data.environment.timeOfDay}</div>
+    </div>
+  `;
+
+        document.getElementById('environment-stats').innerHTML = foodHtml;
+      }
+
+      function updateEvolutionTab(data) {
+        // We need to track historical data for this tab
+        // For now, show current generation stats
+        const evolutionHtml = `
+    <h3>Current Generation</h3>
+    <div class="stat-row">
+      <div class="stat-label">Generation:</div>
+      <div>${data.generation}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Average Fitness:</div>
+      <div>${data.agents.fitness.avg.toFixed(2)}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Max Fitness:</div>
+      <div>${data.agents.fitness.max.toFixed(2)}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Species Count:</div>
+      <div>${data.species.count}</div>
+    </div>
+    
+    <p>Note: To see fitness trends over time, we need to implement historical data tracking.</p>
+  `;
+
+        document.getElementById('evolution-stats').innerHTML = evolutionHtml;
+      }
+
+      function updateNeuralNetworkTab(data) {
+        // For now, show basic stats about the neural networks
+        const topAgent = data.agents.topAgents[0];
+
+        const neuralHtml = topAgent
+          ? `
+    <h3>Top Agent Neural Network</h3>
+    <div class="stat-row">
+      <div class="stat-label">Agent ID:</div>
+      <div>${topAgent.id}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Fitness:</div>
+      <div>${topAgent.fitness.toFixed(2)}</div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-label">Mutation Rate:</div>
+      <div>${topAgent.mutationRate.toFixed(4)}</div>
+    </div>
+    
+    <h3>Network Architecture</h3>
+    <div class="neural-structure">
+      <div class="layer">
+        <span class="layer-name">Input</span>
+        <div class="neurons">
+          ${Array(12)
+            .fill(0)
+            .map((_, i) => `<div class="neuron"></div>`)
+            .join('')}
+        </div>
+      </div>
+      <div class="layer">
+        <span class="layer-name">Hidden 1</span>
+        <div class="neurons">
+          ${Array(16)
+            .fill(0)
+            .map(() => `<div class="neuron"></div>`)
+            .join('')}
+        </div>
+      </div>
+      <div class="layer">
+        <span class="layer-name">Hidden 2</span>
+        <div class="neurons">
+          ${Array(12)
+            .fill(0)
+            .map(() => `<div class="neuron"></div>`)
+            .join('')}
+        </div>
+      </div>
+      <div class="layer">
+        <span class="layer-name">Output</span>
+        <div class="neurons">
+          ${Array(3)
+            .fill(0)
+            .map(() => `<div class="neuron"></div>`)
+            .join('')}
+        </div>
+      </div>
+    </div>
+    
+    <p>Note: This is a simplified visualization of the neural network structure.</p>
+  `
+          : `<p>No agent data available.</p>`;
+
+        document.getElementById('neural-networks').innerHTML = neuralHtml;
+      }
+
+      // Update dashboard when page loads
+      updateDashboard();
+
+      // Set up auto-refresh
+      setInterval(updateDashboard, 1000);
+
+      // Refresh button
+      document.getElementById('refresh-btn').addEventListener('click', () => {
+        location.reload();
+      });
+    </script>
+  </body>
+</html>
