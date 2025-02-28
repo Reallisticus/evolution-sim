@@ -379,34 +379,142 @@
         document.getElementById('environment-stats').innerHTML = foodHtml;
       }
 
+      // Add this to the analytics.html script section to enhance the evolution visualization
+
       function updateEvolutionTab(data) {
-        // We need to track historical data for this tab
-        // For now, show current generation stats
-        const evolutionHtml = `
-    <h3>Current Generation</h3>
-    <div class="stat-row">
-      <div class="stat-label">Generation:</div>
-      <div>${data.generation}</div>
-    </div>
-    <div class="stat-row">
-      <div class="stat-label">Average Fitness:</div>
-      <div>${data.agents.fitness.avg.toFixed(2)}</div>
-    </div>
-    <div class="stat-row">
-      <div class="stat-label">Max Fitness:</div>
-      <div>${data.agents.fitness.max.toFixed(2)}</div>
-    </div>
-    <div class="stat-row">
-      <div class="stat-label">Species Count:</div>
-      <div>${data.species.count}</div>
-    </div>
-    
-    <p>Note: To see fitness trends over time, we need to implement historical data tracking.</p>
+        if (!data.generationHistory || data.generationHistory.length === 0) {
+          document.getElementById('evolution-stats').innerHTML =
+            '<p>No generation history available yet.</p>';
+          return;
+        }
+
+        const history = data.generationHistory;
+
+        // Create fitness trend visualization
+        let fitnessChartHtml = `
+    <h3>Fitness Trends</h3>
+    <div class="chart-container" style="height: 200px; position: relative; margin-bottom: 20px; background-color: rgba(30, 40, 60, 0.5); border-radius: 5px; padding: 10px;">
   `;
 
-        document.getElementById('evolution-stats').innerHTML = evolutionHtml;
-      }
+        // Calculate max fitness for scaling
+        const maxFitness = Math.max(
+          ...history.map((gen) => gen.maxFitness || 0)
+        );
+        const chartHeight = 160;
+        const barWidth = Math.min(20, Math.floor((800 - 40) / history.length));
+        const gap = 2;
 
+        // Create bars for each generation
+        fitnessChartHtml += `<div class="fitness-bars" style="display: flex; height: 100%; align-items: flex-end; padding-left: 10px;">`;
+
+        history.forEach((gen, index) => {
+          if (!gen.maxFitness) return; // Skip if no fitness data
+
+          const avgHeight = (gen.avgFitness / maxFitness) * chartHeight;
+          const maxHeight = (gen.maxFitness / maxFitness) * chartHeight;
+
+          fitnessChartHtml += `
+      <div class="fitness-bar-group" style="width: ${barWidth}px; margin-right: ${gap}px; position: relative;" 
+           title="Generation ${gen.generation}: Max=${gen.maxFitness.toFixed(
+            1
+          )}, Avg=${gen.avgFitness.toFixed(1)}">
+        <div class="max-fitness-bar" style="position: absolute; bottom: 0; left: ${
+          barWidth / 4
+        }px; width: ${
+            barWidth / 2
+          }px; height: ${maxHeight}px; background-color: #ffaa44;"></div>
+        <div class="avg-fitness-bar" style="position: absolute; bottom: 0; left: 0; width: ${barWidth}px; height: ${avgHeight}px; background-color: #44aaff;"></div>
+      </div>
+    `;
+        });
+
+        fitnessChartHtml += `</div>
+  <div style="margin-top: 10px; display: flex; justify-content: center;">
+    <div style="display: flex; align-items: center; margin-right: 20px;">
+      <div style="width: 12px; height: 12px; background-color: #ffaa44; margin-right: 5px;"></div>
+      <span>Max Fitness</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+      <div style="width: 12px; height: 12px; background-color: #44aaff; margin-right: 5px;"></div>
+      <span>Avg Fitness</span>
+    </div>
+  </div>
+  </div>`;
+
+        // Create species diversity visualization
+        let speciesChartHtml = `
+    <h3>Species Diversity</h3>
+    <div class="chart-container" style="height: 150px; position: relative; margin-bottom: 20px; background-color: rgba(30, 40, 60, 0.5); border-radius: 5px; padding: 10px;">
+  `;
+
+        // Calculate max species count for scaling
+        const maxSpecies = Math.max(
+          ...history.map((gen) => gen.speciesCount || 0)
+        );
+        const speciesChartHeight = 110;
+
+        // Create bars for each generation
+        speciesChartHtml += `<div class="species-bars" style="display: flex; height: 100%; align-items: flex-end; padding-left: 10px;">`;
+
+        history.forEach((gen, index) => {
+          if (!gen.speciesCount) return; // Skip if no species data
+
+          const barHeight =
+            (gen.speciesCount / Math.max(maxSpecies, 1)) * speciesChartHeight;
+
+          speciesChartHtml += `
+      <div class="species-bar" 
+           style="width: ${barWidth}px; height: ${barHeight}px; background-color: #aa44ff; margin-right: ${gap}px;"
+           title="Generation ${gen.generation}: ${gen.speciesCount} species">
+      </div>
+    `;
+        });
+
+        speciesChartHtml += `</div></div>`;
+
+        // Add generation-by-generation table
+        let tableHtml = `
+    <h3>Generation History</h3>
+    <div style="max-height: 300px; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Gen</th>
+            <th>Agents</th>
+            <th>Species</th>
+            <th>Avg Fitness</th>
+            <th>Max Fitness</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+        // Sort by generation descending to show latest first
+        const sortedHistory = [...history].sort(
+          (a, b) => b.generation - a.generation
+        );
+
+        sortedHistory.forEach((gen) => {
+          tableHtml += `
+      <tr>
+        <td>${gen.generation}</td>
+        <td>${gen.agentCount || '-'}</td>
+        <td>${gen.speciesCount || '-'}</td>
+        <td>${gen.avgFitness ? gen.avgFitness.toFixed(2) : '-'}</td>
+        <td>${gen.maxFitness ? gen.maxFitness.toFixed(2) : '-'}</td>
+      </tr>
+    `;
+        });
+
+        tableHtml += `
+        </tbody>
+      </table>
+    </div>
+  `;
+
+        document.getElementById('evolution-stats').innerHTML =
+          fitnessChartHtml + speciesChartHtml + tableHtml;
+      }
       function updateNeuralNetworkTab(data) {
         // For now, show basic stats about the neural networks
         const topAgent = data.agents.topAgents[0];
