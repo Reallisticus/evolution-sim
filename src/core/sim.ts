@@ -9,7 +9,6 @@ import { EnvironmentCycle, TimeOfDay } from '../environment/cycle';
 import { createVector, Vector2D } from '../utils/math';
 import { SpeciesManager } from '../evolution/species';
 import { LineageTracker } from '../evolution/lineage';
-import { HistoryTracker } from '../analytics/history-tracker';
 
 export class Simulation {
   private timeController: TimeController;
@@ -23,7 +22,6 @@ export class Simulation {
   private speciesManager: SpeciesManager = new SpeciesManager();
   private lineageTracker: LineageTracker = new LineageTracker();
   private deadAgents: Agent[] = [];
-  private historyTracker: HistoryTracker = new HistoryTracker();
 
   constructor() {
     this.timeController = new TimeController();
@@ -65,10 +63,6 @@ export class Simulation {
 
     // Initialize environment
     this.initializeEnvironment();
-    this.historyTracker.startGeneration(
-      this.generation,
-      config.initialAgentCount
-    );
 
     // Initialize agents
     for (let i = 0; i < config.initialAgentCount; i++) {
@@ -314,227 +308,99 @@ export class Simulation {
   }
 
   private startNewGeneration(): void {
-    // Collect end-of-generation metrics
-    const agents = this.agents;
-    const species = this.speciesManager.getActiveSpecies();
-
-    // Calculate fitness statistics
-    const fitnesses = agents.map((a) => a.fitness);
-    const avgFitness =
-      agents.length > 0
-        ? fitnesses.reduce((sum, f) => sum + f, 0) / agents.length
-        : 0;
-    const sortedFitness = [...fitnesses].sort((a, b) => a - b);
-    const medianFitness =
-      agents.length > 0
-        ? sortedFitness[Math.floor(sortedFitness.length / 2)]
-        : 0;
-
-    // Calculate standard deviation
-    const variance =
-      agents.length > 0
-        ? fitnesses.reduce((sum, f) => sum + Math.pow(f - avgFitness, 2), 0) /
-          agents.length
-        : 0;
-    const stdDev = Math.sqrt(variance);
-
-    // Species metrics
-    const dominantSpecies =
-      species.length > 0
-        ? species.reduce((prev, current) =>
-            prev.members.length > current.members.length ? prev : current
-          )
-        : null;
-
-    // Calculate species diversity using Shannon entropy
-    let diversity = 0;
-    if (agents.length > 0) {
-      const speciesCounts: Record<number, number> = {};
-      agents.forEach((agent) => {
-        const speciesId = agent.species?.id || 0;
-        speciesCounts[speciesId] = (speciesCounts[speciesId] || 0) + 1;
-      });
-
-      Object.values(speciesCounts).forEach((count) => {
-        const p = count / agents.length;
-        diversity -= p * Math.log2(p);
-      });
-    }
-
-    // Get mutation rates for neural metrics
-    const mutationRates = agents.map((a) => a.genome.mutationRate);
-
-    // Get key neural weights (sample from first 10 weights of each agent)
-    const keyWeightSamples = agents
-      .slice(0, 10)
-      .map((a) => a.genome.weights.slice(0, 10));
-
-    // Average the samples
-    const keyWeights = Array(10).fill(0);
-    keyWeightSamples.forEach((weights) => {
-      weights.forEach((w, i) => {
-        keyWeights[i] += w / keyWeightSamples.length;
-      });
-    });
-
-    // Calculate zone distribution
-    const zoneDistribution: Record<ZoneType, number> = {
-      [ZoneType.NORMAL]: 0,
-      [ZoneType.HARSH]: 0,
-      [ZoneType.FERTILE]: 0,
-      [ZoneType.BARREN]: 0,
-    };
-
-    this.agents.forEach((agent) => {
-      let inZone = false;
-
-      for (const zone of this.zones) {
-        if (zone.contains(agent.position)) {
-          zoneDistribution[zone.type]++;
-          inZone = true;
-          break;
-        }
-      }
-
-      if (!inZone) {
-        zoneDistribution[ZoneType.NORMAL]++;
-      }
-    });
-
-    // Collect & record all metrics
-    this.historyTracker.updateZoneDistribution(zoneDistribution);
-    this.historyTracker.updateNeuralMetrics(mutationRates, keyWeights);
-    this.historyTracker.updateSpeciesMetrics(
-      species.length,
-      diversity,
-      dominantSpecies
-        ? {
-            id: dominantSpecies.id,
-            name: dominantSpecies.name,
-            count: dominantSpecies.members.length,
-            avgFitness:
-              agents
-                .filter((a) => a.species?.id === dominantSpecies.id)
-                .reduce((sum, a) => sum + a.fitness, 0) /
-              dominantSpecies.members.length,
-          }
-        : { id: 0, name: 'None', count: 0, avgFitness: 0 },
-      this.speciesManager.getNewSpeciesCount(),
-      this.speciesManager.getExtinctSpeciesCount()
-    );
-
-    // End current generation in history tracker
-    this.historyTracker.endGeneration({
-      fitness: {
-        min: Math.min(...fitnesses),
-        max: Math.max(...fitnesses),
-        avg: avgFitness,
-        median: medianFitness,
-        stdDev,
-      },
-      agentCount: {
-        final: agents.length,
-        survived: agents.length,
-        reproduced: 0, // Will be updated during reproduction
-      },
-    });
-
     this.generation++;
     this.tickCount = 0;
     console.log(`Starting generation ${this.generation}`);
-    this.historyTracker.startGeneration(this.generation, agents.length);
 
     // Advance generation in tracking systems
     this.speciesManager.advanceGeneration();
     this.lineageTracker.advanceGeneration();
-    let reproductionCount = 0;
-    while (newAgents.length < config.initialAgentCount) {
-      // If no agents survived, reset with new random agents
-      if (this.agents.length === 0) {
-        for (let i = 0; i < config.initialAgentCount; i++) {
-          const position = createVector(
-            Math.random() * config.worldWidth,
-            Math.random() * config.worldHeight
-          );
 
-          // Create agent with simulation reference
-          const agent = new Agent(position, undefined, this);
-
-          // Register birth
-          agent.id = this.lineageTracker.registerBirth([], 0);
-
-          // Assign species
-          agent.species = this.speciesManager.assignSpecies(
-            agent.genome,
-            agent.id
-          );
-
-          this.agents.push(agent);
-        }
-      } else {
-        // Get sorted agents by fitness
-        const sortedAgents = [...this.agents].sort(
-          (a, b) => b.fitness - a.fitness
+    // If no agents survived, reset with new random agents
+    if (this.agents.length === 0) {
+      for (let i = 0; i < config.initialAgentCount; i++) {
+        const position = createVector(
+          Math.random() * config.worldWidth,
+          Math.random() * config.worldHeight
         );
 
-        // Keep only the top performers
-        const survivors = sortedAgents.slice(
-          0,
-          Math.ceil(sortedAgents.length / 4)
+        // Create agent with simulation reference
+        const agent = new Agent(position, undefined, this);
+
+        // Register birth
+        agent.id = this.lineageTracker.registerBirth([], 0);
+
+        // Assign species
+        agent.species = this.speciesManager.assignSpecies(
+          agent.genome,
+          agent.id
         );
 
-        // Clean up non-survivors
-        for (const agent of this.agents) {
-          if (!survivors.includes(agent)) {
-            agent.dispose();
-          }
-        }
-
-        // Create new generation
-        const newAgents: Agent[] = [];
-
-        // Keep survivors
-        for (const survivor of survivors) {
-          newAgents.push(survivor);
-        }
-
-        // Fill up to initial count with offspring
-        while (newAgents.length < config.initialAgentCount) {
-          // Select random parent from survivors
-          const parentIndex = Math.floor(Math.random() * survivors.length);
-          const parent = survivors[parentIndex];
-
-          // Have a chance to select a second parent for sexual reproduction
-          let partner = null;
-          if (Math.random() < 0.7 && survivors.length > 1) {
-            let partnerIndex;
-            do {
-              partnerIndex = Math.floor(Math.random() * survivors.length);
-            } while (partnerIndex === parentIndex);
-
-            partner = survivors[partnerIndex];
-          }
-
-          // Create offspring
-          const child = parent.reproduce(partner);
-
-          // Register birth
-          child.id = this.lineageTracker.registerBirth(
-            partner ? [parent.id, partner.id] : [parent.id],
-            0 // Initial species ID, will be set next
-          );
-
-          // Assign species
-          child.species = this.speciesManager.assignSpecies(
-            child.genome,
-            child.id
-          );
-
-          newAgents.push(child);
-        }
-
-        this.agents = newAgents;
+        this.agents.push(agent);
       }
+    } else {
+      // Get sorted agents by fitness
+      const sortedAgents = [...this.agents].sort(
+        (a, b) => b.fitness - a.fitness
+      );
+
+      // Keep only the top performers
+      const survivors = sortedAgents.slice(
+        0,
+        Math.ceil(sortedAgents.length / 4)
+      );
+
+      // Clean up non-survivors
+      for (const agent of this.agents) {
+        if (!survivors.includes(agent)) {
+          agent.dispose();
+        }
+      }
+
+      // Create new generation
+      const newAgents: Agent[] = [];
+
+      // Keep survivors
+      for (const survivor of survivors) {
+        newAgents.push(survivor);
+      }
+
+      // Fill up to initial count with offspring
+      while (newAgents.length < config.initialAgentCount) {
+        // Select random parent from survivors
+        const parentIndex = Math.floor(Math.random() * survivors.length);
+        const parent = survivors[parentIndex];
+
+        // Have a chance to select a second parent for sexual reproduction
+        let partner = null;
+        if (Math.random() < 0.7 && survivors.length > 1) {
+          let partnerIndex;
+          do {
+            partnerIndex = Math.floor(Math.random() * survivors.length);
+          } while (partnerIndex === parentIndex);
+
+          partner = survivors[partnerIndex];
+        }
+
+        // Create offspring
+        const child = parent.reproduce(partner);
+
+        // Register birth
+        child.id = this.lineageTracker.registerBirth(
+          partner ? [parent.id, partner.id] : [parent.id],
+          0 // Initial species ID, will be set next
+        );
+
+        // Assign species
+        child.species = this.speciesManager.assignSpecies(
+          child.genome,
+          child.id
+        );
+
+        newAgents.push(child);
+      }
+
+      this.agents = newAgents;
     }
 
     // Reset food

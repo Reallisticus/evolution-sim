@@ -1,7 +1,6 @@
 // src/main.ts with SimulationPersistence integration
 import { Simulation } from './core/sim';
 import { Renderer } from './visualization/renderer';
-import { DataRecorder } from './analytics/data-recorder';
 import { SimulationPersistence } from './persistence/simulation-saver';
 import config from './cfg';
 
@@ -17,10 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Create simulation
   const simulation = new Simulation();
-
-  // Create data recorder
-  const dataRecorder = new DataRecorder(simulation);
-  dataRecorder.start();
 
   // Create simulation persistence manager
   const simulationPersistence = new SimulationPersistence(simulation);

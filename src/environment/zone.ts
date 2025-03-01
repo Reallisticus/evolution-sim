@@ -1,6 +1,5 @@
 // src/environment/zone.ts
 import { Vector2D } from '../utils/math';
-import config from '../cfg';
 
 export enum ZoneType {
   NORMAL = 'normal',
