@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Evolution Sim Replay Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="panel">
+          <h1>Replay Viewer</h1>
+          <p class="muted">
+            Load a replay JSON, scrub ticks, and inspect durable lineage-grounded
+            species, transient ecotypes, season pressure, and individual agent niches.
+          </p>
+        </div>
+
+        <div class="panel">
+          <label for="replay-url">Replay URL</label>
+          <div class="row">
+            <input
+              id="replay-url"
+              type="text"
+              value="../output/sim-runs/viewer-check.json"
+            />
+            <button id="load-url" type="button">Load</button>
+          </div>
+          <label class="file-input" for="replay-file">
+            <span>Load Local File</span>
+            <input id="replay-file" type="file" accept=".json,application/json" />
+          </label>
+          <div id="load-status" class="muted">No replay loaded.</div>
+        </div>
+
+        <div class="panel">
+          <div class="controls">
+            <button id="play-toggle" type="button" disabled>Play</button>
+            <label for="playback-speed">Speed</label>
+            <select id="playback-speed">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+              <option value="8">8x</option>
+            </select>
+            <label for="overlay-mode">Overlay</label>
+            <select id="overlay-mode">
+              <option value="terrain">Terrain</option>
+              <option value="fertility">Fertility</option>
+              <option value="moisture">Moisture</option>
+              <option value="heat">Heat</option>
+              <option value="hydrology">Hydrology</option>
+              <option value="shoreline">Shoreline</option>
+              <option value="refuge">Refuge</option>
+              <option value="hazard">Hazard</option>
+              <option value="carcass">Carcass</option>
+              <option value="trophic">Trophic Role</option>
+              <option value="habitat">Habitat</option>
+              <option value="ecology">Ecology</option>
+            </select>
+          </div>
+          <label for="timeline">Timeline</label>
+          <input id="timeline" type="range" min="0" max="0" value="0" disabled />
+          <div class="timeline-meta">
+            <span id="frame-label">Tick -</span>
+            <span id="alive-label">Alive -</span>
+            <span id="species-label">Species -</span>
+          </div>
+          <div class="timeline-meta timeline-meta-secondary">
+            <span id="season-label">Season -</span>
+            <span id="climate-label">Climate -</span>
+            <span id="births-label">Births -</span>
+            <span id="deaths-label">Deaths -</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Run Summary</h2>
+          <dl id="summary-grid" class="summary-grid">
+            <div><dt>Run</dt><dd data-summary-field="run_id">-</dd></div>
+            <div><dt>Seed</dt><dd data-summary-field="seed">-</dd></div>
+            <div><dt>Ticks</dt><dd data-summary-field="ticks_executed">-</dd></div>
+            <div><dt>Births</dt><dd data-summary-field="births">-</dd></div>
+            <div><dt>Deaths</dt><dd data-summary-field="deaths">-</dd></div>
+            <div><dt>Peak Alive</dt><dd data-summary-field="peak_alive_agents">-</dd></div>
+            <div><dt>Alive Species</dt><dd data-summary-field="alive_species_count">-</dd></div>
+            <div><dt>Species Created</dt><dd data-summary-field="species_created">-</dd></div>
+            <div><dt>Alive Lineages</dt><dd data-summary-field="alive_lineages">-</dd></div>
+            <div><dt>Season End</dt><dd data-summary-field="season_at_end">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Population Traits</h2>
+          <dl id="trait-grid" class="summary-grid">
+            <div><dt>Avg Max Energy</dt><dd data-trait-field="avg_max_energy_gene">-</dd></div>
+            <div><dt>Avg Max Health</dt><dd data-trait-field="avg_max_health_gene">-</dd></div>
+            <div><dt>Avg Move Cost</dt><dd data-trait-field="avg_move_cost_gene">-</dd></div>
+            <div><dt>Avg Food Eff.</dt><dd data-trait-field="avg_food_efficiency_gene">-</dd></div>
+            <div><dt>Avg Water Eff.</dt><dd data-trait-field="avg_water_efficiency_gene">-</dd></div>
+            <div><dt>Avg Attack Power</dt><dd data-trait-field="avg_attack_power_gene">-</dd></div>
+            <div><dt>Avg Meat Eff.</dt><dd data-trait-field="avg_meat_efficiency_gene">-</dd></div>
+            <div><dt>Avg Carrion Bias</dt><dd data-trait-field="avg_carrion_bias_gene">-</dd></div>
+            <div><dt>Avg Live Prey Bias</dt><dd data-trait-field="avg_live_prey_bias_gene">-</dd></div>
+            <div><dt>Avg Heat Tol.</dt><dd data-trait-field="avg_heat_tolerance_gene">-</dd></div>
+            <div><dt>Last Birth Tick</dt><dd data-trait-field="last_birth_tick">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Climate State</h2>
+          <dl id="climate-grid" class="summary-grid">
+            <div><dt>Disturbance</dt><dd data-climate-field="disturbance_type">-</dd></div>
+            <div><dt>Strength</dt><dd data-climate-field="disturbance_strength">-</dd></div>
+            <div><dt>Season Progress</dt><dd data-climate-field="season_progress">-</dd></div>
+            <div><dt>Moisture Front X</dt><dd data-climate-field="moisture_front_x">-</dd></div>
+            <div><dt>Heat Front Y</dt><dd data-climate-field="heat_front_y">-</dd></div>
+            <div><dt>Center X</dt><dd data-climate-field="disturbance_center_x">-</dd></div>
+            <div><dt>Center Y</dt><dd data-climate-field="disturbance_center_y">-</dd></div>
+            <div><dt>Moisture Shift</dt><dd data-climate-field="moisture_shift">-</dd></div>
+            <div><dt>Heat Shift</dt><dd data-climate-field="heat_shift">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Hard Water</h2>
+          <dl id="hydrology-primary-grid" class="summary-grid">
+            <div><dt>Hard Access Tiles</dt><dd data-hydrology-primary-field="hard_access_tiles">-</dd></div>
+            <div><dt>Primary Adjacent Water</dt><dd data-hydrology-primary-field="adjacent_water">-</dd></div>
+            <div><dt>Primary Wetland</dt><dd data-hydrology-primary-field="wetland">-</dd></div>
+            <div><dt>Primary Flooded</dt><dd data-hydrology-primary-field="flooded">-</dd></div>
+            <div><dt>Primary None</dt><dd data-hydrology-primary-field="none">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Support And Refuge</h2>
+          <dl id="hydrology-support-grid" class="summary-grid">
+            <div><dt>Shoreline Support</dt><dd data-hydrology-support-field="shoreline_support">-</dd></div>
+            <div><dt>Wetland Support</dt><dd data-hydrology-support-field="wetland_support">-</dd></div>
+            <div><dt>Flooded Support</dt><dd data-hydrology-support-field="flooded_support">-</dd></div>
+            <div><dt>Canopy Refuge Tiles</dt><dd data-hydrology-support-field="canopy_refuge_tiles">-</dd></div>
+            <div><dt>Avg Refuge Score (Forest Tiles)</dt><dd data-hydrology-support-field="avg_refuge_score_forest_tiles">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Hazard State</h2>
+          <dl id="hazard-grid" class="summary-grid">
+            <div><dt>Hazardous Tiles</dt><dd data-hazard-field="hazardous_tiles">-</dd></div>
+            <div><dt>Exposure</dt><dd data-hazard-field="exposure">-</dd></div>
+            <div><dt>Instability</dt><dd data-hazard-field="instability">-</dd></div>
+            <div><dt>Hazard None</dt><dd data-hazard-field="none">-</dd></div>
+            <div><dt>Avg Hazard Level</dt><dd data-hazard-field="avg_hazard_level">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Carcass Field</h2>
+          <dl id="carcass-grid" class="summary-grid">
+            <div><dt>Carcass Tiles</dt><dd data-carcass-field="carcass_tiles">-</dd></div>
+            <div><dt>Total Carcass Energy</dt><dd data-carcass-field="total_carcass_energy">-</dd></div>
+            <div><dt>Avg Freshness</dt><dd data-carcass-field="avg_carcass_freshness">-</dd></div>
+            <div><dt>Mixed Source Tiles</dt><dd data-carcass-field="mixed_source_tiles">-</dd></div>
+            <div><dt>Deposition Events</dt><dd data-carcass-field="deposition_events">-</dd></div>
+            <div><dt>Energy Deposited</dt><dd data-carcass-field="carcass_energy_deposited">-</dd></div>
+            <div><dt>Consumption Events</dt><dd data-carcass-field="consumption_events">-</dd></div>
+            <div><dt>Energy Consumed</dt><dd data-carcass-field="carcass_energy_consumed">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Trophic Roles</h2>
+          <dl id="trophic-grid" class="summary-grid">
+            <div><dt>Herbivore</dt><dd data-trophic-field="herbivore">-</dd></div>
+            <div><dt>Omnivore</dt><dd data-trophic-field="omnivore">-</dd></div>
+            <div><dt>Carnivore</dt><dd data-trophic-field="carnivore">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Habitat State</h2>
+          <dl id="habitat-grid" class="summary-grid">
+            <div><dt>Stable</dt><dd data-habitat-field="stable">-</dd></div>
+            <div><dt>Bloom</dt><dd data-habitat-field="bloom">-</dd></div>
+            <div><dt>Flooded</dt><dd data-habitat-field="flooded">-</dd></div>
+            <div><dt>Parched</dt><dd data-habitat-field="parched">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Vegetation Recovery</h2>
+          <dl id="ecology-grid" class="summary-grid">
+            <div><dt>Lush</dt><dd data-ecology-field="lush">-</dd></div>
+            <div><dt>Recovering</dt><dd data-ecology-field="recovering">-</dd></div>
+            <div><dt>Depleted</dt><dd data-ecology-field="depleted">-</dd></div>
+            <div><dt>Avg Vegetation</dt><dd data-ecology-field="avg_vegetation">-</dd></div>
+            <div><dt>Avg Recovery Debt</dt><dd data-ecology-field="avg_recovery_debt">-</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel">
+          <h2>Active Species</h2>
+          <div id="species-empty" class="muted">
+            Load a replay to inspect active durable species.
+          </div>
+          <div id="species-list" class="species-list hidden"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Inspector</h2>
+          <div id="inspector-empty" class="muted">
+            Click an agent in the canvas to inspect it.
+          </div>
+          <dl id="inspector-grid" class="summary-grid hidden"></dl>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <div class="panel canvas-panel">
+          <div class="legend">
+            <div id="terrain-legend" class="terrain-legend"></div>
+            <span id="overlay-label" class="legend-note">Overlay: terrain</span>
+            <span class="legend-note">Agents are colored by species.</span>
+          </div>
+          <div id="canvas-host" class="canvas-host"></div>
+        </div>
+
+        <div class="analytics-grid">
+          <div class="panel">
+            <h2>Alive Population</h2>
+            <div id="population-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Species Count</h2>
+            <div id="species-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Births And Deaths</h2>
+            <div id="turnover-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Trait Drift</h2>
+            <div id="trait-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Habitat Pressure</h2>
+            <div id="habitat-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Hard Water</h2>
+            <div id="hydrology-primary-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Support And Refuge</h2>
+            <div id="hydrology-support-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Hazards</h2>
+            <div id="hazard-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Carcasses</h2>
+            <div id="carcass-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Combat</h2>
+            <div id="combat-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Vegetation Recovery</h2>
+            <div id="ecology-chart" class="chart-host"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Species Ecology</h2>
+            <div id="species-ecology-empty" class="muted">
+              Select a species to inspect hydrology, ecology, hazard, trophic pressure, and collapse pressure.
+            </div>
+            <dl id="species-ecology-grid" class="summary-grid hidden"></dl>
+            <div id="species-occupancy-bars" class="occupancy-bars hidden"></div>
+            <div id="species-trend-chart" class="chart-host hidden"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Collapse Events</h2>
+            <div id="collapse-empty" class="muted">
+              No collapse or extinction events are visible in this replay yet.
+            </div>
+            <div id="collapse-list" class="event-list hidden"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

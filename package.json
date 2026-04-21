@@ -1,0 +1,23 @@
+{
+  "name": "evolution-sim",
+  "version": "1.0.0",
+  "description": "Minimal standalone workspace for the artificial-life simulator.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "sim:run": "PYTHONPATH=python python3 -m evolution_sim.cli.run_headless",
+    "sim:inspect": "PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run",
+    "sim:test": "PYTHONPATH=python python3 -m unittest discover -s python/tests -p 'test_*.py'",
+    "viewer:serve": "python3 -m http.server 4173",
+    "viewer:smoke": "node viewer/smoke.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "playwright": "^1.59.1"
+  }
+}
