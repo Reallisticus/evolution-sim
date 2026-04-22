@@ -69,6 +69,8 @@ try {
     return (
       carcass &&
       carcass.textContent.includes("Carcass Tiles") &&
+      carcass.textContent.includes("Avg Freshness") &&
+      carcass.textContent.includes("Deposition Events") &&
       carcass.textContent.includes("Consumption Events") &&
       carcass.textContent.includes("Energy Consumed")
     );
@@ -115,6 +117,8 @@ try {
       inspector.textContent.includes("Health") &&
       inspector.textContent.includes("Last Damage Source") &&
       inspector.textContent.includes("Hazard Here") &&
+      inspector.textContent.includes("Carcass Dominant Source") &&
+      inspector.textContent.includes("Carcass Source Mix") &&
       inspector.textContent.includes("Water Access Reason") &&
       inspector.textContent.includes("Adjacent To Water") &&
       inspector.textContent.includes("Refuge Score") &&

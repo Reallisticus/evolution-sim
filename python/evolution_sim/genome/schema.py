@@ -34,6 +34,10 @@ def _clamp(name: str, value: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _mix(lower: float, upper: float, share: float) -> float:
+    return lower + (upper - lower) * share
+
+
 @dataclass(slots=True)
 class Genome:
     max_energy: float
@@ -60,21 +64,117 @@ class Genome:
 
     @classmethod
     def sample_initial(cls, rng: Random) -> "Genome":
+        plant_channel = rng.gammavariate(0.7, 1.0)
+        scavenger_channel = rng.gammavariate(0.24, 1.0)
+        hunter_channel = rng.gammavariate(0.24, 1.0)
+        if rng.random() < 0.32:
+            boost_roll = rng.random()
+            boost_factor = rng.uniform(1.5, 2.5)
+            if boost_roll < 0.55:
+                plant_channel *= boost_factor
+            elif boost_roll < 0.775:
+                scavenger_channel *= boost_factor
+            else:
+                hunter_channel *= boost_factor
+        total_channel = max(plant_channel + scavenger_channel + hunter_channel, 1e-9)
+        plant_share = plant_channel / total_channel
+        scavenger_share = scavenger_channel / total_channel
+        hunter_share = hunter_channel / total_channel
+        animal_share = scavenger_share + hunter_share
+        hunter_mode_share = hunter_share / max(animal_share, 1e-9)
+        scavenger_mode_share = scavenger_share / max(animal_share, 1e-9)
+        specialization_gap = abs(plant_share - animal_share)
+        breadth = 1.0 - specialization_gap
+        specialist_push = 0.42 + specialization_gap * 0.58
+
+        def jitter(scale: float) -> float:
+            return rng.gauss(0.0, scale)
+
         return cls(
-            max_energy=rng.uniform(0.9, 1.25),
-            max_hydration=rng.uniform(0.9, 1.25),
-            max_health=rng.uniform(0.92, 1.28),
-            move_cost=rng.uniform(0.03, 0.07),
-            food_efficiency=rng.uniform(0.8, 1.2),
-            water_efficiency=rng.uniform(0.8, 1.2),
-            attack_power=rng.uniform(0.62, 1.24),
-            attack_cost_multiplier=rng.uniform(0.88, 1.12),
-            defense_rating=rng.uniform(0.82, 1.18),
-            meat_efficiency=rng.uniform(0.5, 1.08),
-            healing_efficiency=rng.uniform(0.8, 1.14),
-            plant_bias=rng.uniform(0.88, 1.28),
-            carrion_bias=rng.uniform(0.46, 1.04),
-            live_prey_bias=rng.uniform(0.38, 0.92),
+            max_energy=_clamp(
+                "max_energy",
+                0.96
+                + animal_share * 0.16
+                + hunter_mode_share * 0.05
+                - breadth * 0.04
+                + jitter(0.05),
+            ),
+            max_hydration=_clamp(
+                "max_hydration",
+                0.96 + plant_share * 0.12 + scavenger_mode_share * 0.04 + jitter(0.05),
+            ),
+            max_health=_clamp(
+                "max_health",
+                0.94
+                + animal_share * 0.24
+                + hunter_mode_share * 0.16
+                - breadth * 0.03
+                + jitter(0.06),
+            ),
+            move_cost=_clamp(
+                "move_cost",
+                0.037 + breadth * 0.012 + hunter_mode_share * 0.008 + jitter(0.004),
+            ),
+            food_efficiency=_clamp(
+                "food_efficiency",
+                _mix(0.42, 1.72, plant_share**1.28 * specialist_push + breadth * 0.12)
+                + jitter(0.08),
+            ),
+            water_efficiency=_clamp(
+                "water_efficiency",
+                0.82 + plant_share * 0.18 + scavenger_mode_share * 0.04 + jitter(0.05),
+            ),
+            attack_power=_clamp(
+                "attack_power",
+                0.38
+                + animal_share**1.18
+                * (0.18 + hunter_mode_share * 1.24 + specialization_gap * 0.18)
+                + jitter(0.08),
+            ),
+            attack_cost_multiplier=_clamp(
+                "attack_cost_multiplier",
+                1.2
+                - animal_share * (0.08 + hunter_mode_share * 0.42 + specialization_gap * 0.14)
+                + jitter(0.03),
+            ),
+            defense_rating=_clamp(
+                "defense_rating",
+                0.66
+                + animal_share * (0.18 + hunter_mode_share * 0.42 + specialization_gap * 0.12)
+                + jitter(0.07),
+            ),
+            meat_efficiency=_clamp(
+                "meat_efficiency",
+                _mix(
+                    0.22,
+                    1.74,
+                    animal_share**1.22 * specialist_push + breadth * 0.08,
+                )
+                + jitter(0.08),
+            ),
+            healing_efficiency=_clamp(
+                "healing_efficiency",
+                0.82 + animal_share * 0.1 + scavenger_mode_share * 0.08 + jitter(0.05),
+            ),
+            plant_bias=_clamp(
+                "plant_bias",
+                _mix(0.45, 1.8, plant_share**1.36 * (0.82 + specialization_gap * 0.18))
+                + jitter(0.09),
+            ),
+            carrion_bias=_clamp(
+                "carrion_bias",
+                0.2
+                + animal_share
+                * (0.16 + scavenger_mode_share * 1.34 + specialization_gap * 0.16)
+                + jitter(0.1),
+            ),
+            live_prey_bias=_clamp(
+                "live_prey_bias",
+                0.2
+                + animal_share
+                * (0.16 + hunter_mode_share * 1.34 + specialization_gap * 0.16)
+                + jitter(0.1),
+            ),
             forest_affinity=rng.uniform(0.75, 1.25),
             plain_affinity=rng.uniform(0.75, 1.25),
             wetland_affinity=rng.uniform(0.75, 1.25),
@@ -86,6 +186,9 @@ class Genome:
 
     def mutate(self, rng: Random) -> "Genome":
         sigma = self.mutation_scale
+        plant_shift = rng.gauss(0.0, sigma * 0.85)
+        scavenger_shift = rng.gauss(0.0, sigma * 0.75)
+        hunter_shift = rng.gauss(0.0, sigma * 0.75)
         return Genome(
             max_energy=_clamp("max_energy", self.max_energy + rng.gauss(0.0, sigma)),
             max_hydration=_clamp(
@@ -96,33 +199,46 @@ class Genome:
                 "move_cost", self.move_cost + rng.gauss(0.0, sigma * 0.2)
             ),
             food_efficiency=_clamp(
-                "food_efficiency", self.food_efficiency + rng.gauss(0.0, sigma)
+                "food_efficiency",
+                self.food_efficiency + plant_shift + rng.gauss(0.0, sigma * 0.35),
             ),
             water_efficiency=_clamp(
                 "water_efficiency", self.water_efficiency + rng.gauss(0.0, sigma)
             ),
             attack_power=_clamp(
-                "attack_power", self.attack_power + rng.gauss(0.0, sigma)
+                "attack_power",
+                self.attack_power + hunter_shift * 0.95 + rng.gauss(0.0, sigma * 0.35),
             ),
             attack_cost_multiplier=_clamp(
                 "attack_cost_multiplier",
-                self.attack_cost_multiplier + rng.gauss(0.0, sigma * 0.4),
+                self.attack_cost_multiplier
+                - hunter_shift * 0.18
+                + rng.gauss(0.0, sigma * 0.18),
             ),
             defense_rating=_clamp(
-                "defense_rating", self.defense_rating + rng.gauss(0.0, sigma)
+                "defense_rating",
+                self.defense_rating + hunter_shift * 0.52 + rng.gauss(0.0, sigma * 0.3),
             ),
             meat_efficiency=_clamp(
-                "meat_efficiency", self.meat_efficiency + rng.gauss(0.0, sigma)
+                "meat_efficiency",
+                self.meat_efficiency
+                + (scavenger_shift + hunter_shift) * 0.62
+                + rng.gauss(0.0, sigma * 0.3),
             ),
             healing_efficiency=_clamp(
                 "healing_efficiency", self.healing_efficiency + rng.gauss(0.0, sigma)
             ),
-            plant_bias=_clamp("plant_bias", self.plant_bias + rng.gauss(0.0, sigma)),
+            plant_bias=_clamp(
+                "plant_bias",
+                self.plant_bias + plant_shift * 1.05 + rng.gauss(0.0, sigma * 0.3),
+            ),
             carrion_bias=_clamp(
-                "carrion_bias", self.carrion_bias + rng.gauss(0.0, sigma)
+                "carrion_bias",
+                self.carrion_bias + scavenger_shift * 1.08 + rng.gauss(0.0, sigma * 0.28),
             ),
             live_prey_bias=_clamp(
-                "live_prey_bias", self.live_prey_bias + rng.gauss(0.0, sigma)
+                "live_prey_bias",
+                self.live_prey_bias + hunter_shift * 1.08 + rng.gauss(0.0, sigma * 0.28),
             ),
             forest_affinity=_clamp(
                 "forest_affinity", self.forest_affinity + rng.gauss(0.0, sigma)

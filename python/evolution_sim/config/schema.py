@@ -61,33 +61,49 @@ class HazardConfig:
 @dataclass(slots=True)
 class CombatConfig:
     min_attack_health_ratio: float = 0.55
-    min_attack_energy_ratio: float = 0.45
-    min_attack_hydration_ratio: float = 0.4
+    min_attack_energy_ratio: float = 0.38
+    min_attack_hydration_ratio: float = 0.32
     min_reproduction_health_ratio: float = 0.72
-    base_attack_damage: float = 0.18
-    attack_energy_cost: float = 0.055
-    attack_hydration_cost: float = 0.038
+    base_attack_damage: float = 0.5
+    attack_energy_cost: float = 0.045
+    attack_hydration_cost: float = 0.03
 
 
 @dataclass(slots=True)
 class CarcassConfig:
-    base_energy: float = 0.24
-    health_ratio_yield: float = 0.42
-    body_capacity_yield: float = 0.18
-    decay_base_rate: float = 0.016
-    decay_heat_factor: float = 0.018
-    decay_moisture_factor: float = 0.011
-    healing_fraction: float = 0.08
+    base_energy: float = 0.3
+    health_ratio_yield: float = 0.5
+    body_capacity_yield: float = 0.24
+    fresh_kill_conversion_rate: float = 0.5
+    decay_base_rate: float = 0.012
+    decay_heat_factor: float = 0.014
+    decay_moisture_factor: float = 0.008
+    healing_fraction: float = 0.1
+    max_tile_deposits: int = 8
+    freshness_merge_bucket: float = 0.12
 
 
 @dataclass(slots=True)
 class TrophicConfig:
-    specialist_share_threshold: float = 0.62
-    animal_channel_threshold: float = 0.18
-    attack_channel_threshold: float = 0.17
-    breadth_penalty: float = 0.24
-    breadth_metabolism_penalty: float = 0.08
-    breadth_hydration_penalty: float = 0.04
+    specialist_share_threshold: float = 0.64
+    animal_channel_threshold: float = 0.14
+    animal_use_drive_threshold: float = 0.08
+    attack_channel_threshold: float = 0.08
+    breadth_penalty: float = 0.7
+    breadth_metabolism_penalty: float = 0.28
+    breadth_hydration_penalty: float = 0.14
+    breadth_reproduction_penalty: float = 0.28
+    channel_focus_power: float = 3.0
+    mode_focus_power: float = 2.1
+
+
+@dataclass(slots=True)
+class BioticFieldConfig:
+    diffusion_radius: int = 18
+    prey_weight: float = 1.9
+    carrion_weight: float = 1.14
+    predator_risk_weight: float = 0.24
+    hunter_vulnerability_weight: float = 1.08
 
 
 @dataclass(slots=True)
@@ -116,6 +132,13 @@ class ReproductionConfig:
 
 
 @dataclass(slots=True)
+class DietMatchingConfig:
+    reservoir_decay: float = 0.96
+    specialist_threshold: float = 0.7
+    omnivore_threshold: float = 0.45
+
+
+@dataclass(slots=True)
 class WorldConfig:
     seed: int = 7
     width: int = 48
@@ -138,8 +161,10 @@ class WorldConfig:
     combat: CombatConfig = field(default_factory=CombatConfig)
     carcasses: CarcassConfig = field(default_factory=CarcassConfig)
     trophic: TrophicConfig = field(default_factory=TrophicConfig)
+    biotic_fields: BioticFieldConfig = field(default_factory=BioticFieldConfig)
     taxonomy: TaxonomyConfig = field(default_factory=TaxonomyConfig)
     reproduction: ReproductionConfig = field(default_factory=ReproductionConfig)
+    diet_matching: DietMatchingConfig = field(default_factory=DietMatchingConfig)
     climate: ClimateConfig = field(default_factory=ClimateConfig)
 
     def to_dict(self) -> dict[str, object]:

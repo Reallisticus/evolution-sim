@@ -9,6 +9,7 @@ class EventType(StrEnum):
     TICK_STARTED = "tick_started"
     AGENT_MOVED = "agent_moved"
     AGENT_ATE = "agent_ate"
+    CARCASS_DEPOSITED = "carcass_deposited"
     AGENT_DRANK = "agent_drank"
     AGENT_ATTACKED = "agent_attacked"
     AGENT_DAMAGED = "agent_damaged"

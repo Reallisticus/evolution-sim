@@ -1,7 +1,9 @@
 from .schema import (
+    BioticFieldConfig,
     CarcassConfig,
     ClimateConfig,
     CombatConfig,
+    DietMatchingConfig,
     EnvironmentFieldConfig,
     HazardConfig,
     ReproductionConfig,
@@ -12,9 +14,11 @@ from .schema import (
 )
 
 __all__ = [
+    "BioticFieldConfig",
     "CarcassConfig",
     "ClimateConfig",
     "CombatConfig",
+    "DietMatchingConfig",
     "EnvironmentFieldConfig",
     "HazardConfig",
     "ReproductionConfig",

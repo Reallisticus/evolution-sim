@@ -24,6 +24,7 @@ def main() -> None:
     print(f"births={summary['births']}")
     print(f"deaths={summary['deaths']}")
     print(f"extinct={summary['extinct']}")
+    print(f"taxonomy_mode={summary['taxonomy_mode']}")
     print(f"season_at_end={summary['season_at_end']}")
     print(
         "climate_end="
@@ -32,6 +33,7 @@ def main() -> None:
     print(f"alive_lineages={len(summary['alive_lineages'])}")
     print(f"species_created={summary['species_created']}")
     print(f"alive_species_count={summary['alive_species_count']}")
+    print(f"speciation_events={summary.get('speciation_events', 0)}")
     print(f"last_birth_tick={summary['last_birth_tick']}")
     print(
         "land_fields="
@@ -95,7 +97,13 @@ def main() -> None:
     print(
         "carcass_end="
         f"carcass_tiles={summary['carcass_stats_at_end']['carcass_tiles']} "
-        f"total_carcass_energy={summary['carcass_stats_at_end']['total_carcass_energy']}"
+        f"total_carcass_energy={summary['carcass_stats_at_end']['total_carcass_energy']} "
+        f"deposition_events={summary['carcass_end']['deposition_events']} "
+        f"energy_deposited={summary['carcass_end']['energy_deposited']} "
+        f"consumption_events={summary['carcass_end']['consumption_events']} "
+        f"energy_consumed={summary['carcass_end']['energy_consumed']} "
+        f"energy_decayed={summary['carcass_end']['energy_decayed']} "
+        f"conservation_error={summary['carcass_end']['conservation_error']}"
     )
     print(
         "combat_end="
@@ -124,7 +132,17 @@ def main() -> None:
         print(
             "top_species="
             f"{entry['species_id']} label={entry['label']} peak={entry['peak_members']} "
-            f"alive={entry['alive_members']} lineages={','.join(map(str, entry['lineages']))}"
+            f"alive={entry['alive_members']} status={entry.get('status', 'unknown')} "
+            f"lineages={','.join(map(str, entry['lineages']))}"
+        )
+
+    taxonomy = payload.get("viewer", {}).get("taxonomy", {})
+    for event in taxonomy.get("events", [])[:5]:
+        print(
+            "speciation_event="
+            f"tick={event['tick']} source={event['source_species_id']} "
+            f"continuation={event['continuation_species_id']} daughter={event['daughter_species_id']} "
+            f"score={event['score']}"
         )
 
 

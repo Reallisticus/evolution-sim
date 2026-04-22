@@ -564,15 +564,40 @@ function updateInspector() {
     isAliveNow ? (frame.hazard_level_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
   const currentCarcassEnergy =
     isAliveNow ? (frame.carcass_energy_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
+  const currentCarcassPatch =
+    isAliveNow
+      ? frame.carcass_patches?.find((patch) => patch.x === current.x && patch.y === current.y) ?? null
+      : null;
   const waterAccessReason = isAliveNow ? current.waterAccessReason ?? "none" : "none";
   const softRefugeReason = isAliveNow ? current.softRefugeReason ?? "none" : "none";
   const hydrologySupport = hydrologySupportFromCode(
     isAliveNow ? current.hydrologySupportCode ?? 0 : 0,
   );
+  const carcassDominantSource =
+    currentCarcassPatch?.dominant_source_species != null
+      ? payload.viewer.species_catalog?.[String(currentCarcassPatch.dominant_source_species)]?.label ??
+        currentCarcassPatch.dominant_source_species
+      : currentCarcassPatch?.mixed_sources
+        ? "Mixed"
+        : "-";
+  const carcassSourceMix =
+    currentCarcassPatch?.source_breakdown?.length
+      ? currentCarcassPatch.source_breakdown
+          .map((entry) => {
+            const speciesId = entry.source_species;
+            const label =
+              speciesId != null
+                ? payload.viewer.species_catalog?.[String(speciesId)]?.label ?? `S${speciesId}`
+                : "Unknown";
+            return `${label}:${roundValue(entry.energy)}`;
+          })
+          .join(", ")
+      : "-";
 
   const entries = [
     ["Agent", state.selectedAgentId],
     ["Species", speciesRecord?.label ?? speciesId ?? "-"],
+    ["Species Status", speciesRecord?.status ? titleCase(speciesRecord.status.replaceAll("_", " ")) : "-"],
     ["Ecotype", isAliveNow ? ecotypeRecord?.label ?? current?.ecotypeId ?? "-" : "-"],
     ["Species Members", liveSpeciesCount],
     ["Species Peak", speciesRecord?.peak_members ?? "-"],
@@ -580,6 +605,8 @@ function updateInspector() {
       "Species Lineages",
       speciesRecord?.lineages?.length ? speciesRecord.lineages.join(", ") : "-",
     ],
+    ["Parent Species", speciesRecord?.parent_species_id ?? "-"],
+    ["Split Tick", speciesRecord?.split_tick ?? "-"],
     ["Lineage", catalog.lineage_id],
     ["Parent", catalog.parent_id ?? "root"],
     ["Alive Now", isAliveNow ? "yes" : "no"],
@@ -600,6 +627,11 @@ function updateInspector() {
     ["Hazard Here", currentHazardType ? titleCase(currentHazardType) : "-"],
     ["Hazard Level", isAliveNow ? formatPercent(currentHazardLevel ?? 0) : "-"],
     ["Carcass Here", isAliveNow ? roundValue(currentCarcassEnergy ?? 0) : "-"],
+    ["Carcass Freshness", currentCarcassPatch ? formatPercent(currentCarcassPatch.avg_freshness ?? 0) : "-"],
+    ["Carcass Deposits", currentCarcassPatch?.deposit_count ?? "-"],
+    ["Carcass Mixed Sources", currentCarcassPatch ? (currentCarcassPatch.mixed_sources ? "yes" : "no") : "-"],
+    ["Carcass Dominant Source", carcassDominantSource],
+    ["Carcass Source Mix", carcassSourceMix],
     ["Habitat State", currentHabitatState ? titleCase(currentHabitatState) : "-"],
     ["Ecology State", currentEcologyState ? titleCase(currentEcologyState) : "-"],
     ["Energy Modifier", isAliveNow ? roundValue(current.energyModifier) : "-"],
@@ -1106,9 +1138,48 @@ function renderSpeciesEcology(frame, analytics) {
   }
 }
 
+function taxonomyEventSpeciesLabel(speciesId) {
+  if (speciesId == null) {
+    return "Unknown species";
+  }
+  const record = state.payload?.viewer?.species_catalog?.[String(speciesId)];
+  return record?.label ?? `Species ${speciesId}`;
+}
+
+function taxonomyEventSelected(event) {
+  if (state.selectedSpeciesId == null) {
+    return false;
+  }
+  if (event.type === "speciation") {
+    return [
+      event.source_species_id,
+      event.continuation_species_id,
+      event.daughter_species_id,
+    ].includes(state.selectedSpeciesId);
+  }
+  return event.species_id === state.selectedSpeciesId;
+}
+
 function renderCollapseEvents(frame, analytics) {
-  const events = analytics?.collapse_events ?? [];
-  const visibleEvents = events.filter((event) => event.tick <= frame.tick).slice(-12).reverse();
+  const events = [
+    ...(analytics?.collapse_events ?? []),
+    ...(analytics?.speciation_events ?? []),
+  ];
+  const visibleEvents = events
+    .filter((event) => event.tick <= frame.tick)
+    .sort((left, right) => {
+      if (left.tick !== right.tick) {
+        return right.tick - left.tick;
+      }
+      if (left.type !== right.type) {
+        return String(left.type).localeCompare(String(right.type));
+      }
+      return (
+        (right.species_id ?? right.source_species_id ?? 0) -
+        (left.species_id ?? left.source_species_id ?? 0)
+      );
+    })
+    .slice(0, 12);
   if (visibleEvents.length === 0) {
     elements.collapseEmpty.classList.remove("hidden");
     elements.collapseList.classList.add("hidden");
@@ -1120,20 +1191,38 @@ function renderCollapseEvents(frame, analytics) {
   elements.collapseList.classList.remove("hidden");
   elements.collapseList.innerHTML = visibleEvents
     .map((event) => {
-      const record = state.payload.viewer.species_catalog[String(event.species_id)];
       const classes = [
         "event-item",
         event.tick === frame.tick ? "current" : "",
-        state.selectedSpeciesId === event.species_id ? "selected" : "",
+        taxonomyEventSelected(event) ? "selected" : "",
       ]
         .filter(Boolean)
         .join(" ");
+      if (event.type === "speciation") {
+        return `
+          <div class="${classes}">
+            <div class="event-type">${escapeHtml(event.type)}</div>
+            <div>
+              ${escapeHtml(taxonomyEventSpeciesLabel(event.source_species_id))}
+              -> ${escapeHtml(taxonomyEventSpeciesLabel(event.continuation_species_id))}
+              / ${escapeHtml(taxonomyEventSpeciesLabel(event.daughter_species_id))}
+            </div>
+            <div class="event-meta">
+              Tick ${event.tick}
+            </div>
+          </div>
+        `;
+      }
       return `
         <div class="${classes}">
           <div class="event-type">${escapeHtml(event.type)}</div>
-          <div>${escapeHtml(record?.label ?? `Species ${event.species_id}`)}</div>
+          <div>${escapeHtml(taxonomyEventSpeciesLabel(event.species_id))}</div>
           <div class="event-meta">
-            Tick ${event.tick} - peak ${event.peak} - current ${event.current}
+            ${
+              event.type === "collapse"
+                ? `Tick ${event.tick} - peak ${event.peak} - current ${event.current}`
+                : `Tick ${event.tick}`
+            }
           </div>
         </div>
       `;

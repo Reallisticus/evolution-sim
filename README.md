@@ -53,21 +53,21 @@ http://127.0.0.1:4173/viewer/index.html?replay=../output/sim-runs/species-check.
 
 The viewer shows:
 
-- terrain mix across plain, forest, wetland, rocky, and water, plus live agents colored by durable lineage-grounded species
+- terrain mix across plain, forest, wetland, rocky, and water, plus live agents colored by replay-adjudicated durable species
 - current frame season, births, deaths, and live species count
 - moving climate fronts and deterministic storm/drought state
 - hydrology split into primary hard-water reasons and separate support counts, so shoreline, wetland support, and flooded support cannot be confused with the tile's main drinkable source
 - climate-driven hazard layers for exposure and instability, with hazard counts, hazard overlays, and per-tile hazard levels
-- carcass fields with visible carcass energy, consumption, and decay pressure
+- carcass fields with visible carrion stock, freshness, mixed-source patching, deposition, consumption, and decay pressure
 - trophic-role visibility so herbivore, omnivore, and carnivore occupancy can be inspected directly
 - habitat-state dynamics such as bloom, flooded, and parched regions
 - vegetation depletion, canopy shelter, and terrain-recovery pressure layered on top of habitat and climate, tracked only for land tiles
 - active species leaderboard with current size, peak size, and lineage spread
-- per-agent inspector with durable species, transient ecotype, terrain context, water-access reason, adjacent-to-water support, wetland/flooded flags, refuge score, health, injury, trophic role, hazard state, carcass presence, hydration and energy modifiers, habitat state, ecology state, and genome traits relevant to niche pressure
+- per-agent inspector with durable species, species status, transient ecotype, terrain context, water-access reason, adjacent-to-water support, wetland/flooded flags, refuge score, health, injury, trophic role, hazard state, carcass presence, hydration and energy modifiers, habitat state, ecology state, and genome traits relevant to niche pressure
 - environmental overlays for fertility, moisture, heat, hydrology, shoreline, refuge, hazard, carcass, trophic role, habitat, and ecology that match the simulation state
 - habitat overlay and habitat-pressure time-series chart
 - separate hard-water and support/refuge charts so primary adjacent water, primary wetland, primary flooded, shoreline support, and canopy refuge stay semantically distinct
-- separate hazard, carcass, and combat charts so damage pressure, carrion fields, and predation activity can be attributed over time
+- separate hazard, carcass, and combat charts so damage pressure, carrion stock and flow, and predation activity can be attributed over time
 - ecology overlay and vegetation-recovery time-series chart, with water kept visually separate from land ecology
 - time-series charts for alive population, species count, births/deaths, and trait drift
 - species ecology panels for terrain occupancy, shoreline support exposure, hard water access, refuge exposure, hazard exposure, trophic composition, stress, reproduction pressure, attack outcomes, and carcass use, with refuge averages labeled by denominator

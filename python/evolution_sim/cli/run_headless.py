@@ -102,7 +102,13 @@ def main() -> None:
     print(
         "carcass_end="
         f"carcass_tiles={summary['carcass_stats_at_end']['carcass_tiles']} "
-        f"total_carcass_energy={summary['carcass_stats_at_end']['total_carcass_energy']}"
+        f"total_carcass_energy={summary['carcass_stats_at_end']['total_carcass_energy']} "
+        f"deposition_events={summary['carcass_end']['deposition_events']} "
+        f"energy_deposited={summary['carcass_end']['energy_deposited']} "
+        f"consumption_events={summary['carcass_end']['consumption_events']} "
+        f"energy_consumed={summary['carcass_end']['energy_consumed']} "
+        f"energy_decayed={summary['carcass_end']['energy_decayed']} "
+        f"conservation_error={summary['carcass_end']['conservation_error']}"
     )
     print(
         "combat_end="
