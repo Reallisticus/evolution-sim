@@ -7,9 +7,19 @@
     "doc": "docs"
   },
   "scripts": {
-    "sim:run": "PYTHONPATH=python python3 -m evolution_sim.cli.run_headless",
-    "sim:inspect": "PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run",
-    "sim:test": "PYTHONPATH=python python3 -m unittest discover -s python/tests -p 'test_*.py'",
+    "sim:run": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.run_headless",
+    "sim:inspect": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run",
+    "sim:test": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.test_runner --suite fast",
+    "sim:test:full": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.test_runner --suite full",
+    "sim:golden": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.golden_harness",
+    "sim:golden:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.golden_harness --scenario seed7_ticks20 --scenario seed7_ticks100",
+    "sim:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.evaluate",
+    "sim:evaluate:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.evaluate --seeds 7,8 --ticks 40",
+    "sim:gate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.foundation_gate",
+    "sim:gate:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.foundation_gate --profile quick",
+    "sim:gate:release": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.foundation_gate --profile release",
+    "sim:bench": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench",
+    "sim:bench:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench --warmup 0 --runs 1 --scenario summary_seed7_ticks20 --skip-multiprocess",
     "viewer:serve": "python3 -m http.server 4173",
     "viewer:smoke": "node viewer/smoke.mjs"
   },

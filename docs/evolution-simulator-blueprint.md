@@ -799,9 +799,13 @@ The next implementation slice should stay entirely inside `Stage B: Foundation E
 
 1. Add cross-run evaluation.
 The simulator should compare seeds directly so species dominance, hazard pressure, trophic behavior, and collapse can be explained across runs rather than only within a single replay.
+The initial production path is `npm run sim:evaluate`, which defaults to `summary_only` sweeps and can opt into compact `full_replay` evaluation when species-taxonomy fields are required.
 
 2. Run the Foundation gate pass.
 Do long seeded sweeps, tighten replay-size and analytics discipline, and decide explicitly whether the current world is rich and legible enough to justify `Mind v1`.
+The executable gate is `npm run sim:gate`. Use `sim:gate:quick` for normal
+development and `sim:gate:release` at gate boundaries, because the release
+profile includes long-running probes.
 
 Do not start the learned controller until these tasks are in place.
 

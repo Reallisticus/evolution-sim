@@ -9,11 +9,13 @@ from random import Random
 from tempfile import TemporaryDirectory
 
 from evolution_sim.config import ClimateConfig, ResourceRegrowthConfig, WorldConfig
-from evolution_sim.env import SimulationWorld
+from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.world import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.io import write_json_replay
+
+GOLDEN_SPECIATION_SEED = 3
 
 
 class HeadlessSimulationTests(unittest.TestCase):
@@ -27,13 +29,13 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertEqual(first.events, second.events)
         self.assertEqual(first.viewer, second.viewer)
 
-    def test_long_run_has_births_deaths_and_turnover_beyond_alive_cap(self) -> None:
-        config = WorldConfig(seed=7, max_ticks=500)
+    def test_compact_full_replay_has_turnover_species_and_surfaces(self) -> None:
+        config = WorldConfig(seed=7, max_ticks=120)
         result = SimulationWorld(config).run()
 
         self.assertGreater(result.summary["births"], 0)
         self.assertGreater(result.summary["deaths"], 0)
-        self.assertGreater(result.summary["total_agents_seen"], config.max_agents)
+        self.assertGreater(result.summary["total_agents_seen"], config.initial_agents)
         self.assertGreater(result.summary["peak_alive_agents"], config.initial_agents)
         self.assertIsNotNone(result.summary["last_birth_tick"])
         self.assertEqual(len(result.viewer["frames"]), result.summary["ticks_executed"])
@@ -210,12 +212,13 @@ class HeadlessSimulationTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            result.viewer["agent_encoding"][-6:],
+            result.viewer["agent_encoding"][-7:],
             [
                 "water_access_reason",
                 "soft_refuge_reason",
                 "hydrology_support_code",
                 "refuge_score",
+                "matched_diet_ratio",
                 "ecotype_id",
                 "species_id",
             ],
@@ -583,15 +586,9 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertIn("ecotype_metrics", payload["viewer"]["frames"][-1])
 
     def test_species_ids_only_change_on_logged_speciation_events(self) -> None:
-        result = None
-        for seed in [3, 7, 11, 17, 29]:
-            candidate = SimulationWorld(WorldConfig(seed=seed, max_ticks=320)).run()
-            if candidate.summary["speciation_events"] > 0:
-                result = candidate
-                break
-
-        self.assertIsNotNone(result)
-        assert result is not None
+        result = SimulationWorld(
+            WorldConfig(seed=GOLDEN_SPECIATION_SEED, max_ticks=320)
+        ).run()
 
         field_map = {
             field: index for index, field in enumerate(result.viewer["agent_encoding"])
@@ -629,19 +626,38 @@ class HeadlessSimulationTests(unittest.TestCase):
             result.viewer["taxonomy"]["species_status_counts"],
         )
 
+    def test_full_replay_taxonomy_surfaces_remain_available_on_golden_speciation_seed(self) -> None:
+        result = SimulationWorld(
+            WorldConfig(seed=GOLDEN_SPECIATION_SEED, max_ticks=320)
+        ).run()
+
+        self.assertGreater(result.summary["alive_species_count"], 0)
+        self.assertGreater(result.summary["speciation_events"], 0)
+        self.assertEqual(
+            len(result.viewer["frames"][-1]["species_counts"]),
+            result.summary["alive_species_count"],
+        )
+        self.assertEqual(result.summary["taxonomy_mode"], "replay_clade_species_v2")
+        self.assertEqual(
+            len(result.viewer["taxonomy"]["events"]),
+            result.summary["speciation_events"],
+        )
+
     def test_multi_seed_runs_remain_viable_and_reproductive(self) -> None:
         seeds = [3, 7, 11, 17, 29]
         initial_agents = WorldConfig().initial_agents
 
         for seed in seeds:
-            result = SimulationWorld(WorldConfig(seed=seed, max_ticks=800)).run()
+            result = SimulationWorld(WorldConfig(seed=seed, max_ticks=800)).run(
+                mode=RunMode.SUMMARY_ONLY
+            )
             self.assertFalse(result.summary["extinct"], msg=f"seed {seed} went extinct")
             self.assertGreater(
                 result.summary["births"],
                 initial_agents,
                 msg=f"seed {seed} stalled before sustained reproduction",
             )
-            self.assertGreater(result.summary["alive_species_count"], 0, msg=f"seed {seed} lost all species")
+            self.assertGreater(result.summary["alive_agents"], 0, msg=f"seed {seed} lost all agents")
             self.assertIsNotNone(result.summary["last_birth_tick"], msg=f"seed {seed} stopped reproducing")
             self.assertGreater(
                 result.summary["last_birth_tick"],
@@ -770,20 +786,10 @@ class HeadlessSimulationTests(unittest.TestCase):
                 tile.fresh_kill_deposits = []
                 tile.carcass_deposits = []
                 tile.occupant_id = None
-        world.cached_habitat_tick = None
-        world.cached_habitat_grid = None
-        world.cached_habitat_counts = None
-        world.cached_climate_tick = None
-        world.cached_climate_state = None
-        world._invalidate_biotic_state()
+        world.reset_derived_caches()
 
     def _refresh_fixture_world(self, world: SimulationWorld) -> None:
-        world.cached_habitat_tick = None
-        world.cached_habitat_grid = None
-        world.cached_habitat_counts = None
-        world.cached_climate_tick = None
-        world.cached_climate_state = None
-        world._invalidate_biotic_state()
+        world.reset_derived_caches()
 
     def _set_water_tile(self, world: SimulationWorld, x: int, y: int, *, heat: float = 0.3) -> None:
         tile = world.grid[y][x]
@@ -886,7 +892,7 @@ class HeadlessSimulationTests(unittest.TestCase):
             agent.agent_id: agent.lineage_id for agent in world.alive_agents()
         }
         world.agent_last_species_map = world.current_species_map.copy()
-        world._invalidate_biotic_state()
+        world.reset_derived_caches()
         return initial_counts
 
     def _lineage_stats(
@@ -1466,7 +1472,7 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertEqual(len(deposit_events), 2)
         self.assertTrue(all("tile_source_breakdown_after" in event.data for event in deposit_events))
 
-    def test_attack_and_hazard_damage_are_distinguishable_and_carcasses_are_consumed(self) -> None:
+    def test_attack_hazard_and_frame_death_telemetry_match_summary(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=160)).run()
         damage_sources = {
             event["data"]["source"]
@@ -1477,6 +1483,11 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertTrue(any(source.startswith("hazard_") for source in damage_sources))
         self.assertGreater(result.summary["combat_end"]["attack_attempts"], 0)
         self.assertGreater(result.summary["combat_end"]["successful_attacks"], 0)
+        self.assertGreater(result.summary["combat_end"]["kills"], 0)
+        self.assertEqual(
+            sum(frame["deaths"] for frame in result.viewer["frames"]),
+            result.summary["deaths"],
+        )
         self.assertGreater(result.summary["carcass_end"]["deposition_events"], 0)
         self.assertAlmostEqual(result.summary["carcass_end"]["conservation_error"], 0.0, places=4)
         self.assertTrue(

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_expensive_checks:
+        description: "Run full simulator suite and full benchmark"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    - cron: "0 8 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run sim:golden
+      - run: npm run sim:test
+      - run: npm run sim:gate:quick -- --fail-on-blockers
+      - run: |
+          npm run sim:run -- --seed 7 --ticks 120 --output output/sim-runs/species-check.json
+          python3 -m http.server 4173 >/tmp/viewer-serve.log 2>&1 &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID" EXIT
+          npm run viewer:smoke
+
+  expensive:
+    if: github.event_name == 'schedule' || github.event.inputs.run_expensive_checks == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run sim:test:full
+      - run: npm run sim:bench

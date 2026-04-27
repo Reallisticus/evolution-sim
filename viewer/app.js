@@ -14,6 +14,8 @@ const state = {
   agentEncoding: null,
 };
 
+const UNKNOWN_TERRAIN_COLOR = 0xff00ff;
+
 const elements = {
   replayUrl: document.getElementById("replay-url"),
   replayFile: document.getElementById("replay-file"),
@@ -243,7 +245,7 @@ function populateTerrainLegend(map) {
       <span class="terrain-legend-item">
         <i class="swatch" style="background:${terrainCssColor(Number(code))};"></i>
         ${escapeHtml(titleCase(name))}
-        ${count != null ? `<small>${count}</small>` : ""}
+        ${count != null ? `<small>${escapeHtml(formatValue(count))}</small>` : ""}
       </span>
     `;
   });
@@ -256,7 +258,7 @@ function drawTerrain() {
   if (!app || !payload) return;
 
   const terrainLayer = state.terrainLayer;
-  terrainLayer.removeChildren();
+  clearPixiLayer(terrainLayer);
 
   const map = payload.viewer.map;
   const frame = payload.viewer.frames[state.currentFrameIndex] ?? null;
@@ -329,7 +331,7 @@ function renderFrame(frameIndex) {
   const offset = getMapOffset(map.width, map.height, tileSize);
 
   const agentLayer = state.agentLayer;
-  agentLayer.removeChildren();
+  clearPixiLayer(agentLayer);
 
   const graphics = new PIXI.Graphics();
   for (const agent of decodedAgents) {
@@ -1395,7 +1397,7 @@ function terrainColor(code) {
     3: 0x5d5249,
     4: 0x1d4ed8,
   };
-  return palette[code] ?? palette[0];
+  return palette[code] ?? UNKNOWN_TERRAIN_COLOR;
 }
 
 function terrainBaseColor(code) {
@@ -1406,7 +1408,7 @@ function terrainBaseColor(code) {
     3: 0x403732,
     4: 0x143262,
   };
-  return palette[code] ?? palette[0];
+  return palette[code] ?? UNKNOWN_TERRAIN_COLOR;
 }
 
 function terrainCssColor(code) {
@@ -1549,7 +1551,16 @@ function setStatus(message) {
   syncDebugState();
 }
 
+function clearPixiLayer(layer) {
+  for (const child of layer.removeChildren()) {
+    child.destroy({ children: true });
+  }
+}
+
 function overlayColorForTile(payload, frame, x, y, terrainCode) {
+  if (!isKnownTerrainCode(terrainCode)) {
+    return UNKNOWN_TERRAIN_COLOR;
+  }
   if (state.overlayMode === "hydrology") {
     return hydrologyReasonColor(frame.hydrology_primary_codes?.[y]?.[x], terrainCode);
   }
@@ -1713,7 +1724,7 @@ function terrainEntries(map) {
 }
 
 function terrainNameFromCode(map, code) {
-  return map.terrain_legend?.[String(code)] ?? "plain";
+  return map.terrain_legend?.[String(code)] ?? `unknown_${code}`;
 }
 
 function terrainCodeByName(name) {
@@ -1724,6 +1735,19 @@ function terrainCodeByName(name) {
     rocky: 3,
     water: 4,
   }[name] ?? 0;
+}
+
+function isKnownTerrainCode(code) {
+  return Object.prototype.hasOwnProperty.call(
+    {
+      0: true,
+      1: true,
+      2: true,
+      3: true,
+      4: true,
+    },
+    Number(code),
+  );
 }
 
 function habitatStateNameFromCode(code) {
@@ -1807,14 +1831,25 @@ function validateReplayPayload(payload) {
   }
 
   const { viewer } = payload;
-  if (!Array.isArray(viewer.frames)) {
-    throw new Error("Replay viewer.frames must be an array.");
+  if (!Array.isArray(viewer.frames) || viewer.frames.length === 0) {
+    throw new Error("Replay viewer.frames must be a non-empty array.");
   }
   if (!viewer.map || !Array.isArray(viewer.map.terrain_codes)) {
     throw new Error("Replay viewer.map is missing terrain codes.");
   }
   if (!Array.isArray(viewer.agent_encoding)) {
     throw new Error("Replay viewer.agent_encoding must be an array.");
+  }
+  for (const [index, frame] of viewer.frames.entries()) {
+    if (!frame || typeof frame !== "object") {
+      throw new Error(`Replay frame ${index} must be an object.`);
+    }
+    if (!Array.isArray(frame.agents)) {
+      throw new Error(`Replay frame ${index} is missing agents.`);
+    }
+    if (!Array.isArray(frame.species_counts)) {
+      throw new Error(`Replay frame ${index} is missing species_counts.`);
+    }
   }
 
   for (const field of REQUIRED_AGENT_FIELDS) {

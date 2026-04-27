@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import SimulationWorld
@@ -10,12 +11,13 @@ from evolution_sim.io import write_json_replay
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the evolution simulator headlessly.")
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--ticks", type=int, default=400)
+    parser.add_argument("--seed", type=int, default=7, help="Deterministic RNG seed.")
+    parser.add_argument("--ticks", type=int, default=400, help="Maximum ticks to simulate.")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("output/sim-runs/latest-run.json"),
+        help="Replay JSON destination. Existing files are replaced atomically.",
     )
     return parser
 
@@ -24,7 +26,12 @@ def main() -> None:
     args = build_parser().parse_args()
     config = WorldConfig(seed=args.seed, max_ticks=args.ticks)
     result = SimulationWorld(config).run()
-    replay_path = write_json_replay(result, args.output)
+    if args.output.exists():
+        print(f"warning: overwriting existing replay {args.output}", file=sys.stderr)
+    try:
+        replay_path = write_json_replay(result, args.output)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"failed to write replay {args.output}: {exc}") from exc
 
     summary = result.summary
     print(f"replay={replay_path}")

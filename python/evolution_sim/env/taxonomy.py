@@ -22,6 +22,11 @@ from math import log2
 from typing import Any
 
 from evolution_sim.config import WorldConfig
+from evolution_sim.env.runtime.reporting import (
+    build_species_metrics as build_shared_species_metrics,
+    rebuild_taxonomy_summary_and_analytics,
+    SpeciesMetricSample,
+)
 from evolution_sim.genome.species import GENE_ORDER, euclidean_distance, genome_vector_from_values
 
 LAND_TERRAINS = ("plain", "forest", "wetland", "rocky")
@@ -959,454 +964,119 @@ class ReplayTaxonomyPass:
     ) -> dict[str, dict[str, object]]:
         frame = self.frames[frame_index]
         tick = self.frame_ticks[frame_index]
-        metrics: dict[int, dict[str, object]] = {}
-        births_by_child_species: dict[int, int] = defaultdict(int)
-        births_by_parent_species: dict[int, int] = defaultdict(int)
-        deaths_by_species: dict[int, int] = defaultdict(int)
-        attack_stats_by_species: dict[int, dict[str, float]] = defaultdict(_empty_combat_totals)
-        fresh_kill_stats_by_species: dict[int, dict[str, float]] = defaultdict(
-            _empty_fresh_kill_totals
+        return build_shared_species_metrics(
+            occupancy_samples=(
+                SpeciesMetricSample(
+                    species_id=current_species_map.get(int(row[self.field_map["agent_id"]]), 0),
+                    terrain=self.terrain_legend[int(self.terrain_codes[int(row[self.field_map["y"]])][int(row[self.field_map["x"]])])],
+                    habitat=self.habitat_legend[int(frame["habitat_state_codes"][int(row[self.field_map["y"]])][int(row[self.field_map["x"]])])],
+                    ecology=self.ecology_legend[int(frame["ecology_state_codes"][int(row[self.field_map["y"]])][int(row[self.field_map["x"]])])],
+                    hazard=self.hazard_legend[int(frame["hazard_type_codes"][int(row[self.field_map["y"]])][int(row[self.field_map["x"]])])],
+                    trophic_role=str(row[self.field_map["trophic_role"]]),
+                    meat_mode=str(row[self.field_map["meat_mode"]]),
+                    water_reason=str(row[self.field_map["water_access_reason"]]),
+                    has_water_access=str(row[self.field_map["water_access_reason"]]) != "none",
+                    shoreline_support=bool(
+                        int(row[self.field_map["hydrology_support_code"]])
+                        & HYDROLOGY_SUPPORT_FLAGS["adjacent_to_water"]
+                    ),
+                    wetland_support=bool(
+                        int(row[self.field_map["hydrology_support_code"]])
+                        & HYDROLOGY_SUPPORT_FLAGS["wetland"]
+                    ),
+                    flooded_support=bool(
+                        int(row[self.field_map["hydrology_support_code"]])
+                        & HYDROLOGY_SUPPORT_FLAGS["flooded"]
+                    ),
+                    refuge_exposed=str(row[self.field_map["soft_refuge_reason"]]) != "none",
+                    energy_ratio=float(row[self.field_map["energy_ratio"]]),
+                    hydration_ratio=float(row[self.field_map["hydration_ratio"]]),
+                    health_ratio=float(row[self.field_map["health_ratio"]]),
+                    matched_diet_ratio=float(row[self.field_map["matched_diet_ratio"]]),
+                    age=float(row[self.field_map["age"]]),
+                    vegetation=float(row[self.field_map["tile_vegetation"]]),
+                    recovery_debt=float(row[self.field_map["tile_recovery_debt"]]),
+                    refuge_score=float(row[self.field_map["refuge_score"]]),
+                    injury_load=float(row[self.field_map["injury_load"]]),
+                    reproduction_ready=int(row[self.field_map["reproduction_ready"]]) > 0,
+                )
+                for row in frame["agents"]
+            ),
+            species_map=current_species_map,
+            previous_species_map=previous_species_map,
+            birth_pairs=self.birth_events_by_tick.get(tick, []),
+            dead_agent_ids=(int(event["agent_id"]) for event in self.death_events_by_tick.get(tick, [])),
+            attack_records=(
+                (
+                    int(event["agent_id"]),
+                    bool(event["data"].get("success")),
+                    float(event["data"].get("damage", 0.0)),
+                    bool(event["data"].get("kill")),
+                )
+                for event in self.attack_events_by_tick.get(tick, [])
+            ),
+            damage_records=(
+                (
+                    int(event["agent_id"]),
+                    float(event["data"].get("amount", 0.0)),
+                    str(event["data"].get("source", "")),
+                )
+                for event in self.damage_events_by_tick.get(tick, [])
+            ),
+            carcass_deposit_records=(
+                (
+                    previous_species_map.get(int(event["agent_id"])),
+                    float(event["data"].get("carcass_energy", 0.0)),
+                )
+                for event in self.death_events_by_tick.get(tick, [])
+                if float(event["data"].get("carcass_energy", 0.0)) > 0
+            ),
+            fresh_kill_deposit_records=(
+                (
+                    previous_species_map.get(int(event["agent_id"])),
+                    float(event["data"].get("fresh_kill_energy", 0.0)),
+                )
+                for event in self.death_events_by_tick.get(tick, [])
+                if float(event["data"].get("fresh_kill_energy", 0.0)) > 0
+            ),
+            fresh_kill_consumption_records=(
+                (
+                    int(event["agent_id"]),
+                    float(event["data"].get("consumed", 0.0)),
+                    float(event["data"].get("gained_energy", 0.0)),
+                )
+                for event in self.feed_events_by_tick.get(tick, [])
+                if str(event["data"].get("food_source")) == "fresh_kill"
+            ),
+            carcass_consumption_records=(
+                (
+                    int(event["agent_id"]),
+                    float(event["data"].get("consumed", 0.0)),
+                    float(event["data"].get("gained_energy", 0.0)),
+                )
+                for event in self.feed_events_by_tick.get(tick, [])
+                if str(event["data"].get("food_source")) == "carcass"
+            ),
+            feeding_records=(
+                (
+                    int(event["agent_id"]),
+                    str(event["data"].get("food_source", "plant")),
+                    float(event["data"].get("gained_energy", 0.0)),
+                )
+                for event in self.feed_events_by_tick.get(tick, [])
+            ),
         )
-        carcass_stats_by_species: dict[int, dict[str, float]] = defaultdict(_empty_carcass_totals)
-        diet_stats_by_species: dict[int, dict[str, float]] = defaultdict(_empty_diet_totals)
-
-        def resolve_species_id(agent_id: int | None) -> int:
-            if agent_id is None:
-                return 0
-            return current_species_map.get(agent_id, previous_species_map.get(agent_id, 0))
-
-        for parent_id, child_id in self.birth_events_by_tick.get(tick, []):
-            child_species = current_species_map.get(child_id)
-            if child_species is not None:
-                births_by_child_species[child_species] += 1
-            parent_species = current_species_map.get(parent_id, previous_species_map.get(parent_id))
-            if parent_species is not None:
-                births_by_parent_species[parent_species] += 1
-
-        for event in self.death_events_by_tick.get(tick, []):
-            agent_id = int(event["agent_id"])
-            dead_species = previous_species_map.get(agent_id)
-            if dead_species is not None:
-                deaths_by_species[dead_species] += 1
-                deposited_energy = float(event["data"].get("carcass_energy", 0.0))
-                if deposited_energy > 0:
-                    carcass_stats_by_species[dead_species]["deposition_events"] += 1
-                    carcass_stats_by_species[dead_species]["energy_deposited"] += deposited_energy
-                fresh_kill_energy = float(event["data"].get("fresh_kill_energy", 0.0))
-                if fresh_kill_energy > 0:
-                    fresh_kill_stats_by_species[dead_species]["deposition_events"] += 1
-                    fresh_kill_stats_by_species[dead_species]["energy_deposited"] += fresh_kill_energy
-
-        for event in self.attack_events_by_tick.get(tick, []):
-            species_id = resolve_species_id(int(event["agent_id"]))
-            attack_stats_by_species[species_id]["attack_attempts"] += 1
-            if event["data"].get("success"):
-                attack_stats_by_species[species_id]["successful_attacks"] += 1
-                attack_stats_by_species[species_id]["damage_dealt"] += float(
-                    event["data"].get("damage", 0.0)
-                )
-            if event["data"].get("kill"):
-                attack_stats_by_species[species_id]["kills"] += 1
-
-        for event in self.damage_events_by_tick.get(tick, []):
-            species_id = resolve_species_id(int(event["agent_id"]))
-            attack_stats_by_species[species_id]["damage_taken"] += float(
-                event["data"].get("amount", 0.0)
-            )
-            if str(event["data"].get("source", "")).startswith("hazard_"):
-                attack_stats_by_species[species_id]["hazard_damage_taken"] += float(
-                    event["data"].get("amount", 0.0)
-                )
-
-        for event in self.feed_events_by_tick.get(tick, []):
-            species_id = resolve_species_id(int(event["agent_id"]))
-            food_source = str(event["data"].get("food_source", "plant"))
-            gained_energy = float(event["data"].get("gained_energy", 0.0))
-            consumed = float(event["data"].get("consumed", 0.0))
-            prefix = food_source if food_source in {"plant", "fresh_kill", "carcass"} else "plant"
-            diet_stats_by_species[species_id][f"{prefix}_events"] += 1
-            diet_stats_by_species[species_id][f"{prefix}_energy"] += gained_energy
-            if food_source == "fresh_kill":
-                fresh_kill_stats_by_species[species_id]["consumption_events"] += 1
-                fresh_kill_stats_by_species[species_id]["energy_consumed"] += consumed
-                fresh_kill_stats_by_species[species_id]["gained_energy"] += gained_energy
-            elif food_source == "carcass":
-                carcass_stats_by_species[species_id]["consumption_events"] += 1
-                carcass_stats_by_species[species_id]["energy_consumed"] += consumed
-                carcass_stats_by_species[species_id]["gained_energy"] += gained_energy
-
-        for row in frame["agents"]:
-            agent_id = int(row[self.field_map["agent_id"]])
-            species_id = current_species_map.get(agent_id, 0)
-            record = metrics.setdefault(
-                species_id,
-                _empty_species_metric_record(
-                    births=births_by_child_species.get(species_id, 0),
-                    deaths=deaths_by_species.get(species_id, 0),
-                    reproduction_success=births_by_parent_species.get(species_id, 0),
-                ),
-            )
-            x = int(row[self.field_map["x"]])
-            y = int(row[self.field_map["y"]])
-            terrain = self.terrain_legend[int(self.terrain_codes[y][x])]
-            habitat = self.habitat_legend[int(frame["habitat_state_codes"][y][x])]
-            ecology = self.ecology_legend[int(frame["ecology_state_codes"][y][x])]
-            hazard = self.hazard_legend[int(frame["hazard_type_codes"][y][x])]
-            trophic_role = str(row[self.field_map["trophic_role"]])
-            meat_mode = str(row[self.field_map["meat_mode"]])
-            water_reason = str(row[self.field_map["water_access_reason"]])
-            support_code = int(row[self.field_map["hydrology_support_code"]])
-            energy_ratio = float(row[self.field_map["energy_ratio"]])
-            hydration_ratio = float(row[self.field_map["hydration_ratio"]])
-            health_ratio = float(row[self.field_map["health_ratio"]])
-            injury_load = float(row[self.field_map["injury_load"]])
-            refuge_score = float(row[self.field_map["refuge_score"]])
-            matched_diet_ratio = float(row[self.field_map["matched_diet_ratio"]])
-            vegetation = float(row[self.field_map["tile_vegetation"]])
-            recovery_debt = float(row[self.field_map["tile_recovery_debt"]])
-            reproduction_ready = int(row[self.field_map["reproduction_ready"]]) > 0
-
-            record["alive_count"] += 1
-            record["energy_ratio_total"] += energy_ratio
-            record["hydration_ratio_total"] += hydration_ratio
-            record["health_ratio_total"] += health_ratio
-            record["matched_diet_ratio_total"] += matched_diet_ratio
-            record["age_total"] += float(row[self.field_map["age"]])
-            record["vegetation_total"] += vegetation
-            record["recovery_total"] += recovery_debt
-            record["refuge_score_total"] += refuge_score
-            record["terrain_occupancy"][terrain] += 1
-            record["habitat_occupancy"][habitat] += 1
-            record["ecology_occupancy"][ecology] += 1
-            record["hazard_occupancy"][hazard] += 1
-            record["trophic_role_occupancy"][trophic_role] += 1
-            if meat_mode != "none":
-                record["meat_mode_occupancy"][meat_mode] += 1
-            record["hydrology_exposure_counts"][f"primary_{water_reason}"] += 1
-            if water_reason != "none":
-                record["terrain_occupancy"]["water_access"] += 1
-            if support_code & HYDROLOGY_SUPPORT_FLAGS["adjacent_to_water"]:
-                record["hydrology_exposure_counts"]["shoreline_support"] += 1
-            if support_code & HYDROLOGY_SUPPORT_FLAGS["wetland"]:
-                record["hydrology_exposure_counts"]["wetland_support"] += 1
-            if support_code & HYDROLOGY_SUPPORT_FLAGS["flooded"]:
-                record["hydrology_exposure_counts"]["flooded_support"] += 1
-            if str(row[self.field_map["soft_refuge_reason"]]) != "none":
-                record["hydrology_exposure_counts"]["refuge_exposed"] += 1
-                record["refuge_exposed_count"] += 1
-            if hazard != "none":
-                record["hazard_exposed_count"] += 1
-            if injury_load >= 0.08:
-                record["injury_count"] += 1
-            if energy_ratio < 0.35:
-                record["energy_stressed_count"] += 1
-            if hydration_ratio < 0.35:
-                record["hydration_stressed_count"] += 1
-            if reproduction_ready:
-                record["reproduction_ready_count"] += 1
-
-        referenced_species = (
-            set(births_by_child_species)
-            | set(births_by_parent_species)
-            | set(deaths_by_species)
-            | set(attack_stats_by_species)
-            | set(fresh_kill_stats_by_species)
-            | set(carcass_stats_by_species)
-            | set(diet_stats_by_species)
-        )
-        for species_id in referenced_species:
-            metrics.setdefault(
-                species_id,
-                _empty_species_metric_record(
-                    births=births_by_child_species.get(species_id, 0),
-                    deaths=deaths_by_species.get(species_id, 0),
-                    reproduction_success=births_by_parent_species.get(species_id, 0),
-                ),
-            )
-
-        finalized: dict[str, dict[str, object]] = {}
-        for species_id, record in metrics.items():
-            alive_count = max(int(record["alive_count"]), 1)
-            plant_energy = diet_stats_by_species[species_id]["plant_energy"]
-            fresh_kill_energy = diet_stats_by_species[species_id]["fresh_kill_energy"]
-            carcass_energy = diet_stats_by_species[species_id]["carcass_energy"]
-            animal_energy = fresh_kill_energy + carcass_energy
-            total_diet_energy = plant_energy + animal_energy
-            finalized[str(species_id)] = {
-                "alive_count": int(record["alive_count"]),
-                "births": int(record["births"]),
-                "deaths": int(record["deaths"]),
-                "reproduction_success": int(record["reproduction_success"]),
-                "avg_energy_ratio": round(record["energy_ratio_total"] / alive_count, 4),
-                "avg_hydration_ratio": round(record["hydration_ratio_total"] / alive_count, 4),
-                "avg_health_ratio": round(record["health_ratio_total"] / alive_count, 4),
-                "avg_age": round(record["age_total"] / alive_count, 2),
-                "avg_tile_vegetation": round(record["vegetation_total"] / alive_count, 4),
-                "avg_recovery_debt": round(record["recovery_total"] / alive_count, 4),
-                "avg_refuge_score_occupied_tiles": round(
-                    record["refuge_score_total"] / alive_count,
-                    4,
-                ),
-                "refuge_exposure_rate": round(record["refuge_exposed_count"] / alive_count, 4),
-                "injury_rate": round(record["injury_count"] / alive_count, 4),
-                "hazard_exposure_rate": round(record["hazard_exposed_count"] / alive_count, 4),
-                "energy_stress_rate": round(record["energy_stressed_count"] / alive_count, 4),
-                "hydration_stress_rate": round(
-                    record["hydration_stressed_count"] / alive_count,
-                    4,
-                ),
-                "reproduction_ready_rate": round(
-                    record["reproduction_ready_count"] / alive_count,
-                    4,
-                ),
-                "avg_matched_diet_ratio": round(
-                    record["matched_diet_ratio_total"] / alive_count,
-                    4,
-                ),
-                "attack_attempts": int(attack_stats_by_species[species_id]["attack_attempts"]),
-                "successful_attacks": int(
-                    attack_stats_by_species[species_id]["successful_attacks"]
-                ),
-                "kills": int(attack_stats_by_species[species_id]["kills"]),
-                "damage_dealt": round(attack_stats_by_species[species_id]["damage_dealt"], 4),
-                "damage_taken": round(attack_stats_by_species[species_id]["damage_taken"], 4),
-                "hazard_damage_taken": round(
-                    attack_stats_by_species[species_id]["hazard_damage_taken"],
-                    4,
-                ),
-                "plant_consumption": int(diet_stats_by_species[species_id]["plant_events"]),
-                "plant_energy_consumed": round(plant_energy, 4),
-                "fresh_kill_deposition": int(
-                    fresh_kill_stats_by_species[species_id]["deposition_events"]
-                ),
-                "fresh_kill_energy_deposited": round(
-                    fresh_kill_stats_by_species[species_id]["energy_deposited"],
-                    4,
-                ),
-                "fresh_kill_consumption": int(
-                    fresh_kill_stats_by_species[species_id]["consumption_events"]
-                ),
-                "fresh_kill_energy_consumed": round(
-                    fresh_kill_stats_by_species[species_id]["energy_consumed"],
-                    4,
-                ),
-                "fresh_kill_gained_energy": round(
-                    fresh_kill_stats_by_species[species_id]["gained_energy"],
-                    4,
-                ),
-                "carcass_deposition": int(carcass_stats_by_species[species_id]["deposition_events"]),
-                "carcass_energy_deposited": round(
-                    carcass_stats_by_species[species_id]["energy_deposited"],
-                    4,
-                ),
-                "carcass_consumption": int(carcass_stats_by_species[species_id]["consumption_events"]),
-                "carcass_energy_consumed": round(
-                    carcass_stats_by_species[species_id]["energy_consumed"],
-                    4,
-                ),
-                "carcass_gained_energy": round(
-                    carcass_stats_by_species[species_id]["gained_energy"],
-                    4,
-                ),
-                "realized_plant_share": round(
-                    plant_energy / max(total_diet_energy, 1e-9),
-                    4,
-                )
-                if total_diet_energy > 0
-                else 0.0,
-                "realized_animal_share": round(
-                    animal_energy / max(total_diet_energy, 1e-9),
-                    4,
-                )
-                if total_diet_energy > 0
-                else 0.0,
-                "realized_fresh_kill_share": round(
-                    fresh_kill_energy / max(total_diet_energy, 1e-9),
-                    4,
-                )
-                if total_diet_energy > 0
-                else 0.0,
-                "realized_carcass_share": round(
-                    carcass_energy / max(total_diet_energy, 1e-9),
-                    4,
-                )
-                if total_diet_energy > 0
-                else 0.0,
-                "terrain_occupancy": record["terrain_occupancy"],
-                "hydrology_exposure_counts": record["hydrology_exposure_counts"],
-                "habitat_occupancy": record["habitat_occupancy"],
-                "ecology_occupancy": record["ecology_occupancy"],
-                "hazard_occupancy": record["hazard_occupancy"],
-                "trophic_role_occupancy": record["trophic_role_occupancy"],
-                "meat_mode_occupancy": record["meat_mode_occupancy"],
-            }
-        return finalized
 
     def _rebuild_summary_and_analytics(self) -> None:
-        species_catalog = self.viewer["species_catalog"]
-        final_frame = self.frames[-1] if self.frames else None
-        alive_species = [species_id for species_id, _ in (final_frame or {}).get("species_counts", [])]
-        latest_species_metrics = (final_frame or {}).get("species_metrics", {})
-        top_species = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "label": payload["label"],
-                    "peak_members": payload["peak_members"],
-                    "alive_members": payload.get("current_members", 0),
-                    "lineages": payload["lineages"],
-                    "origin_kind": payload["taxonomy_origin"],
-                    "status": payload["status"],
-                    "parent_species_id": payload.get("parent_species_id"),
-                }
-                for species_id, payload in species_catalog.items()
-            ),
-            key=lambda item: (-item["alive_members"], -item["peak_members"], item["species_id"]),
-        )[:10]
-        self.summary["taxonomy_mode"] = REPLAY_TAXONOMY_MODE
-        self.summary["species_created"] = len(species_catalog)
-        self.summary["alive_species_count"] = len(alive_species)
-        self.summary["alive_species"] = alive_species
-        self.summary["top_species"] = top_species
-        self.summary["speciation_events"] = len(self.speciation_events)
-        self.summary["species_status_counts"] = self.species_status_counts
-        self.summary["top_species_by_realized_animal_share"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "realized_animal_share": float(metrics["realized_animal_share"]),
-                    "realized_fresh_kill_share": float(metrics["realized_fresh_kill_share"]),
-                    "realized_carcass_share": float(metrics["realized_carcass_share"]),
-                    "reproduction_success": int(metrics["reproduction_success"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if metrics["alive_count"] > 0 or metrics["reproduction_success"] > 0
-            ),
-            key=lambda item: (
-                -item["realized_animal_share"],
-                -item["reproduction_success"],
-                item["species_id"],
-            ),
-        )[:10]
-        self.summary["top_species_by_realized_fresh_kill_share"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "realized_fresh_kill_share": float(metrics["realized_fresh_kill_share"]),
-                    "fresh_kill_gained_energy": float(metrics["fresh_kill_gained_energy"]),
-                    "kills": int(metrics["kills"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if metrics["alive_count"] > 0
-                or metrics["fresh_kill_gained_energy"] > 0
-                or metrics["kills"] > 0
-            ),
-            key=lambda item: (
-                -item["realized_fresh_kill_share"],
-                -item["fresh_kill_gained_energy"],
-                -item["kills"],
-                item["species_id"],
-            ),
-        )[:10]
-        self.summary["top_species_by_realized_carcass_share"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "realized_carcass_share": float(metrics["realized_carcass_share"]),
-                    "carcass_gained_energy": float(metrics["carcass_gained_energy"]),
-                    "carcass_energy_consumed": float(metrics["carcass_energy_consumed"]),
-                    "attack_attempts": int(metrics["attack_attempts"]),
-                    "kills": int(metrics["kills"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if metrics["alive_count"] > 0
-                or metrics["carcass_gained_energy"] > 0
-                or metrics["attack_attempts"] > 0
-            ),
-            key=lambda item: (
-                -item["realized_carcass_share"],
-                -item["carcass_gained_energy"],
-                -item["attack_attempts"],
-                item["species_id"],
-            ),
-        )[:10]
-        self.summary["top_carnivore_species"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "realized_animal_share": float(metrics["realized_animal_share"]),
-                    "realized_fresh_kill_share": float(metrics["realized_fresh_kill_share"]),
-                    "realized_carcass_share": float(metrics["realized_carcass_share"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if int(metrics["trophic_role_occupancy"]["carnivore"]) > 0
-            ),
-            key=lambda item: (
-                -item["alive_count"],
-                -item["realized_animal_share"],
-                item["species_id"],
-            ),
-        )[:10]
-        self.summary["top_hunter_species"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "kills": int(metrics["kills"]),
-                    "realized_fresh_kill_share": float(metrics["realized_fresh_kill_share"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if int(metrics["meat_mode_occupancy"]["hunter"]) > 0
-            ),
-            key=lambda item: (
-                -item["alive_count"],
-                -item["kills"],
-                -item["realized_fresh_kill_share"],
-                item["species_id"],
-            ),
-        )[:10]
-        self.summary["top_scavenger_species"] = sorted(
-            (
-                {
-                    "species_id": int(species_id),
-                    "alive_count": int(metrics["alive_count"]),
-                    "realized_carcass_share": float(metrics["realized_carcass_share"]),
-                    "carcass_gained_energy": float(metrics["carcass_gained_energy"]),
-                }
-                for species_id, metrics in latest_species_metrics.items()
-                if int(metrics["meat_mode_occupancy"]["scavenger"]) > 0
-            ),
-            key=lambda item: (
-                -item["alive_count"],
-                -item["realized_carcass_share"],
-                -item["carcass_gained_energy"],
-                item["species_id"],
-            ),
-        )[:10]
-
-        analytics = self.viewer["analytics"]
-        analytics["population"]["species_count"] = [
-            len(frame["species_counts"]) for frame in self.frames
-        ]
-        species_population: dict[str, list[int]] = {
-            species_id: [0 for _ in self.frame_ticks]
-            for species_id in sorted(species_catalog, key=lambda item: int(item))
-        }
-        for frame_index, frame in enumerate(self.frames):
-            counts = {str(species_id): count for species_id, count in frame["species_counts"]}
-            for species_id in species_population:
-                species_population[species_id][frame_index] = counts.get(species_id, 0)
-        analytics["species_population"] = species_population
-        analytics["collapse_events"] = _build_collapse_events(
-            self.frame_ticks,
-            species_population,
+        rebuild_taxonomy_summary_and_analytics(
+            summary=self.summary,
+            viewer=self.viewer,
+            frames=self.frames,
+            frame_ticks=self.frame_ticks,
             speciation_events=self.speciation_events,
+            species_status_counts=self.species_status_counts,
+            taxonomy_mode=REPLAY_TAXONOMY_MODE,
         )
-        analytics["speciation_events"] = self.speciation_events
 
 
 def apply_replay_taxonomy(
@@ -1416,6 +1086,13 @@ def apply_replay_taxonomy(
     events: list[dict[str, object]],
     viewer: dict[str, object],
 ) -> tuple[dict[str, object], dict[str, object]]:
+    taxonomy_payload = viewer.get("taxonomy")
+    if (
+        isinstance(taxonomy_payload, dict)
+        and taxonomy_payload.get("version") == REPLAY_TAXONOMY_MODE
+        and summary.get("taxonomy_mode") == REPLAY_TAXONOMY_MODE
+    ):
+        return summary, viewer
     return ReplayTaxonomyPass(
         config=config,
         summary=summary,
@@ -1435,7 +1112,7 @@ def _total_variation_distance(left: Counter[Any], right: Counter[Any]) -> float:
     right_total = sum(right.values())
     if left_total <= 0 or right_total <= 0:
         return 0.0
-    keys = set(left) | set(right)
+    keys = sorted(set(left) | set(right))
     return 0.5 * sum(
         abs(left.get(key, 0) / left_total - right.get(key, 0) / right_total) for key in keys
     )
@@ -1446,7 +1123,7 @@ def _js_divergence(left: Counter[Any], right: Counter[Any]) -> float:
     right_total = sum(right.values())
     if left_total <= 0 or right_total <= 0:
         return 0.0
-    keys = set(left) | set(right)
+    keys = sorted(set(left) | set(right))
     divergence = 0.0
     for key in keys:
         left_prob = left.get(key, 0) / left_total
@@ -1457,138 +1134,3 @@ def _js_divergence(left: Counter[Any], right: Counter[Any]) -> float:
         if right_prob > 0:
             divergence += 0.5 * right_prob * log2(right_prob / mean_prob)
     return divergence
-
-
-def _empty_combat_totals() -> dict[str, float]:
-    return {
-        "attack_attempts": 0.0,
-        "successful_attacks": 0.0,
-        "kills": 0.0,
-        "damage_dealt": 0.0,
-        "damage_taken": 0.0,
-        "hazard_damage_taken": 0.0,
-    }
-
-
-def _empty_carcass_totals() -> dict[str, float]:
-    return {
-        "deposition_events": 0.0,
-        "energy_deposited": 0.0,
-        "consumption_events": 0.0,
-        "energy_consumed": 0.0,
-        "gained_energy": 0.0,
-    }
-
-
-def _empty_fresh_kill_totals() -> dict[str, float]:
-    return {
-        "deposition_events": 0.0,
-        "energy_deposited": 0.0,
-        "consumption_events": 0.0,
-        "energy_consumed": 0.0,
-        "gained_energy": 0.0,
-    }
-
-
-def _empty_diet_totals() -> dict[str, float]:
-    return {
-        "plant_events": 0.0,
-        "plant_energy": 0.0,
-        "fresh_kill_events": 0.0,
-        "fresh_kill_energy": 0.0,
-        "carcass_events": 0.0,
-        "carcass_energy": 0.0,
-    }
-
-
-def _empty_species_metric_record(
-    *,
-    births: int,
-    deaths: int,
-    reproduction_success: int,
-) -> dict[str, object]:
-    return {
-        "alive_count": 0,
-        "terrain_occupancy": {**{terrain: 0 for terrain in LAND_TERRAINS}, "water_access": 0},
-        "hydrology_exposure_counts": {
-            **{f"primary_{reason}": 0 for reason in HYDROLOGY_REASONS},
-            "shoreline_support": 0,
-            "wetland_support": 0,
-            "flooded_support": 0,
-            "refuge_exposed": 0,
-        },
-        "habitat_occupancy": {state: 0 for state in HABITAT_STATES},
-        "ecology_occupancy": {state: 0 for state in ECOLOGY_STATES},
-        "hazard_occupancy": {hazard_type: 0 for hazard_type in HAZARD_TYPES},
-        "trophic_role_occupancy": {role: 0 for role in TROPHIC_ROLES},
-        "meat_mode_occupancy": {mode: 0 for mode in MEAT_MODES},
-        "energy_ratio_total": 0.0,
-        "hydration_ratio_total": 0.0,
-        "health_ratio_total": 0.0,
-        "age_total": 0.0,
-        "vegetation_total": 0.0,
-        "recovery_total": 0.0,
-        "refuge_score_total": 0.0,
-        "refuge_exposed_count": 0,
-        "injury_count": 0,
-        "hazard_exposed_count": 0,
-        "energy_stressed_count": 0,
-        "hydration_stressed_count": 0,
-        "reproduction_ready_count": 0,
-        "matched_diet_ratio_total": 0.0,
-        "births": births,
-        "deaths": deaths,
-        "reproduction_success": reproduction_success,
-    }
-
-
-def _build_collapse_events(
-    ticks: list[int],
-    species_population: dict[str, list[int]],
-    *,
-    speciation_events: list[dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
-    events: list[dict[str, object]] = []
-    split_source_species_by_tick: dict[int, set[int]] = defaultdict(set)
-    for event in speciation_events or []:
-        tick = int(event["tick"])
-        split_source_species_by_tick[tick].add(int(event["source_species_id"]))
-    for species_id, counts in species_population.items():
-        peak = 0
-        collapse_recorded = False
-        previous = 0
-        for frame_index, count in enumerate(counts):
-            peak = max(peak, count)
-            tick = ticks[frame_index]
-            if (
-                not collapse_recorded
-                and peak >= 12
-                and count > 0
-                and count <= int(peak * 0.4)
-            ):
-                events.append(
-                    {
-                        "tick": tick,
-                        "species_id": int(species_id),
-                        "type": "collapse",
-                        "peak": peak,
-                        "current": count,
-                    }
-                )
-                collapse_recorded = True
-            if previous > 0 and count == 0:
-                if int(species_id) in split_source_species_by_tick.get(tick, set()):
-                    previous = count
-                    continue
-                events.append(
-                    {
-                        "tick": tick,
-                        "species_id": int(species_id),
-                        "type": "extinction",
-                        "peak": peak,
-                        "current": count,
-                    }
-                )
-            previous = count
-    events.sort(key=lambda event: (event["tick"], event["species_id"], event["type"]))
-    return events

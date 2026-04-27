@@ -1,0 +1,41 @@
+{
+  "python_version": "3.14.3",
+  "scenarios": [
+    {
+      "name": "seed7_ticks20",
+      "seed": 7,
+      "ticks": 20,
+      "requires_speciation": false,
+      "fixture": "seed7_ticks20.json.gz",
+      "sha256": "8c60ba9bfae51d7463909707895d510ea8b0532c054e41bfecb3a130947e8415",
+      "bytes": 11414378
+    },
+    {
+      "name": "seed7_ticks100",
+      "seed": 7,
+      "ticks": 100,
+      "requires_speciation": false,
+      "fixture": "seed7_ticks100.json.gz",
+      "sha256": "5cd86711d9e2b254d1197b938018c28d313189bbfbb471f0c7d2be5ea2817f15",
+      "bytes": 56323454
+    },
+    {
+      "name": "speciation_seed_ticks320",
+      "seed": 3,
+      "ticks": 320,
+      "requires_speciation": true,
+      "fixture": "speciation_seed_ticks320.json.gz",
+      "sha256": "0b0b054dad6e1028f1207adcd3054540b053c2d5aa6b32512ecd1df8adfb352d",
+      "bytes": 343034345
+    },
+    {
+      "name": "seed5_ticks120_provenance",
+      "seed": 5,
+      "ticks": 120,
+      "requires_speciation": false,
+      "fixture": "seed5_ticks120_provenance.json.gz",
+      "sha256": "4ec3f16aea90c20517f38a1719afb43fad2921692b0b4cba27cddddb018fc454",
+      "bytes": 69116541
+    }
+  ]
+}

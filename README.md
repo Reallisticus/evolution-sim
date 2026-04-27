@@ -22,6 +22,39 @@ cd /Users/njm/Projects/evolution-sim
 PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run output/sim-runs/seed7.json
 ```
 
+## Evaluate
+
+Compare multiple seeds without writing replay payloads:
+
+```bash
+cd /Users/njm/Projects/evolution-sim
+npm run sim:evaluate -- --seeds 1,2,3,4,5 --ticks 120 --output output/evaluations/foundation-120.json
+```
+
+The evaluator defaults to `summary_only` mode so long seed sweeps stay focused on
+shared survival, trophic, hazard, carrion, hydrology, and ecology outcomes. Use
+`--mode full_replay` only for compact compatibility checks that need species
+taxonomy fields.
+
+## Foundation Gate
+
+Run the local readiness gate before starting Mind work:
+
+```bash
+cd /Users/njm/Projects/evolution-sim
+npm run sim:gate:quick
+```
+
+The quick profile combines a short summary-only cross-seed sweep with a compact
+full-replay species/taxonomy probe. The release profile is intentionally opt-in:
+
+```bash
+npm run sim:gate:release -- --output output/evaluations/foundation-release.json
+```
+
+Use the release profile at gate boundaries; it includes the long summary-only
+viability sweep and the full replay speciation probe.
+
 ## Test
 
 ```bash
@@ -87,6 +120,7 @@ Run the regression and viewer checks for the current Foundation slice, including
 ```bash
 cd /Users/njm/Projects/evolution-sim
 npm run sim:test
+npm run sim:gate:quick
 npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json
 npm run sim:inspect output/sim-runs/species-check.json
 REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke
