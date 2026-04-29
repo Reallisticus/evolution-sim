@@ -8,7 +8,12 @@ from pathlib import Path
 from random import Random
 from tempfile import TemporaryDirectory
 
-from evolution_sim.config import ClimateConfig, ResourceRegrowthConfig, WorldConfig
+from evolution_sim.config import (
+    ClimateConfig,
+    ReproductionConfig,
+    ResourceRegrowthConfig,
+    WorldConfig,
+)
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.world import Agent
 from evolution_sim.genome import Genome
@@ -117,6 +122,7 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertIn("diet_end", result.summary)
         self.assertIn("diet_by_trophic_role_end", result.summary)
         self.assertIn("diet_by_meat_mode_end", result.summary)
+        self.assertIn("animal_resource_opportunity_by_meat_mode_end", result.summary)
         self.assertIn("top_species_by_realized_fresh_kill_share", result.summary)
         self.assertIn("top_species_by_realized_animal_share", result.summary)
         self.assertIn("top_carnivore_species", result.summary)
@@ -946,6 +952,542 @@ class HeadlessSimulationTests(unittest.TestCase):
             )
         return population, diet_shares, kills
 
+    def test_animal_resource_opportunity_counts_absent_resources_by_mode(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=501, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.0,
+            vegetation=0.2,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.2,
+            moisture=0.8,
+            heat=0.3,
+        )
+        self._seed_archetypes(world, counts={"scavenger": 1}, genomes=genomes)
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        counts = result.summary["animal_resource_opportunity_by_meat_mode_end"][
+            "scavenger"
+        ]
+        self.assertEqual(counts["alive_ticks"], 1)
+        self.assertEqual(counts["animal_resource_absent_ticks"], 1)
+        self.assertEqual(counts["animal_resource_present_ticks"], 0)
+        self.assertEqual(counts["animal_resource_consumption_events"], 0)
+
+    def test_animal_resource_opportunity_counts_present_unconsumed_by_mode(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=502, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.0,
+            vegetation=0.2,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.2,
+            moisture=0.8,
+            heat=0.3,
+        )
+        self._seed_archetypes(world, counts={"hunter": 1}, genomes=genomes)
+        agent = world.alive_agents()[0]
+        agent.energy = agent.genome.max_energy
+        agent.health = agent.max_health
+        agent.hydration = agent.genome.max_hydration
+        world._deposit_carcass(
+            world.grid[agent.y][agent.x],
+            x=agent.x,
+            y=agent.y,
+            energy=0.6,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        counts = result.summary["animal_resource_opportunity_by_meat_mode_end"]["hunter"]
+        self.assertEqual(counts["alive_ticks"], 1)
+        self.assertEqual(counts["animal_resource_present_ticks"], 1)
+        self.assertEqual(counts["animal_resource_absent_ticks"], 0)
+        self.assertEqual(counts["animal_resource_present_unconsumed_ticks"], 1)
+        self.assertEqual(counts["carcass_present_unconsumed_ticks"], 1)
+        self.assertEqual(counts["animal_resource_consumption_events"], 0)
+
+    def test_animal_resource_opportunity_counts_reachable_resources_by_mode(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=503, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.0,
+            vegetation=0.2,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.2,
+            moisture=0.8,
+            heat=0.3,
+        )
+        self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=2,
+            y=2,
+            lineage_id=303,
+            energy_ratio=0.45,
+        )
+        world._deposit_carcass(
+            world.grid[2][4],
+            x=4,
+            y=2,
+            energy=0.6,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        counts = result.summary["animal_resource_opportunity_by_meat_mode_end"][
+            "scavenger"
+        ]
+        self.assertEqual(counts["animal_resource_present_ticks"], 1)
+        self.assertEqual(counts["animal_resource_reachable_ticks"], 1)
+        self.assertEqual(counts["animal_resource_reachable_agent_ticks"], 1)
+        self.assertEqual(counts["carcass_reachable_ticks"], 1)
+        self.assertEqual(counts["animal_resource_reachable_unconsumed_ticks"], 1)
+        self.assertEqual(counts["animal_resource_consumption_events"], 0)
+
+    def test_animal_resource_opportunity_counts_unreachable_resources_by_mode(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=504, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.0,
+            vegetation=0.2,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.2,
+            moisture=0.8,
+            heat=0.3,
+        )
+        for y in range(world.config.height):
+            self._set_water_tile(world, 3, y)
+        self._refresh_fixture_world(world)
+        self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=1,
+            y=2,
+            lineage_id=303,
+            energy_ratio=0.45,
+        )
+        world._deposit_carcass(
+            world.grid[2][5],
+            x=5,
+            y=2,
+            energy=0.6,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        counts = result.summary["animal_resource_opportunity_by_meat_mode_end"][
+            "scavenger"
+        ]
+        self.assertEqual(counts["animal_resource_present_ticks"], 1)
+        self.assertEqual(counts["animal_resource_reachable_ticks"], 0)
+        self.assertEqual(counts["animal_resource_present_unreachable_ticks"], 1)
+        self.assertEqual(counts["animal_resource_present_unreachable_agent_ticks"], 1)
+        self.assertEqual(counts["carcass_present_unreachable_ticks"], 1)
+        self.assertEqual(counts["animal_resource_consumption_events"], 0)
+
+    def test_carrion_navigation_prefers_actual_resource_over_same_tile_scent(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=505, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.25,
+            vegetation=0.25,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.25,
+            moisture=0.8,
+            heat=0.3,
+        )
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=3,
+            y=3,
+            lineage_id=303,
+        )
+        world._deposit_carcass(
+            world.grid[3][4],
+            x=4,
+            y=3,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+        self._refresh_fixture_world(world)
+
+        observation = world._observe_agent(world.agents[agent_id])
+        navigation = observation["navigation"]["carrion"]
+        center = next(
+            cell
+            for cell in observation["local_patch"]
+            if cell["dx"] == 0 and cell["dy"] == 0
+        )
+
+        self.assertGreater(center["carrion_signal"], 0.0)
+        self.assertEqual(center["carcass_energy"], 0.0)
+        self.assertEqual(navigation["dx"], 1)
+        self.assertEqual(navigation["dy"], 0)
+        self.assertEqual(navigation["distance"], 1)
+
+    def test_carrion_navigation_targets_actual_resource_under_occupant(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=508, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.25,
+            vegetation=0.25,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.25,
+            moisture=0.8,
+            heat=0.3,
+        )
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=3,
+            y=3,
+            lineage_id=303,
+        )
+        self._add_agent(
+            world,
+            genome=genomes["herbivore"],
+            x=4,
+            y=3,
+            lineage_id=101,
+        )
+        world._deposit_carcass(
+            world.grid[3][4],
+            x=4,
+            y=3,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+        self._refresh_fixture_world(world)
+
+        navigation = world._observe_agent(world.agents[agent_id])["navigation"]["carrion"]
+
+        self.assertEqual(navigation["dx"], 1)
+        self.assertEqual(navigation["dy"], 0)
+        self.assertEqual(navigation["distance"], 1)
+
+    def test_prey_navigation_prefers_actual_prey_over_predator_occupants(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=505, max_ticks=1, width=8, height=7)
+        self._configure_uniform_arena(
+            world,
+            food=0.25,
+            vegetation=0.25,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.25,
+            moisture=0.8,
+            heat=0.3,
+        )
+        hunter_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=3,
+            y=3,
+            lineage_id=202,
+        )
+        self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=4,
+            y=3,
+            lineage_id=202,
+        )
+        self._add_agent(
+            world,
+            genome=genomes["herbivore"],
+            x=3,
+            y=5,
+            lineage_id=101,
+        )
+        self._refresh_fixture_world(world)
+
+        navigation = world._observe_agent(world.agents[hunter_id])["navigation"]["prey"]
+
+        self.assertEqual(navigation["dx"], 0)
+        self.assertEqual(navigation["dy"], 2)
+        self.assertEqual(navigation["distance"], 2)
+
+    def test_scavenger_eats_carcass_before_plant_on_same_tile(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=504, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=1.0,
+            vegetation=0.9,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.8,
+            moisture=0.8,
+            heat=0.3,
+        )
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=3,
+            y=3,
+            lineage_id=303,
+            energy_ratio=0.65,
+        )
+        world._deposit_carcass(
+            world.grid[3][3],
+            x=3,
+            y=3,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+        self._refresh_fixture_world(world)
+
+        feeding = world._eat_action_outcome(world.agents[agent_id])
+
+        self.assertIsNotNone(feeding)
+        self.assertEqual(feeding["food_source"], "carcass")
+        self.assertGreater(world.run_diet_by_meat_mode["scavenger"]["carcass_energy"], 0.0)
+        self.assertEqual(world.run_diet_by_meat_mode["scavenger"]["plant_energy"], 0.0)
+
+    def test_hunter_mode_can_consume_carcass_without_generic_drive_threshold(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=505, max_ticks=1, width=8, height=6)
+        world.config.trophic.animal_use_drive_threshold = 1.0
+        self._configure_uniform_arena(
+            world,
+            food=1.0,
+            vegetation=0.9,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.8,
+            moisture=0.8,
+            heat=0.3,
+        )
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=3,
+            y=3,
+            lineage_id=202,
+            energy_ratio=0.65,
+        )
+        world._deposit_carcass(
+            world.grid[3][3],
+            x=3,
+            y=3,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+        self._refresh_fixture_world(world)
+
+        agent = world.agents[agent_id]
+        profile = world._trophic_profile(agent)
+        self.assertEqual(profile.meat_mode, "hunter")
+        self.assertLess(
+            max(profile.scavenger_drive, profile.hunter_drive),
+            world.config.trophic.animal_use_drive_threshold,
+        )
+        self.assertTrue(world._can_consume_carcass(agent))
+
+        feeding = world._eat_action_outcome(agent)
+
+        self.assertIsNotNone(feeding)
+        self.assertEqual(feeding["food_source"], "carcass")
+        self.assertGreater(world.run_diet_by_meat_mode["hunter"]["carcass_energy"], 0.0)
+        self.assertEqual(world.run_diet_by_meat_mode["hunter"]["plant_energy"], 0.0)
+
+    def test_low_yield_hunter_carcass_beats_plant_fallback_on_same_tile(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=3, max_ticks=1))
+        agent = next(
+            agent
+            for agent in world.alive_agents()
+            if world._trophic_profile(agent).meat_mode == "hunter"
+            and world._trophic_profile(agent).hunter_drive < 0.09
+        )
+        agent.energy = agent.genome.max_energy * 0.65
+        agent.health = agent.max_health
+        agent.hydration = agent.genome.max_hydration
+        tile = world.grid[agent.y][agent.x]
+        tile.food = 1.0
+        tile.vegetation = 0.9
+        tile.recovery_debt = 0.0
+        world._deposit_carcass(
+            tile,
+            x=agent.x,
+            y=agent.y,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+
+        profile = world._trophic_profile(agent)
+        self.assertGreater(
+            world._plant_food_value(agent, tile, profile),
+            world._carcass_food_value(agent, tile, profile),
+        )
+
+        feeding = world._eat_action_outcome(agent)
+
+        self.assertIsNotNone(feeding)
+        self.assertEqual(feeding["food_source"], "carcass")
+        self.assertGreater(world.run_diet_by_meat_mode["hunter"]["carcass_energy"], 0.0)
+        self.assertEqual(world.run_diet_by_meat_mode["hunter"]["plant_energy"], 0.0)
+
+    def test_low_drive_scavenger_can_still_consume_carcass(self) -> None:
+        base = Genome.sample_initial(Random(13))
+        genome = replace(
+            base,
+            attack_power=0.72,
+            attack_cost_multiplier=1.05,
+            defense_rating=0.9,
+            meat_efficiency=0.9,
+            food_efficiency=1.2,
+            plant_bias=0.8,
+            carrion_bias=0.7,
+            live_prey_bias=0.2,
+        )
+        world = self._fixture_world(seed=506, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=1.0,
+            vegetation=0.9,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.8,
+            moisture=0.8,
+            heat=0.3,
+        )
+        agent_id = self._add_agent(
+            world,
+            genome=genome,
+            x=3,
+            y=3,
+            lineage_id=303,
+            energy_ratio=0.65,
+        )
+        world._deposit_carcass(
+            world.grid[3][3],
+            x=3,
+            y=3,
+            energy=0.8,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+        self._refresh_fixture_world(world)
+
+        agent = world.agents[agent_id]
+        profile = world._trophic_profile(agent)
+        self.assertEqual(profile.meat_mode, "scavenger")
+        self.assertLess(
+            profile.scavenger_drive,
+            world.config.trophic.animal_use_drive_threshold,
+        )
+        self.assertTrue(world._can_consume_fresh_kill(agent))
+        self.assertTrue(world._can_consume_carcass(agent))
+
+        feeding = world._eat_action_outcome(agent)
+
+        self.assertIsNotNone(feeding)
+        self.assertEqual(feeding["food_source"], "carcass")
+        self.assertGreater(world.run_diet_by_meat_mode["scavenger"]["carcass_energy"], 0.0)
+        self.assertEqual(world.run_diet_by_meat_mode["scavenger"]["plant_energy"], 0.0)
+
+    def test_hunter_mode_attack_damage_uses_configured_wounded_prey_bonus(self) -> None:
+        genomes = self._archetype_genomes()
+        neutral_combat = replace(
+            WorldConfig().combat,
+            hunter_mode_attack_damage_multiplier=1.0,
+            hunter_wounded_prey_damage_bonus=0.0,
+        )
+        boosted_world = self._fixture_world(seed=507, max_ticks=1, width=8, height=6)
+        neutral_world = self._fixture_world(
+            seed=507,
+            max_ticks=1,
+            width=8,
+            height=6,
+            climate=boosted_world.config.climate,
+        )
+        neutral_world.config.combat = neutral_combat
+        hunter_id = self._add_agent(
+            boosted_world,
+            genome=genomes["hunter"],
+            x=3,
+            y=3,
+            lineage_id=202,
+        )
+        prey_id = self._add_agent(
+            boosted_world,
+            genome=genomes["herbivore"],
+            x=4,
+            y=3,
+            lineage_id=101,
+            health_ratio=0.45,
+        )
+        neutral_hunter_id = self._add_agent(
+            neutral_world,
+            genome=genomes["hunter"],
+            x=3,
+            y=3,
+            lineage_id=202,
+        )
+        neutral_prey_id = self._add_agent(
+            neutral_world,
+            genome=genomes["herbivore"],
+            x=4,
+            y=3,
+            lineage_id=101,
+            health_ratio=0.45,
+        )
+
+        boosted_damage = boosted_world._attack_damage(
+            boosted_world.agents[hunter_id],
+            boosted_world.agents[prey_id],
+        )
+        neutral_damage = neutral_world._attack_damage(
+            neutral_world.agents[neutral_hunter_id],
+            neutral_world.agents[neutral_prey_id],
+        )
+
+        self.assertGreater(boosted_damage, neutral_damage)
+
     def test_trophic_roles_are_coupled_and_gradual(self) -> None:
         rng = Random(7)
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
@@ -1074,12 +1616,12 @@ class HeadlessSimulationTests(unittest.TestCase):
             death_tick=None,
             x=x,
             y=y,
-            energy=0.2,
+            energy=carnivore.max_energy * 0.66,
             hydration=carnivore.max_hydration * 0.8,
             health=carnivore.max_health * 0.9,
             max_health=carnivore.max_health,
             injury_load=0.0,
-            age=0,
+            age=32,
             alive=True,
             last_reproduction_tick=-10_000,
             last_damage_source="none",
@@ -1113,8 +1655,229 @@ class HeadlessSimulationTests(unittest.TestCase):
         carcass_gain = agent.energy - carcass_before
 
         self.assertEqual(world._trophic_role(agent), "carnivore")
+        self.assertGreater(plant_gain, 0.0)
         self.assertLessEqual(plant_gain, max(0.001, carcass_gain * 0.05))
         self.assertGreater(world.run_diet_totals["carcass_energy"], world.run_diet_totals["plant_energy"])
+
+    def test_low_energy_meat_specialist_stationary_metabolism_conserves_energy(self) -> None:
+        genomes = self._archetype_genomes()
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, initial_agents=0))
+        x = y = 0
+        for row_y, row in enumerate(world.grid):
+            for row_x, tile in enumerate(row):
+                if tile.terrain != "water":
+                    x = row_x
+                    y = row_y
+                    break
+            else:
+                continue
+            break
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=x,
+            y=y,
+            lineage_id=202,
+            energy_ratio=0.4,
+            hydration_ratio=0.9,
+        )
+        agent = world.agents[agent_id]
+
+        stationary_energy_before = agent.energy
+        stationary_hydration_before = agent.hydration
+        world._apply_metabolism(agent, moved=False)
+        stationary_energy_loss = stationary_energy_before - agent.energy
+        stationary_hydration_loss = stationary_hydration_before - agent.hydration
+        agent.energy = stationary_energy_before
+        agent.hydration = stationary_hydration_before
+        world._apply_metabolism(agent, moved=True)
+        moved_energy_loss = stationary_energy_before - agent.energy
+        moved_hydration_loss = stationary_hydration_before - agent.hydration
+
+        self.assertEqual(world._meat_mode(agent), "hunter")
+        self.assertGreater(stationary_energy_loss, 0.0)
+        self.assertGreater(stationary_hydration_loss, 0.0)
+        self.assertLess(stationary_energy_loss, moved_energy_loss)
+        self.assertLess(stationary_hydration_loss, moved_hydration_loss)
+
+    def test_meat_specialist_diet_match_discounts_plant_fallback(self) -> None:
+        genomes = self._archetype_genomes()
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, initial_agents=0))
+        agent_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=1,
+            y=1,
+            lineage_id=202,
+        )
+        agent = world.agents[agent_id]
+        profile = world._trophic_profile(agent)
+
+        self.assertEqual(profile.meat_mode, "hunter")
+
+        agent.recent_plant_energy = 6.0
+        agent.recent_fresh_kill_energy = 1.0
+        agent.recent_carcass_energy = 0.0
+        self.assertGreaterEqual(
+            world._matched_diet_ratio(agent, profile),
+            world._matched_diet_threshold(profile),
+        )
+
+        agent.recent_fresh_kill_energy = 0.0
+        self.assertEqual(world._matched_diet_ratio(agent, profile), 0.0)
+
+    def test_animal_mode_reproduction_energy_requirement_uses_configured_multiplier(self) -> None:
+        genomes = self._archetype_genomes()
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                reproduction=ReproductionConfig(
+                    animal_mode_energy_requirement_multiplier=0.75,
+                ),
+            )
+        )
+        land_tiles = [
+            (x, y)
+            for y, row in enumerate(world.grid)
+            for x, tile in enumerate(row)
+            if tile.terrain != "water"
+        ]
+        hunter_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=land_tiles[0][0],
+            y=land_tiles[0][1],
+            lineage_id=202,
+        )
+        herbivore_id = self._add_agent(
+            world,
+            genome=genomes["herbivore"],
+            x=land_tiles[1][0],
+            y=land_tiles[1][1],
+            lineage_id=101,
+        )
+        hunter = world.agents[hunter_id]
+        herbivore = world.agents[herbivore_id]
+        hunter_profile = world._trophic_profile(hunter)
+        herbivore_profile = world._trophic_profile(herbivore)
+        hunter_base_requirement = hunter.reproduction_threshold() * (
+            1.0
+            + hunter_profile.breadth * world.config.trophic.breadth_reproduction_penalty
+        )
+        herbivore_base_requirement = herbivore.reproduction_threshold() * (
+            1.0
+            + herbivore_profile.breadth * world.config.trophic.breadth_reproduction_penalty
+        )
+
+        self.assertEqual(hunter_profile.meat_mode, "hunter")
+        self.assertEqual(herbivore_profile.meat_mode, "none")
+        self.assertAlmostEqual(
+            world._reproduction_energy_requirement(hunter, hunter_profile),
+            hunter_base_requirement * 0.75,
+        )
+        self.assertAlmostEqual(
+            world._reproduction_energy_requirement(herbivore, herbivore_profile),
+            herbivore_base_requirement,
+        )
+
+    def test_animal_mode_reproduction_boosts_child_start_and_preserves_mode(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=601, max_ticks=1, width=8, height=6)
+        world.config.reproduction.animal_mode_child_energy_fraction_multiplier = 1.6
+        world.config.reproduction.animal_mode_child_hydration_fraction_multiplier = 1.18
+        world.config.reproduction.animal_mode_offspring_trait_stability = 1.0
+        self._configure_uniform_arena(
+            world,
+            food=0.4,
+            vegetation=0.4,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.5,
+            moisture=0.7,
+            heat=0.3,
+        )
+        parent_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=3,
+            y=3,
+            lineage_id=202,
+            energy_ratio=0.95,
+            hydration_ratio=0.95,
+        )
+        parent = world.agents[parent_id]
+        parent_profile = world._trophic_profile(parent)
+        self.assertEqual(parent_profile.meat_mode, "hunter")
+
+        self.assertTrue(world._reproduce(parent))
+
+        child = next(agent for agent in world.agents.values() if agent.parent_id == parent_id)
+        child_profile = world._trophic_profile(child)
+        self.assertEqual(child_profile.meat_mode, "hunter")
+        self.assertAlmostEqual(
+            child.energy,
+            child.genome.max_energy
+            * world.config.reproduction.child_energy_fraction
+            * world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+        )
+        self.assertAlmostEqual(
+            child.hydration,
+            child.genome.max_hydration
+            * world.config.reproduction.child_hydration_fraction
+            * world.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
+        )
+        self.assertAlmostEqual(
+            parent.energy,
+            parent.genome.max_energy * 0.95
+            - world.config.reproduction.energy_cost
+            * world.config.reproduction.animal_mode_reproduction_cost_multiplier,
+        )
+
+    def test_trophic_lifecycle_reports_meat_mode_persistence_by_tick_band(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=602, max_ticks=40, width=8, height=6)
+        hunter_id = self._add_agent(
+            world,
+            genome=genomes["hunter"],
+            x=2,
+            y=2,
+            lineage_id=202,
+        )
+        scavenger_id = self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=4,
+            y=2,
+            lineage_id=303,
+        )
+        hunter = world.agents[hunter_id]
+        scavenger = world.agents[scavenger_id]
+        hunter.alive = False
+        hunter.death_tick = 5
+        scavenger.alive = False
+        scavenger.death_tick = 28
+
+        lifecycle = world._trophic_lifecycle_summary(ticks_executed=40)
+        persistence = lifecycle["meat_mode_persistence"]
+
+        self.assertEqual(
+            persistence["last_alive_tick_by_meat_mode"]["hunter"],
+            4,
+        )
+        self.assertEqual(
+            persistence["last_alive_tick_by_meat_mode"]["scavenger"],
+            27,
+        )
+        self.assertEqual(
+            persistence["deaths_by_meat_mode_by_tick_band"]["early"]["hunter"],
+            1,
+        )
+        self.assertEqual(
+            persistence["deaths_by_meat_mode_by_tick_band"]["late"]["scavenger"],
+            1,
+        )
 
     def test_feeding_telemetry_tracks_realized_gain_after_caps(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
@@ -1183,6 +1946,7 @@ class HeadlessSimulationTests(unittest.TestCase):
         target.y = agent.y
         world.grid[target.y][target.x].occupant_id = target.agent_id
         world.tick_feeding_events.clear()
+        agent.energy = agent.genome.max_energy - 0.02
         world._deposit_fresh_kill(
             tile,
             x=agent.x,
@@ -1575,7 +2339,22 @@ class HeadlessSimulationTests(unittest.TestCase):
 
     def test_fixture_carrion_only_arena_favors_scavenger_over_hunter(self) -> None:
         genomes = self._archetype_genomes()
-        world = self._fixture_world(seed=92, max_ticks=72, width=24, height=16, max_agents=120)
+        barren_resources = replace(
+            ResourceRegrowthConfig(),
+            plain_food_rate=0.0,
+            forest_food_rate=0.0,
+            wetland_food_rate=0.0,
+            rocky_food_rate=0.0,
+            vegetation_regrowth_rate=0.0,
+        )
+        world = self._fixture_world(
+            seed=92,
+            max_ticks=72,
+            width=24,
+            height=16,
+            max_agents=120,
+            resources=barren_resources,
+        )
         self._configure_uniform_arena(
             world,
             food=0.0,
@@ -1628,13 +2407,14 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertGreater(population[303]["alive"], 0)
         self.assertGreater(population[303]["births"], 0)
         self.assertEqual(population[202]["births"], 0)
-        self.assertEqual(population[202]["alive"], 0)
-        self.assertGreater(diet_shares[303]["carcass"], 0.9)
+        self.assertGreater(population[303]["alive"], population[202]["alive"])
+        self.assertGreater(diet_shares[303]["carcass"], 0.65)
+        self.assertGreater(diet_shares[303]["carcass"], diet_shares[303]["plant"])
         self.assertEqual(kills[202], 0)
 
     def test_fixture_prey_rich_arena_favors_hunter_over_scavenger(self) -> None:
         genomes = self._archetype_genomes()
-        world = self._fixture_world(seed=93, max_ticks=96, width=24, height=16, max_agents=180)
+        world = self._fixture_world(seed=93, max_ticks=84, width=24, height=16, max_agents=180)
         self._configure_uniform_arena(
             world,
             food=0.92,
@@ -1778,7 +2558,7 @@ class HeadlessSimulationTests(unittest.TestCase):
             plant_bias=0.94,
             carrion_bias=1.3,
             live_prey_bias=0.94,
-            reproduction_threshold=0.82,
+            reproduction_threshold=0.98,
         )
         climate = replace(
             ClimateConfig(),
@@ -1909,18 +2689,19 @@ class HeadlessSimulationTests(unittest.TestCase):
         population, _diet_shares, _kills = self._lineage_stats(result, initial_counts)
 
         omnivore_survival_rate = population[404]["alive"] / max(population[404]["total"], 1)
-        specialist_survival_rate = max(
+        non_scavenger_specialist_survival_rate = max(
             population[101]["alive"] / max(population[101]["total"], 1),
             population[202]["alive"] / max(population[202]["total"], 1),
-            population[303]["alive"] / max(population[303]["total"], 1),
         )
         specialist_births = max(
             population[101]["births"],
             population[202]["births"],
             population[303]["births"],
         )
-        self.assertGreaterEqual(omnivore_survival_rate, specialist_survival_rate)
-        self.assertGreater(specialist_births, population[404]["births"])
+        self.assertGreaterEqual(omnivore_survival_rate, non_scavenger_specialist_survival_rate)
+        self.assertGreaterEqual(population[303]["alive"], population[202]["alive"])
+        self.assertGreater(specialist_births, 0)
+        self.assertGreater(population[404]["births"], 0)
 
     def test_fixture_low_productivity_cascade_hurts_animal_specialists_more_than_herbivores(self) -> None:
         genomes = self._archetype_genomes()

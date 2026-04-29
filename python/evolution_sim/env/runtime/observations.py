@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import base64
+from collections import deque
 import hashlib
 import json
+from math import isfinite
+import struct
 from typing import Any
+import zlib
 
 from evolution_sim.env.runtime.action_space import ACTION_NAMES, build_action_mask
 from evolution_sim.env.runtime.state import Agent
 
-OBSERVATION_SCHEMA_VERSION = "mind_observation_v1"
+OBSERVATION_SCHEMA_VERSION = "mind_observation_v2"
+OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v1"
+OBSERVATION_INPUT_DTYPE = "float32"
+OBSERVATION_STORAGE_DTYPE = "int16"
+OBSERVATION_STORAGE_ENCODING = "zlib_base64_little_endian_int16"
+OBSERVATION_QUANTIZATION_SCALE = 32767.0
+OBSERVATION_INPUT_VALUE_RANGE: tuple[float, float] = (-1.0, 1.0)
 LOCAL_PATCH_RADIUS = 2
+NAVIGATION_RADIUS = 10
+METADATA_FIELDS: tuple[str, ...] = ("agent_id",)
 SELF_FIELDS: tuple[str, ...] = (
     "energy_ratio",
     "hydration_ratio",
@@ -48,15 +61,132 @@ PATCH_FIELDS: tuple[str, ...] = (
     "carrion_signal",
     "predator_risk",
 )
+NAVIGATION_TARGETS: tuple[str, ...] = ("water", "plant", "carrion", "prey")
+NAVIGATION_FIELDS: tuple[str, ...] = ("dx", "dy", "distance", "strength")
+SELF_INPUT_FIELDS: tuple[str, ...] = (
+    "energy_ratio",
+    "hydration_ratio",
+    "health_ratio",
+    "injury_load",
+    "age_norm",
+    "reproduction_ready",
+    "matched_diet_ratio",
+    "trophic_role_code",
+    "meat_mode_code",
+    "season_code",
+    "water_access_reason_code",
+    "hydrology_support_is_land",
+    "hydrology_support_adjacent_to_water",
+    "hydrology_support_wetland",
+    "hydrology_support_flooded",
+    "refuge_score",
+    "hazard_type_code",
+    "hazard_level",
+    "tile_vegetation",
+    "tile_recovery_debt",
+)
+PATCH_INPUT_FIELDS: tuple[str, ...] = (
+    "dx",
+    "dy",
+    "in_bounds",
+    "terrain_code",
+    "occupant_code",
+    "same_lineage",
+    "water_access_reason_code",
+    "food",
+    "vegetation",
+    "recovery_debt",
+    "fresh_kill_energy",
+    "carcass_energy",
+    "hazard_type_code",
+    "hazard_level",
+    "ecology_state_code",
+    "prey_biomass",
+    "carrion_signal",
+    "predator_risk",
+)
+NAVIGATION_INPUT_FIELDS: tuple[str, ...] = (
+    "dx",
+    "dy",
+    "distance",
+    "strength",
+)
+SEASON_VOCAB: tuple[str, ...] = ("wet", "dry")
+TERRAIN_VOCAB: tuple[str, ...] = (
+    "out_of_bounds",
+    "plain",
+    "forest",
+    "wetland",
+    "rocky",
+    "water",
+)
+OCCUPANT_VOCAB: tuple[str, ...] = ("none", "self", "agent")
+TROPHIC_ROLE_VOCAB: tuple[str, ...] = ("none", "herbivore", "omnivore", "carnivore")
+MEAT_MODE_VOCAB: tuple[str, ...] = ("none", "scavenger", "hunter", "mixed")
+WATER_ACCESS_REASON_VOCAB: tuple[str, ...] = (
+    "none",
+    "adjacent_water",
+    "wetland",
+    "flooded",
+)
+HAZARD_TYPE_VOCAB: tuple[str, ...] = ("none", "exposure", "instability")
+ECOLOGY_STATE_VOCAB: tuple[str, ...] = (
+    "none",
+    "stable",
+    "lush",
+    "recovering",
+    "depleted",
+)
+ENUM_VOCABS: dict[str, tuple[str, ...]] = {
+    "season": SEASON_VOCAB,
+    "terrain": TERRAIN_VOCAB,
+    "occupant": OCCUPANT_VOCAB,
+    "trophic_role": TROPHIC_ROLE_VOCAB,
+    "meat_mode": MEAT_MODE_VOCAB,
+    "water_access_reason": WATER_ACCESS_REASON_VOCAB,
+    "hazard_type": HAZARD_TYPE_VOCAB,
+    "ecology_state": ECOLOGY_STATE_VOCAB,
+}
+PATCH_CELL_COUNT = (LOCAL_PATCH_RADIUS * 2 + 1) ** 2
+OBSERVATION_INPUT_VECTOR_SIZE = len(SELF_INPUT_FIELDS) + (
+    PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+) + (
+    len(NAVIGATION_TARGETS) * len(NAVIGATION_INPUT_FIELDS)
+)
 
 
 def observation_contract() -> dict[str, object]:
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "local_patch_radius": LOCAL_PATCH_RADIUS,
+        "metadata_fields": list(METADATA_FIELDS),
+        "metadata_policy_excluded": True,
         "self_fields": list(SELF_FIELDS),
         "patch_fields": list(PATCH_FIELDS),
+        "navigation_radius": NAVIGATION_RADIUS,
+        "navigation_targets": list(NAVIGATION_TARGETS),
+        "navigation_fields": list(NAVIGATION_FIELDS),
         "action_names": list(ACTION_NAMES),
+        "enum_vocabs": {
+            name: list(values) for name, values in sorted(ENUM_VOCABS.items())
+        },
+        "policy_input": {
+            "encoder_version": OBSERVATION_ENCODER_VERSION,
+            "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+            "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+            "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+            "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+            "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+            "self_input_fields": list(SELF_INPUT_FIELDS),
+            "patch_input_fields": list(PATCH_INPUT_FIELDS),
+            "patch_cell_count": PATCH_CELL_COUNT,
+            "patch_order": "row_major_dy_then_dx_centered",
+            "navigation_input_fields": list(NAVIGATION_INPUT_FIELDS),
+            "navigation_target_order": list(NAVIGATION_TARGETS),
+            "categorical_encoding": "normalized_ordinal_code",
+            "nonnegative_signal_encoding": "x/(1+x)",
+            "quantization_scale": OBSERVATION_QUANTIZATION_SCALE,
+        },
         "privileged_world_state": False,
     }
 
@@ -67,9 +197,13 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
     tile = world.grid[agent.y][agent.x]
     hazard_type, hazard_level = world._hazard_at(agent.x, agent.y)
     biotic_state = world._current_biotic_state()
+    _record_runtime_cost(world, "action_mask_builds")
+    action_mask = build_action_mask(world, agent)
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
-        "agent_id": agent.agent_id,
+        "metadata": {
+            "agent_id": agent.agent_id,
+        },
         "self": {
             "energy_ratio": _round(world._energy_ratio(agent)),
             "hydration_ratio": _round(world._hydration_ratio(agent)),
@@ -94,13 +228,79 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
             for dy in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
             for dx in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
         ],
-        "action_mask": build_action_mask(world, agent),
+        "navigation": _navigation_targets(world, agent, biotic_state),
+        "action_mask": action_mask,
     }
+
+
+def _record_runtime_cost(world: Any, name: str) -> None:
+    recorder = getattr(world, "_record_runtime_cost", None)
+    if callable(recorder):
+        recorder(name)
 
 
 def observation_digest(observation: dict[str, object]) -> str:
     payload = json.dumps(observation, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def encode_observation_input(observation: dict[str, object]) -> dict[str, object]:
+    """Encode the policy-visible observation as a compact, versioned tensor payload."""
+    if observation.get("schema_version") != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError("observation schema_version is missing or stale")
+    values = _observation_input_values(observation)
+    if len(values) != OBSERVATION_INPUT_VECTOR_SIZE:
+        raise ValueError(
+            f"encoded observation has {len(values)} values; expected "
+            f"{OBSERVATION_INPUT_VECTOR_SIZE}"
+        )
+    packed = _pack_quantized_values(values)
+    data = base64.b64encode(zlib.compress(packed, level=6)).decode("ascii")
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "encoder_version": OBSERVATION_ENCODER_VERSION,
+        "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+        "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+        "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "data": data,
+    }
+
+
+def decode_observation_input(payload: dict[str, object]) -> list[float]:
+    _validate_observation_input_header(payload)
+    shape = payload["shape"]
+    expected_size = int(shape[0])  # type: ignore[index]
+    data = payload.get("data")
+    if not isinstance(data, str):
+        raise ValueError("observation input data must be a base64 string")
+    try:
+        packed = zlib.decompress(base64.b64decode(data.encode("ascii")))
+    except (ValueError, zlib.error) as exc:
+        raise ValueError("observation input data is not valid compressed base64") from exc
+    expected_bytes = expected_size * 2
+    if len(packed) != expected_bytes:
+        raise ValueError(
+            f"observation input byte length {len(packed)} does not match "
+            f"expected {expected_bytes}"
+        )
+    if expected_size == 0:
+        return []
+    values = [
+        _round(float(value) / OBSERVATION_QUANTIZATION_SCALE)
+        for value in struct.unpack(f"<{expected_size}h", packed)
+    ]
+    _validate_decoded_values(values)
+    return values
+
+
+def validate_observation_input_payload(payload: dict[str, object]) -> list[str]:
+    try:
+        decode_observation_input(payload)
+    except ValueError as exc:
+        return [str(exc)]
+    return []
 
 
 def _patch_cell(
@@ -165,5 +365,392 @@ def _patch_cell(
     }
 
 
+def _navigation_targets(
+    world: Any,
+    agent: Agent,
+    biotic_state: Any,
+) -> dict[str, dict[str, object]]:
+    best: dict[str, tuple[float, int, int, int, float]] = {}
+    carrion_signal_best: dict[str, tuple[float, int, int, int, float]] = {}
+    prey_signal_best: dict[str, tuple[float, int, int, int, float]] = {}
+    for dy in range(-NAVIGATION_RADIUS, NAVIGATION_RADIUS + 1):
+        span = NAVIGATION_RADIUS - abs(dy)
+        for dx in range(-span, span + 1):
+            distance = abs(dx) + abs(dy)
+            x = agent.x + dx
+            y = agent.y + dy
+            if not world._in_bounds(x, y):
+                continue
+            tile = world.grid[y][x]
+            if tile.terrain == "water":
+                continue
+            occupant = tile.occupant_id
+            occupied_by_other = occupant is not None and occupant != agent.agent_id
+            water_strength = 1.0 if world._water_access_reason(x, y) != "none" else 0.0
+            plant_strength = max(0.0, float(tile.food))
+            carrion_resource_strength = max(0.0, float(tile.fresh_kill_energy)) + max(
+                0.0,
+                float(tile.carcass_energy),
+            )
+            carrion_signal_strength = max(0.0, float(biotic_state.carrion[y][x]))
+            prey_strength = max(0.0, float(biotic_state.prey_biomass[y][x]))
+            prey_resource_strength = _prey_resource_strength(world, agent, occupant)
+            if water_strength > 0:
+                _consider_navigation_target(
+                    best,
+                    "water",
+                    dx,
+                    dy,
+                    distance,
+                    water_strength,
+                )
+            if not occupied_by_other:
+                _consider_navigation_target(best, "plant", dx, dy, distance, plant_strength)
+            if carrion_resource_strength > 0:
+                path_target = _navigation_first_step_to_tile(
+                    world,
+                    agent,
+                    target_x=x,
+                    target_y=y,
+                    max_distance=NAVIGATION_RADIUS,
+                )
+                target_dx, target_dy, target_distance = (
+                    path_target if path_target is not None else (dx, dy, distance)
+                )
+                _consider_navigation_target(
+                    best,
+                    "carrion",
+                    target_dx,
+                    target_dy,
+                    target_distance,
+                    carrion_resource_strength + carrion_signal_strength * 0.1,
+                )
+            elif not occupied_by_other:
+                _consider_navigation_target(
+                    carrion_signal_best,
+                    "carrion",
+                    dx,
+                    dy,
+                    distance,
+                    carrion_signal_strength,
+                )
+            if prey_resource_strength > 0:
+                _consider_navigation_target(
+                    best,
+                    "prey",
+                    dx,
+                    dy,
+                    distance,
+                    prey_resource_strength + prey_strength * 0.1,
+                )
+            else:
+                _consider_navigation_target(
+                    prey_signal_best,
+                    "prey",
+                    dx,
+                    dy,
+                    distance,
+                    prey_strength,
+                )
+    return {
+        target: _navigation_payload(
+            best.get(target)
+            or (carrion_signal_best.get(target) if target == "carrion" else None)
+            or (prey_signal_best.get(target) if target == "prey" else None)
+        )
+        for target in NAVIGATION_TARGETS
+    }
+
+
+def _prey_resource_strength(world: Any, agent: Agent, occupant_id: int | None) -> float:
+    if occupant_id is None or occupant_id == agent.agent_id:
+        return 0.0
+    target = world.agents.get(occupant_id)
+    if target is None or not target.alive:
+        return 0.0
+    target_profile = world._trophic_profile(target)
+    vulnerability = world._prey_vulnerability(target)
+    if target_profile.role == "herbivore":
+        return 1.0 + vulnerability * 0.45
+    if target_profile.role == "omnivore":
+        return max(0.0, vulnerability - 1.08) * 0.72
+    return 0.0
+
+
+def _navigation_first_step_to_tile(
+    world: Any,
+    agent: Agent,
+    *,
+    target_x: int,
+    target_y: int,
+    max_distance: int,
+) -> tuple[int, int, int] | None:
+    if target_x == agent.x and target_y == agent.y:
+        return (0, 0, 0)
+
+    visited = {(agent.x, agent.y)}
+    frontier = deque([(agent.x, agent.y, 0, 0, 0)])
+    while frontier:
+        x, y, distance, first_dx, first_dy = frontier.popleft()
+        if distance >= max_distance:
+            continue
+        for _, dx, dy in _ordered_movement_actions_toward(world, x, y, target_x, target_y):
+            nx = x + dx
+            ny = y + dy
+            if (nx, ny) in visited:
+                continue
+            if not _navigation_path_tile_open(world, agent, nx, ny):
+                continue
+            step_dx = first_dx if distance > 0 else dx
+            step_dy = first_dy if distance > 0 else dy
+            next_distance = distance + 1
+            if nx == target_x and ny == target_y:
+                return (step_dx, step_dy, next_distance)
+            visited.add((nx, ny))
+            frontier.append((nx, ny, next_distance, step_dx, step_dy))
+    return None
+
+
+def _ordered_movement_actions_toward(
+    world: Any,
+    x: int,
+    y: int,
+    target_x: int,
+    target_y: int,
+) -> list[tuple[str, int, int]]:
+    actions = list(world._movement_actions())
+    return sorted(
+        actions,
+        key=lambda action: (
+            abs(target_x - (x + action[1])) + abs(target_y - (y + action[2])),
+            action[0],
+        ),
+    )
+
+
+def _navigation_path_tile_open(world: Any, agent: Agent, x: int, y: int) -> bool:
+    if not world._in_bounds(x, y):
+        return False
+    tile = world.grid[y][x]
+    if tile.terrain == "water":
+        return False
+    return tile.occupant_id is None or tile.occupant_id == agent.agent_id
+
+
+def _consider_navigation_target(
+    best: dict[str, tuple[float, int, int, int, float]],
+    target: str,
+    dx: int,
+    dy: int,
+    distance: int,
+    strength: float,
+) -> None:
+    if strength <= 1e-9:
+        return
+    score = strength - distance * 0.045
+    current = best.get(target)
+    if current is None or score > current[0]:
+        best[target] = (score, dx, dy, distance, strength)
+
+
+def _navigation_payload(
+    item: tuple[float, int, int, int, float] | None,
+) -> dict[str, object]:
+    if item is None:
+        return {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0}
+    _, dx, dy, distance, strength = item
+    return {
+        "dx": dx,
+        "dy": dy,
+        "distance": distance,
+        "strength": _round(strength),
+    }
+
+
 def _round(value: float) -> float:
     return round(float(value), 4)
+
+
+def _observation_input_values(observation: dict[str, object]) -> list[float]:
+    self_state = observation.get("self")
+    patch = observation.get("local_patch")
+    navigation = observation.get("navigation")
+    if not isinstance(self_state, dict):
+        raise ValueError("observation self section must be a mapping")
+    if not isinstance(patch, list) or len(patch) != PATCH_CELL_COUNT:
+        raise ValueError(
+            f"observation local_patch must contain {PATCH_CELL_COUNT} cells"
+        )
+    if not isinstance(navigation, dict):
+        raise ValueError("observation navigation section must be a mapping")
+    values = _self_input_values(self_state)
+    for cell in patch:
+        if not isinstance(cell, dict):
+            raise ValueError("observation local_patch cells must be mappings")
+        values.extend(_patch_input_values(cell))
+    for target in NAVIGATION_TARGETS:
+        payload = navigation.get(target)
+        if not isinstance(payload, dict):
+            raise ValueError(f"observation navigation target {target} must be a mapping")
+        values.extend(_navigation_input_values(payload))
+    _validate_decoded_values(values)
+    return values
+
+
+def _self_input_values(self_state: dict[str, object]) -> list[float]:
+    support_values = _hydrology_support_values(self_state["hydrology_support_code"])
+    return [
+        _unit_value(self_state["energy_ratio"]),
+        _unit_value(self_state["hydration_ratio"]),
+        _unit_value(self_state["health_ratio"]),
+        _unit_value(self_state["injury_load"]),
+        _unit_value(self_state["age_norm"]),
+        _bool_value(self_state["reproduction_ready"]),
+        _unit_value(self_state["matched_diet_ratio"]),
+        _enum_value(self_state["trophic_role"], TROPHIC_ROLE_VOCAB),
+        _enum_value(self_state["meat_mode"], MEAT_MODE_VOCAB),
+        _enum_value(self_state["season"], SEASON_VOCAB),
+        _enum_value(self_state["water_access_reason"], WATER_ACCESS_REASON_VOCAB),
+        *support_values,
+        _unit_value(self_state["refuge_score"]),
+        _enum_value(self_state["hazard_type"], HAZARD_TYPE_VOCAB),
+        _unit_value(self_state["hazard_level"]),
+        _unit_value(self_state["tile_vegetation"]),
+        _unit_value(self_state["tile_recovery_debt"]),
+    ]
+
+
+def _patch_input_values(cell: dict[str, object]) -> list[float]:
+    return [
+        _offset_value(cell["dx"]),
+        _offset_value(cell["dy"]),
+        _bool_value(cell["in_bounds"]),
+        _enum_value(cell["terrain"], TERRAIN_VOCAB),
+        _enum_value(cell["occupant"], OCCUPANT_VOCAB),
+        _bool_value(cell["same_lineage"]),
+        _enum_value(cell["water_access_reason"], WATER_ACCESS_REASON_VOCAB),
+        _nonnegative_signal_value(cell["food"]),
+        _unit_value(cell["vegetation"]),
+        _unit_value(cell["recovery_debt"]),
+        _nonnegative_signal_value(cell["fresh_kill_energy"]),
+        _nonnegative_signal_value(cell["carcass_energy"]),
+        _enum_value(cell["hazard_type"], HAZARD_TYPE_VOCAB),
+        _unit_value(cell["hazard_level"]),
+        _enum_value(cell["ecology_state"], ECOLOGY_STATE_VOCAB),
+        _nonnegative_signal_value(cell["prey_biomass"]),
+        _nonnegative_signal_value(cell["carrion_signal"]),
+        _nonnegative_signal_value(cell["predator_risk"]),
+    ]
+
+
+def _navigation_input_values(payload: dict[str, object]) -> list[float]:
+    return [
+        _signed_radius_value(payload["dx"], NAVIGATION_RADIUS),
+        _signed_radius_value(payload["dy"], NAVIGATION_RADIUS),
+        _unit_value(float(payload["distance"]) / max(NAVIGATION_RADIUS, 1)),
+        _nonnegative_signal_value(payload["strength"]),
+    ]
+
+
+def _pack_quantized_values(values: list[float]) -> bytes:
+    quantized: list[int] = []
+    for value in values:
+        if not isfinite(value):
+            raise ValueError("observation input values must be finite")
+        low, high = OBSERVATION_INPUT_VALUE_RANGE
+        if value < low or value > high:
+            raise ValueError(
+                f"observation input value {value} is outside range [{low}, {high}]"
+            )
+        quantized.append(int(round(value * OBSERVATION_QUANTIZATION_SCALE)))
+    return struct.pack(f"<{len(quantized)}h", *quantized)
+
+
+def _validate_observation_input_header(payload: dict[str, object]) -> None:
+    if payload.get("schema_version") != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError("observation input schema_version is missing or stale")
+    if payload.get("encoder_version") != OBSERVATION_ENCODER_VERSION:
+        raise ValueError("observation input encoder_version is missing or stale")
+    if payload.get("decoded_dtype") != OBSERVATION_INPUT_DTYPE:
+        raise ValueError("observation input decoded_dtype is missing or stale")
+    if payload.get("storage_dtype") != OBSERVATION_STORAGE_DTYPE:
+        raise ValueError("observation input storage_dtype is missing or stale")
+    if payload.get("storage_encoding") != OBSERVATION_STORAGE_ENCODING:
+        raise ValueError("observation input storage_encoding is missing or stale")
+    if payload.get("value_range") != list(OBSERVATION_INPUT_VALUE_RANGE):
+        raise ValueError("observation input value_range is missing or stale")
+    shape = payload.get("shape")
+    if shape != [OBSERVATION_INPUT_VECTOR_SIZE]:
+        raise ValueError("observation input shape is missing or stale")
+
+
+def _validate_decoded_values(values: list[float]) -> None:
+    low, high = OBSERVATION_INPUT_VALUE_RANGE
+    for value in values:
+        if not isfinite(value):
+            raise ValueError("observation input values must be finite")
+        if value < low or value > high:
+            raise ValueError(
+                f"observation input value {value} is outside range [{low}, {high}]"
+            )
+
+
+def _unit_value(value: object) -> float:
+    number = _finite_number(value)
+    return _round(min(1.0, max(0.0, number)))
+
+
+def _nonnegative_signal_value(value: object) -> float:
+    number = max(0.0, _finite_number(value))
+    return _round(number / (1.0 + number))
+
+
+def _offset_value(value: object) -> float:
+    if LOCAL_PATCH_RADIUS <= 0:
+        return 0.0
+    number = _finite_number(value)
+    return _round(min(1.0, max(-1.0, number / LOCAL_PATCH_RADIUS)))
+
+
+def _signed_radius_value(value: object, radius: int) -> float:
+    if radius <= 0:
+        return 0.0
+    number = _finite_number(value)
+    return _round(min(1.0, max(-1.0, number / radius)))
+
+
+def _bool_value(value: object) -> float:
+    return 1.0 if bool(value) else 0.0
+
+
+def _enum_value(value: object, vocab: tuple[str, ...]) -> float:
+    label = str(value)
+    try:
+        index = vocab.index(label)
+    except ValueError as exc:
+        raise ValueError(f"unknown observation enum value {label!r}") from exc
+    if len(vocab) <= 1:
+        return 0.0
+    return _round(index / (len(vocab) - 1))
+
+
+def _hydrology_support_values(value: object) -> list[float]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("hydrology_support_code must be an integer")
+    if value < 0:
+        return [0.0, 0.0, 0.0, 0.0]
+    return [
+        1.0,
+        1.0 if value & 1 else 0.0,
+        1.0 if value & 2 else 0.0,
+        1.0 if value & 4 else 0.0,
+    ]
+
+
+def _finite_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("observation input numeric values must be finite numbers")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError("observation input numeric values must be finite numbers")
+    return number

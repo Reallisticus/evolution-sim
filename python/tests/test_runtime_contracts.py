@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import unittest
+from dataclasses import replace
+from inspect import signature
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.config import WorldConfig
+from evolution_sim.config import (
+    CarcassConfig,
+    ClimateConfig,
+    CombatConfig,
+    DietMatchingConfig,
+    HazardConfig,
+    ReproductionConfig,
+    WorldConfig,
+)
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.contracts import (
     FULL_ONLY_SUMMARY_FIELDS,
@@ -18,22 +29,1086 @@ from evolution_sim.env.contracts import (
 )
 from evolution_sim.env.runtime.biotic import diffuse_biotic_field, diffuse_sparse_biotic_field
 from evolution_sim.env.runtime.action_space import build_action_mask
+from evolution_sim.env.runtime.state import Agent, CarcassDeposit, SimulationWorldResult
 from evolution_sim.env.runtime.observations import (
+    OBSERVATION_ENCODER_VERSION,
+    OBSERVATION_INPUT_DTYPE,
+    OBSERVATION_INPUT_VECTOR_SIZE,
     OBSERVATION_SCHEMA_VERSION,
+    PATCH_CELL_COUNT,
     build_observation,
+    decode_observation_input,
+    encode_observation_input,
     observation_digest,
+    observation_contract,
+)
+from evolution_sim.env.runtime.policy import (
+    ActionDecision,
+    OBSERVATION_HEURISTIC_POLICY_ID,
+    OBSERVATION_HEURISTIC_POLICY_VERSION,
+    ObservationHeuristicPolicy,
+    POLICY_INTERFACE_VERSION,
 )
 from evolution_sim.env.runtime.trajectory import (
+    ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
     TRAJECTORY_SCHEMA_VERSION,
+    build_reward,
+    reward_contract,
 )
-from evolution_sim.env.taxonomy import apply_replay_taxonomy
-from evolution_sim.io import write_json_replay
+from evolution_sim.env.runtime.lifecycle import genome_profile_key
+from evolution_sim.genome import Genome
+from evolution_sim.genome.schema import GENE_LIMITS
+from evolution_sim.genome.species import genome_vector
+from evolution_sim.env.taxonomy import REPLAY_TAXONOMY_MODE, apply_replay_taxonomy
+from evolution_sim.io import JsonlTrajectoryWriter, write_json_replay
 
 GOLDEN_SPECIATION_SEED = 3
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def _policy_action_mask(self) -> dict[str, bool]:
+        return {
+            "stay": True,
+            "move_north": True,
+            "move_south": True,
+            "move_east": True,
+            "move_west": True,
+            "eat": True,
+            "drink": False,
+            "reproduce": False,
+            "attack_north": False,
+            "attack_south": False,
+            "attack_east": False,
+            "attack_west": False,
+        }
+
+    def _policy_cell(self, dx: int, dy: int, **overrides: object) -> dict[str, object]:
+        cell: dict[str, object] = {
+            "dx": dx,
+            "dy": dy,
+            "in_bounds": True,
+            "terrain": "plain",
+            "occupant": "none",
+            "food": 0.0,
+            "vegetation": 0.0,
+            "recovery_debt": 0.0,
+            "hazard_level": 0.0,
+            "water_access_reason": "none",
+            "fresh_kill_energy": 0.0,
+            "carcass_energy": 0.0,
+            "prey_biomass": 0.0,
+            "carrion_signal": 0.0,
+            "predator_risk": 0.0,
+        }
+        cell.update(overrides)
+        return cell
+
+    def _policy_observation(
+        self,
+        *,
+        energy_ratio: float,
+        hydration_ratio: float,
+        navigation: dict[str, dict[str, object]],
+        center_food: float = 0.0,
+        center_hazard_level: float = 0.0,
+        trophic_role: str = "carnivore",
+        meat_mode: str = "hunter",
+    ) -> dict[str, object]:
+        return {
+            "schema_version": OBSERVATION_SCHEMA_VERSION,
+            "metadata": {},
+            "self": {
+                "energy_ratio": energy_ratio,
+                "hydration_ratio": hydration_ratio,
+                "health_ratio": 1.0,
+                "age_ratio": 0.1,
+                "trophic_role": trophic_role,
+                "meat_mode": meat_mode,
+            },
+            "local_patch": [
+                self._policy_cell(0, 0, food=center_food, hazard_level=center_hazard_level),
+            ],
+            "navigation": navigation,
+            "action_mask": self._policy_action_mask(),
+        }
+
+    def _empty_navigation(self) -> dict[str, dict[str, object]]:
+        return {
+            "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+        }
+
+    def test_desperate_meat_policy_prioritizes_urgent_water_over_prey(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 1.0}
+        navigation["prey"] = {"dx": -3, "dy": 0, "distance": 3, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.52,
+                hydration_ratio=0.42,
+                navigation=navigation,
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_desperate_meat_policy_uses_carrion_before_distant_prey(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.2}
+        navigation["prey"] = {"dx": -4, "dy": 0, "distance": 4, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.75,
+                navigation=navigation,
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_scavenger_policy_uses_carrion_before_plant_fallback(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.2}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 0.8}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.82,
+                hydration_ratio=0.8,
+                navigation=navigation,
+                center_food=0.3,
+                trophic_role="omnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_scavenger_policy_uses_local_food_before_out_of_range_carrion(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 9, "dy": 0, "distance": 9, "strength": 0.2}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 0.8}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.82,
+                hydration_ratio=0.8,
+                navigation=navigation,
+                center_food=0.3,
+                trophic_role="omnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_starving_meat_policy_uses_local_food_before_carrion_chase(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 4, "dy": 0, "distance": 4, "strength": 0.6}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.28,
+                hydration_ratio=0.7,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="omnivore",
+                meat_mode="hunter",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_low_hydration_meat_policy_uses_water_before_carrion_chase(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 1.0}
+        navigation["carrion"] = {"dx": 4, "dy": 0, "distance": 4, "strength": 0.6}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.6,
+                navigation=navigation,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_west")
+
+    def test_thirsty_scavenger_uses_current_carcass_when_energy_is_high(self) -> None:
+        observation = self._policy_observation(
+            energy_ratio=0.98,
+            hydration_ratio=0.5,
+            navigation=self._empty_navigation(),
+            trophic_role="carnivore",
+            meat_mode="scavenger",
+        )
+        observation["local_patch"][0]["carcass_energy"] = 0.3
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_scavenger_policy_eats_adjacent_blocked_carcass(self) -> None:
+        observation = self._policy_observation(
+            energy_ratio=0.34,
+            hydration_ratio=0.7,
+            navigation=self._empty_navigation(),
+            trophic_role="carnivore",
+            meat_mode="scavenger",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(
+                1,
+                0,
+                occupant="agent",
+                carcass_energy=0.4,
+            )
+        )
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_thirsty_starving_scavenger_uses_local_food_before_long_carrion(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 4, "dy": 0, "distance": 4, "strength": 0.6}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.5,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_starving_scavenger_moves_to_nearby_low_signal_carrion_before_plant(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.0}
+
+        observation = self._policy_observation(
+            energy_ratio=0.28,
+            hydration_ratio=0.7,
+            navigation=navigation,
+            center_food=0.9,
+            trophic_role="carnivore",
+            meat_mode="scavenger",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(
+                1,
+                0,
+                carcass_energy=0.001,
+                carrion_signal=0.001,
+            )
+        )
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_starving_scavenger_eats_local_food_before_long_carrion_chase(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 4, "dy": 0, "distance": 4, "strength": 0.6}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.28,
+                hydration_ratio=0.7,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_desperate_meat_policy_does_not_conserve_on_hazard(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["plant"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 1.0}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.35,
+                hydration_ratio=0.7,
+                navigation=navigation,
+                center_hazard_level=0.48,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_starving_scavenger_ignores_weak_signal_only_carrion(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.03}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 0.8}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.28,
+                hydration_ratio=0.7,
+                navigation=navigation,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_west")
+
+    def test_desperate_animal_mode_forages_locally_before_long_carrion_chase(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 9, "dy": 0, "distance": 9, "strength": 1.0}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 0.8}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.75,
+                navigation=navigation,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_west")
+
+    def test_desperate_scavenger_detours_when_direct_carrion_step_is_blocked(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": -8, "dy": 0, "distance": 8, "strength": 0.5}
+        action_mask = self._policy_action_mask()
+        action_mask["move_west"] = False
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.75,
+                navigation=navigation,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+            ),
+            action_mask,
+        )
+
+        self.assertEqual(decision.requested_action, "move_north")
+
+    def test_mixed_policy_seeks_nearby_carrion_before_plant_fallback(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 2, "dy": 0, "distance": 2, "strength": 0.4}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 1.0}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.88,
+                hydration_ratio=0.8,
+                navigation=navigation,
+                center_food=0.8,
+                trophic_role="omnivore",
+                meat_mode="mixed",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_mixed_policy_keeps_release_horizon_carrion_actionable(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 10, "dy": 0, "distance": 10, "strength": 0.9}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 1.0}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.62,
+                hydration_ratio=0.74,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="omnivore",
+                meat_mode="mixed",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_mixed_policy_uses_local_carrion_resource_before_rich_plant(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 1.0}
+        observation = self._policy_observation(
+            energy_ratio=0.7,
+            hydration_ratio=0.86,
+            navigation=navigation,
+            center_food=0.9,
+            trophic_role="omnivore",
+            meat_mode="mixed",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(1, 1, fresh_kill_energy=0.04, food=0.8)
+        )
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_hunter_policy_seeks_nearby_carrion_when_no_adjacent_prey(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 0, "dy": 2, "distance": 2, "strength": 0.4}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.8,
+                hydration_ratio=0.8,
+                navigation=navigation,
+                center_food=0.8,
+                trophic_role="carnivore",
+                meat_mode="hunter",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_south")
+
+    def test_hunter_policy_attacks_adjacent_prey_before_plant_fallback(self) -> None:
+        navigation = self._empty_navigation()
+        observation = self._policy_observation(
+            energy_ratio=0.82,
+            hydration_ratio=0.8,
+            navigation=navigation,
+            center_food=0.8,
+            trophic_role="omnivore",
+            meat_mode="hunter",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(
+                1,
+                0,
+                occupant="agent",
+                prey_biomass=1.0,
+                predator_risk=0.0,
+            )
+        )
+        action_mask = self._policy_action_mask()
+        action_mask["attack_east"] = True
+
+        decision = ObservationHeuristicPolicy().decide(observation, action_mask)
+
+        self.assertEqual(decision.requested_action, "attack_east")
+
+    def test_desperate_meat_policy_conserves_instead_of_chasing_distant_prey(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["prey"] = {"dx": -4, "dy": 0, "distance": 4, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.45,
+                hydration_ratio=0.75,
+                navigation=navigation,
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "stay")
+
+    def _ready_reproduction_config(self, **overrides: object) -> WorldConfig:
+        values = {
+            "seed": 7,
+            "max_ticks": 1,
+            "initial_agents": 0,
+            "water_tile_ratio": 0.0,
+            "forest_tile_ratio": 0.0,
+            "wetland_tile_ratio": 0.0,
+            "rocky_tile_ratio": 0.0,
+            "base_energy_drain": 0.0,
+            "base_hydration_drain": 0.0,
+            "reproduction": ReproductionConfig(
+                min_age=1,
+                cooldown_ticks=0,
+                min_hydration_fraction=0.0,
+                energy_cost=0.0,
+            ),
+            "diet_matching": DietMatchingConfig(
+                specialist_threshold=0.0,
+                omnivore_threshold=0.0,
+            ),
+            "combat": CombatConfig(
+                min_attack_health_ratio=1.0,
+                min_attack_energy_ratio=1.0,
+                min_attack_hydration_ratio=1.0,
+            ),
+        }
+        values.update(overrides)
+        return WorldConfig(**values)
+
+    def _place_ready_agent(
+        self,
+        world: SimulationWorld,
+        *,
+        x: int,
+        y: int,
+        lineage_id: int = 1,
+        genome: Genome | None = None,
+    ) -> Agent:
+        genome = genome or Genome.sample_initial(world.rng)
+        agent = Agent(
+            agent_id=world.next_agent_id,
+            parent_id=None,
+            lineage_id=lineage_id,
+            birth_tick=0,
+            death_tick=None,
+            x=x,
+            y=y,
+            energy=genome.max_energy * 1.25,
+            hydration=genome.max_hydration,
+            health=genome.max_health,
+            max_health=genome.max_health,
+            injury_load=0.0,
+            age=10,
+            alive=True,
+            last_reproduction_tick=-10_000,
+            last_damage_source="none",
+            recent_plant_energy=0.0,
+            recent_fresh_kill_energy=0.0,
+            recent_carcass_energy=0.0,
+            genome_vector=genome_vector(genome),
+            genome=genome,
+        )
+        world._place_agent(agent)
+        world.next_agent_id += 1
+        return agent
+
+    def _scavenger_genome(self) -> Genome:
+        return Genome(
+            max_energy=1.0,
+            max_hydration=1.0,
+            max_health=1.0,
+            move_cost=0.03,
+            food_efficiency=0.4,
+            water_efficiency=1.0,
+            attack_power=0.35,
+            attack_cost_multiplier=1.45,
+            defense_rating=0.45,
+            meat_efficiency=1.8,
+            healing_efficiency=1.0,
+            plant_bias=0.45,
+            carrion_bias=1.8,
+            live_prey_bias=0.2,
+            forest_affinity=1.0,
+            plain_affinity=1.0,
+            wetland_affinity=1.0,
+            rocky_affinity=1.0,
+            heat_tolerance=1.0,
+            reproduction_threshold=0.7,
+            mutation_scale=0.01,
+        )
+
+    def test_scavenger_can_resolve_fresh_kill_intake(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._scavenger_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        tile = world.grid[agent.y][agent.x]
+        tile.food = 0.0
+        world._deposit_fresh_kill(
+            tile,
+            x=agent.x,
+            y=agent.y,
+            energy=0.4,
+            source_species=None,
+            source_agent_id=None,
+            killer_id=None,
+        )
+
+        outcome = world._eat_action_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "fresh_kill")
+        self.assertGreater(outcome["gained_energy"], 0.0)
+
+    def test_scavenger_carcass_intake_restores_hydration(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._scavenger_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        agent.hydration = agent.genome.max_hydration * 0.3
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._consume_carcass_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertGreater(agent.hydration, hydration_before)
+
+    def test_scavenger_carcass_intake_can_be_hydration_useful_only(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._scavenger_genome(),
+        )
+        agent.energy = agent.genome.max_energy
+        agent.health = agent.max_health
+        agent.hydration = agent.genome.max_hydration * 0.45
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._eat_action_outcome(agent)
+        hydration_gain = agent.hydration - hydration_before
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertEqual(outcome["gained_energy"], 0.0)
+        self.assertGreater(hydration_gain, 0.0)
+        self.assertGreater(
+            hydration_gain,
+            outcome["consumed"] * world.config.carcasses.scavenger_hydration_fraction,
+        )
+
+    def test_scavenger_can_eat_adjacent_blocked_carcass(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._scavenger_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.34
+        source_tile = world.grid[1][2]
+        source_tile.occupant_id = 12345
+        source_tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        action_mask = build_action_mask(world, agent)
+        outcome = world._eat_action_outcome(agent)
+
+        self.assertTrue(action_mask["eat"])
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertEqual((outcome["x"], outcome["y"]), (2, 1))
+        self.assertGreater(outcome["gained_energy"], 0.0)
+
+    def test_carcass_opportunity_reports_policy_blockers(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            genome=self._scavenger_genome(),
+        )
+        blocker = self._place_ready_agent(world, x=3, y=2, lineage_id=2)
+        world.grid[blocker.y][blocker.x].carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        reachability = world._animal_resource_reachability_by_meat_mode([agent])
+        scavenger_counts = reachability["scavenger"]
+
+        self.assertEqual(scavenger_counts["carcass_reachable_agents"], 1)
+        self.assertEqual(scavenger_counts["carcass_policy_actionable_agents"], 0)
+        self.assertEqual(
+            scavenger_counts["carcass_reachable_policy_blocked_agents"],
+            1,
+        )
+        self.assertEqual(
+            scavenger_counts["carcass_policy_blocked_by_occupant_agents"],
+            1,
+        )
+        self.assertEqual(
+            scavenger_counts["animal_resource_policy_blocked_by_occupant_agents"],
+            1,
+        )
+
+    def test_bfs_reachable_carcass_can_be_blocked_by_direct_water_step(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            genome=self._scavenger_genome(),
+        )
+        world.grid[2][3].terrain = "water"
+        world.grid[2][4].carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        reachability = world._animal_resource_reachability_by_meat_mode([agent])
+        scavenger_counts = reachability["scavenger"]
+
+        self.assertEqual(scavenger_counts["carcass_reachable_agents"], 1)
+        self.assertEqual(scavenger_counts["carcass_policy_actionable_agents"], 0)
+        self.assertEqual(
+            scavenger_counts["carcass_policy_blocked_by_water_agents"],
+            1,
+        )
+
+    def test_carrion_navigation_routes_first_step_around_water(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            genome=self._scavenger_genome(),
+        )
+        world.grid[2][3].terrain = "water"
+        world.grid[2][4].carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        navigation = build_observation(world, agent)["navigation"]["carrion"]
+
+        self.assertEqual(navigation["dx"], 0)
+        self.assertEqual(navigation["dy"], -1)
+        self.assertEqual(navigation["distance"], 4)
+        self.assertGreater(navigation["strength"], 0.0)
+
+    def test_scavenger_reproduction_health_floor_uses_carrion_match(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._scavenger_genome(),
+        )
+        agent.health = agent.max_health * (
+            world.config.reproduction.scavenger_min_health_fraction + 0.02
+        )
+        agent.recent_carcass_energy = 1.0
+        profile = world._trophic_profile(agent)
+
+        blockers = world._biological_reproduction_block_reasons(agent, profile)
+
+        self.assertNotIn("health", blockers)
+        self.assertNotIn("matched_diet", blockers)
+
+    def _run_scripted_lethal_attack(self) -> tuple[SimulationWorldResult, int, int]:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                width=3,
+                height=3,
+                initial_agents=0,
+                max_agents=10,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+                base_energy_drain=0.0,
+                base_hydration_drain=0.0,
+                combat=CombatConfig(
+                    min_attack_health_ratio=0.0,
+                    min_attack_energy_ratio=0.0,
+                    min_attack_hydration_ratio=0.0,
+                    base_attack_damage=3.0,
+                ),
+                reproduction=ReproductionConfig(min_age=720),
+            )
+        )
+        base_genome = Genome.sample_initial(world.rng)
+        hunter = replace(
+            base_genome,
+            attack_power=1.8,
+            meat_efficiency=1.8,
+            live_prey_bias=1.8,
+            carrion_bias=0.2,
+            plant_bias=0.45,
+        )
+        prey_genome = replace(
+            base_genome,
+            max_health=0.7,
+            defense_rating=0.45,
+            attack_power=0.35,
+            plant_bias=1.8,
+            live_prey_bias=0.2,
+            carrion_bias=0.2,
+        )
+        attacker = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            lineage_id=1,
+            genome=hunter,
+        )
+        target = self._place_ready_agent(
+            world,
+            x=1,
+            y=0,
+            lineage_id=2,
+            genome=prey_genome,
+        )
+        target.health = 0.05
+        world.current_species_map = {
+            agent.agent_id: agent.lineage_id for agent in world.alive_agents()
+        }
+        world.agent_last_species_map = world.current_species_map.copy()
+
+        def choose_scripted_action(
+            agent: Agent,
+            observation: dict[str, object] | None = None,
+        ) -> str:
+            world._policy_action_source = "scripted_attack"
+            world._policy_id = "scripted_attack"
+            world._policy_version = "scripted_attack_v1"
+            return "attack_north" if agent.agent_id == attacker.agent_id else "stay"
+
+        with patch.object(world, "_choose_action", side_effect=choose_scripted_action):
+            result = world.run(mode=RunMode.FULL_REPLAY)
+        return result, attacker.agent_id, target.agent_id
+
+    def test_world_config_rejects_invalid_ranges_early(self) -> None:
+        invalid_configs = (
+            ("width", lambda: WorldConfig(width=0)),
+            ("height", lambda: WorldConfig(height=0)),
+            ("max_ticks", lambda: WorldConfig(max_ticks=0)),
+            (
+                "climate.season_length",
+                lambda: WorldConfig(climate=ClimateConfig(season_length=0)),
+            ),
+            ("water_tile_ratio", lambda: WorldConfig(water_tile_ratio=-0.1)),
+            ("water_tile_ratio", lambda: WorldConfig(water_tile_ratio=1.2)),
+            (
+                "hazards.exposure_damage_rate",
+                lambda: WorldConfig(hazards=HazardConfig(exposure_damage_rate=-0.1)),
+            ),
+            (
+                "combat.attack_energy_cost",
+                lambda: WorldConfig(combat=CombatConfig(attack_energy_cost=-0.1)),
+            ),
+            (
+                "combat.hunter_mode_attack_damage_multiplier",
+                lambda: WorldConfig(
+                    combat=CombatConfig(hunter_mode_attack_damage_multiplier=0.0)
+                ),
+            ),
+            (
+                "combat.hunter_wounded_prey_damage_bonus",
+                lambda: WorldConfig(
+                    combat=CombatConfig(hunter_wounded_prey_damage_bonus=-0.1)
+                ),
+            ),
+            (
+                "carcasses.fresh_kill_conversion_rate",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(fresh_kill_conversion_rate=2.0)
+                ),
+            ),
+            (
+                "carcasses.scavenger_healing_multiplier",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(scavenger_healing_multiplier=0.0)
+                ),
+            ),
+            (
+                "carcasses.scavenger_hydration_fraction",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(scavenger_hydration_fraction=-0.1)
+                ),
+            ),
+            (
+                "reproduction.energy_cost",
+                lambda: WorldConfig(reproduction=ReproductionConfig(energy_cost=2.0)),
+            ),
+            (
+                "reproduction.animal_mode_energy_requirement_multiplier",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        animal_mode_energy_requirement_multiplier=0.0,
+                    )
+                ),
+            ),
+            (
+                "reproduction.animal_mode_reproduction_cost_multiplier",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        animal_mode_reproduction_cost_multiplier=0.0,
+                    )
+                ),
+            ),
+            (
+                "reproduction.animal_mode_offspring_trait_stability",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        animal_mode_offspring_trait_stability=1.2,
+                    )
+                ),
+            ),
+            (
+                "reproduction.scavenger_min_health_fraction",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        scavenger_min_health_fraction=1.2,
+                    )
+                ),
+            ),
+        )
+
+        for expected_message, build_config in invalid_configs:
+            with self.subTest(expected_message=expected_message):
+                with self.assertRaisesRegex(ValueError, expected_message):
+                    build_config()
+
+    def test_world_config_rejects_invalid_cross_field_relationships(self) -> None:
+        invalid_configs = (
+            ("initial_agents", lambda: WorldConfig(initial_agents=30, max_agents=20)),
+            (
+                "terrain tile ratios",
+                lambda: WorldConfig(water_tile_ratio=0.8, forest_tile_ratio=0.3),
+            ),
+            (
+                "estimated land tiles",
+                lambda: WorldConfig(
+                    width=4,
+                    height=4,
+                    initial_agents=1,
+                    max_agents=1,
+                    water_tile_ratio=1.0,
+                    forest_tile_ratio=0.0,
+                    wetland_tile_ratio=0.0,
+                    rocky_tile_ratio=0.0,
+                ),
+            ),
+            ("max_age", lambda: WorldConfig(max_age=20)),
+        )
+
+        for expected_message, build_config in invalid_configs:
+            with self.subTest(expected_message=expected_message):
+                with self.assertRaisesRegex(ValueError, expected_message):
+                    build_config()
+
+    def test_simulation_world_validates_mutated_config_before_runtime_setup(self) -> None:
+        config = WorldConfig(seed=7, max_ticks=1)
+        config.climate.season_length = 0
+
+        with self.assertRaisesRegex(ValueError, "climate.season_length"):
+            SimulationWorld(config)
+
+    def test_simulation_world_run_is_one_shot(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=2))
+
+        result = world.run()
+
+        self.assertEqual(len(result.viewer["frames"]), result.summary["ticks_executed"])
+        with self.assertRaisesRegex(RuntimeError, "one-shot"):
+            world.run()
+
     def test_full_replay_contract_orders_are_frozen(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=20)).run()
 
@@ -78,6 +1153,170 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertEqual(summary_only.summary[field], full.summary[field], msg=field)
         for field in FULL_ONLY_SUMMARY_FIELDS:
             self.assertNotIn(field, summary_only.summary)
+
+    def test_summary_gene_averages_distinguish_historical_and_alive_agents(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        agent_catalog = result.viewer["agent_catalog"]
+        all_genomes = [record["genome"] for record in agent_catalog.values()]
+        alive_genomes = [
+            record["genome"]
+            for record in agent_catalog.values()
+            if record["death_tick"] is None
+        ]
+
+        def avg_gene(genomes: list[dict[str, float]], field: str) -> float:
+            return round(
+                sum(float(genome[field]) for genome in genomes) / max(len(genomes), 1),
+                4,
+            )
+
+        self.assertGreater(len(all_genomes), len(alive_genomes))
+        self.assertEqual(
+            result.summary["avg_max_energy_gene"],
+            result.summary["avg_historical_max_energy_gene"],
+        )
+        self.assertEqual(
+            result.summary["avg_historical_max_energy_gene"],
+            avg_gene(all_genomes, "max_energy"),
+        )
+        self.assertEqual(
+            result.summary["avg_alive_max_energy_gene"],
+            avg_gene(alive_genomes, "max_energy"),
+        )
+        self.assertEqual(
+            result.summary["avg_historical_attack_power_gene"],
+            avg_gene(all_genomes, "attack_power"),
+        )
+        self.assertEqual(
+            result.summary["avg_alive_attack_power_gene"],
+            avg_gene(alive_genomes, "attack_power"),
+        )
+
+    def test_reproduction_blocked_by_max_population_is_reported(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=4, height=4, max_agents=1)
+        )
+        self._place_ready_agent(world, x=1, y=1)
+
+        result = world.run(mode=RunMode.FULL_REPLAY)
+
+        blocked_events = [
+            event
+            for event in result.events
+            if event["type"] == "agent_reproduction_blocked"
+        ]
+        self.assertEqual(result.summary["births"], 0)
+        self.assertEqual(result.summary["max_agents"], 1)
+        self.assertEqual(result.summary["max_agent_saturation_at_end"], 1.0)
+        self.assertEqual(
+            result.summary["reproduction_end"]["blocked_run_counts"]["max_population"],
+            1,
+        )
+        self.assertEqual(blocked_events[0]["data"]["reason"], "max_population")
+
+    def test_reproduction_blocked_by_local_crowding_is_reported(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=3, height=3, max_agents=20)
+        )
+        genome = Genome.sample_initial(world.rng)
+        for y in range(3):
+            for x in range(3):
+                self._place_ready_agent(
+                    world,
+                    x=x,
+                    y=y,
+                    lineage_id=y * 3 + x + 1,
+                    genome=genome,
+                )
+
+        result = world.run(mode=RunMode.FULL_REPLAY)
+
+        blocked_events = [
+            event
+            for event in result.events
+            if event["type"] == "agent_reproduction_blocked"
+        ]
+        self.assertEqual(result.summary["births"], 0)
+        self.assertGreaterEqual(
+            result.summary["reproduction_end"]["blocked_run_counts"]["local_crowding"],
+            1,
+        )
+        self.assertEqual(
+            result.summary["reproduction_end"]["blocked_by_local_crowding_agents"],
+            9,
+        )
+        self.assertTrue(
+            all(event["data"]["reason"] == "local_crowding" for event in blocked_events)
+        )
+
+    def test_reproduction_biological_blockers_are_grouped_by_role_and_mode(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+                base_energy_drain=0.0,
+                base_hydration_drain=0.0,
+                reproduction=ReproductionConfig(min_age=30, cooldown_ticks=24),
+                combat=CombatConfig(min_reproduction_health_ratio=0.9),
+            )
+        )
+        agent = self._place_ready_agent(world, x=1, y=1)
+        agent.age = 0
+        agent.last_reproduction_tick = 0
+        agent.energy = agent.reproduction_threshold() * 0.1
+        agent.hydration = agent.genome.max_hydration * 0.1
+        agent.health = agent.max_health * 0.5
+        agent.recent_plant_energy = 0.0
+        agent.recent_fresh_kill_energy = 0.0
+        agent.recent_carcass_energy = 0.0
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        reproduction = result.summary["reproduction_end"]
+        role = next(
+            role
+            for role, counts in reproduction["by_trophic_role"].items()
+            if counts["alive_agents"] == 1
+        )
+        mode = next(
+            mode
+            for mode, counts in reproduction["by_meat_mode"].items()
+            if counts["alive_agents"] == 1
+        )
+        self.assertEqual(reproduction["biologically_ready_agents"], 0)
+        for reason in ("age", "cooldown", "energy", "hydration", "health", "matched_diet"):
+            self.assertEqual(reproduction["biological_blocker_counts"][reason], 1)
+            self.assertEqual(
+                reproduction["biological_blocker_counts_by_trophic_role"][role][reason],
+                1,
+            )
+            self.assertEqual(
+                reproduction["biological_blocker_counts_by_meat_mode"][mode][reason],
+                1,
+            )
+        self.assertEqual(
+            reproduction["by_trophic_role"][role]["biologically_ready_agents"],
+            0,
+        )
+        self.assertEqual(
+            reproduction["by_meat_mode"][mode]["biologically_ready_agents"],
+            0,
+        )
+        role_energy = reproduction["energy_readiness_by_trophic_role"][role]
+        mode_energy = reproduction["energy_readiness_by_meat_mode"][mode]
+        for energy_counts in (role_energy, mode_energy):
+            self.assertEqual(energy_counts["alive_agents"], 1)
+            self.assertEqual(energy_counts["energy_shortfall_agents"], 1)
+            self.assertGreater(
+                energy_counts["energy_required_total"],
+                energy_counts["energy_total"],
+            )
+            self.assertGreater(energy_counts["energy_gap_total"], 0.0)
 
     def test_summary_only_is_byte_deterministic_under_repeated_runs(self) -> None:
         for seed, ticks in ((7, 40), (GOLDEN_SPECIATION_SEED, 80)):
@@ -176,16 +1415,43 @@ class RuntimeContractTests(unittest.TestCase):
 
         observation = build_observation(world, agent)
         digest = observation_digest(observation)
+        encoded = encode_observation_input(observation)
+        decoded = decode_observation_input(encoded)
+        contract = observation_contract()
 
         self.assertEqual(observation["schema_version"], OBSERVATION_SCHEMA_VERSION)
-        self.assertEqual(set(observation), {"schema_version", "agent_id", "self", "local_patch", "action_mask"})
-        self.assertEqual(len(observation["local_patch"]), 25)
+        self.assertEqual(
+            set(observation),
+            {
+                "schema_version",
+                "metadata",
+                "self",
+                "local_patch",
+                "navigation",
+                "action_mask",
+            },
+        )
+        self.assertNotIn("agent_id", observation)
+        self.assertEqual(observation["metadata"], {"agent_id": agent.agent_id})
+        self.assertEqual(len(observation["local_patch"]), PATCH_CELL_COUNT)
         self.assertNotIn("world", observation)
         self.assertNotIn("grid", observation)
         self.assertNotIn("agents", observation)
+        self.assertTrue(contract["metadata_policy_excluded"])
+        self.assertEqual(
+            contract["policy_input"]["encoder_version"],
+            OBSERVATION_ENCODER_VERSION,
+        )
+        self.assertEqual(contract["policy_input"]["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
+        self.assertEqual(encoded["decoded_dtype"], OBSERVATION_INPUT_DTYPE)
+        self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
+        self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
+        self.assertTrue(all(-1.0 <= value <= 1.0 for value in decoded))
+        self.assertTrue(all(isinstance(value, float) for value in decoded))
         self.assertIsInstance(digest, str)
         self.assertEqual(len(digest), 64)
         json.dumps(observation)
+        json.dumps(encoded)
 
     def test_full_replay_records_mind_trajectory_contract(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
@@ -197,6 +1463,11 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(result.summary["mind_contracts"]["schema_version"], TRAJECTORY_SCHEMA_VERSION)
         self.assertEqual(trajectory["schema_version"], TRAJECTORY_SCHEMA_VERSION)
         self.assertEqual(
+            result.summary["mind_contracts"]["policy_interface_version"],
+            POLICY_INTERFACE_VERSION,
+        )
+        self.assertEqual(trajectory["policy_interface_version"], POLICY_INTERFACE_VERSION)
+        self.assertEqual(
             trajectory["observation_contract"]["schema_version"],
             OBSERVATION_SCHEMA_VERSION,
         )
@@ -204,11 +1475,334 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertGreater(trajectory["record_count"], 0)
         self.assertEqual(trajectory["record_count"], len(records))
         self.assertEqual(first_record["observation_schema"], OBSERVATION_SCHEMA_VERSION)
+        self.assertEqual(
+            first_record["observation_metadata"],
+            {"agent_id": first_record["agent_id"]},
+        )
+        self.assertEqual(
+            first_record["observation_input"]["encoder_version"],
+            OBSERVATION_ENCODER_VERSION,
+        )
+        self.assertEqual(
+            first_record["observation_input"]["shape"],
+            [OBSERVATION_INPUT_VECTOR_SIZE],
+        )
+        self.assertEqual(
+            len(decode_observation_input(first_record["observation_input"])),
+            OBSERVATION_INPUT_VECTOR_SIZE,
+        )
+        self.assertEqual(
+            trajectory["reward_contract"]["schema_version"],
+            REWARD_SCHEMA_VERSION,
+        )
+        self.assertIn(
+            "invalid_action_penalty",
+            trajectory["reward_contract"]["component_bounds"],
+        )
+        self.assertEqual(
+            trajectory["action_outcome_schema_version"],
+            ACTION_OUTCOME_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["action_outcome_schema_version"],
+            ACTION_OUTCOME_SCHEMA_VERSION,
+        )
         self.assertIn(first_record["requested_action"], first_record["action_mask"])
+        self.assertIn(first_record["requested_action"], first_record["resolution_action_mask"])
+        self.assertEqual(first_record["policy_id"], OBSERVATION_HEURISTIC_POLICY_ID)
+        self.assertEqual(
+            first_record["policy_version"],
+            OBSERVATION_HEURISTIC_POLICY_VERSION,
+        )
+        self.assertIn("resolution_action_valid", first_record)
+        self.assertEqual(first_record["outcome"]["schema_version"], ACTION_OUTCOME_SCHEMA_VERSION)
         self.assertIn("resource_gain", first_record["outcome"])
         self.assertEqual(first_record["reward"]["schema_version"], REWARD_SCHEMA_VERSION)
         self.assertIn("invalid_action_penalty", first_record["reward"]["components"])
         self.assertEqual(result.summary["mind_contracts"]["record_count"], len(records))
+
+    def test_species_centroid_units_are_explicit(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        species_catalog = result.viewer["species_catalog"]
+        ecotype_catalog = result.viewer["ecotype_catalog"]
+
+        self.assertTrue(species_catalog)
+        for entry in species_catalog.values():
+            self.assertEqual(entry["identity_mode"], REPLAY_TAXONOMY_MODE)
+            self.assertEqual(entry["centroid_units"], "raw_gene_values")
+            self.assertEqual(
+                entry["normalized_centroid_units"],
+                "unit_interval_by_gene_limits",
+            )
+            for gene, value in entry["centroid"].items():
+                lower, upper = GENE_LIMITS[gene]
+                self.assertGreaterEqual(value, lower, msg=gene)
+                self.assertLessEqual(value, upper, msg=gene)
+            for gene, value in entry["normalized_centroid"].items():
+                self.assertIn(gene, GENE_LIMITS)
+                self.assertGreaterEqual(value, 0.0, msg=gene)
+                self.assertLessEqual(value, 1.0, msg=gene)
+
+        self.assertTrue(ecotype_catalog)
+        for entry in ecotype_catalog.values():
+            self.assertEqual(entry["identity_mode"], "frame_local_genome_cluster")
+            self.assertEqual(entry["centroid_units"], "raw_gene_values")
+
+    def test_policy_boundary_receives_observation_and_action_mask(self) -> None:
+        class RecordingPolicy:
+            policy_id = "recording_policy"
+            policy_version = "recording_policy_v1"
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[dict[str, object], dict[str, bool]]] = []
+
+            def decide(
+                self,
+                observation: dict[str, object],
+                action_mask: dict[str, bool],
+            ) -> ActionDecision:
+                self.calls.append((copy.deepcopy(observation), dict(action_mask)))
+                return ActionDecision(
+                    requested_action="stay",
+                    source=self.policy_id,
+                    policy_id=self.policy_id,
+                    policy_version=self.policy_version,
+                )
+
+        policy = RecordingPolicy()
+        result = SimulationWorld(
+            WorldConfig(seed=7, max_ticks=1),
+            policy=policy,
+        ).run(mode=RunMode.FULL_REPLAY)
+
+        self.assertGreater(len(policy.calls), 0)
+        observation, action_mask = policy.calls[0]
+        self.assertEqual(
+            set(observation),
+            {
+                "schema_version",
+                "metadata",
+                "self",
+                "local_patch",
+                "navigation",
+                "action_mask",
+            },
+        )
+        self.assertEqual(action_mask, observation["action_mask"])
+        self.assertNotIn("agent_id", observation)
+        first_record = result.viewer["trajectory"]["records"][0]
+        self.assertEqual(first_record["requested_action"], "stay")
+        self.assertEqual(first_record["action_source"], policy.policy_id)
+        self.assertEqual(first_record["policy_id"], policy.policy_id)
+        self.assertEqual(first_record["policy_version"], policy.policy_version)
+
+    def test_default_policy_does_not_call_legacy_world_reading_heuristic(self) -> None:
+        with patch(
+            "evolution_sim.env.runtime.actions.choose_action",
+            side_effect=AssertionError("default policy must not read live world state"),
+        ):
+            result = SimulationWorld(WorldConfig(seed=7, max_ticks=2)).run(
+                mode=RunMode.SUMMARY_ONLY
+            )
+
+        self.assertEqual(tuple(result.summary), SHARED_SUMMARY_FIELDS)
+
+    def test_reward_components_are_versioned_and_bounded(self) -> None:
+        before = {
+            "energy_ratio": 1.4,
+            "hydration_ratio": 0.9,
+            "health_ratio": 1.0,
+        }
+        after = {
+            "energy_ratio": -0.2,
+            "hydration_ratio": 1.8,
+            "health_ratio": -0.4,
+        }
+
+        reward = build_reward(
+            before=before,
+            after=after,
+            action_valid=False,
+            moved=True,
+            resource_gain=4.5,
+            reproduced=True,
+            died=True,
+            reproduction_ready_after=True,
+        )
+
+        contract = reward_contract()
+        self.assertEqual(reward["schema_version"], REWARD_SCHEMA_VERSION)
+        for name, value in reward["components"].items():
+            lower, upper = contract["component_bounds"][name]
+            self.assertGreaterEqual(value, lower, msg=name)
+            self.assertLessEqual(value, upper, msg=name)
+        total_lower, total_upper = contract["total_bounds"]
+        self.assertGreaterEqual(reward["total"], total_lower)
+        self.assertLessEqual(reward["total"], total_upper)
+        self.assertEqual(reward["components"]["invalid_action_penalty"], -0.05)
+        self.assertEqual(reward["components"]["movement_cost"], -0.005)
+        self.assertEqual(reward["components"]["resource_acquisition"], 1.0)
+        self.assertEqual(reward["components"]["survival_continuation"], -1.0)
+        self.assertEqual(reward["components"]["reproduction_success"], 1.0)
+
+    def test_trajectory_attack_outcome_records_target_damage_and_kill(self) -> None:
+        result, attacker_id, _target_id = self._run_scripted_lethal_attack()
+        attack_records = [
+            record
+            for record in result.viewer["trajectory"]["records"]
+            if record["agent_id"] == attacker_id and record["outcome"]["attack"]["attempted"]
+        ]
+
+        self.assertTrue(attack_records)
+        lethal_records = [record for record in attack_records if record["outcome"]["attack"]["kill"]]
+        self.assertTrue(lethal_records)
+        attack = lethal_records[0]["outcome"]["attack"]
+        self.assertIsInstance(attack["target_id"], int)
+        self.assertGreater(attack["damage"], 0)
+        self.assertTrue(attack["success"])
+        if attack["immediate_kill_feed"]:
+            self.assertTrue(lethal_records[0]["outcome"]["feeding"]["ate"])
+            self.assertEqual(
+                lethal_records[0]["outcome"]["feeding"]["food_source"],
+                "fresh_kill",
+            )
+
+    def test_trajectory_records_passive_killed_before_action(self) -> None:
+        result, _attacker_id, target_id = self._run_scripted_lethal_attack()
+        passive_records = [
+            record
+            for record in result.viewer["trajectory"]["records"]
+            if (
+                record["agent_id"] == target_id
+                and record["outcome"]["passive"]["died_before_action"]
+            )
+        ]
+
+        self.assertTrue(passive_records)
+        record = passive_records[0]
+        passive = record["outcome"]["passive"]
+        self.assertEqual(record["action_source"], "passive")
+        self.assertEqual(record["requested_action"], "stay")
+        self.assertFalse(passive["acted"])
+        self.assertTrue(passive["killed"])
+        self.assertEqual(passive["death_cause"], "attack")
+        self.assertIsInstance(passive["killer_id"], int)
+        self.assertGreater(passive["attack_damage_taken"], 0)
+
+    def test_trajectory_records_passive_death_after_action(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        records = [
+            record
+            for record in result.viewer["trajectory"]["records"]
+            if record["outcome"]["passive"]["died_after_action"]
+        ]
+
+        self.assertTrue(records)
+        passive = records[0]["outcome"]["passive"]
+        self.assertNotEqual(records[0]["action_source"], "passive")
+        self.assertTrue(passive["acted"])
+        self.assertTrue(passive["killed"])
+        self.assertIsNotNone(passive["death_cause"])
+
+    def test_trajectory_feeding_outcome_records_source_tile_and_gain(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        feeding_records = [
+            record
+            for record in result.viewer["trajectory"]["records"]
+            if record["outcome"]["feeding"]["ate"]
+        ]
+
+        self.assertTrue(feeding_records)
+        feeding = feeding_records[0]["outcome"]["feeding"]
+        self.assertIn(feeding["food_source"], {"plant", "fresh_kill", "carcass"})
+        self.assertIsInstance(feeding["x"], int)
+        self.assertIsInstance(feeding["y"], int)
+        self.assertGreater(feeding["consumed"], 0)
+        self.assertGreaterEqual(feeding["gained_energy"], 0)
+        self.assertEqual(
+            feeding_records[0]["outcome"]["resource_gain"],
+            feeding["gained_energy"],
+        )
+
+    def test_action_outcome_records_resolution_mask_invalid_reason(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation_mask = world._action_mask(agent)
+        resolution_mask = dict(observation_mask)
+        observation_mask["eat"] = True
+        resolution_mask["eat"] = False
+
+        moved, outcome = world._resolve_action_with_outcome(
+            agent,
+            "eat",
+            observation_action_mask=observation_mask,
+            resolution_action_mask=resolution_mask,
+        )
+
+        self.assertFalse(moved)
+        self.assertEqual(outcome["resolved_action"], "stay")
+        self.assertTrue(outcome["observation_action_valid"])
+        self.assertFalse(outcome["resolution_action_valid"])
+        self.assertEqual(outcome["invalid_reason"], "not_in_resolution_action_mask")
+
+    def test_trajectory_records_real_tick_resolution_conflict(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                width=3,
+                height=3,
+                initial_agents=0,
+                max_agents=10,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+                base_energy_drain=0.0,
+                base_hydration_drain=0.0,
+                reproduction=ReproductionConfig(min_age=720),
+            )
+        )
+        genome = Genome.sample_initial(world.rng)
+        first = self._place_ready_agent(world, x=0, y=1, lineage_id=1, genome=genome)
+        second = self._place_ready_agent(world, x=1, y=2, lineage_id=2, genome=genome)
+        first.age = 1
+        second.age = 1
+        requested_actions = {
+            first.agent_id: "move_east",
+            second.agent_id: "move_north",
+        }
+
+        def choose_scripted_action(
+            agent: Agent,
+            observation: dict[str, object] | None = None,
+        ) -> str:
+            world._policy_action_source = "scripted_conflict"
+            world._policy_id = "scripted_conflict"
+            world._policy_version = "scripted_conflict_v1"
+            return requested_actions[agent.agent_id]
+
+        with patch.object(world, "_choose_action", side_effect=choose_scripted_action):
+            result = world.run(mode=RunMode.FULL_REPLAY)
+
+        records = {
+            record["agent_id"]: record
+            for record in result.viewer["trajectory"]["records"]
+            if record["agent_id"] in requested_actions
+        }
+
+        first_record = records[first.agent_id]
+        second_record = records[second.agent_id]
+        self.assertTrue(first_record["resolution_action_valid"])
+        self.assertEqual(first_record["resolved_action"], "move_east")
+        self.assertTrue(second_record["action_valid"])
+        self.assertFalse(second_record["resolution_action_valid"])
+        self.assertEqual(second_record["resolved_action"], "stay")
+        self.assertEqual(second_record["action_source"], "scripted_conflict")
+        self.assertEqual(
+            second_record["outcome"]["invalid_reason"],
+            "not_in_resolution_action_mask",
+        )
 
     def test_summary_only_does_not_retain_trajectory_bookkeeping(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=4))
@@ -219,6 +1813,76 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(world.trajectory_records, [])
         self.assertEqual(world.tick_trajectory_records, [])
         self.assertTrue(world.record_trajectory)
+
+    def test_summary_only_can_record_trajectory_without_replay_surfaces(self) -> None:
+        with patch(
+            "evolution_sim.env.runtime.collectors.apply_replay_taxonomy",
+            side_effect=AssertionError("taxonomy should not run in trajectory summary mode"),
+        ), patch.object(
+            SimulationWorld,
+            "_capture_frame",
+            side_effect=AssertionError("trajectory summary mode should not capture frames"),
+        ), patch.object(
+            SimulationWorld,
+            "_build_viewer_payload",
+            side_effect=AssertionError("trajectory summary mode should not build viewer payload"),
+        ):
+            world = SimulationWorld(WorldConfig(seed=7, max_ticks=4))
+            result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+
+        self.assertIsNone(result.viewer)
+        self.assertIsNone(result.events)
+        self.assertEqual(tuple(result.summary), SHARED_SUMMARY_FIELDS)
+        self.assertGreater(len(world.trajectory_records), 0)
+        self.assertEqual(world.viewer_frames, [])
+        self.assertIn("observation_input", world.trajectory_records[0])
+        self.assertEqual(
+            world.trajectory_records[0]["observation_input"]["encoder_version"],
+            OBSERVATION_ENCODER_VERSION,
+        )
+
+    def test_streaming_trajectory_sink_avoids_replay_and_record_retention(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            writer = JsonlTrajectoryWriter(output_path)
+            world = SimulationWorld(WorldConfig(seed=7, max_ticks=4))
+
+            result = world.run(mode=RunMode.SUMMARY_ONLY, trajectory_sink=writer)
+
+            with gzip.open(output_path, "rt", encoding="utf-8") as handle:
+                lines = [json.loads(line) for line in handle]
+
+        header = lines[0]
+        footer = lines[-1]
+        records = [line["record"] for line in lines if line["type"] == "record"]
+        self.assertIsNone(result.viewer)
+        self.assertIsNone(result.events)
+        self.assertEqual(world.viewer_frames, [])
+        self.assertEqual(world.trajectory_records, [])
+        self.assertGreater(writer.record_count, 0)
+        self.assertEqual(writer.record_count, len(records))
+        self.assertEqual(header["type"], "header")
+        self.assertEqual(header["format"], "evolution_sim_trajectory_jsonl_v1")
+        self.assertEqual(
+            header["trajectory_contract"]["schema_version"],
+            TRAJECTORY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            header["trajectory_contract"]["policy_interface_version"],
+            POLICY_INTERFACE_VERSION,
+        )
+        self.assertEqual(footer["type"], "footer")
+        self.assertEqual(
+            footer["trajectory_summary"]["policy_interface_version"],
+            POLICY_INTERFACE_VERSION,
+        )
+        self.assertEqual(footer["trajectory_summary"]["record_count"], len(records))
+        self.assertEqual(footer["summary"]["run_id"], result.summary["run_id"])
+        self.assertIn("observation_input", records[0])
+        self.assertEqual(
+            len(decode_observation_input(records[0]["observation_input"])),
+            OBSERVATION_INPUT_VECTOR_SIZE,
+        )
 
     def test_write_json_replay_rejects_summary_only_results(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=20)).run(mode=RunMode.SUMMARY_ONLY)
@@ -262,6 +1926,33 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIsNot(rebuilt_habitat[0], first_habitat[0])
         self.assertIsNot(rebuilt_habitat[1], first_habitat[1])
         self.assertIsNot(world._current_biotic_state(), first_biotic)
+
+    def test_trophic_profile_cache_uses_consistent_raw_genome_key(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+
+        self.assertNotEqual(genome_profile_key(agent.genome), agent.genome_vector)
+        with patch.object(
+            world,
+            "_compute_trophic_profile_for_genome",
+            wraps=world._compute_trophic_profile_for_genome,
+        ) as compute_profile:
+            first = world._trophic_profile_for_genome(agent.genome)
+            second = world._trophic_profile(agent)
+            third = world._trophic_profile(agent)
+
+        self.assertIs(first, second)
+        self.assertIs(second, third)
+        self.assertEqual(compute_profile.call_count, 1)
+
+    def test_effective_tile_fields_is_current_tick_only(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+
+        self.assertEqual(
+            tuple(signature(world._effective_tile_fields).parameters),
+            ("x", "y"),
+        )
+        self.assertEqual(world._effective_tile_fields(0, 0), world._effective_tile_fields(0, 0))
 
     def test_cached_biotic_diffusion_targets_match_naive_diffusion(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))

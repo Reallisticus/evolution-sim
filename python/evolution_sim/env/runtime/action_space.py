@@ -45,7 +45,10 @@ def _can_eat(world: Any, agent: Agent, tile: Any, profile: Any) -> bool:
     return (
         world._can_consume_carcass(agent)
         and world._carcass_intake_useful(agent)
-        and world._carcass_food_value(agent, tile, profile) > 0
+        and (
+            world._carcass_food_value(agent, tile, profile) > 0
+            or world._adjacent_scavenger_carcass_target(agent, profile) is not None
+        )
     )
 
 

@@ -37,11 +37,8 @@ def genome_profile_key(genome: Genome) -> tuple[float, ...]:
 def cached_trophic_profile(
     world: Any,
     genome: Genome,
-    *,
-    genome_vector: tuple[float, ...] | None = None,
 ):
-    live_key = genome_profile_key(genome)
-    key = genome_vector if genome_vector == live_key else live_key
+    key = genome_profile_key(genome)
     profile = world._trophic_profile_cache.get(key)
     if profile is None:
         profile = world._compute_trophic_profile_for_genome(genome)

@@ -28,8 +28,104 @@ class EvaluateCliTests(unittest.TestCase):
         self.assertEqual(report["aggregate"]["run_count"], 2)
         self.assertIn("hazard_counts_at_end", report["aggregate"])
         self.assertIn("trophic_role_counts_at_end", report["aggregate"])
+        self.assertIn("trophic_lifecycle", report["runs"][0])
+        lifecycle = report["runs"][0]["trophic_lifecycle"]
+        self.assertIn("births_by_parent_trophic_role", lifecycle)
+        self.assertIn("deaths_by_trophic_role", lifecycle)
+        self.assertIn("death_causes_by_trophic_role", lifecycle)
+        self.assertIn("late_window", lifecycle)
+        self.assertIn(
+            "death_causes_by_meat_mode",
+            report["aggregate"]["trophic_lifecycle"],
+        )
+        self.assertIn(
+            "death_causes_by_meat_mode_by_tick_band",
+            report["aggregate"]["trophic_lifecycle"]["meat_mode_persistence"],
+        )
+        self.assertIn(
+            "late_window_trophic_role_presence_runs",
+            report["aggregate"]["trophic_lifecycle"],
+        )
+        reproduction = report["runs"][0]["reproduction"]
+        self.assertIn("by_trophic_role", reproduction)
+        self.assertIn("by_meat_mode", reproduction)
+        self.assertIn("biological_blocker_counts_by_trophic_role", reproduction)
+        self.assertIn("energy_readiness_by_trophic_role", reproduction)
+        self.assertIn("energy_readiness_by_meat_mode", reproduction)
+        self.assertIn("blocked_run_counts_by_meat_mode", reproduction)
+        self.assertIn("herbivore", reproduction["by_trophic_role"])
+        self.assertIn("hunter", reproduction["by_meat_mode"])
+        self.assertIn(
+            "reproduction_biological_blockers_by_trophic_role_at_end",
+            report["aggregate"],
+        )
+        self.assertIn(
+            "reproduction_energy_readiness_by_meat_mode_at_end",
+            report["aggregate"],
+        )
+        self.assertIn("diet_by_meat_mode_at_end", report["aggregate"])
+        self.assertIn(
+            "animal_energy",
+            report["aggregate"]["diet_by_meat_mode_at_end"]["hunter"]["total"],
+        )
+        self.assertIn(
+            "animal_resource_opportunity_by_meat_mode",
+            report["runs"][0]["trophic"],
+        )
+        self.assertIn(
+            "animal_resource_opportunity_by_meat_mode_at_end",
+            report["aggregate"],
+        )
+        self.assertIn(
+            "animal_resource_opportunity_run_counts_by_meat_mode",
+            report["aggregate"],
+        )
+        opportunity_run_counts = report["aggregate"][
+            "animal_resource_opportunity_run_counts_by_meat_mode"
+        ]
+        if opportunity_run_counts:
+            first_counts = next(iter(opportunity_run_counts.values()))
+            self.assertIn("animal_resource_present_unreachable_runs", first_counts)
+            self.assertIn("animal_resource_reachable_unconsumed_runs", first_counts)
+            self.assertIn("animal_resource_policy_actionable_runs", first_counts)
+            self.assertIn(
+                "animal_resource_reachable_policy_blocked_runs",
+                first_counts,
+            )
+        self.assertIn(
+            "reproduction_blocked_run_counts_by_meat_mode",
+            report["aggregate"],
+        )
         self.assertNotIn("species", report["runs"][0])
         json.dumps(report)
+
+    def test_release_seed_scavenger_opportunity_diagnostics_are_present(self) -> None:
+        report = build_evaluation_report(
+            seeds=[3, 11],
+            ticks=80,
+            mode=RunMode.SUMMARY_ONLY,
+            min_births=0,
+        )
+
+        for run in report["runs"]:
+            scavenger = run["trophic"]["animal_resource_opportunity_by_meat_mode"][
+                "scavenger"
+            ]
+            self.assertIn("animal_resource_policy_actionable_ticks", scavenger)
+            self.assertIn("carcass_policy_actionable_ticks", scavenger)
+            self.assertIn("fresh_kill_policy_actionable_ticks", scavenger)
+            self.assertIn(
+                "animal_resource_reachable_policy_blocked_ticks",
+                scavenger,
+            )
+            self.assertIn(
+                "carcass_policy_blocked_by_occupant_agent_ticks",
+                scavenger,
+            )
+            self.assertIn(
+                "fresh_kill_policy_blocked_by_water_agent_ticks",
+                scavenger,
+            )
 
     def test_full_replay_evaluation_includes_compact_species_summary(self) -> None:
         report = build_evaluation_report(

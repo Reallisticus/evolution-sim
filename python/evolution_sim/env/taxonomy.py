@@ -71,6 +71,7 @@ class ReplayAgentRecord:
     lineage_id: int
     birth_tick: int
     death_tick: int | None
+    genome_values: dict[str, float]
     genome_vector: tuple[float, ...]
 
     def last_alive_tick(self, final_tick: int) -> int:
@@ -248,6 +249,7 @@ class ReplayTaxonomyPass:
                 lineage_id=int(payload["lineage_id"]),
                 birth_tick=int(payload.get("birth_tick", 0)),
                 death_tick=payload.get("death_tick"),
+                genome_values={gene: float(genome_values[gene]) for gene in GENE_ORDER},
                 genome_vector=genome_vector_from_values(genome_values),
             )
         return records
@@ -883,6 +885,7 @@ class ReplayTaxonomyPass:
                 "peak_members": 0,
                 "lineages": [segment.lineage_id],
                 "taxonomy_origin": segment.origin_kind,
+                "identity_mode": REPLAY_TAXONOMY_MODE,
                 "status": "pending",
                 "child_species_ids": sorted(segment.child_species_ids),
                 "is_leaf_species": not segment.child_species_ids,
@@ -893,15 +896,29 @@ class ReplayTaxonomyPass:
                 "split_child_agent_id": segment.split_child_agent_id,
                 "split_tick": segment.start_tick if segment.parent_species_id is not None else None,
                 "evidence": segment.evidence,
+                "centroid_units": "raw_gene_values",
                 "centroid": self._segment_centroid(segment),
+                "normalized_centroid_units": "unit_interval_by_gene_limits",
+                "normalized_centroid": self._segment_normalized_centroid(segment),
             }
         return catalog
 
     def _segment_centroid(self, segment: SpeciesSegment) -> dict[str, float]:
+        return self._segment_centroid_from_values(segment, normalized=False)
+
+    def _segment_normalized_centroid(self, segment: SpeciesSegment) -> dict[str, float]:
+        return self._segment_centroid_from_values(segment, normalized=True)
+
+    def _segment_centroid_from_values(
+        self,
+        segment: SpeciesSegment,
+        *,
+        normalized: bool,
+    ) -> dict[str, float]:
         if not segment.members:
             return {}
         end_tick = segment.end_tick if segment.end_tick is not None else self.final_tick
-        totals = [0.0 for _ in self.agents[segment.founder_agent_id].genome_vector]
+        totals = {gene: 0.0 for gene in GENE_ORDER}
         count = 0
         for agent_id in segment.members:
             record = self.agents[agent_id]
@@ -909,12 +926,16 @@ class ReplayTaxonomyPass:
                 continue
             if record.last_alive_tick(self.final_tick) < segment.start_tick:
                 continue
-            self._add_vector(totals, record.genome_vector)
+            for index, gene in enumerate(GENE_ORDER):
+                if normalized:
+                    totals[gene] += record.genome_vector[index]
+                else:
+                    totals[gene] += record.genome_values[gene]
             count += 1
         if count <= 0:
             return {}
         return {
-            gene: round(totals[index] / count, 4) for index, gene in enumerate(GENE_ORDER)
+            gene: round(totals[gene] / count, 4) for gene in GENE_ORDER
         }
 
     @staticmethod
@@ -938,6 +959,7 @@ class ReplayTaxonomyPass:
             "invariants": [
                 "species assignments are replay-derived, not frame-cluster-derived",
                 "species changes are one-way and only occur on logged taxonomy event ticks",
+                "species centroids are raw gene values and normalized_centroid is unit interval",
                 "ecotypes remain transient frame-local genome clusters",
             ],
         }

@@ -17,9 +17,14 @@ npm run sim:golden:quick
 - Reported metrics:
   - median wall time
   - p95 wall time
-  - median peak RSS
-  - p95 peak RSS
+  - median peak RSS in KiB
+  - p95 peak RSS in KiB
   - replay size for full-replay scenarios
+
+Each measured scenario repetition runs in a fresh worker process. Wall time is
+measured inside that worker so process startup overhead is excluded, while peak
+RSS is isolated to that repetition instead of inherited from earlier scenarios.
+RSS is normalized to KiB across platforms.
 
 ## Required Machine Profile
 

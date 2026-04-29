@@ -14,6 +14,7 @@ class EventType(StrEnum):
     AGENT_ATTACKED = "agent_attacked"
     AGENT_DAMAGED = "agent_damaged"
     AGENT_HEALED = "agent_healed"
+    AGENT_REPRODUCTION_BLOCKED = "agent_reproduction_blocked"
     AGENT_REPRODUCED = "agent_reproduced"
     AGENT_DIED = "agent_died"
     TICK_COMPLETED = "tick_completed"

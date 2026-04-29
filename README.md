@@ -36,6 +36,19 @@ shared survival, trophic, hazard, carrion, hydrology, and ecology outcomes. Use
 `--mode full_replay` only for compact compatibility checks that need species
 taxonomy fields.
 
+## Trajectory Collection
+
+Collect trainable trajectory rows without building full replay/viewer payloads:
+
+```bash
+cd /Users/njm/Projects/evolution-sim
+npm run sim:trajectory -- --seed 7 --ticks 400 --output output/trajectories/seed7.jsonl.gz
+```
+
+The trajectory stream is gzip JSONL when the output path ends in `.gz`. It writes
+a header with the trajectory/observation/reward contract, one record per
+decision, and a footer with summary and trajectory statistics.
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:

@@ -39,7 +39,7 @@ class DerivedTileMemo:
     def effective_fields(self, x: int, y: int) -> tuple[float, float, float]:
         key = (x, y)
         if key not in self.effective_tile_fields:
-            self.effective_tile_fields[key] = self.world._effective_tile_fields(x, y, self.season)
+            self.effective_tile_fields[key] = self.world._effective_tile_fields(x, y)
         return self.effective_tile_fields[key]
 
     def water_reason(self, x: int, y: int) -> str:

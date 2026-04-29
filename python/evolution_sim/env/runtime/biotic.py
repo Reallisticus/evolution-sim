@@ -25,6 +25,12 @@ def invalidate_biotic_state(world: Any) -> None:
     world.cached_biotic_state = None
 
 
+def _record_runtime_cost(world: Any, name: str) -> None:
+    recorder = getattr(world, "_record_runtime_cost", None)
+    if callable(recorder):
+        recorder(name)
+
+
 def _diffusion_targets_for_world(
     world: Any,
     radius: int,
@@ -32,8 +38,10 @@ def _diffusion_targets_for_world(
     cache = world._biotic_diffusion_target_cache
     cached_targets = cache.get(radius)
     if cached_targets is not None:
+        _record_runtime_cost(world, "biotic_diffusion_target_cache_hits")
         return cached_targets
 
+    _record_runtime_cost(world, "biotic_diffusion_target_cache_misses")
     offsets = _diffusion_offsets(radius)
     width = world.config.width
     targets_by_source: list[tuple[tuple[int, float], ...]] = []
@@ -54,6 +62,7 @@ def _diffusion_targets_for_world(
 
 
 def diffuse_biotic_field(world: Any, sources: list[list[float]]) -> list[list[float]]:
+    _record_runtime_cost(world, "biotic_diffusions")
     radius = max(1, world.config.biotic_fields.diffusion_radius)
     targets_by_source = _diffusion_targets_for_world(world, radius)
     width = world.config.width
@@ -75,6 +84,7 @@ def diffuse_biotic_field(world: Any, sources: list[list[float]]) -> list[list[fl
 
 
 def diffuse_sparse_biotic_field(world: Any, sources: dict[int, float]) -> list[list[float]]:
+    _record_runtime_cost(world, "biotic_diffusions")
     radius = max(1, world.config.biotic_fields.diffusion_radius)
     targets_by_source = _diffusion_targets_for_world(world, radius)
     width = world.config.width

@@ -36,7 +36,7 @@ class SummaryCollector:
     mode: RunMode = RunMode.SUMMARY_ONLY
 
     def on_tick(self, world: Any, *, births_this_tick: int, deaths_this_tick: int) -> None:
-        return None
+        world._refresh_population_snapshots(include_species=False)
 
     def finalize(
         self,

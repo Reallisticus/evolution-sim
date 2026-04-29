@@ -27,7 +27,7 @@ def vegetation_target(world: Any, x: int, y: int, season: str) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 1.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y, season)
+    fertility, moisture, heat = world._effective_tile_fields(x, y)
     habitat_state = world._habitat_state_at(x, y)
     target = (
         TERRAIN_VEGETATION_BASE.get(tile.terrain, 0.5)
@@ -48,7 +48,7 @@ def shelter_target(world: Any, x: int, y: int, season: str) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 0.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y, season)
+    fertility, moisture, heat = world._effective_tile_fields(x, y)
     forest_density = world._terrain_neighbor_ratio(x, y, terrain_filter={"forest"}, radius=1)
     habitat_state = world._habitat_state_at(x, y)
     target = (
@@ -75,7 +75,7 @@ def food_capacity(world: Any, x: int, y: int, season: str) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 0.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y, season)
+    fertility, moisture, heat = world._effective_tile_fields(x, y)
     capacity = (
         0.06
         + tile.vegetation * 0.7
@@ -95,7 +95,7 @@ def food_capacity(world: Any, x: int, y: int, season: str) -> float:
 
 def field_growth_multiplier(world: Any, x: int, y: int, season: str) -> float:
     tile = world.grid[y][x]
-    fertility, moisture, heat = world._effective_tile_fields(x, y, season)
+    fertility, moisture, heat = world._effective_tile_fields(x, y)
     growth = 0.42 + fertility * 0.72 + moisture * 0.44
     heat_penalty = max(0.0, heat - moisture) * 0.34
     vegetation_bonus = tile.vegetation * 0.34
@@ -122,7 +122,7 @@ def regrow_resources(world: Any) -> None:
                 )
 
             if tile.carcass_energy > 0:
-                _, moisture, heat = world._effective_tile_fields(x, y, season)
+                _, moisture, heat = world._effective_tile_fields(x, y)
                 decay = (
                     world.config.carcasses.decay_base_rate
                     + heat * world.config.carcasses.decay_heat_factor
@@ -132,7 +132,7 @@ def regrow_resources(world: Any) -> None:
                 world.tick_carcass_energy_decayed += energy_decayed
                 world.run_carcass_totals["energy_decayed"] += energy_decayed
 
-            fertility, moisture, heat = world._effective_tile_fields(x, y, season)
+            fertility, moisture, heat = world._effective_tile_fields(x, y)
             habitat_state = world._habitat_state_at(x, y)
             field_growth = field_growth_multiplier(world, x, y, season)
             vegetation_goal = vegetation_target(world, x, y, season)
