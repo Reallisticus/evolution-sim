@@ -2756,6 +2756,8 @@ class SimulationWorld:
     @staticmethod
     def _fresh_kill_drive(profile: TrophicProfile) -> float:
         drive = profile.hunter_drive + profile.scavenger_drive * 0.28
+        if profile.meat_mode == "hunter":
+            return max(drive, 0.45)
         if profile.meat_mode == "scavenger":
             return max(drive, 0.14)
         return drive
@@ -2765,6 +2767,8 @@ class SimulationWorld:
         drive = profile.scavenger_drive + profile.hunter_drive * 0.24
         if profile.meat_mode == "scavenger":
             return max(drive, 0.34)
+        if profile.meat_mode == "mixed":
+            return max(drive, 0.16)
         return drive
 
     def _fresh_kill_nutrition(
@@ -4454,6 +4458,8 @@ class SimulationWorld:
         healing_multiplier = 1.0
         if food_source == "carcass" and profile.meat_mode == "scavenger":
             healing_multiplier = self.config.carcasses.scavenger_healing_multiplier
+        elif food_source == "fresh_kill" and profile.meat_mode in {"hunter", "mixed"}:
+            healing_multiplier = self.config.carcasses.fresh_kill_hunter_healing_multiplier
         healed = (
             consumed
             * self.config.carcasses.healing_fraction
@@ -4467,6 +4473,41 @@ class SimulationWorld:
                 + (
                     consumed
                     * self._scavenger_carcass_hydration_fraction(agent)
+                    * agent.genome.water_efficiency
+                ),
+            )
+        elif (
+            food_source == "carcass"
+            and profile.meat_mode == "hunter"
+            and self._hydration_ratio(agent)
+            < self.config.carcasses.hunter_carcass_hydration_max_ratio
+        ):
+            agent.hydration = min(
+                agent.genome.max_hydration,
+                agent.hydration
+                + (
+                    consumed
+                    * self.config.carcasses.hunter_carcass_hydration_fraction
+                    * agent.genome.water_efficiency
+                ),
+            )
+        elif food_source == "carcass" and profile.meat_mode == "mixed":
+            agent.hydration = min(
+                agent.genome.max_hydration,
+                agent.hydration
+                + (
+                    consumed
+                    * self.config.carcasses.mixed_carcass_hydration_fraction
+                    * agent.genome.water_efficiency
+                ),
+            )
+        if food_source == "fresh_kill" and profile.meat_mode in {"hunter", "mixed"}:
+            agent.hydration = min(
+                agent.genome.max_hydration,
+                agent.hydration
+                + (
+                    consumed
+                    * self.config.carcasses.fresh_kill_hydration_fraction
                     * agent.genome.water_efficiency
                 ),
             )
@@ -4577,8 +4618,13 @@ class SimulationWorld:
 
     def _drink_action_outcome(self, agent: Agent) -> dict[str, object] | None:
         water_reason = self._water_access_reason(agent.x, agent.y)
+        source_x = agent.x
+        source_y = agent.y
         if water_reason == "none":
-            return None
+            adjacent_water = self._adjacent_blocked_water_access_target(agent)
+            if adjacent_water is None:
+                return None
+            source_x, source_y, water_reason = adjacent_water
         hydration_before = agent.hydration
         gained = self.config.resources.drink_amount * agent.genome.water_efficiency
         agent.hydration = min(agent.genome.max_hydration, agent.hydration + gained)
@@ -4589,12 +4635,16 @@ class SimulationWorld:
             data={
                 "hydration": round(agent.hydration, 4),
                 "water_access_reason": water_reason,
+                "source_x": source_x,
+                "source_y": source_y,
             },
         )
         return {
             "drank": True,
             "x": agent.x,
             "y": agent.y,
+            "source_x": source_x,
+            "source_y": source_y,
             "water_access_reason": water_reason,
             "hydration_before": round(hydration_before, 4),
             "hydration_after": round(agent.hydration, 4),
@@ -5660,10 +5710,50 @@ class SimulationWorld:
         )
 
     def _has_water_access(self, agent: Agent) -> bool:
-        return self._tile_has_water_access(agent.x, agent.y)
+        return (
+            self._tile_has_water_access(agent.x, agent.y)
+            or self._adjacent_blocked_water_access_target(agent) is not None
+        )
 
     def _tile_has_water_access(self, x: int, y: int) -> bool:
         return self._water_access_reason(x, y) != "none"
+
+    def _adjacent_blocked_water_access_target(
+        self,
+        agent: Agent,
+    ) -> tuple[int, int, str] | None:
+        profile = self._trophic_profile(agent)
+        if profile.meat_mode not in {"hunter", "mixed"}:
+            return None
+        if (
+            self._hydration_ratio(agent)
+            >= runtime_policy.ANIMAL_BLOCKED_WATER_SURVIVAL_HYDRATION
+        ):
+            return None
+        best_target: tuple[int, int, str] | None = None
+        best_score = float("-inf")
+        for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
+            x = agent.x + dx
+            y = agent.y + dy
+            if not self._in_bounds(x, y):
+                continue
+            tile = self.grid[y][x]
+            if tile.terrain == "water":
+                continue
+            water_reason = self._water_access_reason(x, y)
+            if water_reason == "none":
+                continue
+            if tile.occupant_id is None and self._can_move_to(x, y):
+                continue
+            _, hazard_level = self._hazard_at(x, y)
+            score = 1.0
+            score -= hazard_level * 0.25
+            if water_reason == "wetland":
+                score += 0.05
+            if score > best_score:
+                best_score = score
+                best_target = (x, y, water_reason)
+        return best_target
 
     def _adjacent_to_water(self, x: int, y: int) -> bool:
         return self.static_topology.adjacent_to_water[y][x]

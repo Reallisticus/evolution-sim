@@ -13,6 +13,7 @@ from typing import Callable, Mapping, Sequence
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.io import build_replay_payload, replay_payload_size_bytes
 from evolution_sim.env.world import (
     ANIMAL_RESOURCE_KINDS,
     ANIMAL_RESOURCE_POLICY_BLOCKERS,
@@ -70,6 +71,11 @@ class GateProfile:
     min_animal_resource_consumption_run_share_by_mode: float = 0.0
     use_late_window_population_floor: bool = False
     min_aggregate_meat_modes: int | None = None
+    dominance_warning_share: float = 0.75
+    required_terminal_meat_mode_alternatives_by_seed: Mapping[
+        int,
+        tuple[str, ...],
+    ] | None = None
 
 
 QUICK_PROFILE = GateProfile(
@@ -145,6 +151,11 @@ RELEASE_PROFILE = GateProfile(
             max_replay_size_bytes=260_000_000,
         ),
     ),
+    dominance_warning_share=0.85,
+    required_terminal_meat_mode_alternatives_by_seed={
+        3: ("hunter", "mixed"),
+        11: ("hunter", "mixed"),
+    },
 )
 
 PROFILES: dict[str, GateProfile] = {
@@ -732,6 +743,48 @@ def _summary_gate_flags(
                     ),
                 )
             )
+        terminal_alternatives = (
+            profile.required_terminal_meat_mode_alternatives_by_seed or {}
+        ).get(seed)
+        if terminal_alternatives:
+            lifecycle = run.get("trophic_lifecycle")
+            persistence = (
+                lifecycle.get("meat_mode_persistence")
+                if isinstance(lifecycle, Mapping)
+                else None
+            )
+            last_alive = (
+                persistence.get("last_alive_tick_by_meat_mode")
+                if isinstance(persistence, Mapping)
+                else None
+            )
+            terminal_tick = max(
+                0,
+                int(run.get("ticks_executed", profile.summary_ticks)) - 1,
+            )
+            observed_last_alive: dict[str, int | None] = {}
+            terminal_modes: list[str] = []
+            if isinstance(last_alive, Mapping):
+                for mode in terminal_alternatives:
+                    tick = _as_optional_int(last_alive.get(mode))
+                    observed_last_alive[mode] = tick
+                    if tick is not None and tick >= terminal_tick:
+                        terminal_modes.append(mode)
+            if not terminal_modes:
+                flags.append(
+                    _flag(
+                        "error",
+                        f"summary_seed_{seed}",
+                        (
+                            "trophic_lifecycle.meat_mode_persistence."
+                            "last_alive_tick_by_meat_mode"
+                        ),
+                        (
+                            "Required at least one terminal hunter/mixed timeline "
+                            f"for seed {seed}; observed {observed_last_alive}."
+                        ),
+                    )
+                )
         if profile.min_animal_energy_share > 0:
             animal_share = float(trophic["diet"].get("animal_energy_share", 0.0))
             if animal_share < profile.min_animal_energy_share:
@@ -911,7 +964,15 @@ def _summary_gate_flags(
 
 
 def _replay_size_bytes(result_payload: dict[str, object]) -> int:
-    return len(json.dumps(result_payload, indent=2).encode("utf-8"))
+    return replay_payload_size_bytes(result_payload)
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _mind_contract_flags(
@@ -1136,14 +1197,7 @@ def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
         mode=RunMode.FULL_REPLAY
     )
     summary = result.summary
-    payload = {
-        "run_id": result.run_id,
-        "config": result.config,
-        "summary": result.summary,
-        "events": result.events,
-        "viewer": result.viewer,
-    }
-    replay_size_bytes = _replay_size_bytes(payload)
+    replay_size_bytes = 0
     flags: list[dict[str, object]] = []
 
     if result.events is None or result.viewer is None:
@@ -1156,6 +1210,7 @@ def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
             )
         )
     else:
+        replay_size_bytes = _replay_size_bytes(build_replay_payload(result))
         frame_count = len(result.viewer["frames"])
         if frame_count != int(summary["ticks_executed"]):
             flags.append(
@@ -1469,6 +1524,14 @@ def build_foundation_gate_report(
                     profile.min_animal_resource_consumption_run_share_by_mode
                 ),
                 "use_late_window_population_floor": profile.use_late_window_population_floor,
+                "dominance_warning_share": profile.dominance_warning_share,
+                "required_terminal_meat_mode_alternatives_by_seed": {
+                    str(seed): list(modes)
+                    for seed, modes in (
+                        profile.required_terminal_meat_mode_alternatives_by_seed
+                        or {}
+                    ).items()
+                },
             },
             "full_replay_probes": [asdict(probe) for probe in profile.full_replay_probes],
         }
@@ -1491,7 +1554,7 @@ def build_foundation_gate_report(
             mode=RunMode.SUMMARY_ONLY,
             min_alive_agents=profile.min_alive_agents,
             min_births=profile.min_births,
-            dominance_warning_share=0.75,
+            dominance_warning_share=profile.dominance_warning_share,
             runs=runs,
             run_errors=run_errors,
         )

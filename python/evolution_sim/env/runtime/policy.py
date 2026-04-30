@@ -18,6 +18,18 @@ MOVE_DELTAS: dict[str, tuple[int, int]] = {
 }
 SCAVENGER_ADJACENT_CARCASS_SURVIVAL_ENERGY_THRESHOLD = 0.36
 SCAVENGER_ADJACENT_CARCASS_SURVIVAL_HYDRATION_THRESHOLD = 0.64
+SCAVENGER_MATCHED_DIET_CARRION_THRESHOLD = 0.2
+SCAVENGER_MATCHED_DIET_CARRION_MIN_ENERGY = 0.18
+SCAVENGER_MATCHED_DIET_CARRION_MAX_ENERGY = 0.28
+SCAVENGER_MATCHED_DIET_CARRION_MAX_HEALTH = 0.3
+HUNTER_MATCHED_DIET_PURSUIT_THRESHOLD = 0.62
+HUNTER_MATCHED_DIET_PURSUIT_MIN_ENERGY = 0.72
+HUNTER_MATCHED_DIET_PURSUIT_MIN_HYDRATION = 0.68
+HUNTER_MATCHED_DIET_PURSUIT_MIN_HEALTH = 0.72
+HUNTER_MATCHED_DIET_PURSUIT_MAX_PREY_DISTANCE = 3
+ANIMAL_CRITICAL_LOCAL_FOOD_BEFORE_WATER_ENERGY = 0.36
+ANIMAL_BLOCKED_WATER_LOCAL_FOOD_ENERGY = 0.16
+ANIMAL_BLOCKED_WATER_SURVIVAL_HYDRATION = 0.06
 ATTACK_DELTAS: dict[str, tuple[int, int]] = {
     action.replace("move_", "attack_"): delta for action, delta in MOVE_DELTAS.items()
 }
@@ -131,6 +143,8 @@ class ObservationHeuristicPolicy:
         is_omnivore = trophic_role == "omnivore"
         center_food = _float(center["food"]) if center is not None else 0.0
         center_hazard_level = _float(center["hazard_level"]) if center is not None else 0.0
+        health_ratio = _float(self_state.get("health_ratio", 1.0))
+        matched_diet_ratio = _float(self_state.get("matched_diet_ratio", 1.0))
         omnivore_needs_animal_channel = (
             energy_ratio < self.config.desperate_energy_threshold
             or center_food < 0.08
@@ -167,6 +181,30 @@ class ObservationHeuristicPolicy:
             ):
                 return self._decision("eat", "heuristic_observation")
 
+        if self._should_pursue_hunter_matched_diet(
+            meat_mode=meat_mode,
+            energy_ratio=energy_ratio,
+            hydration_ratio=hydration_ratio,
+            health_ratio=health_ratio,
+            matched_diet_ratio=matched_diet_ratio,
+        ):
+            attack = self._best_attack_action(
+                patch_cells,
+                action_mask,
+                energy_ratio=energy_ratio,
+            )
+            if attack is not None:
+                return self._decision(attack, "heuristic_observation")
+            prey_distance = _target_distance(navigation["prey"])
+            if (
+                0
+                < prey_distance
+                <= HUNTER_MATCHED_DIET_PURSUIT_MAX_PREY_DISTANCE
+            ):
+                prey_move = _navigation_action(navigation["prey"], action_mask)
+                if prey_move is not None:
+                    return self._decision(prey_move, "heuristic_observation")
+
         if (
             meat_mode == "scavenger"
             and _valid(action_mask, "eat")
@@ -189,13 +227,55 @@ class ObservationHeuristicPolicy:
         ):
             return self._decision("drink", "heuristic_observation")
 
+        water_distance = _target_distance(navigation["water"])
+        water_step = _navigation_action(navigation["water"], action_mask)
+        if (
+            meat_mode in {"hunter", "mixed"}
+            and _valid(action_mask, "eat")
+            and center is not None
+            and center_food >= self.config.critical_local_food_min
+            and energy_ratio < ANIMAL_CRITICAL_LOCAL_FOOD_BEFORE_WATER_ENERGY
+            and hydration_ratio < self.config.critical_hydration_threshold
+            and (
+                water_distance > 1
+                or (
+                    water_distance > 0
+                    and water_step is None
+                    and energy_ratio < ANIMAL_BLOCKED_WATER_LOCAL_FOOD_ENERGY
+                )
+            )
+        ):
+            return self._decision("eat", "heuristic_observation")
+
         if (
             meat_mode in {"hunter", "scavenger", "mixed"}
             and hydration_ratio < self.config.critical_hydration_threshold
         ):
-            water_move = _navigation_action(navigation["water"], action_mask)
+            water_move = water_step
+            if water_move is None and meat_mode in {"hunter", "mixed"}:
+                water_move = self._best_water_access_move(
+                    patch_cells,
+                    action_mask,
+                    max_distance=self.config.local_patch_radius * 2,
+                )
+            if (
+                water_move is None
+                and meat_mode in {"hunter", "mixed"}
+                and water_distance > 1
+            ):
+                water_move = _navigation_action(
+                    navigation["water"],
+                    action_mask,
+                    allow_detour=True,
+                )
             if water_move is not None:
                 return self._decision(water_move, "heuristic_observation")
+            if (
+                meat_mode in {"hunter", "mixed"}
+                and _target_distance(navigation["water"]) > 0
+                and _valid(action_mask, "stay")
+            ):
+                return self._decision("stay", "heuristic_observation_conserve")
 
         if (
             meat_mode == "scavenger"
@@ -208,6 +288,27 @@ class ObservationHeuristicPolicy:
             )
             if carrion_move is not None:
                 return self._decision(carrion_move, "heuristic_observation")
+            if (
+                matched_diet_ratio < SCAVENGER_MATCHED_DIET_CARRION_THRESHOLD
+                and energy_ratio >= SCAVENGER_MATCHED_DIET_CARRION_MIN_ENERGY
+                and energy_ratio <= SCAVENGER_MATCHED_DIET_CARRION_MAX_ENERGY
+                and hydration_ratio >= self.config.animal_pursuit_min_hydration
+                and health_ratio <= SCAVENGER_MATCHED_DIET_CARRION_MAX_HEALTH
+                and self._should_follow_carrion_navigation(
+                    navigation["carrion"],
+                    meat_mode=meat_mode,
+                    energy_ratio=energy_ratio,
+                    hydration_ratio=hydration_ratio,
+                )
+            ):
+                carrion_move = _navigation_action(
+                    navigation["carrion"],
+                    action_mask,
+                    min_strength=self.config.carrion_navigation_min_strength,
+                    allow_detour=True,
+                )
+                if carrion_move is not None:
+                    return self._decision(carrion_move, "heuristic_observation")
             if (
                 _valid(action_mask, "eat")
                 and center is not None
@@ -234,6 +335,20 @@ class ObservationHeuristicPolicy:
                 )
                 if carrion_move is not None:
                     return self._decision(carrion_move, "heuristic_observation")
+
+        if (
+            meat_mode in {"hunter", "mixed"}
+            and hydration_ratio < self.config.animal_pursuit_min_hydration
+        ):
+            water_move = _navigation_action(navigation["water"], action_mask)
+            if water_move is None:
+                water_move = self._best_water_access_move(
+                    patch_cells,
+                    action_mask,
+                    max_distance=self.config.local_patch_radius * 2,
+                )
+            if water_move is not None:
+                return self._decision(water_move, "heuristic_observation")
 
         if (
             meat_mode in {"hunter", "mixed"}
@@ -527,6 +642,23 @@ class ObservationHeuristicPolicy:
                 return True
         return False
 
+    @staticmethod
+    def _should_pursue_hunter_matched_diet(
+        *,
+        meat_mode: str,
+        energy_ratio: float,
+        hydration_ratio: float,
+        health_ratio: float,
+        matched_diet_ratio: float,
+    ) -> bool:
+        return (
+            meat_mode == "hunter"
+            and matched_diet_ratio < HUNTER_MATCHED_DIET_PURSUIT_THRESHOLD
+            and energy_ratio >= HUNTER_MATCHED_DIET_PURSUIT_MIN_ENERGY
+            and hydration_ratio >= HUNTER_MATCHED_DIET_PURSUIT_MIN_HYDRATION
+            and health_ratio >= HUNTER_MATCHED_DIET_PURSUIT_MIN_HEALTH
+        )
+
     def _best_attack_action(
         self,
         patch_cells: list[dict[str, object]],
@@ -694,6 +826,39 @@ class ObservationHeuristicPolicy:
             score += _float(cell["carrion_signal"]) * 0.08
             score -= distance * 0.04
             score -= _float(cell["hazard_level"]) * 0.18
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action
+
+    def _best_water_access_move(
+        self,
+        patch_cells: list[dict[str, object]],
+        action_mask: dict[str, bool],
+        *,
+        max_distance: int,
+    ) -> str | None:
+        best_action: str | None = None
+        best_score = float("-inf")
+        for cell in patch_cells:
+            dx = int(cell["dx"])
+            dy = int(cell["dy"])
+            distance = abs(dx) + abs(dy)
+            if distance <= 0 or distance > max_distance:
+                continue
+            if not bool(cell["in_bounds"]) or cell["terrain"] == "water":
+                continue
+            if cell["occupant"] == "agent":
+                continue
+            if cell["water_access_reason"] == "none":
+                continue
+            action = _step_action_for_delta(dx, dy, action_mask)
+            if action is None:
+                continue
+            score = 1.0
+            score -= distance * 0.12
+            score -= _float(cell["hazard_level"]) * 0.25
+            score -= _float(cell["predator_risk"]) * 0.08
             if score > best_score:
                 best_score = score
                 best_action = action

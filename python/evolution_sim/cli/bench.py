@@ -16,7 +16,11 @@ from tempfile import TemporaryDirectory
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
-from evolution_sim.io import JsonlTrajectoryWriter
+from evolution_sim.io import (
+    JsonlTrajectoryWriter,
+    build_replay_payload,
+    replay_payload_size_bytes,
+)
 
 from .golden_harness import GOLDEN_SPECIATION_SEED
 
@@ -87,14 +91,7 @@ def _run_once(scenario: BenchScenario) -> dict[str, object]:
     peak_rss_kib = _ru_maxrss_to_kib(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     replay_size = None
     if result.viewer is not None and result.events is not None:
-        payload = {
-            "run_id": result.run_id,
-            "config": result.config,
-            "summary": result.summary,
-            "events": result.events,
-            "viewer": result.viewer,
-        }
-        replay_size = len(json.dumps(payload, indent=2).encode("utf-8"))
+        replay_size = replay_payload_size_bytes(build_replay_payload(result))
     return {
         "wall_seconds": wall_seconds,
         "peak_rss_kib": int(peak_rss_kib),

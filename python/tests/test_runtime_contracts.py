@@ -114,6 +114,8 @@ class RuntimeContractTests(unittest.TestCase):
         center_hazard_level: float = 0.0,
         trophic_role: str = "carnivore",
         meat_mode: str = "hunter",
+        health_ratio: float = 1.0,
+        matched_diet_ratio: float = 1.0,
     ) -> dict[str, object]:
         return {
             "schema_version": OBSERVATION_SCHEMA_VERSION,
@@ -121,8 +123,9 @@ class RuntimeContractTests(unittest.TestCase):
             "self": {
                 "energy_ratio": energy_ratio,
                 "hydration_ratio": hydration_ratio,
-                "health_ratio": 1.0,
+                "health_ratio": health_ratio,
                 "age_ratio": 0.1,
+                "matched_diet_ratio": matched_diet_ratio,
                 "trophic_role": trophic_role,
                 "meat_mode": meat_mode,
             },
@@ -539,6 +542,192 @@ class RuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(decision.requested_action, "stay")
 
+    def test_hunter_matched_diet_deficit_pursues_nearby_prey_before_plants(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["prey"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.86,
+                hydration_ratio=0.82,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="omnivore",
+                meat_mode="hunter",
+                matched_diet_ratio=0.0,
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_hunter_pursues_water_before_low_energy_plant_fallback(self) -> None:
+        navigation = self._empty_navigation()
+        observation = self._policy_observation(
+            energy_ratio=0.48,
+            hydration_ratio=0.62,
+            navigation=navigation,
+            center_food=0.9,
+            trophic_role="carnivore",
+            meat_mode="hunter",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(1, 0, water_access_reason="adjacent_water")
+        )
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_hunter_eats_local_food_before_nonadjacent_water_when_critically_weak(
+        self,
+    ) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 1, "dy": 0, "distance": 3, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.3,
+                hydration_ratio=0.12,
+                navigation=navigation,
+                center_food=0.3,
+                trophic_role="carnivore",
+                meat_mode="hunter",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_hunter_still_pursues_adjacent_water_when_critically_thirsty(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 1.0}
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.3,
+                hydration_ratio=0.12,
+                navigation=navigation,
+                center_food=0.3,
+                trophic_role="carnivore",
+                meat_mode="hunter",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_hunter_waits_when_critical_water_route_is_blocked(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 0, "dy": 1, "distance": 1, "strength": 1.0}
+        navigation["plant"] = {"dx": 0, "dy": -1, "distance": 1, "strength": 0.8}
+        action_mask = self._policy_action_mask()
+        action_mask["move_south"] = False
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.28,
+                hydration_ratio=0.08,
+                navigation=navigation,
+                center_food=0.02,
+                trophic_role="carnivore",
+                meat_mode="hunter",
+            ),
+            action_mask,
+        )
+
+        self.assertEqual(decision.requested_action, "stay")
+
+    def test_hunter_detours_when_nonadjacent_water_route_is_blocked(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 0, "dy": 2, "distance": 2, "strength": 1.0}
+        action_mask = self._policy_action_mask()
+        action_mask["move_south"] = False
+        action_mask["move_east"] = True
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.68,
+                hydration_ratio=0.08,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="omnivore",
+                meat_mode="mixed",
+            ),
+            action_mask,
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_hunter_eats_local_food_when_adjacent_water_route_blocked_and_starving(
+        self,
+    ) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 0, "dy": 1, "distance": 1, "strength": 1.0}
+        action_mask = self._policy_action_mask()
+        action_mask["move_south"] = False
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.12,
+                hydration_ratio=0.12,
+                navigation=navigation,
+                center_food=0.3,
+                trophic_role="carnivore",
+                meat_mode="hunter",
+            ),
+            action_mask,
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+
+    def test_hunter_water_fallback_uses_full_local_patch_radius(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["water"] = {"dx": 0, "dy": 1, "distance": 1, "strength": 1.0}
+        observation = self._policy_observation(
+            energy_ratio=0.48,
+            hydration_ratio=0.62,
+            navigation=navigation,
+            center_food=0.9,
+            trophic_role="carnivore",
+            meat_mode="hunter",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(2, 2, water_access_reason="adjacent_water")
+        )
+        action_mask = self._policy_action_mask()
+        action_mask["move_south"] = False
+
+        decision = ObservationHeuristicPolicy().decide(
+            observation,
+            action_mask,
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
+    def test_scavenger_matched_diet_deficit_follows_reachable_carrion_before_plants(
+        self,
+    ) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {
+            "dx": 1,
+            "dy": 0,
+            "distance": 4,
+            "strength": 0.5,
+        }
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.22,
+                hydration_ratio=0.72,
+                navigation=navigation,
+                center_food=0.9,
+                trophic_role="carnivore",
+                meat_mode="scavenger",
+                health_ratio=0.28,
+                matched_diet_ratio=0.0,
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
     def _ready_reproduction_config(self, **overrides: object) -> WorldConfig:
         values = {
             "seed": 7,
@@ -606,6 +795,56 @@ class RuntimeContractTests(unittest.TestCase):
         world.next_agent_id += 1
         return agent
 
+    def _hunter_genome(self) -> Genome:
+        return Genome(
+            max_energy=1.0,
+            max_hydration=1.0,
+            max_health=1.0,
+            move_cost=0.03,
+            food_efficiency=0.4,
+            water_efficiency=1.0,
+            attack_power=1.2,
+            attack_cost_multiplier=1.0,
+            defense_rating=0.9,
+            meat_efficiency=1.8,
+            healing_efficiency=1.0,
+            plant_bias=0.35,
+            carrion_bias=0.2,
+            live_prey_bias=1.8,
+            forest_affinity=1.0,
+            plain_affinity=1.0,
+            wetland_affinity=1.0,
+            rocky_affinity=1.0,
+            heat_tolerance=1.0,
+            reproduction_threshold=0.7,
+            mutation_scale=0.01,
+        )
+
+    def _mixed_genome(self) -> Genome:
+        return Genome(
+            max_energy=1.0,
+            max_hydration=1.0,
+            max_health=1.0,
+            move_cost=0.03,
+            food_efficiency=1.0,
+            water_efficiency=1.0,
+            attack_power=0.8,
+            attack_cost_multiplier=1.0,
+            defense_rating=0.9,
+            meat_efficiency=1.1,
+            healing_efficiency=1.0,
+            plant_bias=1.0,
+            carrion_bias=0.75,
+            live_prey_bias=0.75,
+            forest_affinity=1.0,
+            plain_affinity=1.0,
+            wetland_affinity=1.0,
+            rocky_affinity=1.0,
+            heat_tolerance=1.0,
+            reproduction_threshold=0.7,
+            mutation_scale=0.01,
+        )
+
     def _scavenger_genome(self) -> Genome:
         return Genome(
             max_energy=1.0,
@@ -630,6 +869,52 @@ class RuntimeContractTests(unittest.TestCase):
             reproduction_threshold=0.7,
             mutation_scale=0.01,
         )
+
+    def test_hunter_fresh_kill_drive_has_specialist_floor(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=3, max_ticks=1))
+        agent = next(
+            agent
+            for agent in world.alive_agents()
+            if world._trophic_profile(agent).meat_mode == "hunter"
+            and world._trophic_profile(agent).hunter_drive < 0.09
+        )
+        profile = world._trophic_profile(agent)
+        raw_drive = profile.hunter_drive + profile.scavenger_drive * 0.28
+
+        self.assertLess(raw_drive, 0.45)
+        self.assertEqual(world._fresh_kill_drive(profile), 0.45)
+
+    def test_mixed_carcass_drive_has_omnivore_floor(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        genome = Genome(
+            max_energy=1.0,
+            max_hydration=1.0,
+            max_health=1.0,
+            move_cost=0.04,
+            food_efficiency=1.0,
+            water_efficiency=1.0,
+            attack_power=0.8,
+            attack_cost_multiplier=1.0,
+            defense_rating=0.8,
+            meat_efficiency=0.9,
+            healing_efficiency=1.0,
+            plant_bias=1.0,
+            carrion_bias=0.75,
+            live_prey_bias=0.75,
+            forest_affinity=1.0,
+            plain_affinity=1.0,
+            wetland_affinity=1.0,
+            rocky_affinity=1.0,
+            heat_tolerance=1.0,
+            reproduction_threshold=0.7,
+            mutation_scale=0.01,
+        )
+        profile = world._trophic_profile_for_genome(genome)
+        raw_drive = profile.scavenger_drive + profile.hunter_drive * 0.24
+
+        self.assertEqual(profile.meat_mode, "mixed")
+        self.assertLess(raw_drive, 0.16)
+        self.assertEqual(world._carcass_drive(profile), 0.16)
 
     def test_scavenger_can_resolve_fresh_kill_intake(self) -> None:
         world = SimulationWorld(self._ready_reproduction_config())
@@ -657,6 +942,178 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIsNotNone(outcome)
         self.assertEqual(outcome["food_source"], "fresh_kill")
         self.assertGreater(outcome["gained_energy"], 0.0)
+
+    def test_hunter_fresh_kill_intake_restores_hydration(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                carcasses=CarcassConfig(fresh_kill_hydration_fraction=0.2)
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._hunter_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        agent.hydration = agent.genome.max_hydration * 0.3
+        tile = world.grid[agent.y][agent.x]
+        world._deposit_fresh_kill(
+            tile,
+            x=agent.x,
+            y=agent.y,
+            energy=0.4,
+            source_species=None,
+            source_agent_id=None,
+            killer_id=None,
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._consume_fresh_kill_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "fresh_kill")
+        self.assertGreater(agent.hydration, hydration_before)
+
+    def test_hunter_fresh_kill_intake_uses_hunter_healing_multiplier(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                carcasses=CarcassConfig(
+                    healing_fraction=0.1,
+                    fresh_kill_hunter_healing_multiplier=2.0,
+                )
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._hunter_genome(),
+        )
+        agent.energy = agent.genome.max_energy
+        agent.health = agent.max_health * 0.5
+        tile = world.grid[agent.y][agent.x]
+        world._deposit_fresh_kill(
+            tile,
+            x=agent.x,
+            y=agent.y,
+            energy=0.4,
+            source_species=None,
+            source_agent_id=None,
+            killer_id=None,
+        )
+
+        health_before = agent.health
+        outcome = world._consume_fresh_kill_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "fresh_kill")
+        self.assertGreater(agent.health, health_before + 0.05)
+
+    def test_mixed_carcass_intake_restores_hydration(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                carcasses=CarcassConfig(mixed_carcass_hydration_fraction=0.2)
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._mixed_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        agent.hydration = agent.genome.max_hydration * 0.3
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._consume_carcass_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertGreater(agent.hydration, hydration_before)
+
+    def test_hunter_carcass_intake_restores_hydration_when_severely_thirsty(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                carcasses=CarcassConfig(
+                    hunter_carcass_hydration_fraction=0.2,
+                    hunter_carcass_hydration_max_ratio=0.5,
+                )
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._hunter_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        agent.hydration = agent.genome.max_hydration * 0.3
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._consume_carcass_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertGreater(agent.hydration, hydration_before)
+
+    def test_hunter_carcass_intake_does_not_hydrate_above_rescue_threshold(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                carcasses=CarcassConfig(
+                    hunter_carcass_hydration_fraction=0.2,
+                    hunter_carcass_hydration_max_ratio=0.5,
+                )
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._hunter_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        agent.hydration = agent.genome.max_hydration * 0.6
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits.append(
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=1.0,
+                source_species=None,
+                source_agent_id=None,
+                death_tick=0,
+                cause="test",
+            )
+        )
+
+        hydration_before = agent.hydration
+        outcome = world._consume_carcass_outcome(agent)
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["food_source"], "carcass")
+        self.assertEqual(agent.hydration, hydration_before)
 
     def test_scavenger_carcass_intake_restores_hydration(self) -> None:
         world = SimulationWorld(self._ready_reproduction_config())
@@ -753,6 +1210,63 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(outcome["food_source"], "carcass")
         self.assertEqual((outcome["x"], outcome["y"]), (2, 1))
         self.assertGreater(outcome["gained_energy"], 0.0)
+
+    def test_hunter_can_drink_from_adjacent_blocked_wetland_when_near_death(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        x, y = next(
+            (
+                (x, y)
+                for y in range(world.config.height)
+                for x in range(world.config.width - 1)
+                if world._water_access_reason(x, y) == "none"
+                and world._water_access_reason(x + 1, y) == "none"
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=x,
+            y=y,
+            genome=self._hunter_genome(),
+        )
+        blocker = self._place_ready_agent(world, x=x + 1, y=y, lineage_id=2)
+        world.grid[blocker.y][blocker.x].terrain = "wetland"
+        agent.hydration = agent.genome.max_hydration * 0.03
+
+        action_mask = build_action_mask(world, agent)
+        outcome = world._drink_action_outcome(agent)
+
+        self.assertTrue(action_mask["drink"])
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome["water_access_reason"], "wetland")
+        self.assertEqual((outcome["source_x"], outcome["source_y"]), (x + 1, y))
+        self.assertGreater(outcome["gained_hydration"], 0.0)
+
+    def test_hunter_cannot_share_blocked_wetland_above_critical_hydration(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        x, y = next(
+            (
+                (x, y)
+                for y in range(world.config.height)
+                for x in range(world.config.width - 1)
+                if world._water_access_reason(x, y) == "none"
+                and world._water_access_reason(x + 1, y) == "none"
+            )
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=x,
+            y=y,
+            genome=self._hunter_genome(),
+        )
+        blocker = self._place_ready_agent(world, x=x + 1, y=y, lineage_id=2)
+        world.grid[blocker.y][blocker.x].terrain = "wetland"
+        agent.hydration = agent.genome.max_hydration * 0.5
+
+        action_mask = build_action_mask(world, agent)
+        outcome = world._drink_action_outcome(agent)
+
+        self.assertFalse(action_mask["drink"])
+        self.assertIsNone(outcome)
 
     def test_carcass_opportunity_reports_policy_blockers(self) -> None:
         world = SimulationWorld(
@@ -1008,6 +1522,36 @@ class RuntimeContractTests(unittest.TestCase):
                 "carcasses.fresh_kill_conversion_rate",
                 lambda: WorldConfig(
                     carcasses=CarcassConfig(fresh_kill_conversion_rate=2.0)
+                ),
+            ),
+            (
+                "carcasses.fresh_kill_hydration_fraction",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(fresh_kill_hydration_fraction=-0.1)
+                ),
+            ),
+            (
+                "carcasses.mixed_carcass_hydration_fraction",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(mixed_carcass_hydration_fraction=-0.1)
+                ),
+            ),
+            (
+                "carcasses.hunter_carcass_hydration_fraction",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(hunter_carcass_hydration_fraction=-0.1)
+                ),
+            ),
+            (
+                "carcasses.hunter_carcass_hydration_max_ratio",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(hunter_carcass_hydration_max_ratio=1.1)
+                ),
+            ),
+            (
+                "carcasses.fresh_kill_hunter_healing_multiplier",
+                lambda: WorldConfig(
+                    carcasses=CarcassConfig(fresh_kill_hunter_healing_multiplier=0.0)
                 ),
             ),
             (

@@ -17,6 +17,7 @@ from evolution_sim.cli.foundation_gate import (
     build_foundation_gate_report,
     _ecology_failure_rollup,
     _mind_contract_flags,
+    _replay_size_bytes,
     _summary_gate_flags,
 )
 from evolution_sim.config import WorldConfig
@@ -37,6 +38,23 @@ class FoundationGateCliTests(unittest.TestCase):
         )
         self.assertTrue(ECOLOGY_PROFILE.use_late_window_population_floor)
         self.assertEqual(ECOLOGY_PROFILE.full_replay_probes, ())
+
+    def test_release_profile_hardens_seed_3_and_11_terminal_timelines(self) -> None:
+        release = PROFILES["release"]
+
+        self.assertEqual(release.dominance_warning_share, 0.85)
+        self.assertEqual(
+            release.required_terminal_meat_mode_alternatives_by_seed,
+            {3: ("hunter", "mixed"), 11: ("hunter", "mixed")},
+        )
+
+    def test_replay_size_budget_uses_compact_json_bytes(self) -> None:
+        payload = {"run_id": "x", "viewer": {"frames": [{"agents": [[1, 2, 3]]}]}}
+
+        self.assertEqual(
+            _replay_size_bytes(payload),
+            len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+        )
 
     def test_ecology_gate_has_npm_entrypoint(self) -> None:
         package = json.loads(Path("package.json").read_text(encoding="utf-8"))
@@ -808,6 +826,99 @@ class FoundationGateCliTests(unittest.TestCase):
         self.assertNotIn(
             "trophic_lifecycle.late_window_meat_mode_presence_runs",
             error_fields,
+        )
+
+    def test_required_terminal_meat_mode_alternatives_use_last_alive_timelines(self) -> None:
+        profile = replace(
+            QUICK_PROFILE,
+            name="terminal-timeline-unit",
+            min_trophic_roles=1,
+            min_meat_modes=1,
+            min_last_birth_tick=0,
+            min_hazardous_tiles=0,
+            min_ecology_pressure_tiles=0,
+            full_replay_probes=(),
+            required_terminal_meat_mode_alternatives_by_seed={
+                3: ("hunter", "mixed"),
+            },
+        )
+        evaluation = {
+            "flags": [],
+            "runs": [
+                {
+                    "seed": 3,
+                    "ticks_executed": 800,
+                    "last_birth_tick": 8,
+                    "trophic": {
+                        "role_counts": {"herbivore": 8, "omnivore": 1},
+                        "meat_mode_counts": {
+                            "none": 8,
+                            "scavenger": 1,
+                            "hunter": 1,
+                            "mixed": 0,
+                        },
+                        "diet": {"animal_energy_share": 0.1},
+                    },
+                    "trophic_lifecycle": {
+                        "meat_mode_persistence": {
+                            "last_alive_tick_by_meat_mode": {
+                                "none": 799,
+                                "scavenger": 799,
+                                "hunter": 790,
+                                "mixed": None,
+                            },
+                        },
+                    },
+                    "carrion": {"energy_deposited": 1.0, "energy_consumed": 0.2},
+                }
+            ],
+            "aggregate": {
+                "hazardous_tiles": {"min": 1},
+                "trophic_role_counts_at_end": {
+                    "total": {"herbivore": 8, "omnivore": 1}
+                },
+                "meat_mode_counts_at_end": {
+                    "total": {"none": 8, "scavenger": 1, "hunter": 1, "mixed": 0}
+                },
+                "trophic_lifecycle": {},
+                "ecology_state_counts_at_end": {
+                    "total": {"stable": 0, "lush": 0, "recovering": 1, "depleted": 0}
+                },
+                "carrion_energy_consumed": {"max": 0.2},
+                "fresh_kill_energy_consumed": {"max": 0.0},
+            },
+        }
+
+        flags = _summary_gate_flags(evaluation, profile)
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == (
+                    "trophic_lifecycle.meat_mode_persistence."
+                    "last_alive_tick_by_meat_mode"
+                )
+                for flag in flags
+            )
+        )
+
+        passing_evaluation = copy.deepcopy(evaluation)
+        passing_evaluation["runs"][0]["trophic_lifecycle"][
+            "meat_mode_persistence"
+        ]["last_alive_tick_by_meat_mode"]["hunter"] = 799
+
+        passing_flags = _summary_gate_flags(passing_evaluation, profile)
+
+        self.assertFalse(
+            any(
+                flag["field"]
+                == (
+                    "trophic_lifecycle.meat_mode_persistence."
+                    "last_alive_tick_by_meat_mode"
+                )
+                for flag in passing_flags
+            )
         )
 
     def test_missing_ecology_pressure_is_blocking(self) -> None:

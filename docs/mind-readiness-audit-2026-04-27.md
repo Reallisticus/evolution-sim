@@ -1,10 +1,32 @@
 # Mind Readiness Audit
 
 Date: 2026-04-27
-Latest update: 2026-04-28
+Latest update: 2026-04-30
 Scope: `python/evolution_sim/`, `python/tests/`, `viewer/`, `docs/`, CI, and npm entrypoints in the current working tree.
 
-This audit cross-checks the 2026-04-25 pre-Mind report against the current code. Several findings from that report are already fixed on this branch. The important remaining conclusion is narrower now: Foundation is not yet ready for Mind v1 because quick-profile ecology, the 120-tick ecology seed bank, and Mind data contracts are in place, but release-horizon ecology and any major reproduction semantics still need to be proven before learned-controller work starts.
+This audit cross-checks the 2026-04-25 pre-Mind report against the current code. Several findings from that report are already fixed on this branch. The important remaining conclusion is narrower now: Foundation is not yet ready for Mind v1 because quick-profile ecology, the 120-tick ecology seed bank, release-horizon validation, and Mind data contracts are in place, but major reproduction and signal semantics still need to be designed, implemented, and gated before learned-controller work starts.
+
+## 2026-04-30 Update: Release Gate Closed, Reproductive/Signal Cleanup Blocks Mind
+
+The latest audit pass independently confirmed the current validation claims:
+
+- `npm run sim:test:full`: pass, 166 tests in 1454.967s.
+- `npm run sim:golden`: pass, including compact full-replay fixture sizes of `3904126`, `19095623`, `191055154`, and `29893799` bytes.
+- `npm run sim:gate:release -- --output output/evaluations/foundation-release-audit.json`: pass in 828.135s with no blockers or warnings. The summary sweep took 763.3447s.
+- `npm run sim:bench`: pass. Full speciation replay remains the heavy case at `65.9557s`, `618624` KiB RSS, `191055154` replay bytes, and `40915` trajectory records. Summary-only speciation remains simulation-heavy at `45.5399s` and `99728` KiB RSS. Streaming trajectory overhead remains modest: seed 7, 100 ticks reported `3.1063s` and `1301917` output bytes versus `2.2445s` for summary-only.
+- Viewer smoke: pass, `viewer_smoke_ok selected_agent=1 final_frame=299`.
+- `git diff --check`: pass.
+
+The older release-gate operability warning below is now historical evidence, not
+the current gate status. Release validation has completed successfully.
+
+The next blocker is no longer "can the release gate finish?" It is now the
+pre-Mind reproductive and signal semantics captured in
+[`pre-mind-reproductive-and-signal-readiness-plan.md`](pre-mind-reproductive-and-signal-readiness-plan.md).
+Sexed reproduction, reproductive groups, pheromones, opaque communication
+tokens, reserved mate/communication action slots, and learned-state inheritance
+metadata are deliberate Foundation work. They must be added, measured, and
+represented in observation/action/reward/replay contracts before Mind v1.
 
 ## Verification Run
 
@@ -130,21 +152,21 @@ Earlier targeted probes from the deeper Foundation pass, retained as audit evide
 
 ## Current Verdict
 
-Foundation is materially closer but still not closed for Mind v1. The current tree now has an enforceable observation-only default policy boundary, trainable trajectory payloads, versioned rewards/action outcomes, low-memory trajectory streaming, explicit runtime-cost counters, explicit centroid units, and quick plus 120-tick ecology gates that pass without terminal herbivore-only collapse.
+Foundation is materially closer but still not closed for Mind v1. The current tree now has an enforceable observation-only default policy boundary, trainable trajectory payloads, versioned rewards/action outcomes, low-memory trajectory streaming, explicit runtime-cost counters, explicit centroid units, quick plus 120-tick ecology gates, and a passing release gate.
 
-The strongest remaining negative evidence is now release-horizon proof and animal-specialist reproductive strength, not the 120-tick seed-bank pass/fail result. Earlier 120-tick and 800-tick probes showed herbivore-only terminal collapse, and the old release artifact reached the hard population ceiling while continuing to reproduce. The current `sim:gate:ecology` run closes the 20-seed, 120-tick summary-only blocker and now includes an animal-consumption floor, but it also shows the next Foundation risk: animal-resource specialists are surviving better than before, yet births are still overwhelmingly herbivore/`none`, per-mode present-but-unconsumed animal-resource cases remain, and animal modes have `0` terminal biologically ready agents. The latest animal-resource acquisition slice clears the prior run-level no-consumption seeds, but remaining by-mode misses still distinguish pathing/local-reachability gaps from reachable-but-unconsumed gaps.
+The strongest remaining negative evidence is now semantic instability, not gate operability: the desired world includes sexed recombination, reproductive groups, pheromone-like signals, opaque communication, and later learned-state inheritance. Those semantics would change state, actions, observations, rewards, replay, metrics, gates, and viewer surfaces if added after Mind v1. They must be Foundation work.
 
-Gender/sexed reproduction status: not implemented. The current system has reproduction, but it is automatic, single-parent, and asexual. A child is created from one parent by `parent.genome.mutate(self.rng)`, with `parent_id` and `lineage_id` inheritance, local empty-neighbor placement, parent energy cost, and cooldown update. There is no agent sex/gender field, no mate/partner action, no partner selection, no two-parent recombination, no sex-ratio gate, and no mate-attempt reward or replay contract.
+Sexed reproduction status: not implemented. The current system has reproduction, but it is automatic, single-parent, and asexual. A child is created from one parent by `parent.genome.mutate(self.rng)`, with `parent_id` and `lineage_id` inheritance, local empty-neighbor placement, parent energy cost, and cooldown update. There is no reproductive group layer, mate/partner action, partner selection, two-parent recombination, X/Y/Z-like expression, pheromone substrate, or mate-attempt reward/replay contract.
 
-So the order remains: prove Foundation ecology at release horizons first, decide and implement any major environment semantics such as sexed intentional reproduction, keep pre-Mind observability aligned with that stable environment, then start Mind. The observation/trajectory scaffolding is now real enough to build on, but release ecology and reproduction semantics still need a deeper pass before learned-controller work starts.
+So the order is now: preserve the validated release gate as the regression boundary, implement the reproductive/signal plan in staged Foundation slices, keep pre-Mind observability aligned with that stable environment, then start Mind. The observation/trajectory scaffolding is real enough to build on, but reproduction and signal semantics still need a deeper pass before learned-controller work starts.
 
 Mind v1 should not start until these are true:
 
-- Long-horizon release gates preserve terminal trophic and animal-resource diversity, not only quick-gate diversity.
+- Long-horizon release gates continue to preserve terminal trophic and animal-resource diversity after reproductive/signal changes.
 - Reward components remain explicitly defined as an experiment contract, with tests for scale, terminal events, invalid actions, and reproduction.
 - The release gate measures the full Mind data contract and the Foundation ecology contract directly.
 - Benchmark memory metrics are trustworthy per scenario and cross-platform.
-- If male/female or intentional reproduction is in scope for Mind v1, it is already represented in state, observation, action masks, rewards, replay, gates, and baseline policies.
+- Sexed reproduction, reproductive groups, pheromones, communication slots, and any future mate action are already represented in state, observation, action masks, rewards, replay, gates, and baseline policies without exposing human-readable semantics to Mind.
 
 ## Critical Findings
 
@@ -298,17 +320,17 @@ File: `python/evolution_sim/cli/foundation_gate.py:573`
 
 The quick gate passed. The current release gate was started with the release profile and output path, but after more than 30 minutes it had emitted no progress and had not written a report file. The process was CPU-bound, so this was not an idle wait.
 
-Consequence for Foundation: a short quick gate is useful for CI but cannot prove sustained emergent behavior, and the release gate is currently hard to trust operationally because a developer cannot tell whether it is progressing, hung, or in an unexpectedly slow scenario.
+Consequence for Foundation: a short quick gate is useful for CI but cannot prove sustained emergent behavior. The release gate is now operable, and that operability should be preserved as the ecological closure check.
 
 Required fix: add per-seed/per-probe progress output, scenario timing, incremental report writing, and a timeout. Release readiness should require terminal and aggregate survival of resource pressure, trophic diversity, and meat modes across seeds, but that gate also has to complete predictably.
 
-Status: addressed for gate operability in the 2026-04-27 gate slice. `foundation_gate` now records per-seed/probe timings, emits progress to stderr through the CLI, writes incremental reports to `--output`, and converts scenario timeouts/exceptions into gate blockers. Release ecology is still not closed until the release profile itself completes and passes or produces actionable blockers.
+Status: addressed for gate operability in the 2026-04-27 gate slice and verified at release scale on 2026-04-30. `foundation_gate` now records per-seed/probe timings, emits progress to stderr through the CLI, writes incremental reports to `--output`, converts scenario timeouts/exceptions into gate blockers, and the latest release profile completed with no blockers or warnings.
 
 ### 12. Release durability still needs to be treated as the real ecological gate
 
-The older release report in `output/evaluations/foundation-release.json` was only `review`, with terminal trophic/carrion weakness after 800 ticks. The current 120-tick ecology seed bank now passes, but that is still not release-horizon proof. Because the current release profile has not been rerun to completion after the ecology repair, the older artifact remains useful context but not proof of current behavior.
+The older release report in `output/evaluations/foundation-release.json` was only `review`, with terminal trophic/carrion weakness after 800 ticks. That finding is now historical. The 2026-04-30 release gate completed successfully after the ecology and replay-size repairs.
 
-Consequence for Foundation: quick-gate pass does not close Foundation. Release readiness should require terminal and aggregate survival of resource pressure, trophic diversity, and meat modes across seeds.
+Consequence for Foundation: quick-gate pass alone does not close Foundation. Release readiness should continue to require terminal and aggregate survival of resource pressure, trophic diversity, and meat modes across seeds, especially after reproductive/signal behavior changes.
 
 ### 13. Invalid config can silently reshape the world
 
@@ -598,7 +620,7 @@ If the desired emergent behaviors include mate seeking, nesting, dispersal, crow
 
 ### H. Performance Is A Foundation Requirement
 
-The release gate running for more than 30 minutes without producing a report is not only tooling friction. Mind training will need many more environment steps than the release gate.
+The earlier release gate run that exceeded 30 minutes without producing a report was not only tooling friction. It exposed why Mind training needs explicit performance budgets. The 2026-04-30 release gate now completes, but performance remains a Foundation contract because Mind training will need many more environment steps than the release gate.
 
 The likely cost centers include:
 
@@ -641,7 +663,7 @@ Foundation now has a `validate()`/`__post_init__` layer and tests that invalid c
 
 ### K. Default Ecology Lost Animal Niches Early
 
-Status: partially addressed for the quick profile on 2026-04-27 and the 20-seed, 120-tick ecology profile on 2026-04-28. The latest quick gate passes, and `npm run sim:gate:ecology -- --fail-on-blockers` now passes seeds `1-20` at `120` ticks with late-window animal-resource modes present. Release-horizon proof is still open, and animal-specialist reproduction remains weak.
+Status: addressed for the quick profile on 2026-04-27, the 20-seed, 120-tick ecology profile on 2026-04-28, and the release gate on 2026-04-30. Animal-specialist reproduction should remain a watched metric, especially after reproductive/signal changes.
 
 The older release artifact showed terminal animal-resource collapse at 800 ticks. A pre-repair probe found the same direction by 120 ticks:
 
@@ -651,9 +673,9 @@ The older release artifact showed terminal animal-resource collapse at 800 ticks
 - seed 7: `76` alive, all herbivore, all meat mode `none`, animal energy share `0.0018`;
 - seed 11: `98` alive, all herbivore, all meat mode `none`, animal energy share `0.0`.
 
-The pre-repair expanded 20-seed 120-tick sweep strengthened this finding: `18/20` seeds ended herbivore-only with no terminal animal-resource mode. The only exceptions were seed `6`, with one terminal scavenger/omnivore, and seed `15`, also with one terminal scavenger/omnivore. That pass/fail evidence is now stale for the repaired 120-tick ecology profile, but still explains why release-horizon proof and animal-specialist birth/death diagnostics are required.
+The pre-repair expanded 20-seed 120-tick sweep strengthened this finding: `18/20` seeds ended herbivore-only with no terminal animal-resource mode. The only exceptions were seed `6`, with one terminal scavenger/omnivore, and seed `15`, also with one terminal scavenger/omnivore. That pass/fail evidence is now stale for the repaired 120-tick ecology and release profiles, but still explains why release diagnostics and animal-specialist birth/death metrics are required.
 
-This does not contradict the fixture tests. The tests prove the mechanics can favor scavengers, hunters, herbivores, and omnivores in constructed arenas. The default generated ecology now proves a 120-tick seed-bank floor, but still does not prove release-horizon durability or strong animal-specialist reproduction.
+This does not contradict the fixture tests. The tests prove the mechanics can favor scavengers, hunters, herbivores, and omnivores in constructed arenas. The default generated ecology now proves a 120-tick seed-bank floor and has a passing release profile, but those gates must continue to catch regressions as reproduction and signal semantics change.
 
 Foundation work therefore needs two tracks:
 
@@ -672,9 +694,9 @@ The test suite has important Foundation coverage that the old plan underweighted
 - `test_fixture_low_productivity_cascade_hurts_animal_specialists_more_than_herbivores`;
 - `test_production_readiness_mixed_world_sweep`.
 
-Those are strong subsystem tests. The gap is that release readiness is still judged mostly through summary sweeps and shallow full-replay probes. The causal fixtures need to inform the release gate, and the default-world release profile needs comparable per-role survival, diet, reproduction, and terminal diversity checks.
+Those are strong subsystem tests. The release gate now provides the default-world closure check, but the causal fixtures should continue to inform release thresholds as reproductive and signal behavior changes.
 
-Also, CI currently runs the quick gate in the regular job and the full simulator test/benchmark in the expensive job, but not `sim:gate:release`. Once the release gate is operable, it should be scheduled or explicitly available as the ecological closure check.
+CI currently runs the quick gate in the regular job and the full simulator test/benchmark in the expensive job, but not `sim:gate:release`. Keep release as the explicit ecological closure check; schedule it only if runtime cost is acceptable.
 
 ### M. Derived-State Cost Is Already A Foundation Concern
 
@@ -741,20 +763,30 @@ Before Mind datasets are generated, every numeric replay field that could become
 
 ### S. Sexed Intentional Reproduction Is A Foundation Redesign
 
-Adding male/female agents and making reproduction non-automatic is not a small feature. It changes the environment's core selection pressure and the data contract Mind will learn from.
+Adding sexed recombination, reproductive groups, mate attempts, pheromones, and later X/Y/Z-like reproductive expression is not a small feature. It changes the environment's core selection pressure and the data contract Mind will learn from.
 
-If this is desired before Mind, do it before observability is frozen. Required design decisions:
+This is now explicitly in scope for pre-Mind Foundation cleanup. The detailed architecture is in [`pre-mind-reproductive-and-signal-readiness-plan.md`](pre-mind-reproductive-and-signal-readiness-plan.md). The important direction is not "add fixed male/female from tick zero"; it is staged biology:
 
-- agent state: add `sex` or a more general reproductive role to `Agent`, frames, catalogs, observations, trajectory rows, and replay schema;
-- initialization: deterministic sex assignment, sex-ratio gates, and bootstrapping rules so small populations do not fail by one-sex extinction before ecology is tested;
+- start with current asexual clone-and-mutate behavior;
+- add a reproductive genome module and live reproductive groups;
+- introduce rare facultative same-group two-parent recombination;
+- reserve mate/communication action slots while keeping policy-facing IDs opaque;
+- add pheromone/signal substrates without hardcoded signal meanings;
+- add X/Y/Z-like reproductive expression only after group-stage thresholds;
+- allow rare gated hybridization later, not at the beginning.
+
+Required design decisions:
+
+- agent state: add reproductive group, reproductive-stage/capability flags, and later reproductive expression to `Agent`, frames, catalogs, observations, trajectory rows, and replay schema;
+- initialization: keep Stage 0 asexual and make sexed capability mutation-gated rather than assigning fixed roles to every first organism;
 - action space: add `reproduce`, `mate`, or `court` as explicit actions, with masks and invalid reasons;
-- partner rule: adjacent only versus radius search, one-sided attempt versus mutual readiness, same-tick conflict resolution, and deterministic tie-breaking;
+- partner rule: small-radius search, one-sided attempt versus mutual readiness, same-tick conflict resolution, compatibility scoring, and deterministic tie-breaking;
 - costs: decide whether one or both parents pay energy/hydration/cooldown cost;
-- genetics: decide child genome inheritance from one parent, recombination from two parents, sex-linked traits, and mutation policy;
+- genetics: decide grouped genome inheritance, recombination from two parents, reproductive-module mutation, inbreeding penalties, and later sex-linked/plastic traits;
 - space: keep child placement local, nest-like, or nearest empty tile, and emit blocked reasons for no partner/no space/max population;
-- rewards and analytics: log mate opportunities, attempts, success, blocked attempts, per-sex survival, per-sex reproduction, effective population size, lineage diversity, and inbreeding risk.
+- rewards and analytics: log mate opportunities, attempts, success, blocked attempts, per-expression survival, per-expression reproduction, effective population size, lineage diversity, inbreeding risk, and signal costs.
 
-This also changes the recommended baseline suite. A stay-only, random-valid, heuristic, and simple mate-seeking baseline should be compared before learned policies are trained.
+This also changes the recommended baseline suite. A stay-only, random-valid, heuristic, and later simple mate-attempt baseline should be compared before learned policies are trained. The default heuristic should not emit opaque communication tokens or chase pheromones by human-readable meaning.
 
 ## Executable Guarantees To Add
 
@@ -765,19 +797,19 @@ This is the audit-to-test conversion layer. Each item below should become a unit
 | Parameter combinations | Negative ratios, zero dimensions, zero season length, `initial_agents > max_agents`, `max_age < reproduction.min_age`, negative rates, and conversion rates over 1 were accepted or failed late before the 2026-04-27 hardening slice. | Implemented initial coverage in `test_world_config_rejects_invalid_ranges_early` and `test_world_config_rejects_invalid_cross_field_relationships`; validation now runs before terrain generation and spawn. |
 | Terrain generation | High or negative ratio combinations silently produce worlds far from the config's apparent meaning. | `test_terrain_counts_match_validated_ratio_policy`; impossible terrain requests fail with a config error or documented normalization. |
 | Episode lifecycle | Reusing one world accumulated events, frames, and trajectory records before the 2026-04-27 hardening slice. | Implemented `test_simulation_world_run_is_one_shot`; training wrappers cannot mix episodes by accidentally reusing a `SimulationWorld`. |
-| Long-horizon ecology | Earlier 120-tick and 800-tick probes collapsed to herbivores. The latest quick gate and 20-seed, 120-tick ecology gate now preserve late-window animal-resource modes, but release-horizon proof is still open. | `test_default_seed_sweep_preserves_late_animal_niches` and release-gate thresholds for terminal role/mode diversity, animal-energy share, carrion consumption, animal-specialist reproduction, and no herbivore-only collapse at release horizons. |
-| Stochastic edge cases | Quick seeds and the fixed 20-seed ecology profile now preserve animal-resource modes, but release-horizon and randomized nightly behavior are still unproven after the policy/ecology repair. | Seed-bank tests over fixed rare seeds and randomized nightly seeds report extinctions, one-role collapse, cap saturation, no-animal-mode collapse, no-animal-consumption seeds, and animal-specialist birth/death ratios. |
+| Long-horizon ecology | Earlier 120-tick and 800-tick probes collapsed to herbivores. The latest quick, ecology, and release gates now pass, but reproductive/signal changes must not regress this. | `test_default_seed_sweep_preserves_late_animal_niches` and release-gate thresholds for terminal role/mode diversity, animal-energy share, carrion consumption, animal-specialist reproduction, and no herbivore-only collapse at release horizons. |
+| Stochastic edge cases | Quick seeds, the fixed 20-seed ecology profile, and the release profile now preserve enough animal-resource behavior to pass. Randomized nightly behavior remains future hardening. | Seed-bank tests over fixed rare seeds and randomized nightly seeds report extinctions, one-role collapse, cap saturation, no-animal-mode collapse, no-animal-consumption seeds, and animal-specialist birth/death ratios. |
 | Hydrology + hazards + reproduction + predation | Quick and ecology gates now show survival, births, hazards, attacks, kills, fresh-kill consumption, and terminal animal-resource modes in generated-world runs. Stress and release-scale variants still need promotion into gates. | `test_interaction_stress_preserves_cross_system_signals`; gate requires nonzero hydrology pressure, hazard damage, reproduction opportunity, predation, and late-window animal-resource survival in the same generated-world runs. |
 | Performance cliffs | Saturated 40-tick run took `13.5641s`; huge diffusion radius 20-tick run took `3.7446s`; long summary runs hit timeouts. | `test_summary_rollout_step_budget`, `test_biotic_diffusion_radius_budget`, and benchmark CI with per-scenario subprocess RSS/time budgets. |
 | Schema drift | Full replay shapes matched declared fields, but species centroids were normalized under raw gene keys; trajectory lacked observation payloads and had weak outcomes before the 2026-04-27 action/observation contract slices. | Implemented centroid-unit coverage in `test_species_centroid_units_are_explicit`; observation payload, action outcome, reward-bound, policy metadata, and real resolution-conflict coverage now exist in runtime contract tests. |
 | Viewer/replay trust boundary | Viewer validates only shallow shape. | Malformed-replay smoke tests for map dimensions, surface shapes, agent row length/types, frame tick order, catalog units, and trajectory rows. |
-| Future sexed reproduction | Current automatic asexual reproduction touches state, actions, rewards, gates, replay, taxonomy, and analytics. | `test_sexed_reproduction_state_schema`, `test_mate_action_mask_and_invalid_reasons`, `test_partner_conflict_resolution_is_deterministic`, `test_recombination_and_mutation_contract`, and `test_sex_ratio_does_not_silently_dead_end_population`. |
+| Future sexed reproduction | Current automatic asexual reproduction touches state, actions, rewards, gates, replay, taxonomy, and analytics. | `test_reproductive_group_state_schema`, `test_mate_action_mask_and_invalid_reasons`, `test_partner_conflict_resolution_is_deterministic`, `test_recombination_and_mutation_contract`, `test_inbreeding_penalty_is_recorded`, and `test_x_y_z_stage_does_not_silently_dead_end_population`. |
 
 These guarantees should be implemented as failing tests only when the corresponding fix is in the same change set. Until then, they are acceptance criteria in this plan rather than red CI.
 
 ## New Plan Of Action
 
-This order is intentional. Do not start Mind v1 after only wiring observation and trajectory contracts. First repair and prove the Foundation ecology, implement any major environment semantics such as sexed intentional reproduction, then build observability around that stable Foundation, then train Mind.
+This order is intentional. Do not start Mind v1 after only wiring observation and trajectory contracts. The release gate is now a passing regression boundary; next implement the major reproductive and signal semantics in Foundation, keep observability aligned with that stable environment, then train Mind.
 
 ### Phase 0: Complete The Audit And Fix Measurement
 
@@ -851,7 +883,7 @@ Goal: make claims about readiness trustworthy before tuning or building Mind sur
 
 Goal: the environment should sustain learnable, nontrivial pressure before Mind-specific observability is treated as the main project.
 
-1. Treat the old herbivore-only release result as a Foundation failure until disproven at release scale. The quick-profile version was repaired on 2026-04-27, but release-horizon proof is still required:
+1. Keep the release gate as the regression boundary. The old herbivore-only release result was disproven by the 2026-04-30 release pass, but every reproductive/signal behavior change must preserve:
    - terminal trophic role diversity;
    - terminal meat-mode diversity;
    - carrion and fresh-kill availability/consumption;
@@ -889,19 +921,21 @@ Goal: the environment should sustain learnable, nontrivial pressure before Mind-
    - alive-only trait drift;
    - whether species/ecotype splits correspond to ecological differentiation.
 
-6. Decide reproduction design before observability:
-   - keep automatic asexual reproduction for Mind v1 only if indirect reproductive control is intentional;
-   - if male/female and intentional reproduction are desired, implement them here before freezing observation and trajectory schemas;
-   - add sex/reproductive role to agent state, replay, observations, analytics, and gates;
-   - add explicit reproduction/mate actions, action masks, invalid reasons, and conflict resolution;
-   - emit blocked-reproduction events for no partner, partner not ready, same-sex/role mismatch, local crowding, and global saturation.
+6. Implement the reproductive/signal design before Mind:
+   - keep Stage 0 automatic asexual reproduction as the starting behavior;
+   - add reproductive groups and a reproductive genome module;
+   - add rare facultative same-group two-parent recombination;
+   - reserve `mate` and communication action slots with opaque policy IDs;
+   - add pheromone/signal substrate fields with intensity, range, duration, decay, and cost;
+   - keep human-readable signal meanings out of policy observations;
+   - emit blocked-reproduction events for no partner, partner not ready, incompatible partner, local crowding, and global saturation.
 
 7. Normalize or document reproduction economics:
    - decide whether parent reproduction cost should be absolute or genome-scaled;
    - decide whether one or both parents pay costs under sexed reproduction;
    - define recombination and mutation semantics if two parents contribute genomes;
    - report reproduction opportunity, success, and blocked attempts by role and lineage;
-   - report sex/reproductive-role ratio, per-sex survival, per-sex reproduction success, effective population size, and one-sex extinction risk;
+   - report reproductive-expression ratio, per-expression survival, per-expression reproduction success, effective population size, and late-stage role-extinction risk;
    - include reproduction pressure in release analytics.
 
 ### Phase 2: Prove Foundation Causality And Efficiency
@@ -928,11 +962,12 @@ Goal: show the environment is causal, stable, and fast enough, not only richly i
    - simple predator/scavenger oracle;
    - if sexed reproduction is added, simple mate-seeking/reproductive-timing oracle.
 
-4. Make the release gate operable:
+4. Keep the release gate operable after new behavior lands:
    - progress output before and after each seed/probe;
    - per-scenario timing in the report;
    - incremental JSON writes so partial progress is inspectable;
-   - timeout and failure messages for slow scenarios.
+   - timeout and failure messages for slow scenarios;
+   - no silent replay-size or trajectory-memory regression.
 
 5. Make release gate the ecological source of truth:
    - fail if terminal release populations collapse to one trophic role;
@@ -942,7 +977,7 @@ Goal: show the environment is causal, stable, and fast enough, not only richly i
    - require per-role birth/death/survival metrics;
    - require alive-only trait drift summaries.
 
-6. Add the release gate to scheduled or opt-in CI after it is fast and observable enough.
+6. Keep the release gate available as the opt-in ecological closure check; consider scheduled CI only if cost becomes acceptable.
 
 7. Define explicit release thresholds from distributions, not from a desired narrative.
 
@@ -1066,37 +1101,10 @@ Entry criteria:
 
 ## Bottom Line
 
-2026-04-28 release-horizon animal-mode slice:
+As of 2026-04-30, the release gate, full tests, goldens, viewer smoke, and full benchmark pass. Compact replay serialization and streaming trajectory output are coherent enough to move beyond release-gate hardening.
 
-- Added release diagnostics for meat-mode persistence:
-  - last alive tick by meat mode and seed;
-  - deaths by meat mode, tick band, and cause;
-  - parent/child births by meat mode and tick band;
-  - per-seed animal-resource opportunity rollups;
-  - terminal biological blockers only for modes still alive at terminal.
-- Repaired a concrete scavenger policy failure:
-  - urgent water still has priority;
-  - starving scavengers now prefer nearby actual carrion/fresh-kill over plant fallback;
-  - desperate animal modes ignore weak signal-only carrion and forage locally rather than chase out-of-range scent;
-  - long-distance carrion pursuit is capped by mode-specific distance and hydration checks.
-- Validation passed:
-  - `PYTHONHASHSEED=0 PYTHONPATH=python python3 -m compileall -q python/evolution_sim python/tests`
-  - focused policy/evaluation/gate tests
-  - `npm run sim:test` (120 tests)
-  - refreshed and verified `npm run sim:golden`
-  - `npm run sim:gate:quick -- --fail-on-blockers`
-  - `npm run sim:gate:ecology -- --fail-on-blockers`
-  - `npm run sim:bench:quick`
-  - `git diff --check`
-- Release gate remains blocked, but narrower:
-  - blockers dropped from 18 to 13 versus the prior release run;
-  - terminal animal modes now persist in multiple release seeds: seed 7 has hunter and mixed, seed 17 has hunter, seed 29 has mixed;
-  - seed 3 and seed 11 still end herbivore-only with no terminal animal modes;
-  - scavenger still has no terminal presence in release seeds;
-  - aggregate parent births improved for mixed (`392`) and hunter (`50`), but scavenger parent births remain effectively absent (`1`);
-  - replay payload size remains a secondary warning: speciation probe is `411627018` bytes versus the `260000000` byte budget.
-- Do not run `npm run sim:test:full` or `npm run sim:bench` yet. The next Foundation slice should target scavenger persistence specifically: resource/action reachability versus BFS reachability, occupied-carcass access, and early scavenger energy deaths in seeds 3 and 11.
+The old plan was directionally solid but stale. The current code has now fixed many hygiene findings and turned the first-pass Mind scaffolding into real contracts: the default controller path uses frozen observations, trajectory collection can stream without full replay, rewards/action outcomes are versioned, quick plus 120-tick Foundation ecology no longer collapse to herbivores, and release validation now completes without blockers or warnings.
 
-The old plan was directionally solid but stale. The current code has now fixed many hygiene findings and turned the first-pass Mind scaffolding into real contracts: the default controller path uses frozen observations, trajectory collection can stream without full replay, rewards/action outcomes are versioned, and quick plus 120-tick Foundation ecology no longer collapse to herbivores. The remaining risk is release-scale proof: Foundation ecology is not yet proven durable across longer horizons, animal-specialist reproduction is still weak, and major environment semantics like sexed intentional reproduction would still invalidate the contracts if added later.
+The active blocker is semantic: the desired world includes staged sexed recombination, live reproductive groups, pheromone/signal fields, opaque communication tokens, reserved mate/communication action slots, and future learned-state inheritance metadata. Implement that work inside Foundation before Mind v1. Starting Mind first would freeze datasets around automatic single-parent reproduction and a world with no signal substrate, forcing either a rewrite or a learned controller trained on the wrong environment.
 
-Do the remaining Phase 1 and Phase 2 work before Mind v1. If male/female and non-automatic reproduction are part of the desired world, implement them inside those Foundation phases before observability freeze. Then harden the existing pre-Mind contracts against release-scale behavior. Starting Mind before those gates pass will create data that looks structured but may still teach the wrong ecology.
+The next practical step is the behavior-preserving scaffolding slice from [`pre-mind-reproductive-and-signal-readiness-plan.md`](pre-mind-reproductive-and-signal-readiness-plan.md): add the contracts, reserved slots, inert genome/reproductive metadata, and no-op signal surfaces without changing current simulator behavior. Then land each biological behavior slice with matching tests, metrics, replay/viewer semantics, gates, and intentional golden updates.

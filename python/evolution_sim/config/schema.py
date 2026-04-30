@@ -238,6 +238,11 @@ class CarcassConfig:
     decay_heat_factor: float = 0.014
     decay_moisture_factor: float = 0.008
     healing_fraction: float = 0.1
+    fresh_kill_hunter_healing_multiplier: float = 1.8
+    fresh_kill_hydration_fraction: float = 0.1
+    hunter_carcass_hydration_fraction: float = 0.08
+    hunter_carcass_hydration_max_ratio: float = 0.5
+    mixed_carcass_hydration_fraction: float = 0.12
     scavenger_healing_multiplier: float = 3.0
     scavenger_hydration_fraction: float = 0.18
     max_tile_deposits: int = 8
@@ -258,6 +263,26 @@ class CarcassConfig:
         _check_nonnegative("carcasses.decay_heat_factor", self.decay_heat_factor)
         _check_nonnegative("carcasses.decay_moisture_factor", self.decay_moisture_factor)
         _check_fraction("carcasses.healing_fraction", self.healing_fraction)
+        _check_positive(
+            "carcasses.fresh_kill_hunter_healing_multiplier",
+            self.fresh_kill_hunter_healing_multiplier,
+        )
+        _check_nonnegative(
+            "carcasses.fresh_kill_hydration_fraction",
+            self.fresh_kill_hydration_fraction,
+        )
+        _check_nonnegative(
+            "carcasses.hunter_carcass_hydration_fraction",
+            self.hunter_carcass_hydration_fraction,
+        )
+        _check_fraction(
+            "carcasses.hunter_carcass_hydration_max_ratio",
+            self.hunter_carcass_hydration_max_ratio,
+        )
+        _check_nonnegative(
+            "carcasses.mixed_carcass_hydration_fraction",
+            self.mixed_carcass_hydration_fraction,
+        )
         _check_positive(
             "carcasses.scavenger_healing_multiplier",
             self.scavenger_healing_multiplier,

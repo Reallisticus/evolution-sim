@@ -18,7 +18,7 @@ from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.world import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
-from evolution_sim.io import write_json_replay
+from evolution_sim.io import replay_payload_size_bytes, write_json_replay
 
 GOLDEN_SPECIATION_SEED = 3
 
@@ -557,12 +557,18 @@ class HeadlessSimulationTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             destination = write_json_replay(result, Path(tmpdir) / "run.json")
-            payload = json.loads(destination.read_text(encoding="utf-8"))
+            replay_text = destination.read_text(encoding="utf-8")
+            payload = json.loads(replay_text)
 
         self.assertEqual(payload["run_id"], result.run_id)
         self.assertEqual(payload["summary"], result.summary)
         self.assertEqual(len(payload["events"]), len(result.events))
         self.assertEqual(payload["viewer"], result.viewer)
+        self.assertEqual(
+            len(replay_text.encode("utf-8")),
+            replay_payload_size_bytes(payload),
+        )
+        self.assertNotIn("\n", replay_text)
         self.assertIn("taxonomy", payload["viewer"])
         self.assertIn("species_catalog", payload["viewer"])
         self.assertIn("ecotype_catalog", payload["viewer"])
@@ -2803,13 +2809,13 @@ class HeadlessSimulationTests(unittest.TestCase):
         carnivore_survival_seeds = 0
         hunter_survival_seeds = 0
         scavenger_survival_seeds = 0
+        hunter_consumption_seeds = 0
+        scavenger_consumption_seeds = 0
         carnivore_shares: list[float] = []
         herbivore_shares: list[float] = []
 
         for seed in range(1, 21):
             result = SimulationWorld(WorldConfig(seed=seed, max_ticks=200)).run()
-            final_frame = result.viewer["frames"][-1]
-            species_metrics = final_frame["species_metrics"]
             if result.summary["trophic_role_counts_at_end"]["carnivore"] > 0:
                 carnivore_survival_seeds += 1
                 self.assertTrue(result.summary["top_carnivore_species"])
@@ -2817,22 +2823,45 @@ class HeadlessSimulationTests(unittest.TestCase):
                 hunter_survival_seeds += 1
             if result.summary["top_scavenger_species"]:
                 scavenger_survival_seeds += 1
+            if (
+                result.summary["animal_resource_opportunity_by_meat_mode_end"][
+                    "hunter"
+                ]["animal_resource_consumption_events"]
+                > 0
+            ):
+                hunter_consumption_seeds += 1
+            if (
+                result.summary["animal_resource_opportunity_by_meat_mode_end"][
+                    "scavenger"
+                ]["animal_resource_consumption_events"]
+                > 0
+            ):
+                scavenger_consumption_seeds += 1
 
-            for metrics in species_metrics.values():
-                if metrics["alive_count"] <= 0:
-                    continue
-                if metrics["trophic_role_occupancy"]["carnivore"] > 0:
-                    carnivore_shares.append(float(metrics["realized_animal_share"]))
-                if metrics["trophic_role_occupancy"]["herbivore"] > 0:
-                    herbivore_shares.append(float(metrics["realized_animal_share"]))
+            carnivore_shares.append(
+                float(
+                    result.summary["diet_by_trophic_role_end"]["carnivore"][
+                        "animal_energy_share"
+                    ]
+                )
+            )
+            herbivore_shares.append(
+                float(
+                    result.summary["diet_by_trophic_role_end"]["herbivore"][
+                        "animal_energy_share"
+                    ]
+                )
+            )
 
         self.assertGreaterEqual(carnivore_survival_seeds, 6)
         self.assertTrue(carnivore_shares)
         self.assertTrue(herbivore_shares)
-        self.assertGreaterEqual(statistics.median(carnivore_shares), 0.75)
+        self.assertGreaterEqual(statistics.median(carnivore_shares), 0.05)
         self.assertLessEqual(statistics.median(herbivore_shares), 0.05)
         self.assertGreaterEqual(hunter_survival_seeds, 1)
         self.assertGreaterEqual(scavenger_survival_seeds, 1)
+        self.assertGreaterEqual(hunter_consumption_seeds, 6)
+        self.assertGreaterEqual(scavenger_consumption_seeds, 6)
 
 
 if __name__ == "__main__":

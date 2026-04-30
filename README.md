@@ -68,6 +68,19 @@ npm run sim:gate:release -- --output output/evaluations/foundation-release.json
 Use the release profile at gate boundaries; it includes the long summary-only
 viability sweep and the full replay speciation probe.
 
+## Pre-Mind Readiness Plan
+
+The current Foundation phase includes reproductive and signal cleanup before
+Mind v1. The architecture plan is in
+[`docs/pre-mind-reproductive-and-signal-readiness-plan.md`](docs/pre-mind-reproductive-and-signal-readiness-plan.md).
+
+The plan keeps the policy surface numeric and opaque while preparing live
+reproductive groups, staged sexed recombination, pheromone/signal fields,
+trait-gated communication tokens, reserved mate/communication action slots, and
+future bounded learned-state inheritance metadata. These are Foundation
+contracts, not learned-controller work. Do not expose human-readable action
+names, species labels, or signal meanings to the Mind.
+
 ## Test
 
 ```bash
