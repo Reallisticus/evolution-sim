@@ -50,6 +50,11 @@ def _check_positive(name: str, value: float) -> None:
     _check_number(name, value, minimum=0.0, inclusive_minimum=False)
 
 
+def _check_bool(name: str, value: bool) -> None:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+
+
 @dataclass(slots=True)
 class ClimateConfig:
     season_length: int = 90
@@ -495,6 +500,46 @@ class DietMatchingConfig:
 
 
 @dataclass(slots=True)
+class SignalConfig:
+    enabled: bool = True
+    reproductive_signal_channels: int = 1
+    communication_token_count: int = 4
+    communication_profiles_per_token: int = 2
+    max_signal_radius: int = 8
+    max_duration_ticks: int = 24
+    max_intensity: float = 1.0
+    base_emission_energy_cost: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _check_bool("signals.enabled", self.enabled)
+        _check_integer(
+            "signals.reproductive_signal_channels",
+            self.reproductive_signal_channels,
+            minimum=1,
+        )
+        _check_integer(
+            "signals.communication_token_count",
+            self.communication_token_count,
+            minimum=1,
+        )
+        _check_integer(
+            "signals.communication_profiles_per_token",
+            self.communication_profiles_per_token,
+            minimum=1,
+        )
+        _check_integer("signals.max_signal_radius", self.max_signal_radius, minimum=0)
+        _check_integer("signals.max_duration_ticks", self.max_duration_ticks, minimum=0)
+        _check_nonnegative("signals.max_intensity", self.max_intensity)
+        _check_nonnegative(
+            "signals.base_emission_energy_cost",
+            self.base_emission_energy_cost,
+        )
+
+
+@dataclass(slots=True)
 class WorldConfig:
     seed: int = 7
     width: int = 48
@@ -521,6 +566,7 @@ class WorldConfig:
     taxonomy: TaxonomyConfig = field(default_factory=TaxonomyConfig)
     reproduction: ReproductionConfig = field(default_factory=ReproductionConfig)
     diet_matching: DietMatchingConfig = field(default_factory=DietMatchingConfig)
+    signals: SignalConfig = field(default_factory=SignalConfig)
     climate: ClimateConfig = field(default_factory=ClimateConfig)
 
     def __post_init__(self) -> None:
@@ -570,6 +616,7 @@ class WorldConfig:
             self.taxonomy,
             self.reproduction,
             self.diet_matching,
+            self.signals,
             self.climate,
         )
         for nested_config in nested_configs:

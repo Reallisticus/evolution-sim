@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from random import Random
 
 
@@ -28,6 +28,18 @@ GENE_LIMITS: dict[str, tuple[float, float]] = {
     "mutation_scale": (0.01, 0.25),
 }
 
+REPRODUCTIVE_GENE_LIMITS: dict[str, tuple[float, float]] = {
+    "sexual_reproduction_drive": (0.0, 1.0),
+    "recombination_affinity": (0.0, 1.0),
+    "role_differentiation_drive": (0.0, 1.0),
+    "sex_expression_bias": (-1.0, 1.0),
+    "sex_plasticity": (0.0, 1.0),
+    "hybridization_tolerance": (0.0, 1.0),
+    "fecundity_potential": (0.0, 1.0),
+    "signal_emission_bias": (0.0, 1.0),
+    "signal_sensitivity": (0.0, 1.0),
+}
+
 
 def _clamp(name: str, value: float) -> float:
     lower, upper = GENE_LIMITS[name]
@@ -36,6 +48,22 @@ def _clamp(name: str, value: float) -> float:
 
 def _mix(lower: float, upper: float, share: float) -> float:
     return lower + (upper - lower) * share
+
+
+@dataclass(frozen=True, slots=True)
+class ReproductiveGenome:
+    sexual_reproduction_drive: float = 0.0
+    recombination_affinity: float = 0.0
+    role_differentiation_drive: float = 0.0
+    sex_expression_bias: float = 0.0
+    sex_plasticity: float = 0.0
+    hybridization_tolerance: float = 0.0
+    fecundity_potential: float = 0.0
+    signal_emission_bias: float = 0.0
+    signal_sensitivity: float = 0.0
+
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -61,6 +89,7 @@ class Genome:
     heat_tolerance: float
     reproduction_threshold: float
     mutation_scale: float
+    reproductive: ReproductiveGenome = field(default_factory=ReproductiveGenome)
 
     @classmethod
     def sample_initial(cls, rng: Random) -> "Genome":
@@ -263,7 +292,8 @@ class Genome:
                 "mutation_scale",
                 self.mutation_scale + rng.gauss(0.0, sigma * 0.15),
             ),
+            reproductive=self.reproductive,
         )
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)

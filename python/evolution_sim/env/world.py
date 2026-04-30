@@ -54,6 +54,7 @@ from evolution_sim.env.runtime.state import (
     SimulationWorldResult,
     Tile,
     TrophicProfile,
+    empty_mind_inheritance_metadata,
 )
 from evolution_sim.env.taxonomy import REPLAY_TAXONOMY_MODE
 from evolution_sim.genome import Genome, SpeciesMember, SpeciesRecord
@@ -930,6 +931,10 @@ class SimulationWorld:
                 recent_carcass_energy=0.0,
                 genome_vector=genome_vector(genome),
                 genome=genome,
+                reproductive_group_id=self.next_agent_id,
+                reproductive_stage="stage0_asexual",
+                reproductive_expression="asexual",
+                mind_inheritance_metadata=empty_mind_inheritance_metadata(),
             )
             self._place_agent(agent)
             self.next_agent_id += 1
@@ -5569,6 +5574,10 @@ class SimulationWorld:
             recent_carcass_energy=0.0,
             genome_vector=genome_vector(child_genome),
             genome=child_genome,
+            reproductive_group_id=parent.reproductive_group_id or parent.lineage_id,
+            reproductive_stage=parent.reproductive_stage,
+            reproductive_expression=parent.reproductive_expression,
+            mind_inheritance_metadata=empty_mind_inheritance_metadata(),
         )
         parent.energy -= self._reproduction_energy_cost(parent_profile)
         parent.last_reproduction_tick = self.tick
@@ -6496,9 +6505,13 @@ class SimulationWorld:
                     "agent_id": agent.agent_id,
                     "parent_id": agent.parent_id,
                     "lineage_id": agent.lineage_id,
+                    "reproductive_group_id": agent.reproductive_group_id,
+                    "reproductive_stage": agent.reproductive_stage,
+                    "reproductive_expression": agent.reproductive_expression,
                     "birth_tick": agent.birth_tick,
                     "death_tick": agent.death_tick,
                     "genome": agent.genome.to_dict(),
+                    "mind_inheritance": dict(agent.mind_inheritance_metadata),
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             },

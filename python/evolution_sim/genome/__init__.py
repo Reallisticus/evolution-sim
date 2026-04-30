@@ -1,4 +1,4 @@
-from .schema import Genome
+from .schema import Genome, ReproductiveGenome
 from .species import SpeciesMember, SpeciesRecord
 
-__all__ = ["Genome", "SpeciesMember", "SpeciesRecord"]
+__all__ = ["Genome", "ReproductiveGenome", "SpeciesMember", "SpeciesRecord"]

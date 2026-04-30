@@ -18,6 +18,7 @@ from evolution_sim.config import (
     HazardConfig,
     ReproductionConfig,
     WorldConfig,
+    SignalConfig,
 )
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.contracts import (
@@ -28,8 +29,21 @@ from evolution_sim.env.contracts import (
     VIEWER_MAP_KEYS,
 )
 from evolution_sim.env.runtime.biotic import diffuse_biotic_field, diffuse_sparse_biotic_field
+from evolution_sim.env.runtime.action_contract import (
+    ACTION_CONTRACT_VERSION,
+    ACTIVE_ACTION_NAMES,
+    MATE_ACTION,
+    RESERVED_ACTION_NAMES,
+    action_contract,
+)
 from evolution_sim.env.runtime.action_space import build_action_mask
-from evolution_sim.env.runtime.state import Agent, CarcassDeposit, SimulationWorldResult
+from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
+from evolution_sim.env.runtime.state import (
+    MIND_INHERITANCE_PLACEHOLDER_VERSION,
+    Agent,
+    CarcassDeposit,
+    SimulationWorldResult,
+)
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_ENCODER_VERSION,
     OBSERVATION_INPUT_DTYPE,
@@ -1986,6 +2000,15 @@ class RuntimeContractTests(unittest.TestCase):
             contract["policy_input"]["encoder_version"],
             OBSERVATION_ENCODER_VERSION,
         )
+        self.assertEqual(
+            contract["action_contract"]["schema_version"],
+            ACTION_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            contract["signal_contract"]["schema_version"],
+            SIGNAL_CONTRACT_VERSION,
+        )
+        self.assertFalse(contract["mind_inheritance_placeholder"]["policy_visible"])
         self.assertEqual(contract["policy_input"]["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
         self.assertEqual(encoded["decoded_dtype"], OBSERVATION_INPUT_DTYPE)
         self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
@@ -1996,6 +2019,78 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
         json.dumps(observation)
         json.dumps(encoded)
+
+    def test_action_contract_reserves_future_slots_without_enabling_them(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        mask = build_action_mask(world, agent)
+        contract = action_contract()
+
+        self.assertEqual(contract["schema_version"], ACTION_CONTRACT_VERSION)
+        self.assertEqual(contract["mate_action_key"], MATE_ACTION)
+        for action in ACTIVE_ACTION_NAMES:
+            self.assertIn(action, mask)
+        for action in RESERVED_ACTION_NAMES:
+            self.assertIn(action, mask)
+            self.assertFalse(mask[action], msg=action)
+            self.assertIn(action, contract["reserved_action_keys"])
+
+        moved, outcome = world._resolve_action_with_outcome(
+            agent,
+            MATE_ACTION,
+            observation_action_mask=mask,
+            resolution_action_mask=mask,
+        )
+
+        self.assertFalse(moved)
+        self.assertEqual(outcome["resolved_action"], "stay")
+        self.assertFalse(outcome["observation_action_valid"])
+        self.assertFalse(outcome["resolution_action_valid"])
+        self.assertEqual(
+            outcome["invalid_reason"],
+            "not_in_observation_or_resolution_mask",
+        )
+
+    def test_pre_mind_signal_and_reproductive_scaffold_is_inert(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(world, agent)
+        decoded = decode_observation_input(encode_observation_input(observation))
+
+        self.assertEqual(agent.reproductive_group_id, agent.lineage_id)
+        self.assertEqual(agent.reproductive_stage, "stage0_asexual")
+        self.assertEqual(agent.reproductive_expression, "asexual")
+        self.assertEqual(
+            agent.mind_inheritance_metadata["schema_version"],
+            MIND_INHERITANCE_PLACEHOLDER_VERSION,
+        )
+        self.assertFalse(agent.mind_inheritance_metadata["inherited_state"])
+        self.assertTrue(
+            all(value == 0.0 for value in agent.genome.reproductive.to_dict().values())
+        )
+
+        self_state = observation["self"]
+        self.assertEqual(self_state["reproductive_stage"], "stage0_asexual")
+        self.assertFalse(self_state["sexual_reproduction_unlocked"])
+        self.assertEqual(self_state["reproductive_signal"], 0.0)
+        self.assertEqual(self_state["communication_signal"], 0.0)
+        self.assertFalse(self_state["mind_inheritance_available"])
+        self.assertTrue(
+            all(
+                cell["reproductive_signal"] == 0.0
+                and cell["communication_signal"] == 0.0
+                for cell in observation["local_patch"]
+            )
+        )
+        self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
+
+    def test_signal_config_rejects_invalid_scaffold_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "signals.enabled"):
+            SignalConfig(enabled=1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "signals.communication_token_count"):
+            SignalConfig(communication_token_count=0)
+        with self.assertRaisesRegex(ValueError, "signals.max_signal_radius"):
+            SignalConfig(max_signal_radius=-1)
 
     def test_full_replay_records_mind_trajectory_contract(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
@@ -2011,6 +2106,12 @@ class RuntimeContractTests(unittest.TestCase):
             POLICY_INTERFACE_VERSION,
         )
         self.assertEqual(trajectory["policy_interface_version"], POLICY_INTERFACE_VERSION)
+        self.assertEqual(trajectory["action_contract_version"], ACTION_CONTRACT_VERSION)
+        self.assertEqual(
+            result.summary["mind_contracts"]["action_contract_version"],
+            ACTION_CONTRACT_VERSION,
+        )
+        self.assertIn(MATE_ACTION, trajectory["action_contract"]["reserved_action_keys"])
         self.assertEqual(
             trajectory["observation_contract"]["schema_version"],
             OBSERVATION_SCHEMA_VERSION,
@@ -2053,6 +2154,7 @@ class RuntimeContractTests(unittest.TestCase):
         )
         self.assertIn(first_record["requested_action"], first_record["action_mask"])
         self.assertIn(first_record["requested_action"], first_record["resolution_action_mask"])
+        self.assertFalse(first_record["action_mask"][MATE_ACTION])
         self.assertEqual(first_record["policy_id"], OBSERVATION_HEURISTIC_POLICY_ID)
         self.assertEqual(
             first_record["policy_version"],

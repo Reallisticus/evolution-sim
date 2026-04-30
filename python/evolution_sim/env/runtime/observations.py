@@ -9,8 +9,14 @@ import struct
 from typing import Any
 import zlib
 
+from evolution_sim.env.runtime.action_contract import action_contract
 from evolution_sim.env.runtime.action_space import ACTION_NAMES, build_action_mask
-from evolution_sim.env.runtime.state import Agent
+from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_SIGNAL_FIELD,
+    REPRODUCTIVE_SIGNAL_FIELD,
+    signal_contract,
+)
+from evolution_sim.env.runtime.state import MIND_INHERITANCE_PLACEHOLDER_VERSION, Agent
 
 OBSERVATION_SCHEMA_VERSION = "mind_observation_v2"
 OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v1"
@@ -40,6 +46,11 @@ SELF_FIELDS: tuple[str, ...] = (
     "hazard_level",
     "tile_vegetation",
     "tile_recovery_debt",
+    "reproductive_stage",
+    "sexual_reproduction_unlocked",
+    "reproductive_signal",
+    "communication_signal",
+    "mind_inheritance_available",
 )
 PATCH_FIELDS: tuple[str, ...] = (
     "dx",
@@ -60,6 +71,8 @@ PATCH_FIELDS: tuple[str, ...] = (
     "prey_biomass",
     "carrion_signal",
     "predator_risk",
+    "reproductive_signal",
+    "communication_signal",
 )
 NAVIGATION_TARGETS: tuple[str, ...] = ("water", "plant", "carrion", "prey")
 NAVIGATION_FIELDS: tuple[str, ...] = ("dx", "dy", "distance", "strength")
@@ -84,6 +97,11 @@ SELF_INPUT_FIELDS: tuple[str, ...] = (
     "hazard_level",
     "tile_vegetation",
     "tile_recovery_debt",
+    "reproductive_stage_code",
+    "sexual_reproduction_unlocked",
+    "reproductive_signal",
+    "communication_signal",
+    "mind_inheritance_available",
 )
 PATCH_INPUT_FIELDS: tuple[str, ...] = (
     "dx",
@@ -104,6 +122,8 @@ PATCH_INPUT_FIELDS: tuple[str, ...] = (
     "prey_biomass",
     "carrion_signal",
     "predator_risk",
+    "reproductive_signal",
+    "communication_signal",
 )
 NAVIGATION_INPUT_FIELDS: tuple[str, ...] = (
     "dx",
@@ -123,6 +143,13 @@ TERRAIN_VOCAB: tuple[str, ...] = (
 OCCUPANT_VOCAB: tuple[str, ...] = ("none", "self", "agent")
 TROPHIC_ROLE_VOCAB: tuple[str, ...] = ("none", "herbivore", "omnivore", "carnivore")
 MEAT_MODE_VOCAB: tuple[str, ...] = ("none", "scavenger", "hunter", "mixed")
+REPRODUCTIVE_STAGE_VOCAB: tuple[str, ...] = (
+    "stage0_asexual",
+    "stage1_facultative_sex",
+    "stage2_proto_roles",
+    "stage3_x_y_z",
+    "stage4_hybridization",
+)
 WATER_ACCESS_REASON_VOCAB: tuple[str, ...] = (
     "none",
     "adjacent_water",
@@ -143,6 +170,7 @@ ENUM_VOCABS: dict[str, tuple[str, ...]] = {
     "occupant": OCCUPANT_VOCAB,
     "trophic_role": TROPHIC_ROLE_VOCAB,
     "meat_mode": MEAT_MODE_VOCAB,
+    "reproductive_stage": REPRODUCTIVE_STAGE_VOCAB,
     "water_access_reason": WATER_ACCESS_REASON_VOCAB,
     "hazard_type": HAZARD_TYPE_VOCAB,
     "ecology_state": ECOLOGY_STATE_VOCAB,
@@ -167,6 +195,12 @@ def observation_contract() -> dict[str, object]:
         "navigation_targets": list(NAVIGATION_TARGETS),
         "navigation_fields": list(NAVIGATION_FIELDS),
         "action_names": list(ACTION_NAMES),
+        "action_contract": action_contract(),
+        "signal_contract": signal_contract(),
+        "mind_inheritance_placeholder": {
+            "schema_version": MIND_INHERITANCE_PLACEHOLDER_VERSION,
+            "policy_visible": False,
+        },
         "enum_vocabs": {
             name: list(values) for name, values in sorted(ENUM_VOCABS.items())
         },
@@ -222,6 +256,13 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
             "hazard_level": _round(hazard_level),
             "tile_vegetation": _round(tile.vegetation),
             "tile_recovery_debt": _round(tile.recovery_debt),
+            "reproductive_stage": agent.reproductive_stage,
+            "sexual_reproduction_unlocked": agent.reproductive_stage != "stage0_asexual",
+            REPRODUCTIVE_SIGNAL_FIELD: 0.0,
+            COMMUNICATION_SIGNAL_FIELD: 0.0,
+            "mind_inheritance_available": bool(
+                agent.mind_inheritance_metadata.get("inherited_state", False)
+            ),
         },
         "local_patch": [
             _patch_cell(world, agent, dx, dy, biotic_state)
@@ -332,6 +373,8 @@ def _patch_cell(
             "prey_biomass": 0.0,
             "carrion_signal": 0.0,
             "predator_risk": 0.0,
+            REPRODUCTIVE_SIGNAL_FIELD: 0.0,
+            COMMUNICATION_SIGNAL_FIELD: 0.0,
         }
 
     tile = world.grid[y][x]
@@ -362,6 +405,8 @@ def _patch_cell(
         "prey_biomass": _round(biotic_state.prey_biomass[y][x]),
         "carrion_signal": _round(biotic_state.carrion[y][x]),
         "predator_risk": _round(biotic_state.predator_risk[y][x]),
+        REPRODUCTIVE_SIGNAL_FIELD: 0.0,
+        COMMUNICATION_SIGNAL_FIELD: 0.0,
     }
 
 
@@ -617,6 +662,11 @@ def _self_input_values(self_state: dict[str, object]) -> list[float]:
         _unit_value(self_state["hazard_level"]),
         _unit_value(self_state["tile_vegetation"]),
         _unit_value(self_state["tile_recovery_debt"]),
+        _enum_value(self_state["reproductive_stage"], REPRODUCTIVE_STAGE_VOCAB),
+        _bool_value(self_state["sexual_reproduction_unlocked"]),
+        _nonnegative_signal_value(self_state[REPRODUCTIVE_SIGNAL_FIELD]),
+        _nonnegative_signal_value(self_state[COMMUNICATION_SIGNAL_FIELD]),
+        _bool_value(self_state["mind_inheritance_available"]),
     ]
 
 
@@ -640,6 +690,8 @@ def _patch_input_values(cell: dict[str, object]) -> list[float]:
         _nonnegative_signal_value(cell["prey_biomass"]),
         _nonnegative_signal_value(cell["carrion_signal"]),
         _nonnegative_signal_value(cell["predator_risk"]),
+        _nonnegative_signal_value(cell[REPRODUCTIVE_SIGNAL_FIELD]),
+        _nonnegative_signal_value(cell[COMMUNICATION_SIGNAL_FIELD]),
     ]
 
 

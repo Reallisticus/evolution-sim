@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Protocol
 
+from evolution_sim.env.runtime.action_contract import (
+    ACTION_CONTRACT_VERSION,
+    action_contract,
+)
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_SCHEMA_VERSION,
     observation_contract,
@@ -80,9 +84,11 @@ def trajectory_contract() -> dict[str, object]:
         "schema_version": TRAJECTORY_SCHEMA_VERSION,
         "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
         "policy_interface_version": POLICY_INTERFACE_VERSION,
+        "action_contract_version": ACTION_CONTRACT_VERSION,
         "reward_schema_version": REWARD_SCHEMA_VERSION,
         "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
         "record_fields": list(TRAJECTORY_RECORD_FIELDS),
+        "action_contract": action_contract(),
         "observation_contract": observation_contract(),
         "reward_contract": reward_contract(),
     }
@@ -324,6 +330,7 @@ def build_trajectory_summary(records: list[dict[str, object]]) -> dict[str, obje
         "schema_version": payload["schema_version"],
         "observation_schema_version": payload["observation_schema_version"],
         "policy_interface_version": payload["policy_interface_version"],
+        "action_contract_version": payload["action_contract_version"],
         "reward_schema_version": payload["reward_schema_version"],
         "action_outcome_schema_version": payload["action_outcome_schema_version"],
         "record_count": payload["record_count"],

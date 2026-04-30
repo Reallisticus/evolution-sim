@@ -1,3 +1,4 @@
+from .action_contract import ACTION_CONTRACT_VERSION, action_contract
 from .collectors import FullReplayCollector, SummaryCollector, collector_for_mode
 from .observations import OBSERVATION_SCHEMA_VERSION, observation_contract
 from .state import (
@@ -14,6 +15,7 @@ from .trajectory import TRAJECTORY_SCHEMA_VERSION, trajectory_contract
 
 __all__ = [
     "Agent",
+    "ACTION_CONTRACT_VERSION",
     "BioticFieldState",
     "CarcassDeposit",
     "FreshKillDeposit",
@@ -25,6 +27,7 @@ __all__ = [
     "Tile",
     "TrophicProfile",
     "TRAJECTORY_SCHEMA_VERSION",
+    "action_contract",
     "collector_for_mode",
     "observation_contract",
     "trajectory_contract",

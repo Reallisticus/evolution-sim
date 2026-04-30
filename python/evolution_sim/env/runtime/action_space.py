@@ -2,19 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from evolution_sim.env.runtime.action_contract import (
+    ACTION_NAMES,
+    ATTACK_ACTIONS,
+    MOVEMENT_ACTIONS,
+)
 from evolution_sim.env.runtime.state import Agent
-
-
-MOVEMENT_ACTIONS: tuple[str, ...] = (
-    "move_north",
-    "move_south",
-    "move_east",
-    "move_west",
-)
-ATTACK_ACTIONS: tuple[str, ...] = tuple(
-    action.replace("move_", "attack_") for action in MOVEMENT_ACTIONS
-)
-ACTION_NAMES: tuple[str, ...] = ("stay", "eat", "drink", *MOVEMENT_ACTIONS, *ATTACK_ACTIONS)
 
 
 def build_action_mask(world: Any, agent: Agent) -> dict[str, bool]:

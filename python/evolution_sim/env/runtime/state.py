@@ -5,6 +5,16 @@ from enum import StrEnum
 
 from evolution_sim.genome import Genome
 
+MIND_INHERITANCE_PLACEHOLDER_VERSION = "mind_inheritance_placeholder_v1"
+
+
+def empty_mind_inheritance_metadata() -> dict[str, object]:
+    return {
+        "schema_version": MIND_INHERITANCE_PLACEHOLDER_VERSION,
+        "inherited_state": False,
+        "state_size": 0,
+    }
+
 
 class RunMode(StrEnum):
     FULL_REPLAY = "full_replay"
@@ -101,6 +111,12 @@ class Agent:
     recent_carcass_energy: float
     genome_vector: tuple[float, ...]
     genome: Genome
+    reproductive_group_id: int | None = None
+    reproductive_stage: str = "stage0_asexual"
+    reproductive_expression: str = "asexual"
+    mind_inheritance_metadata: dict[str, object] = field(
+        default_factory=empty_mind_inheritance_metadata
+    )
 
     def reproduction_threshold(self) -> float:
         return self.genome.max_energy * self.genome.reproduction_threshold
