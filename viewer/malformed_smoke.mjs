@@ -212,6 +212,29 @@ const cases = [
     expected: "multi-offspring sibling group",
   },
   {
+    name: "clamped_multi_offspring_missing_limit_reason",
+    fileName: "clamped-multi-offspring-missing-limit-reason.json",
+    payload: malformedValidBase((payload) => {
+      payload.events.push({
+        tick: 0,
+        type: "agent_reproduced",
+        agent_id: 1,
+        data: {
+          schema_version: "reproduction_event_v1",
+          child_id: 2,
+          child_reproductive_group_id: 1,
+          reproduction_mode: "same_group_sexual",
+          offspring_count: 1,
+          multi_offspring_desired_count: 2,
+          multi_offspring_actual_count: 1,
+          multi_offspring_limit_reasons: [],
+          hybrid: false,
+        },
+      });
+    }),
+    expected: "must include a limit reason",
+  },
+  {
     name: "unknown_reproductive_expression",
     fileName: "unknown-reproductive-expression.json",
     payload: malformedValidBase((payload) => {

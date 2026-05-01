@@ -92,7 +92,8 @@ metadata. Current Mind-facing replay contracts include reproductive expression
 in `mind_observation_v3` and stable per-action signal outcome metadata in
 `mind_action_outcome_v2`. Rare multi-offspring birth expansion is config-gated,
 sexual-only, requires both parents to qualify, is bounded by parent
-energy/population capacity/local destinations, and disabled by default. The
+energy/population capacity/local destinations, emits clamp-reason metadata for
+qualified attempts, and is disabled by default. The
 `mate` action remains reserved and masked; Stage 1 is
 biology-gated, not policy-driven. Communication signal slots remain opaque and
 disabled by default, with an opt-in trait-gated emission path covered by tests;

@@ -487,8 +487,8 @@ births remain a future behavior slice. Rare multi-offspring is now implemented a
 a disabled-by-default sexual strategy requiring both parents' pair fecundity,
 parent energy, population capacity, and adjacent destination availability.
 Multi-offspring attempts emit one replay event per child so existing birth
-accounting remains child-count based, with validator-checked sibling metadata on
-each event.
+accounting remains child-count based, with validator-checked sibling metadata
+and clamp-reason metadata on each qualifying attempt.
 
 Metrics should distinguish:
 
@@ -661,7 +661,7 @@ X/Y/Z and hybridization slices:
    multi-child expansion is available only on explicitly enabled sexual pairs
    where both parents qualify. The runtime clamps the litter size by pair
    fecundity, parent energy, population capacity, and local empty birth
-   destinations.
+   destinations, and surfaces clamp reasons in reproduction event metadata.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 

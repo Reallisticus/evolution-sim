@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
@@ -46,6 +47,15 @@ class ReproductionAvailability:
     @property
     def population_saturated(self) -> bool:
         return self.alive_agents >= self.max_agents
+
+
+@dataclass(frozen=True, slots=True)
+class SexualOffspringPlan:
+    """Resolved litter size before local destination clamping."""
+
+    desired_count: int
+    count: int
+    limit_reasons: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -1478,7 +1488,7 @@ def _reproduce_sexual_birth_count(
     partner_profile = world._trophic_profile(partner)
     parent_cost = sexual_reproduction_energy_cost(world, parent_profile)
     partner_cost = sexual_reproduction_energy_cost(world, partner_profile)
-    offspring_count = _actual_sexual_offspring_count(
+    offspring_plan = _sexual_offspring_plan(
         world,
         parent,
         partner,
@@ -1486,13 +1496,13 @@ def _reproduce_sexual_birth_count(
         partner_cost=partner_cost,
         alive_count=alive_count,
     )
-    if offspring_count <= 0:
+    if offspring_plan.count <= 0:
         return 0
     destinations = _sexual_offspring_destinations(
         world,
         parent,
         first_destination=destination,
-        requested_count=offspring_count,
+        requested_count=offspring_plan.count,
     )
     offspring_count = len(destinations)
     if offspring_count <= 0:
@@ -1503,6 +1513,9 @@ def _reproduce_sexual_birth_count(
             alive_count=alive_count,
         )
         return 0
+    multi_offspring_limit_reasons = list(offspring_plan.limit_reasons)
+    if offspring_count < offspring_plan.count:
+        multi_offspring_limit_reasons.append("local_destination_capacity")
     child_energy_fraction = sexual_child_starting_fraction(
         world.config.reproduction.child_energy_fraction,
         world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
@@ -1585,6 +1598,8 @@ def _reproduce_sexual_birth_count(
                 offspring_count=offspring_count,
                 offspring_index=index + 1,
                 sibling_child_ids=child_ids,
+                multi_offspring_desired_count=offspring_plan.desired_count,
+                multi_offspring_limit_reasons=tuple(multi_offspring_limit_reasons),
             ),
         )
     world.next_agent_id += offspring_count
@@ -1594,7 +1609,7 @@ def _reproduce_sexual_birth_count(
     return offspring_count
 
 
-def _actual_sexual_offspring_count(
+def _sexual_offspring_plan(
     world: Any,
     parent: Agent,
     partner: Agent,
@@ -1602,7 +1617,7 @@ def _actual_sexual_offspring_count(
     parent_cost: float,
     partner_cost: float,
     alive_count: int | None,
-) -> int:
+) -> SexualOffspringPlan:
     desired_count = runtime_mating.multi_offspring_count_for_pair(
         parent,
         partner,
@@ -1611,13 +1626,52 @@ def _actual_sexual_offspring_count(
     current_alive = len(world.alive_agents()) if alive_count is None else alive_count
     population_slots = max(0, int(world.config.max_agents) - current_alive)
     if population_slots <= 0:
-        return 0
-    affordable_count = desired_count
-    if parent_cost > 0:
-        affordable_count = min(affordable_count, int(parent.energy // parent_cost))
-    if partner_cost > 0:
-        affordable_count = min(affordable_count, int(partner.energy // partner_cost))
-    return max(0, min(desired_count, population_slots, affordable_count))
+        return SexualOffspringPlan(
+            desired_count=desired_count,
+            count=0,
+            limit_reasons=("population_capacity",),
+        )
+    parent_affordable = _affordable_offspring_count(
+        parent.energy,
+        parent_cost,
+        desired_count,
+    )
+    partner_affordable = _affordable_offspring_count(
+        partner.energy,
+        partner_cost,
+        desired_count,
+    )
+    count = max(
+        0,
+        min(
+            desired_count,
+            population_slots,
+            parent_affordable,
+            partner_affordable,
+        ),
+    )
+    limit_reasons: list[str] = []
+    if population_slots < desired_count:
+        limit_reasons.append("population_capacity")
+    if parent_affordable < desired_count:
+        limit_reasons.append("parent_energy")
+    if partner_affordable < desired_count:
+        limit_reasons.append("partner_energy")
+    return SexualOffspringPlan(
+        desired_count=desired_count,
+        count=count,
+        limit_reasons=tuple(limit_reasons),
+    )
+
+
+def _affordable_offspring_count(
+    energy: float,
+    cost: float,
+    desired_count: int,
+) -> int:
+    if cost <= 0:
+        return desired_count
+    return max(0, min(desired_count, math.floor((energy + 1e-12) / cost)))
 
 
 def _sexual_offspring_destinations(
@@ -1659,6 +1713,8 @@ def _reproduction_event_payload(
     offspring_count: int = 1,
     offspring_index: int | None = None,
     sibling_child_ids: list[int] | None = None,
+    multi_offspring_desired_count: int = 1,
+    multi_offspring_limit_reasons: tuple[str, ...] = (),
 ) -> dict[str, object]:
     parent_ids = [parent.agent_id for parent in parents]
     parent_group_ids = [
@@ -1702,6 +1758,10 @@ def _reproduction_event_payload(
     }
     if len(parents) > 1:
         payload["partner_id"] = parents[1].agent_id
+    if multi_offspring_desired_count > 1:
+        payload["multi_offspring_desired_count"] = multi_offspring_desired_count
+        payload["multi_offspring_actual_count"] = offspring_count
+        payload["multi_offspring_limit_reasons"] = list(multi_offspring_limit_reasons)
     if offspring_count > 1:
         payload["offspring_index"] = offspring_index
         payload["sibling_child_ids"] = list(sibling_child_ids or [])

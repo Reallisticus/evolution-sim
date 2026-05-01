@@ -463,6 +463,7 @@ function validateReproductionEventOffspringMetadata(
   const basePath = `Replay events[${eventIndex}].data`;
   assertNonnegativeInteger(data.child_id, `${basePath}.child_id`);
   assertPositiveInteger(data.offspring_count, `${basePath}.offspring_count`);
+  validateMultiOffspringAttemptMetadata(data, eventIndex);
   if (data.offspring_count === 1) {
     if (data.multi_offspring === true) {
       throw new Error(
@@ -570,6 +571,65 @@ function validateReproductionEventOffspringMetadata(
   group.seenChildIds.add(data.child_id);
   group.seenIndexes.add(data.offspring_index);
   multiOffspringGroups.set(siblingKey, group);
+}
+
+function validateMultiOffspringAttemptMetadata(data, eventIndex) {
+  const hasAttemptMetadata =
+    "multi_offspring_desired_count" in data ||
+    "multi_offspring_actual_count" in data ||
+    "multi_offspring_limit_reasons" in data;
+  if (!hasAttemptMetadata) {
+    return;
+  }
+  const basePath = `Replay events[${eventIndex}].data`;
+  if (data.reproduction_mode !== SEXUAL_REPRODUCTION_MODE) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi-offspring attempt metadata must be sexual.`,
+    );
+  }
+  assertPositiveInteger(
+    data.multi_offspring_desired_count,
+    `${basePath}.multi_offspring_desired_count`,
+  );
+  assertPositiveInteger(
+    data.multi_offspring_actual_count,
+    `${basePath}.multi_offspring_actual_count`,
+  );
+  if (data.multi_offspring_desired_count <= 1) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi-offspring attempt metadata requires desired_count above one.`,
+    );
+  }
+  if (data.multi_offspring_actual_count !== data.offspring_count) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi_offspring_actual_count must match offspring_count.`,
+    );
+  }
+  if (data.multi_offspring_desired_count < data.multi_offspring_actual_count) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi_offspring_desired_count cannot be below actual count.`,
+    );
+  }
+  assertStringArray(
+    data.multi_offspring_limit_reasons,
+    `${basePath}.multi_offspring_limit_reasons`,
+  );
+  if (
+    data.multi_offspring_desired_count > data.multi_offspring_actual_count &&
+    data.multi_offspring_limit_reasons.length === 0
+  ) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} clamped multi-offspring attempt must include a limit reason.`,
+    );
+  }
+  if (
+    data.multi_offspring_desired_count === data.multi_offspring_actual_count &&
+    data.multi_offspring_limit_reasons.length > 0
+  ) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} unclamped multi-offspring attempt cannot include limit reasons.`,
+    );
+  }
 }
 
 function validateMultiOffspringGroups(groups) {

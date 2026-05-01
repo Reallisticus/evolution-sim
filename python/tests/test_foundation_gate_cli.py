@@ -1324,6 +1324,35 @@ class FoundationGateCliTests(unittest.TestCase):
             )
         )
 
+    def test_clamped_multi_offspring_event_requires_limit_reason(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        events = copy.deepcopy(result.events)
+        reproduction_event = next(
+            event for event in events if event.get("type") == "agent_reproduced"
+        )
+        data = reproduction_event["data"]
+        data["reproduction_mode"] = runtime_mating.SEXUAL_REPRODUCTION_MODE
+        data["multi_offspring_desired_count"] = 2
+        data["multi_offspring_actual_count"] = 1
+        data["multi_offspring_limit_reasons"] = []
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=result.viewer,
+            events=events,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == "events.agent_reproduced.multi_offspring_limit_reasons"
+                and "must include a limit reason" in flag["message"]
+                for flag in flags
+            )
+        )
+
     def test_mismatched_reproductive_summary_birth_events_block_full_replay_probe(
         self,
     ) -> None:

@@ -2217,6 +2217,15 @@ def _reproduction_event_offspring_metadata_flags(
             )
         )
         return flags
+    flags.extend(
+        _multi_offspring_attempt_metadata_flags(
+            scope=scope,
+            index=index,
+            data=data,
+            reproduction_mode=reproduction_mode,
+            offspring_count=offspring_count,
+        )
+    )
     if offspring_count == 1:
         if data.get("multi_offspring") is True:
             flags.append(
@@ -2426,6 +2435,144 @@ def _reproduction_event_offspring_metadata_flags(
                 )
             )
         offspring_indexes.add(offspring_index)
+    return flags
+
+
+def _multi_offspring_attempt_metadata_flags(
+    *,
+    scope: str,
+    index: int,
+    data: Mapping[object, object],
+    reproduction_mode: object,
+    offspring_count: int,
+) -> list[dict[str, object]]:
+    fields = (
+        "multi_offspring_desired_count",
+        "multi_offspring_actual_count",
+        "multi_offspring_limit_reasons",
+    )
+    if not any(field in data for field in fields):
+        return []
+    flags: list[dict[str, object]] = []
+    if reproduction_mode != SEXUAL_REPRODUCTION_MODE:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.reproduction_mode",
+                (
+                    f"Reproduction event {index} multi-offspring attempt "
+                    "metadata must be sexual."
+                ),
+            )
+        )
+    desired_count = _as_optional_int(data.get("multi_offspring_desired_count"))
+    actual_count = _as_optional_int(data.get("multi_offspring_actual_count"))
+    if desired_count is None or desired_count <= 1:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_desired_count",
+                (
+                    f"Reproduction event {index} multi_offspring_desired_count "
+                    "must be an integer above one."
+                ),
+            )
+        )
+    if actual_count is None or actual_count <= 0:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_actual_count",
+                (
+                    f"Reproduction event {index} multi_offspring_actual_count "
+                    "must be a positive integer."
+                ),
+            )
+        )
+    if desired_count is None or actual_count is None:
+        return flags
+    if actual_count != offspring_count:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_actual_count",
+                (
+                    f"Reproduction event {index} multi_offspring_actual_count "
+                    "must match offspring_count."
+                ),
+            )
+        )
+    if desired_count < actual_count:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_desired_count",
+                (
+                    f"Reproduction event {index} multi_offspring_desired_count "
+                    "cannot be below actual count."
+                ),
+            )
+        )
+    raw_limit_reasons = data.get("multi_offspring_limit_reasons")
+    if not isinstance(raw_limit_reasons, Sequence) or isinstance(
+        raw_limit_reasons,
+        (str, bytes, bytearray),
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_limit_reasons",
+                (
+                    f"Reproduction event {index} multi_offspring_limit_reasons "
+                    "must be a sequence."
+                ),
+            )
+        )
+        return flags
+    limit_reasons = [reason for reason in raw_limit_reasons if isinstance(reason, str)]
+    if len(limit_reasons) != len(raw_limit_reasons):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_limit_reasons",
+                (
+                    f"Reproduction event {index} multi_offspring_limit_reasons "
+                    "must contain strings."
+                ),
+            )
+        )
+        return flags
+    if desired_count > actual_count and not limit_reasons:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_limit_reasons",
+                (
+                    f"Reproduction event {index} clamped multi-offspring attempt "
+                    "must include a limit reason."
+                ),
+            )
+        )
+    if desired_count == actual_count and limit_reasons:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring_limit_reasons",
+                (
+                    f"Reproduction event {index} unclamped multi-offspring "
+                    "attempt cannot include limit reasons."
+                ),
+            )
+        )
     return flags
 
 

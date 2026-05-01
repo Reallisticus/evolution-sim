@@ -3939,6 +3939,9 @@ class RuntimeContractTests(unittest.TestCase):
             data = event["data"]
             self.assertEqual(data["reproduction_mode"], SEXUAL_REPRODUCTION_MODE)
             self.assertEqual(data["offspring_count"], 3)
+            self.assertEqual(data["multi_offspring_desired_count"], 3)
+            self.assertEqual(data["multi_offspring_actual_count"], 3)
+            self.assertEqual(data["multi_offspring_limit_reasons"], [])
             self.assertEqual(data["offspring_index"], index)
             self.assertEqual(data["sibling_child_ids"], child_ids)
             self.assertTrue(data["multi_offspring"])
@@ -4019,6 +4022,12 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(world.births, 1)
         self.assertEqual(len(world.alive_agents()), 3)
         self.assertEqual(event["data"]["offspring_count"], 1)
+        self.assertEqual(event["data"]["multi_offspring_desired_count"], 3)
+        self.assertEqual(event["data"]["multi_offspring_actual_count"], 1)
+        self.assertEqual(
+            event["data"]["multi_offspring_limit_reasons"],
+            ["population_capacity"],
+        )
         self.assertNotIn("multi_offspring", event["data"])
 
     def test_multi_offspring_requires_both_parents_to_qualify(self) -> None:

@@ -256,6 +256,9 @@ expectValid("valid multi-offspring sibling group", (payload) => {
         child_reproductive_group_id: 1,
         reproduction_mode: "same_group_sexual",
         offspring_count: 2,
+        multi_offspring_desired_count: 2,
+        multi_offspring_actual_count: 2,
+        multi_offspring_limit_reasons: [],
         offspring_index: offspringIndex + 1,
         sibling_child_ids: [2, 3],
         multi_offspring: true,
@@ -483,6 +486,28 @@ expectError(
   "multi-offspring sibling group",
 );
 expectError(
+  "clamped multi-offspring missing limit reason",
+  (payload) => {
+    payload.events.push({
+      tick: 0,
+      type: "agent_reproduced",
+      agent_id: 1,
+      data: {
+        schema_version: "reproduction_event_v1",
+        child_id: 2,
+        child_reproductive_group_id: 1,
+        reproduction_mode: "same_group_sexual",
+        offspring_count: 1,
+        multi_offspring_desired_count: 2,
+        multi_offspring_actual_count: 1,
+        multi_offspring_limit_reasons: [],
+        hybrid: false,
+      },
+    });
+  },
+  "must include a limit reason",
+);
+expectError(
   "unknown reproductive expression",
   (payload) => {
     payload.viewer.agent_catalog["1"].reproductive_expression = "mystery";
@@ -525,7 +550,7 @@ expectError(
   "outcome.signal",
 );
 
-console.log("viewer_validator_smoke_ok malformed_cases=28");
+console.log("viewer_validator_smoke_ok malformed_cases=30");
 
 function observationInput() {
   return {
