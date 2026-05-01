@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 from inspect import signature
 from pathlib import Path
+from random import Random
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from evolution_sim.config import (
     SignalConfig,
 )
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.world import MEAT_MODE_CODES, TROPHIC_ROLE_CODES
 from evolution_sim.env.contracts import (
     FULL_ONLY_SUMMARY_FIELDS,
     REPLAY_TOP_LEVEL_KEYS,
@@ -35,9 +37,12 @@ from evolution_sim.env.runtime.action_contract import (
     MATE_ACTION,
     RESERVED_ACTION_NAMES,
     action_contract,
+    action_names,
 )
 from evolution_sim.env.runtime.action_space import build_action_mask
 from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
+import evolution_sim.env.runtime.signals as runtime_signals
+import evolution_sim.env.runtime.mating as runtime_mating
 from evolution_sim.env.runtime.state import (
     MIND_INHERITANCE_PLACEHOLDER_VERSION,
     Agent,
@@ -63,6 +68,13 @@ from evolution_sim.env.runtime.policy import (
     ObservationHeuristicPolicy,
     POLICY_INTERFACE_VERSION,
 )
+import evolution_sim.env.runtime.reproduction as runtime_reproduction
+from evolution_sim.env.runtime.reproduction import (
+    REPRODUCTION_EVENT_SCHEMA_VERSION,
+    REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+    STAGE0_ASEXUAL,
+    reproductive_group_contract,
+)
 from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
@@ -71,8 +83,27 @@ from evolution_sim.env.runtime.trajectory import (
     reward_contract,
 )
 from evolution_sim.env.runtime.lifecycle import genome_profile_key
-from evolution_sim.genome import Genome
-from evolution_sim.genome.schema import GENE_LIMITS
+from evolution_sim.env.runtime.mating import (
+    PROTO_X_EXPRESSION,
+    PROTO_Y_EXPRESSION,
+    PROTO_Z_EXPRESSION,
+    SEXUAL_EXPRESSION,
+    SEXUAL_REPRODUCTION_MODE,
+    STAGE1_FACULTATIVE_SEX,
+    STAGE2_PROTO_ROLES,
+    STAGE3_X_Y_Z,
+    X_EXPRESSION,
+    Y_EXPRESSION,
+    Z_EXPRESSION,
+)
+from evolution_sim.genome import Genome, ReproductiveGenome
+from evolution_sim.genome.recombination import (
+    GENOME_GROUPS,
+    GENOME_RECOMBINATION_CONTRACT_VERSION,
+    genome_recombination_contract,
+    recombine_genomes,
+)
+from evolution_sim.genome.schema import GENE_LIMITS, REPRODUCTIVE_GENE_LIMITS
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.env.taxonomy import REPLAY_TAXONOMY_MODE, apply_replay_taxonomy
 from evolution_sim.io import JsonlTrajectoryWriter, write_json_replay
@@ -780,6 +811,9 @@ class RuntimeContractTests(unittest.TestCase):
         y: int,
         lineage_id: int = 1,
         genome: Genome | None = None,
+        reproductive_group_id: int | None = None,
+        reproductive_stage: str = "stage0_asexual",
+        reproductive_expression: str = "asexual",
     ) -> Agent:
         genome = genome or Genome.sample_initial(world.rng)
         agent = Agent(
@@ -804,6 +838,9 @@ class RuntimeContractTests(unittest.TestCase):
             recent_carcass_energy=0.0,
             genome_vector=genome_vector(genome),
             genome=genome,
+            reproductive_group_id=reproductive_group_id or lineage_id,
+            reproductive_stage=reproductive_stage,
+            reproductive_expression=reproductive_expression,
         )
         world._place_agent(agent)
         world.next_agent_id += 1
@@ -882,6 +919,41 @@ class RuntimeContractTests(unittest.TestCase):
             heat_tolerance=1.0,
             reproduction_threshold=0.7,
             mutation_scale=0.01,
+        )
+
+    def _sexualized_genome(self, genome: Genome) -> Genome:
+        return replace(
+            genome,
+            reproductive=ReproductiveGenome(
+                sexual_reproduction_drive=0.9,
+                recombination_affinity=0.9,
+                role_differentiation_drive=0.0,
+                sex_expression_bias=0.0,
+                sex_plasticity=0.0,
+                hybridization_tolerance=0.0,
+                fecundity_potential=0.0,
+                signal_emission_bias=0.0,
+                signal_sensitivity=0.0,
+            ),
+        )
+
+    def _role_genome(
+        self,
+        genome: Genome,
+        *,
+        role_drive: float,
+        expression_bias: float,
+        plasticity: float = 0.0,
+    ) -> Genome:
+        sexualized = self._sexualized_genome(genome)
+        return replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                role_differentiation_drive=role_drive,
+                sex_expression_bias=expression_bias,
+                sex_plasticity=plasticity,
+            ),
         )
 
     def test_hunter_fresh_kill_drive_has_specialist_floor(self) -> None:
@@ -1616,6 +1688,63 @@ class RuntimeContractTests(unittest.TestCase):
                     )
                 ),
             ),
+            (
+                "reproduction.sexual_reproduction_enabled",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        sexual_reproduction_enabled=1,  # type: ignore[arg-type]
+                    )
+                ),
+            ),
+            (
+                "reproduction.sexual_partner_radius",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(sexual_partner_radius=0)
+                ),
+            ),
+            (
+                "reproduction.sexual_parent_cost_multiplier",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        sexual_parent_cost_multiplier=0.0,
+                    )
+                ),
+            ),
+            (
+                "reproduction.role_differentiation_threshold",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        role_differentiation_threshold=1.2,
+                    )
+                ),
+            ),
+            (
+                "reproduction.xyz_expression_threshold",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        role_differentiation_threshold=0.8,
+                        xyz_expression_threshold=0.7,
+                    )
+                ),
+            ),
+            (
+                "reproduction.z_plasticity_threshold",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(z_plasticity_threshold=-0.1)
+                ),
+            ),
+            (
+                "reproduction.role_complementarity_bonus",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(role_complementarity_bonus=1.2)
+                ),
+            ),
+            (
+                "reproduction.z_z_pairing_penalty",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(z_z_pairing_penalty=1.2)
+                ),
+            ),
         )
 
         for expected_message, build_config in invalid_configs:
@@ -2051,7 +2180,44 @@ class RuntimeContractTests(unittest.TestCase):
             "not_in_observation_or_resolution_mask",
         )
 
-    def test_pre_mind_signal_and_reproductive_scaffold_is_inert(self) -> None:
+    def test_action_contract_tracks_signal_config_reserved_communication_slots(self) -> None:
+        signal_config = SignalConfig(
+            communication_token_count=2,
+            communication_profiles_per_token=3,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
+        )
+        agent = world.alive_agents()[0]
+        mask = build_action_mask(world, agent)
+        contract = action_contract(signal_config)
+
+        expected_communication_actions = [
+            "signal_0_profile_0",
+            "signal_0_profile_1",
+            "signal_0_profile_2",
+            "signal_1_profile_0",
+            "signal_1_profile_1",
+            "signal_1_profile_2",
+        ]
+
+        self.assertEqual(contract["communication"]["token_count"], 2)
+        self.assertEqual(contract["communication"]["profiles_per_token"], 3)
+        self.assertEqual(
+            contract["communication"]["action_keys"],
+            expected_communication_actions,
+        )
+        self.assertEqual(
+            contract["reserved_action_keys"],
+            [MATE_ACTION, *expected_communication_actions],
+        )
+        self.assertEqual(set(mask), set(action_names(signal_config)))
+        for action in expected_communication_actions:
+            self.assertIn(action, mask)
+            self.assertFalse(mask[action], msg=action)
+        self.assertNotIn("signal_2_profile_0", mask)
+
+    def test_pre_mind_reproductive_slots_start_without_emitted_signals(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
         observation = build_observation(world, agent)
@@ -2084,13 +2250,1233 @@ class RuntimeContractTests(unittest.TestCase):
         )
         self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
 
+    def test_reproductive_signal_emits_for_ready_agents_and_decays(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=SignalConfig(
+                    reproductive_signal_radius=2,
+                    reproductive_signal_duration_ticks=3,
+                    reproductive_signal_decay_rate=0.5,
+                    reproductive_signal_base_intensity=0.2,
+                    reproductive_signal_trait_intensity_bonus=0.3,
+                    base_emission_energy_cost=0.05,
+                ),
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
+        energy_before = agent.energy
+
+        totals = runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        signal_state = world._current_signal_state()
+        observation = build_observation(world, agent)
+        decoded = decode_observation_input(encode_observation_input(observation))
+
+        self.assertEqual(totals["reproductive_emissions"], 1)
+        self.assertEqual(totals["communication_emissions"], 0)
+        self.assertEqual(len(world.reproductive_signal_emissions), 1)
+        self.assertEqual(len(world.tick_signal_emission_events), 1)
+        emission = world.reproductive_signal_emissions[0]
+        emission_event = world.tick_signal_emission_events[0]
+        self.assertEqual(emission.profile_id, "reproductive_readiness")
+        self.assertEqual(emission.source_agent_id, agent.agent_id)
+        self.assertIsNone(emission.token_id)
+        self.assertEqual(emission.radius, 2)
+        self.assertEqual(emission.duration_ticks, 3)
+        self.assertEqual(emission.decay_rate, 0.5)
+        self.assertFalse(emission_event["policy_visible"])
+        self.assertEqual(emission_event["source_agent_id"], agent.agent_id)
+        self.assertEqual(emission_event["profile_id"], "reproductive_readiness")
+        self.assertEqual(emission_event["token_id"], None)
+        self.assertAlmostEqual(float(totals["energy_spent"]), 0.025)
+        self.assertAlmostEqual(agent.energy, energy_before - 0.025)
+        self.assertAlmostEqual(signal_state.reproductive_signal[2][2], 0.5)
+        self.assertGreater(signal_state.reproductive_signal[2][2], 0.0)
+        self.assertGreater(signal_state.reproductive_signal[2][2], signal_state.reproductive_signal[2][3])
+        self.assertEqual(signal_state.communication_signal[2][2], 0.0)
+        self.assertGreater(observation["self"]["reproductive_signal"], 0.0)
+        self.assertEqual(observation["self"]["communication_signal"], 0.0)
+        self.assertTrue(
+            any(cell["reproductive_signal"] > 0.0 for cell in observation["local_patch"])
+        )
+        self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
+
+        runtime_signals.decay_signal_emissions(world)
+        decayed_state = world._current_signal_state()
+        self.assertEqual(world.reproductive_signal_emissions[0].remaining_ticks, 2)
+        self.assertAlmostEqual(world.reproductive_signal_emissions[0].intensity, 0.25)
+
+        self.assertLess(
+            decayed_state.reproductive_signal[2][2],
+            signal_state.reproductive_signal[2][2],
+        )
+        self.assertEqual(decayed_state.communication_signal[2][2], 0.0)
+
+    def test_reproductive_signal_is_biology_gated(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=SignalConfig(
+                    reproductive_signal_radius=1,
+                    reproductive_signal_duration_ticks=2,
+                ),
+            )
+        )
+        agent = self._place_ready_agent(world, x=2, y=2)
+        agent.energy = 0.0
+
+        totals = runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        signal_state = world._current_signal_state()
+
+        self.assertEqual(totals["reproductive_emissions"], 0)
+        self.assertEqual(signal_state.reproductive_signal[2][2], 0.0)
+        self.assertEqual(world.run_signal_totals["reproductive_emissions"], 0.0)
+
+    def test_communication_signal_actions_are_opt_in_and_trait_gated(self) -> None:
+        default_world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        default_agent = default_world.alive_agents()[0]
+        default_agent.genome = replace(
+            default_agent.genome,
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        self.assertFalse(
+            build_action_mask(default_world, default_agent)["signal_0_profile_0"]
+        )
+
+        enabled_world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                signals=SignalConfig(communication_signal_emission_enabled=True),
+            )
+        )
+        gated_agent = enabled_world.alive_agents()[0]
+        gated_agent.genome = replace(
+            gated_agent.genome,
+            reproductive=ReproductiveGenome(signal_emission_bias=0.0),
+        )
+        self.assertFalse(
+            build_action_mask(enabled_world, gated_agent)["signal_0_profile_0"]
+        )
+
+    def test_communication_signal_action_emits_opaque_numeric_field(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_signal_radius=2,
+                    communication_signal_duration_ticks=3,
+                    communication_signal_decay_rate=0.5,
+                    communication_signal_base_intensity=0.2,
+                    communication_signal_trait_intensity_bonus=0.3,
+                    base_emission_energy_cost=0.05,
+                ),
+            )
+        )
+        agent = world.alive_agents()[0]
+        agent.genome = replace(
+            agent.genome,
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        agent.energy = 1.0
+        action = "signal_1_profile_1"
+        mask = build_action_mask(world, agent)
+        contract = action_contract(world.config.signals)
+        signal_spec = next(
+            spec for spec in contract["actions"] if spec["key"] == action
+        )
+
+        self.assertTrue(mask[action])
+        self.assertTrue(signal_spec["active"])
+        self.assertTrue(signal_spec["reserved"])
+        moved, outcome = world._resolve_action_with_outcome(
+            agent,
+            action,
+            observation_action_mask=mask,
+            resolution_action_mask=mask,
+        )
+        signal_outcome = outcome["signal"]
+        signal_state = world._current_signal_state()
+        observation = build_observation(world, agent)
+        event = world.tick_signal_emission_events[0]
+
+        self.assertFalse(moved)
+        self.assertEqual(outcome["resolved_action"], action)
+        self.assertTrue(signal_outcome["emitted"])
+        self.assertEqual(signal_outcome["token_id"], 1)
+        self.assertEqual(signal_outcome["profile_index"], 1)
+        self.assertNotIn("profile_id", signal_outcome)
+        self.assertAlmostEqual(signal_outcome["intensity"], 0.5)
+        self.assertEqual(signal_outcome["radius"], 3)
+        self.assertEqual(signal_outcome["duration_ticks"], 4)
+        self.assertAlmostEqual(signal_outcome["energy_cost"], 0.05)
+        self.assertAlmostEqual(agent.energy, 0.95)
+        self.assertEqual(len(world.communication_signal_emissions), 1)
+        self.assertEqual(world.tick_signal_totals["communication_emissions"], 1.0)
+        self.assertEqual(world.run_signal_totals["communication_emissions"], 1.0)
+        self.assertEqual(event["field_name"], "communication_signal")
+        self.assertEqual(event["source_agent_id"], agent.agent_id)
+        self.assertEqual(event["token_id"], 1)
+        self.assertEqual(event["profile_index"], 1)
+        self.assertFalse(event["policy_visible"])
+        self.assertGreater(signal_state.communication_signal[agent.y][agent.x], 0.0)
+        self.assertEqual(signal_state.reproductive_signal[agent.y][agent.x], 0.0)
+        self.assertGreater(observation["self"]["communication_signal"], 0.0)
+
+    def test_signal_contract_declares_debug_only_profile_provenance(self) -> None:
+        signal_config = SignalConfig(
+            communication_token_count=2,
+            communication_profiles_per_token=3,
+            communication_signal_decay_rate=0.42,
+            max_signal_radius=5,
+            max_duration_ticks=12,
+        )
+        contract = runtime_signals.signal_contract(signal_config)
+        required_debug_fields = {
+            "profile_id",
+            "source_agent_id",
+            "token_id",
+            "profile_index",
+            "radius",
+            "duration_ticks",
+            "decay_rate",
+            "energy_cost",
+            "emitted_tick",
+        }
+
+        self.assertEqual(contract["schema_version"], SIGNAL_CONTRACT_VERSION)
+        self.assertEqual(contract["policy_semantics"], "opaque")
+        self.assertFalse(contract["profile_metadata_policy_visible"])
+        self.assertTrue(
+            required_debug_fields.issubset(
+                set(contract["emission_debug_metadata_fields"])
+            )
+        )
+        self.assertEqual(
+            contract["reproductive_readiness_profile"]["field_name"],
+            "reproductive_signal",
+        )
+        self.assertFalse(
+            contract["reproductive_readiness_profile"]["policy_visible"]
+        )
+        self.assertEqual(contract["communication_token_count"], 2)
+        self.assertEqual(contract["communication_profiles_per_token"], 3)
+        self.assertEqual(contract["communication_signal_decay_rate"], 0.42)
+        self.assertEqual(contract["max_signal_radius"], 5)
+        self.assertEqual(contract["max_duration_ticks"], 12)
+        self.assertEqual(len(contract["reserved_profiles"]), 6)
+        self.assertTrue(
+            all(
+                not profile["policy_visible"]
+                for profile in contract["reserved_profiles"]
+            )
+        )
+        self.assertTrue(
+            all(
+                profile["field_name"] == "communication_signal"
+                for profile in contract["reserved_profiles"]
+            )
+        )
+        self.assertEqual(
+            [
+                (profile["token_id"], profile["profile_index"])
+                for profile in contract["reserved_profiles"]
+            ],
+            [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+        )
+
     def test_signal_config_rejects_invalid_scaffold_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "signals.enabled"):
             SignalConfig(enabled=1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.reproductive_signal_emission_enabled",
+        ):
+            SignalConfig(reproductive_signal_emission_enabled=1)  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "signals.communication_token_count"):
             SignalConfig(communication_token_count=0)
+        with self.assertRaisesRegex(ValueError, "signals.communication_token_count"):
+            SignalConfig(
+                communication_token_count=(
+                    SignalConfig.MAX_COMMUNICATION_TOKEN_COUNT + 1
+                )
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_profiles_per_token",
+        ):
+            SignalConfig(
+                communication_profiles_per_token=(
+                    SignalConfig.MAX_COMMUNICATION_PROFILES_PER_TOKEN + 1
+                )
+            )
         with self.assertRaisesRegex(ValueError, "signals.max_signal_radius"):
             SignalConfig(max_signal_radius=-1)
+        with self.assertRaisesRegex(ValueError, "signals.reproductive_signal_radius"):
+            SignalConfig(reproductive_signal_radius=9)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.reproductive_signal_duration_ticks",
+        ):
+            SignalConfig(reproductive_signal_duration_ticks=25)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.reproductive_signal_decay_rate",
+        ):
+            SignalConfig(reproductive_signal_decay_rate=1.1)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_signal_decay_rate",
+        ):
+            SignalConfig(communication_signal_decay_rate=1.1)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_signal_emission_enabled",
+        ):
+            SignalConfig(communication_signal_emission_enabled=1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_signal_radius",
+        ):
+            SignalConfig(communication_signal_radius=9)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_signal_duration_ticks",
+        ):
+            SignalConfig(communication_signal_duration_ticks=25)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.communication_signal_base_intensity",
+        ):
+            SignalConfig(communication_signal_base_intensity=0.9)
+        with self.assertRaisesRegex(
+            ValueError,
+            "signals.reproductive_signal_base_intensity",
+        ):
+            SignalConfig(reproductive_signal_base_intensity=0.9)
+
+
+    def test_genome_recombination_contract_groups_all_inherited_genes(self) -> None:
+        contract = genome_recombination_contract()
+        grouped_genes = [gene for group in GENOME_GROUPS for gene in group.genes]
+        grouped_reproductive_traits = [
+            trait for group in GENOME_GROUPS for trait in group.reproductive_traits
+        ]
+
+        self.assertEqual(
+            contract["schema_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
+        )
+        self.assertEqual(sorted(grouped_genes), sorted(GENE_LIMITS))
+        self.assertEqual(len(grouped_genes), len(set(grouped_genes)))
+        self.assertEqual(
+            sorted(grouped_reproductive_traits),
+            sorted(REPRODUCTIVE_GENE_LIMITS),
+        )
+        self.assertEqual(
+            len(grouped_reproductive_traits),
+            len(set(grouped_reproductive_traits)),
+        )
+        json.dumps(contract)
+
+    def test_grouped_recombine_is_deterministic_and_group_coherent(self) -> None:
+        left = Genome(
+            **{gene: limits[0] for gene, limits in GENE_LIMITS.items()},
+            reproductive=ReproductiveGenome(
+                **{
+                    trait: limits[0]
+                    for trait, limits in REPRODUCTIVE_GENE_LIMITS.items()
+                }
+            ),
+        )
+        right = Genome(
+            **{gene: limits[1] for gene, limits in GENE_LIMITS.items()},
+            reproductive=ReproductiveGenome(
+                **{
+                    trait: limits[1]
+                    for trait, limits in REPRODUCTIVE_GENE_LIMITS.items()
+                }
+            ),
+        )
+
+        child = recombine_genomes(left, right, Random(11))
+        repeated = recombine_genomes(left, right, Random(11))
+
+        self.assertEqual(child.to_dict(), repeated.to_dict())
+        for group in GENOME_GROUPS:
+            first_gene = group.genes[0]
+            source = (
+                left
+                if getattr(child, first_gene) == getattr(left, first_gene)
+                else right
+            )
+            for gene in group.genes:
+                self.assertEqual(getattr(child, gene), getattr(source, gene), msg=gene)
+            for trait in group.reproductive_traits:
+                self.assertEqual(
+                    getattr(child.reproductive, trait),
+                    getattr(source.reproductive, trait),
+                    msg=trait,
+                )
+
+    def test_reproductive_group_registry_tracks_stage0_asexual_groups(self) -> None:
+        config = WorldConfig(seed=7, max_ticks=40)
+        result = SimulationWorld(config).run()
+
+        summary = result.summary["reproductive_groups_end"]
+        catalog = result.viewer["reproductive_group_catalog"]
+
+        self.assertEqual(
+            reproductive_group_contract()["schema_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(summary["schema_version"], REPRODUCTIVE_GROUP_CONTRACT_VERSION)
+        self.assertEqual(catalog["schema_version"], REPRODUCTIVE_GROUP_CONTRACT_VERSION)
+        self.assertEqual(summary["group_count"], config.initial_agents)
+        self.assertEqual(summary["asexual_births"], result.summary["births"])
+        self.assertEqual(summary["sexual_births"], 0)
+        self.assertEqual(summary["hybrid_births"], 0)
+        self.assertEqual(
+            summary["stage_counts"],
+            {STAGE0_ASEXUAL: config.initial_agents},
+        )
+        self.assertEqual(
+            summary["alive_stage_counts"],
+            {STAGE0_ASEXUAL: result.summary["alive_agents"]},
+        )
+        self.assertEqual(
+            sum(group["member_count"] for group in catalog["groups"].values()),
+            result.summary["total_agents_seen"],
+        )
+        self.assertEqual(
+            sum(group["alive_member_count"] for group in catalog["groups"].values()),
+            result.summary["alive_agents"],
+        )
+        self.assertEqual(
+            sum(summary["alive_expression_counts"].values()),
+            result.summary["alive_agents"],
+        )
+        self.assertEqual(
+            summary["alive_expression_counts_by_stage"],
+            {
+                STAGE0_ASEXUAL: {
+                    "asexual": result.summary["alive_agents"],
+                }
+            },
+        )
+        self.assertEqual(
+            result.summary["reproduction_end"]["reproductive_capability_counts"],
+            {
+                "hybridization": 0,
+                "multi_offspring": 0,
+                "proto_role_differentiation": 0,
+                "sexual_reproduction": 0,
+                "xyz_expression": 0,
+            },
+        )
+        self.assertEqual(
+            result.summary["reproduction_end"]["mate_search_run_counts"],
+            runtime_reproduction.empty_reproduction_mate_search_counts(),
+        )
+        for agent in result.viewer["agent_catalog"].values():
+            group_id = str(agent["reproductive_group_id"])
+            self.assertIn(group_id, catalog["groups"])
+            self.assertEqual(agent["reproductive_stage"], STAGE0_ASEXUAL)
+            self.assertEqual(agent["reproductive_expression"], "asexual")
+        for group in catalog["groups"].values():
+            self.assertEqual(
+                sum(group["alive_stage_counts"].values()),
+                group["alive_member_count"],
+            )
+            self.assertEqual(
+                sum(group["alive_expression_counts"].values()),
+                group["alive_member_count"],
+            )
+
+    def test_reproductive_stage_classifies_proto_and_xyz_expression(self) -> None:
+        config = ReproductionConfig()
+        proto_x = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        proto_y = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=0.8,
+        )
+        proto_z = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=0.0,
+            plasticity=0.8,
+        )
+        xyz_x = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=-0.8,
+        )
+        xyz_y = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=0.8,
+        )
+        xyz_z = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=0.0,
+            plasticity=0.8,
+        )
+
+        self.assertEqual(
+            runtime_mating.reproductive_stage_for_genome(proto_x, config),
+            STAGE2_PROTO_ROLES,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(proto_x, config),
+            PROTO_X_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(proto_y, config),
+            PROTO_Y_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(proto_z, config),
+            PROTO_Z_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_stage_for_genome(xyz_x, config),
+            STAGE3_X_Y_Z,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(xyz_x, config),
+            X_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(xyz_y, config),
+            Y_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_expression_for_genome(xyz_z, config),
+            Z_EXPRESSION,
+        )
+        self.assertEqual(
+            runtime_mating.reproductive_capabilities_for_genome(xyz_z, config),
+            {
+                "sexual_reproduction": True,
+                "proto_role_differentiation": True,
+                "xyz_expression": True,
+                "hybridization": False,
+                "multi_offspring": False,
+            },
+        )
+
+    def test_proto_role_mating_requires_complementary_expression(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=6,
+                height=6,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        parent_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        same_role_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        compatible_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=0.8,
+        )
+
+        def place_role_agent(x: int, y: int, genome: Genome) -> Agent:
+            return self._place_ready_agent(
+                world,
+                x=x,
+                y=y,
+                lineage_id=1,
+                reproductive_group_id=1,
+                reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                    genome,
+                    config,
+                ),
+                reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                    genome,
+                    config,
+                ),
+                genome=genome,
+            )
+
+        parent = place_role_agent(2, 2, parent_genome)
+        same_role = place_role_agent(2, 3, same_role_genome)
+        compatible = place_role_agent(3, 2, compatible_genome)
+
+        self.assertFalse(
+            runtime_mating.expression_compatibility(parent, same_role, config)[0]
+        )
+        mate = runtime_mating.choose_same_group_mate(
+            parent,
+            world.agents.values(),
+            config=config,
+            biologically_ready=lambda agent: True,
+        )
+        report = runtime_mating.same_group_mate_search_report(
+            parent,
+            world.agents.values(),
+            config=config,
+            biologically_ready=lambda agent: True,
+        )
+
+        self.assertIsNotNone(mate)
+        self.assertEqual(mate.agent.agent_id, compatible.agent_id)
+        self.assertIsNotNone(report.selected)
+        self.assertEqual(report.selected.agent.agent_id, compatible.agent_id)
+        self.assertEqual(report.reason_counts["expression_incompatible"], 1)
+        self.assertEqual(report.constraint_counts["expression_incompatible"], 1)
+        self.assertEqual(report.expression_compatible_candidates, 1)
+        self.assertEqual(report.expression_incompatible_candidates, 1)
+        self.assertGreater(mate.compatibility_score, 0.0)
+
+    def test_mate_search_report_preserves_overlapping_constraints(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=4,
+            y=1,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+
+        report = runtime_mating.same_group_mate_search_report(
+            parent,
+            world.agents.values(),
+            config=config,
+            biologically_ready=lambda agent: agent.agent_id != partner.agent_id,
+        )
+
+        self.assertIsNone(report.selected)
+        self.assertEqual(report.same_group_candidates, 1)
+        self.assertEqual(report.same_group_sexual_candidates, 1)
+        self.assertEqual(report.in_radius_candidates, 0)
+        self.assertEqual(report.biologically_ready_candidates, 0)
+        self.assertEqual(report.reason_counts["partner_out_of_radius"], 1)
+        self.assertEqual(report.constraint_counts["partner_out_of_radius"], 1)
+        self.assertEqual(report.constraint_counts["partner_not_ready"], 1)
+        self.assertEqual(report.constraint_counts["expression_incompatible"], 1)
+
+    def test_reproduction_readiness_reports_role_stage_capabilities(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=6, height=6, max_agents=20)
+        )
+        config = world.config.reproduction
+        proto_x = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        xyz_z = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=0.0,
+            plasticity=0.8,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                proto_x,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                proto_x,
+                config,
+            ),
+            genome=proto_x,
+        )
+        self._place_ready_agent(
+            world,
+            x=3,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                xyz_z,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                xyz_z,
+                config,
+            ),
+            genome=xyz_z,
+        )
+
+        stats = world._reproduction_readiness_counts(world.alive_agents())
+
+        self.assertEqual(
+            stats["reproductive_stage_counts"],
+            {
+                STAGE2_PROTO_ROLES: 1,
+                STAGE3_X_Y_Z: 1,
+            },
+        )
+        self.assertEqual(
+            stats["reproductive_expression_counts"],
+            {
+                PROTO_X_EXPRESSION: 1,
+                Z_EXPRESSION: 1,
+            },
+        )
+        self.assertEqual(
+            stats["reproductive_capability_counts"],
+            {
+                "hybridization": 0,
+                "multi_offspring": 0,
+                "proto_role_differentiation": 2,
+                "sexual_reproduction": 2,
+                "xyz_expression": 1,
+            },
+        )
+        self.assertEqual(stats["biologically_ready_group_count"], 1)
+        self.assertEqual(stats["ready_group_count"], 1)
+
+    def test_xyz_plastic_expression_can_pair_with_fixed_expression(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=6,
+                height=6,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        x_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=-0.8,
+        )
+        z_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.78,
+            expression_bias=0.0,
+            plasticity=0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                x_genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                x_genome,
+                config,
+            ),
+            genome=x_genome,
+        )
+        plastic_partner = self._place_ready_agent(
+            world,
+            x=3,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                z_genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                z_genome,
+                config,
+            ),
+            genome=z_genome,
+        )
+
+        mate = runtime_mating.choose_same_group_mate(
+            parent,
+            world.agents.values(),
+            config=config,
+            biologically_ready=lambda agent: True,
+        )
+
+        self.assertIsNotNone(mate)
+        self.assertEqual(mate.agent.agent_id, plastic_partner.agent_id)
+        self.assertGreater(mate.compatibility_score, 0.0)
+
+    def test_reproductive_group_records_promote_to_highest_member_stage(self) -> None:
+        parent = Agent(
+            agent_id=1,
+            parent_id=None,
+            lineage_id=1,
+            birth_tick=0,
+            death_tick=None,
+            x=0,
+            y=0,
+            energy=1.0,
+            hydration=1.0,
+            health=1.0,
+            max_health=1.0,
+            injury_load=0.0,
+            age=10,
+            alive=True,
+            last_reproduction_tick=-10_000,
+            last_damage_source="none",
+            recent_plant_energy=0.0,
+            recent_fresh_kill_energy=0.0,
+            recent_carcass_energy=0.0,
+            genome_vector=(),
+            genome=self._mixed_genome(),
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+        )
+        child = replace(
+            parent,
+            agent_id=2,
+            parent_id=1,
+            reproductive_stage=STAGE3_X_Y_Z,
+            reproductive_expression=Z_EXPRESSION,
+        )
+        registry = {
+            1: runtime_reproduction.ReproductiveGroupRecord(
+                group_id=1,
+                founder_lineage_id=1,
+                founder_agent_id=1,
+                created_tick=0,
+                stage=STAGE1_FACULTATIVE_SEX,
+            )
+        }
+
+        runtime_reproduction.record_asexual_birth(registry, parent, child, tick=1)
+
+        self.assertEqual(registry[1].stage, STAGE3_X_Y_Z)
+
+    def test_role_mate_search_fallback_records_expression_incompatibility(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=6,
+                height=6,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+
+        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+
+        child = next(
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+        )
+        run_counts = world.run_reproduction_mate_search_counts
+        frame_stats = runtime_reproduction.build_frame_reproduction_stats(
+            world,
+            world.alive_agents(),
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
+        )
+
+        self.assertIsNone(child.secondary_parent_id)
+        self.assertEqual(run_counts["sexual_parent_candidates"], 1)
+        self.assertEqual(run_counts["sexual_searches"], 1)
+        self.assertEqual(run_counts["sexual_successes"], 0)
+        self.assertEqual(run_counts["asexual_fallbacks_after_sexual_candidate"], 1)
+        self.assertEqual(run_counts["candidate_expression_incompatible"], 1)
+        self.assertEqual(run_counts["fallback_expression_incompatible"], 1)
+        self.assertEqual(
+            world.tick_reproduction_mate_search_events[0]["fallback_reason"],
+            "expression_incompatible",
+        )
+        self.assertEqual(
+            frame_stats["mate_search_this_tick"]["fallback_expression_incompatible"],
+            1,
+        )
+        self.assertEqual(
+            frame_stats["mate_search_events"][0]["reason_counts"][
+                "expression_incompatible"
+            ],
+            1,
+        )
+        self.assertEqual(
+            frame_stats["mate_search_events"][0]["constraint_counts"][
+                "expression_incompatible"
+            ],
+            1,
+        )
+
+    def test_mate_search_diagnostics_skip_event_details_when_not_recording_ticks(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=6,
+                height=6,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        world.record_tick_details = False
+        config = world.config.reproduction
+        genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+
+        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+
+        self.assertEqual(world.tick_reproduction_mate_search_events, [])
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts[
+                "constraint_expression_incompatible"
+            ],
+            1,
+        )
+
+    def test_stage1_same_group_sexual_reproduction_uses_local_partner(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.2,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        genome = self._sexualized_genome(self._mixed_genome())
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        parent_energy = parent.energy
+        partner_energy = partner.energy
+
+        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+
+        child = next(
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+        )
+        parent_cost = world._sexual_reproduction_energy_cost(
+            world._trophic_profile(parent)
+        )
+        partner_cost = world._sexual_reproduction_energy_cost(
+            world._trophic_profile(partner)
+        )
+        event = world.events[-1].to_dict()
+        summary = world._build_summary(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertEqual(child.secondary_parent_id, partner.agent_id)
+        self.assertEqual(child.reproductive_group_id, 1)
+        self.assertEqual(parent.last_reproduction_tick, world.tick)
+        self.assertEqual(partner.last_reproduction_tick, world.tick)
+        self.assertAlmostEqual(parent.energy, parent_energy - parent_cost)
+        self.assertAlmostEqual(partner.energy, partner_energy - partner_cost)
+        self.assertEqual(
+            event["data"]["reproduction_mode"],
+            SEXUAL_REPRODUCTION_MODE,
+        )
+        self.assertEqual(event["data"]["parent_ids"], [parent.agent_id, partner.agent_id])
+        self.assertEqual(event["data"]["schema_version"], REPRODUCTION_EVENT_SCHEMA_VERSION)
+        self.assertEqual(event["data"]["parent_lineage_ids"], [1, 1])
+        self.assertEqual(event["data"]["parent_reproductive_group_ids"], [1, 1])
+        self.assertEqual(event["data"]["child_lineage_id"], child.lineage_id)
+        self.assertEqual(event["data"]["child_reproductive_group_id"], 1)
+        self.assertEqual(event["data"]["child_reproductive_stage"], child.reproductive_stage)
+        self.assertEqual(
+            event["data"]["child_reproductive_expression"],
+            child.reproductive_expression,
+        )
+        self.assertEqual(event["data"]["offspring_count"], 1)
+        self.assertEqual(event["data"]["mate_distance"], 1)
+        self.assertIsNotNone(event["data"]["compatibility_score"])
+        self.assertEqual(len(event["data"]["parent_energy_costs"]), 2)
+        self.assertEqual(
+            event["data"]["parent_energy_costs"][0],
+            {"agent_id": parent.agent_id, "energy_cost": round(parent_cost, 4)},
+        )
+        self.assertEqual(
+            event["data"]["parent_energy_costs"][1],
+            {"agent_id": partner.agent_id, "energy_cost": round(partner_cost, 4)},
+        )
+        self.assertEqual(
+            event["data"]["mind_inheritance"]["schema_version"],
+            MIND_INHERITANCE_PLACEHOLDER_VERSION,
+        )
+        self.assertEqual(summary["reproductive_groups_end"]["sexual_births"], 1)
+        self.assertEqual(summary["reproductive_groups_end"]["asexual_births"], 0)
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts["sexual_successes"],
+            1,
+        )
+        self.assertEqual(
+            world.tick_reproduction_mate_search_events[0]["selected_partner_id"],
+            partner.agent_id,
+        )
+        self.assertIsNone(
+            world.tick_reproduction_mate_search_events[0]["fallback_reason"]
+        )
+
+    def test_reproduction_phase_runs_signaling_and_birth_flow(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=5, height=5, max_agents=20)
+        )
+        parent = self._place_ready_agent(world, x=2, y=2)
+
+        births = runtime_reproduction.run_reproduction_phase(world)
+
+        child = next(
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+        )
+        self.assertEqual(births, 1)
+        self.assertEqual(world.births, 1)
+        self.assertEqual(world.tick_birth_pairs, [(parent.agent_id, child.agent_id)])
+        self.assertEqual(world.tick_signal_totals["reproductive_emissions"], 1.0)
+        self.assertEqual(world.run_signal_totals["reproductive_emissions"], 1.0)
+        self.assertEqual(len(world.tick_signal_emission_events), 1)
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts,
+            runtime_reproduction.empty_reproduction_mate_search_counts(),
+        )
+        self.assertEqual(
+            world.tick_signal_emission_events[0]["source_agent_id"],
+            parent.agent_id,
+        )
+
+    def test_stage1_sexual_reproduction_falls_back_without_same_group_partner(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=5, height=5, max_agents=20)
+        )
+        genome = self._sexualized_genome(self._mixed_genome())
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=2,
+            reproductive_group_id=2,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+
+        self.assertTrue(world._reproduce(parent))
+
+        child = next(
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+        )
+        event = world.events[-1].to_dict()
+        summary = world._build_summary(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertIsNone(child.secondary_parent_id)
+        self.assertEqual(event["data"]["reproduction_mode"], "asexual")
+        self.assertEqual(event["data"]["schema_version"], REPRODUCTION_EVENT_SCHEMA_VERSION)
+        self.assertEqual(event["data"]["parent_ids"], [parent.agent_id])
+        self.assertEqual(event["data"]["parent_lineage_ids"], [1])
+        self.assertEqual(event["data"]["parent_reproductive_group_ids"], [1])
+        self.assertEqual(event["data"]["child_lineage_id"], child.lineage_id)
+        self.assertEqual(event["data"]["offspring_count"], 1)
+        self.assertIsNone(event["data"]["compatibility_score"])
+        self.assertIsNone(event["data"]["inbreeding_penalty"])
+        self.assertEqual(len(event["data"]["parent_energy_costs"]), 1)
+        self.assertEqual(summary["reproductive_groups_end"]["sexual_births"], 0)
+        self.assertEqual(summary["reproductive_groups_end"]["asexual_births"], 1)
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts[
+                "fallback_no_same_group_partner"
+            ],
+            1,
+        )
+        self.assertEqual(
+            world.tick_reproduction_mate_search_events[0]["fallback_reason"],
+            "no_same_group_partner",
+        )
 
     def test_full_replay_records_mind_trajectory_contract(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
@@ -2111,7 +3497,31 @@ class RuntimeContractTests(unittest.TestCase):
             result.summary["mind_contracts"]["action_contract_version"],
             ACTION_CONTRACT_VERSION,
         )
+        self.assertEqual(
+            trajectory["reproductive_group_contract_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["reproductive_group_contract_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            trajectory["genome_recombination_contract_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["genome_recombination_contract_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
+        )
         self.assertIn(MATE_ACTION, trajectory["action_contract"]["reserved_action_keys"])
+        self.assertEqual(
+            trajectory["reproductive_group_contract"]["schema_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            trajectory["genome_recombination_contract"]["schema_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
+        )
         self.assertEqual(
             trajectory["observation_contract"]["schema_version"],
             OBSERVATION_SCHEMA_VERSION,
@@ -2166,6 +3576,46 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(first_record["reward"]["schema_version"], REWARD_SCHEMA_VERSION)
         self.assertIn("invalid_action_penalty", first_record["reward"]["components"])
         self.assertEqual(result.summary["mind_contracts"]["record_count"], len(records))
+
+    def test_full_replay_signal_contract_tracks_world_signal_config(self) -> None:
+        config = WorldConfig(
+            seed=7,
+            max_ticks=2,
+            signals=SignalConfig(
+                communication_token_count=2,
+                communication_profiles_per_token=3,
+                communication_signal_decay_rate=0.42,
+                max_signal_radius=5,
+                max_duration_ticks=12,
+            ),
+        )
+
+        result = SimulationWorld(config).run()
+        signal_contract = result.viewer["trajectory"]["observation_contract"][
+            "signal_contract"
+        ]
+
+        self.assertEqual(signal_contract["schema_version"], SIGNAL_CONTRACT_VERSION)
+        self.assertEqual(signal_contract["communication_token_count"], 2)
+        self.assertEqual(signal_contract["communication_profiles_per_token"], 3)
+        self.assertEqual(signal_contract["communication_signal_decay_rate"], 0.42)
+        self.assertEqual(signal_contract["max_signal_radius"], 5)
+        self.assertEqual(signal_contract["max_duration_ticks"], 12)
+        self.assertEqual(len(signal_contract["reserved_profiles"]), 6)
+        action_contract_payload = result.viewer["trajectory"]["action_contract"]
+        self.assertEqual(action_contract_payload["communication"]["token_count"], 2)
+        self.assertEqual(
+            action_contract_payload["communication"]["profiles_per_token"],
+            3,
+        )
+        self.assertIn(
+            "signal_1_profile_2",
+            action_contract_payload["reserved_action_keys"],
+        )
+        self.assertNotIn(
+            "signal_2_profile_0",
+            action_contract_payload["reserved_action_keys"],
+        )
 
     def test_species_centroid_units_are_explicit(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
@@ -2473,7 +3923,16 @@ class RuntimeContractTests(unittest.TestCase):
             "_build_viewer_payload",
             side_effect=AssertionError("trajectory summary mode should not build viewer payload"),
         ):
-            world = SimulationWorld(WorldConfig(seed=7, max_ticks=4))
+            world = SimulationWorld(
+                WorldConfig(
+                    seed=7,
+                    max_ticks=4,
+                    signals=SignalConfig(
+                        communication_token_count=2,
+                        communication_profiles_per_token=3,
+                    ),
+                )
+            )
             result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
 
         self.assertIsNone(result.viewer)
@@ -2491,7 +3950,16 @@ class RuntimeContractTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "trajectory.jsonl.gz"
             writer = JsonlTrajectoryWriter(output_path)
-            world = SimulationWorld(WorldConfig(seed=7, max_ticks=4))
+            world = SimulationWorld(
+                WorldConfig(
+                    seed=7,
+                    max_ticks=4,
+                    signals=SignalConfig(
+                        communication_token_count=2,
+                        communication_profiles_per_token=3,
+                    ),
+                )
+            )
 
             result = world.run(mode=RunMode.SUMMARY_ONLY, trajectory_sink=writer)
 
@@ -2517,10 +3985,40 @@ class RuntimeContractTests(unittest.TestCase):
             header["trajectory_contract"]["policy_interface_version"],
             POLICY_INTERFACE_VERSION,
         )
+        self.assertEqual(
+            header["trajectory_contract"]["reproductive_group_contract_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            header["trajectory_contract"]["genome_recombination_contract_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            header["trajectory_contract"]["observation_contract"]["signal_contract"][
+                "communication_token_count"
+            ],
+            2,
+        )
+        self.assertEqual(
+            len(
+                header["trajectory_contract"]["observation_contract"][
+                    "signal_contract"
+                ]["reserved_profiles"]
+            ),
+            6,
+        )
         self.assertEqual(footer["type"], "footer")
         self.assertEqual(
             footer["trajectory_summary"]["policy_interface_version"],
             POLICY_INTERFACE_VERSION,
+        )
+        self.assertEqual(
+            footer["trajectory_summary"]["reproductive_group_contract_version"],
+            REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            footer["trajectory_summary"]["genome_recombination_contract_version"],
+            GENOME_RECOMBINATION_CONTRACT_VERSION,
         )
         self.assertEqual(footer["trajectory_summary"]["record_count"], len(records))
         self.assertEqual(footer["summary"]["run_id"], result.summary["run_id"])

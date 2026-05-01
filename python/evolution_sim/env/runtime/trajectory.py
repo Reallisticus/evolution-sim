@@ -12,7 +12,15 @@ from evolution_sim.env.runtime.observations import (
     observation_contract,
 )
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
+from evolution_sim.env.runtime.reproduction import (
+    REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+    reproductive_group_contract,
+)
 from evolution_sim.env.runtime.state import Agent
+from evolution_sim.genome.recombination import (
+    GENOME_RECOMBINATION_CONTRACT_VERSION,
+    genome_recombination_contract,
+)
 
 TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1"
 REWARD_SCHEMA_VERSION = "mind_reward_v1"
@@ -79,17 +87,21 @@ class TrajectorySink(Protocol):
         ...
 
 
-def trajectory_contract() -> dict[str, object]:
+def trajectory_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": TRAJECTORY_SCHEMA_VERSION,
         "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
         "policy_interface_version": POLICY_INTERFACE_VERSION,
         "action_contract_version": ACTION_CONTRACT_VERSION,
+        "reproductive_group_contract_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        "genome_recombination_contract_version": GENOME_RECOMBINATION_CONTRACT_VERSION,
         "reward_schema_version": REWARD_SCHEMA_VERSION,
         "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
         "record_fields": list(TRAJECTORY_RECORD_FIELDS),
-        "action_contract": action_contract(),
-        "observation_contract": observation_contract(),
+        "action_contract": action_contract(signal_config),
+        "reproductive_group_contract": reproductive_group_contract(),
+        "genome_recombination_contract": genome_recombination_contract(),
+        "observation_contract": observation_contract(signal_config),
         "reward_contract": reward_contract(),
     }
 
@@ -307,23 +319,31 @@ def build_reward(
     }
 
 
-def build_trajectory_payload(records: list[dict[str, object]]) -> dict[str, object]:
+def build_trajectory_payload(
+    records: list[dict[str, object]],
+    *,
+    signal_config: Any | None = None,
+) -> dict[str, object]:
     stats = empty_trajectory_stats()
     for record in records:
         update_trajectory_stats(stats, record)
     return {
-        **trajectory_contract(),
+        **trajectory_contract(signal_config),
         **build_trajectory_summary_from_stats(stats),
         "records": records,
     }
 
 
-def build_trajectory_summary(records: list[dict[str, object]]) -> dict[str, object]:
+def build_trajectory_summary(
+    records: list[dict[str, object]],
+    *,
+    signal_config: Any | None = None,
+) -> dict[str, object]:
     stats = empty_trajectory_stats()
     for record in records:
         update_trajectory_stats(stats, record)
     payload = {
-        **trajectory_contract(),
+        **trajectory_contract(signal_config),
         **build_trajectory_summary_from_stats(stats),
     }
     return {
@@ -331,6 +351,12 @@ def build_trajectory_summary(records: list[dict[str, object]]) -> dict[str, obje
         "observation_schema_version": payload["observation_schema_version"],
         "policy_interface_version": payload["policy_interface_version"],
         "action_contract_version": payload["action_contract_version"],
+        "reproductive_group_contract_version": payload[
+            "reproductive_group_contract_version"
+        ],
+        "genome_recombination_contract_version": payload[
+            "genome_recombination_contract_version"
+        ],
         "reward_schema_version": payload["reward_schema_version"],
         "action_outcome_schema_version": payload["action_outcome_schema_version"],
         "record_count": payload["record_count"],

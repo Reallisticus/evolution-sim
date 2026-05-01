@@ -111,6 +111,7 @@ class Agent:
     recent_carcass_energy: float
     genome_vector: tuple[float, ...]
     genome: Genome
+    secondary_parent_id: int | None = None
     reproductive_group_id: int | None = None
     reproductive_stage: str = "stage0_asexual"
     reproductive_expression: str = "asexual"

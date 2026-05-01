@@ -27,6 +27,7 @@ def materialize_frame_surfaces(world: Any) -> dict[str, object]:
     ecology_codes, ecology_counts, ecology_stats = world._ecology_snapshot()
     hazard_type_codes, hazard_level_codes, hazard_counts, hazard_stats = world._hazard_snapshot()
     biotic_fields, biotic_field_stats = world._biotic_field_snapshot()
+    signal_fields, signal_field_stats = world._signal_field_snapshot()
     fresh_kill_energy_codes, fresh_kill_stats = world._fresh_kill_snapshot()
     carcass_energy_codes, carcass_freshness_codes, carcass_stats = world._carcass_snapshot()
 
@@ -96,6 +97,8 @@ def materialize_frame_surfaces(world: Any) -> dict[str, object]:
         ],
         "biotic_fields": biotic_fields,
         "biotic_field_stats": biotic_field_stats,
+        "signal_fields": signal_fields,
+        "signal_field_stats": signal_field_stats,
         "fresh_kill_energy_codes": fresh_kill_energy_codes,
         "fresh_kill_stats": fresh_kill_stats,
         "carcass_energy_codes": carcass_energy_codes,

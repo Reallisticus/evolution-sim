@@ -9,8 +9,8 @@ import struct
 from typing import Any
 import zlib
 
-from evolution_sim.env.runtime.action_contract import action_contract
-from evolution_sim.env.runtime.action_space import ACTION_NAMES, build_action_mask
+from evolution_sim.env.runtime.action_contract import action_contract, action_names
+from evolution_sim.env.runtime.action_space import build_action_mask
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_SIGNAL_FIELD,
     REPRODUCTIVE_SIGNAL_FIELD,
@@ -183,7 +183,7 @@ OBSERVATION_INPUT_VECTOR_SIZE = len(SELF_INPUT_FIELDS) + (
 )
 
 
-def observation_contract() -> dict[str, object]:
+def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "local_patch_radius": LOCAL_PATCH_RADIUS,
@@ -194,9 +194,9 @@ def observation_contract() -> dict[str, object]:
         "navigation_radius": NAVIGATION_RADIUS,
         "navigation_targets": list(NAVIGATION_TARGETS),
         "navigation_fields": list(NAVIGATION_FIELDS),
-        "action_names": list(ACTION_NAMES),
-        "action_contract": action_contract(),
-        "signal_contract": signal_contract(),
+        "action_names": list(action_names(signal_config)),
+        "action_contract": action_contract(signal_config),
+        "signal_contract": signal_contract(signal_config),
         "mind_inheritance_placeholder": {
             "schema_version": MIND_INHERITANCE_PLACEHOLDER_VERSION,
             "policy_visible": False,
@@ -231,6 +231,7 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
     tile = world.grid[agent.y][agent.x]
     hazard_type, hazard_level = world._hazard_at(agent.x, agent.y)
     biotic_state = world._current_biotic_state()
+    signal_state = world._current_signal_state()
     _record_runtime_cost(world, "action_mask_builds")
     action_mask = build_action_mask(world, agent)
     return {
@@ -258,14 +259,18 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
             "tile_recovery_debt": _round(tile.recovery_debt),
             "reproductive_stage": agent.reproductive_stage,
             "sexual_reproduction_unlocked": agent.reproductive_stage != "stage0_asexual",
-            REPRODUCTIVE_SIGNAL_FIELD: 0.0,
-            COMMUNICATION_SIGNAL_FIELD: 0.0,
+            REPRODUCTIVE_SIGNAL_FIELD: _round(
+                signal_state.reproductive_signal[agent.y][agent.x]
+            ),
+            COMMUNICATION_SIGNAL_FIELD: _round(
+                signal_state.communication_signal[agent.y][agent.x]
+            ),
             "mind_inheritance_available": bool(
                 agent.mind_inheritance_metadata.get("inherited_state", False)
             ),
         },
         "local_patch": [
-            _patch_cell(world, agent, dx, dy, biotic_state)
+            _patch_cell(world, agent, dx, dy, biotic_state, signal_state)
             for dy in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
             for dx in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
         ],
@@ -350,6 +355,7 @@ def _patch_cell(
     dx: int,
     dy: int,
     biotic_state: Any,
+    signal_state: Any,
 ) -> dict[str, object]:
     x = agent.x + dx
     y = agent.y + dy
@@ -405,8 +411,8 @@ def _patch_cell(
         "prey_biomass": _round(biotic_state.prey_biomass[y][x]),
         "carrion_signal": _round(biotic_state.carrion[y][x]),
         "predator_risk": _round(biotic_state.predator_risk[y][x]),
-        REPRODUCTIVE_SIGNAL_FIELD: 0.0,
-        COMMUNICATION_SIGNAL_FIELD: 0.0,
+        REPRODUCTIVE_SIGNAL_FIELD: _round(signal_state.reproductive_signal[y][x]),
+        COMMUNICATION_SIGNAL_FIELD: _round(signal_state.communication_signal[y][x]),
     }
 
 

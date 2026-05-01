@@ -1,4 +1,5 @@
 import * as PIXI from "./vendor/pixi.min.mjs";
+import { validateReplayPayload } from "./replay_validator.mjs";
 
 const state = {
   payload: null,
@@ -68,24 +69,6 @@ const elements = {
   canvasHost: document.getElementById("canvas-host"),
 };
 
-const REQUIRED_AGENT_FIELDS = [
-  "agent_id",
-  "x",
-  "y",
-  "energy",
-  "hydration",
-  "health",
-  "health_ratio",
-  "injury_load",
-  "age",
-  "energy_modifier",
-  "hydration_modifier",
-  "trophic_role",
-  "last_damage_source",
-  "water_access_reason",
-  "species_id",
-];
-
 const HYDROLOGY_SUPPORT_BITS = {
   adjacent_to_water: 1,
   wetland: 2,
@@ -134,8 +117,12 @@ function bindEvents() {
   elements.replayFile.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    loadReplay(JSON.parse(text), file.name);
+    try {
+      const text = await file.text();
+      loadReplay(JSON.parse(text), file.name);
+    } catch (error) {
+      setStatus(`Failed to load replay: ${error.message}`);
+    }
   });
 
   elements.timeline.addEventListener("input", () => {
@@ -297,9 +284,15 @@ function drawTerrain() {
           color: overlayColor,
           alpha:
             isWaterTile &&
-            ["hydrology", "shoreline", "refuge", "hazard", "carcass", "ecology"].includes(
-              state.overlayMode,
-            )
+            [
+              "hydrology",
+              "shoreline",
+              "refuge",
+              "hazard",
+              "carcass",
+              "reproductive_signal",
+              "ecology",
+            ].includes(state.overlayMode)
               ? 0.84
               : 0.72,
         });
@@ -566,6 +559,10 @@ function updateInspector() {
     isAliveNow ? (frame.hazard_level_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
   const currentCarcassEnergy =
     isAliveNow ? (frame.carcass_energy_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
+  const currentReproductiveSignal =
+    isAliveNow ? frame.signal_fields?.reproductive_signal?.[current.y]?.[current.x] ?? 0 : null;
+  const currentCommunicationSignal =
+    isAliveNow ? frame.signal_fields?.communication_signal?.[current.y]?.[current.x] ?? 0 : null;
   const currentCarcassPatch =
     isAliveNow
       ? frame.carcass_patches?.find((patch) => patch.x === current.x && patch.y === current.y) ?? null
@@ -628,6 +625,8 @@ function updateInspector() {
     ["Last Damage Source", isAliveNow ? titleCase(current.lastDamageSource ?? "none") : "-"],
     ["Hazard Here", currentHazardType ? titleCase(currentHazardType) : "-"],
     ["Hazard Level", isAliveNow ? formatPercent(currentHazardLevel ?? 0) : "-"],
+    ["Reproductive Signal Here", isAliveNow ? roundValue(currentReproductiveSignal ?? 0) : "-"],
+    ["Communication Signal Here", isAliveNow ? roundValue(currentCommunicationSignal ?? 0) : "-"],
     ["Carcass Here", isAliveNow ? roundValue(currentCarcassEnergy ?? 0) : "-"],
     ["Carcass Freshness", currentCarcassPatch ? formatPercent(currentCarcassPatch.avg_freshness ?? 0) : "-"],
     ["Carcass Deposits", currentCarcassPatch?.deposit_count ?? "-"],
@@ -1501,6 +1500,17 @@ function carcassColor(energyCode, freshnessCode, terrainCode) {
   return blendColor(0x5b2c06, 0xfbbf24, energy * 0.55 + freshness * 0.45);
 }
 
+function signalColor(value, terrainCode) {
+  if (terrainCode === terrainCodeByName("water")) {
+    return terrainColor(terrainCodeByName("water"));
+  }
+  const intensity = clamp01(Number(value ?? 0));
+  if (intensity <= 0) {
+    return blendColor(0x1f2937, terrainBaseColor(terrainCode), 0.5);
+  }
+  return blendColor(0x0f172a, 0x2dd4bf, Math.sqrt(intensity));
+}
+
 function trophicColor(code, terrainCode) {
   if (terrainCode === terrainCodeByName("water")) {
     return terrainColor(terrainCodeByName("water"));
@@ -1588,6 +1598,9 @@ function overlayColorForTile(payload, frame, x, y, terrainCode) {
       terrainCode,
     );
   }
+  if (state.overlayMode === "reproductive_signal") {
+    return signalColor(frame.signal_fields?.reproductive_signal?.[y]?.[x], terrainCode);
+  }
   if (state.overlayMode === "trophic") {
     return trophicColor(frame.trophic_role_codes?.[y]?.[x] ?? 0, terrainCode);
   }
@@ -1606,6 +1619,9 @@ function overlayColorForTile(payload, frame, x, y, terrainCode) {
 function effectiveFieldValue(payload, frame, fieldName, x, y) {
   if (fieldName === "habitat") {
     return frame.habitat_state_codes?.[y]?.[x] ?? 0;
+  }
+  if (fieldName === "reproductive_signal" || fieldName === "communication_signal") {
+    return frame.signal_fields?.[fieldName]?.[y]?.[x] ?? 0;
   }
   const base = payload.viewer.map.base_tile_fields ?? payload.viewer.map.environment_fields;
   const config = payload.config?.environment ?? {};
@@ -1817,54 +1833,6 @@ function blendColor(start, end, ratio) {
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
-}
-
-function validateReplayPayload(payload) {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("Replay payload must be a JSON object.");
-  }
-  if (!payload.summary || typeof payload.summary !== "object") {
-    throw new Error("Replay payload is missing summary data.");
-  }
-  if (!payload.viewer || typeof payload.viewer !== "object") {
-    throw new Error("Replay payload is missing viewer data.");
-  }
-
-  const { viewer } = payload;
-  if (!Array.isArray(viewer.frames) || viewer.frames.length === 0) {
-    throw new Error("Replay viewer.frames must be a non-empty array.");
-  }
-  if (!viewer.map || !Array.isArray(viewer.map.terrain_codes)) {
-    throw new Error("Replay viewer.map is missing terrain codes.");
-  }
-  if (!Array.isArray(viewer.agent_encoding)) {
-    throw new Error("Replay viewer.agent_encoding must be an array.");
-  }
-  for (const [index, frame] of viewer.frames.entries()) {
-    if (!frame || typeof frame !== "object") {
-      throw new Error(`Replay frame ${index} must be an object.`);
-    }
-    if (!Array.isArray(frame.agents)) {
-      throw new Error(`Replay frame ${index} is missing agents.`);
-    }
-    if (!Array.isArray(frame.species_counts)) {
-      throw new Error(`Replay frame ${index} is missing species_counts.`);
-    }
-  }
-
-  for (const field of REQUIRED_AGENT_FIELDS) {
-    if (!viewer.agent_encoding.includes(field)) {
-      throw new Error(`Replay agent encoding is missing required field ${field}.`);
-    }
-  }
-  if (!viewer.agent_catalog || typeof viewer.agent_catalog !== "object") {
-    throw new Error("Replay viewer.agent_catalog must be an object.");
-  }
-  if (!viewer.species_catalog || typeof viewer.species_catalog !== "object") {
-    throw new Error("Replay viewer.species_catalog must be an object.");
-  }
-
-  return payload;
 }
 
 function buildEncodingMap(fields) {

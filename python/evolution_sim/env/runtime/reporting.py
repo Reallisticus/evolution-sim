@@ -26,6 +26,7 @@ DIET_SERIES_METRICS = (
     "carcass_energy_share",
 )
 BIOTIC_FIELD_NAMES = ("prey_biomass", "carrion", "predator_risk")
+SIGNAL_FIELD_NAMES = ("reproductive_signal", "communication_signal")
 
 
 @dataclass(frozen=True, slots=True)
@@ -806,6 +807,24 @@ def build_replay_analytics(
                 for metric in ("avg", "max")
             }
             for field_name in BIOTIC_FIELD_NAMES
+        },
+        "signal_fields": {
+            field_name: {
+                metric: [
+                    frame["signal_field_stats"][field_name][metric] for frame in frames
+                ]
+                for metric in ("avg", "max", "active_tiles")
+            }
+            for field_name in SIGNAL_FIELD_NAMES
+        },
+        "signal_flow": {
+            "reproductive_emissions": [
+                frame["signal_flow"]["reproductive_emissions"] for frame in frames
+            ],
+            "communication_emissions": [
+                frame["signal_flow"]["communication_emissions"] for frame in frames
+            ],
+            "energy_spent": [frame["signal_flow"]["energy_spent"] for frame in frames],
         },
         "fresh_kill": {
             "fresh_kill_tiles": [

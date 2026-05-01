@@ -6,14 +6,17 @@ from evolution_sim.env.runtime.action_contract import (
     ACTION_NAMES,
     ATTACK_ACTIONS,
     MOVEMENT_ACTIONS,
+    action_names,
+    communication_action_names,
 )
+import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.runtime.state import Agent
 
 
 def build_action_mask(world: Any, agent: Agent) -> dict[str, bool]:
     profile = world._trophic_profile(agent)
     tile = world.grid[agent.y][agent.x]
-    mask = {action: False for action in ACTION_NAMES}
+    mask = {action: False for action in action_names(world.config.signals)}
     mask["stay"] = True
     mask["eat"] = _can_eat(world, agent, tile, profile)
     mask["drink"] = world._has_water_access(agent)
@@ -23,6 +26,10 @@ def build_action_mask(world: Any, agent: Agent) -> dict[str, bool]:
         y = agent.y + dy
         mask[action] = world._can_move_to(x, y)
         mask[action.replace("move_", "attack_")] = _can_attack_tile(world, agent, x, y)
+    for action in communication_action_names(world.config.signals):
+        mask[action] = runtime_signals.communication_signal_action_available(
+            world, agent, action
+        )
     return mask
 
 
