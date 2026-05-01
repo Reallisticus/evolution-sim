@@ -1,4 +1,5 @@
 import * as PIXI from "./vendor/pixi.min.mjs";
+import { validateReplayPayload } from "./replay_validator.mjs";
 
 const state = {
   payload: null,
@@ -68,24 +69,6 @@ const elements = {
   canvasHost: document.getElementById("canvas-host"),
 };
 
-const REQUIRED_AGENT_FIELDS = [
-  "agent_id",
-  "x",
-  "y",
-  "energy",
-  "hydration",
-  "health",
-  "health_ratio",
-  "injury_load",
-  "age",
-  "energy_modifier",
-  "hydration_modifier",
-  "trophic_role",
-  "last_damage_source",
-  "water_access_reason",
-  "species_id",
-];
-
 const HYDROLOGY_SUPPORT_BITS = {
   adjacent_to_water: 1,
   wetland: 2,
@@ -134,8 +117,12 @@ function bindEvents() {
   elements.replayFile.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    loadReplay(JSON.parse(text), file.name);
+    try {
+      const text = await file.text();
+      loadReplay(JSON.parse(text), file.name);
+    } catch (error) {
+      setStatus(`Failed to load replay: ${error.message}`);
+    }
   });
 
   elements.timeline.addEventListener("input", () => {
@@ -1846,54 +1833,6 @@ function blendColor(start, end, ratio) {
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
-}
-
-function validateReplayPayload(payload) {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("Replay payload must be a JSON object.");
-  }
-  if (!payload.summary || typeof payload.summary !== "object") {
-    throw new Error("Replay payload is missing summary data.");
-  }
-  if (!payload.viewer || typeof payload.viewer !== "object") {
-    throw new Error("Replay payload is missing viewer data.");
-  }
-
-  const { viewer } = payload;
-  if (!Array.isArray(viewer.frames) || viewer.frames.length === 0) {
-    throw new Error("Replay viewer.frames must be a non-empty array.");
-  }
-  if (!viewer.map || !Array.isArray(viewer.map.terrain_codes)) {
-    throw new Error("Replay viewer.map is missing terrain codes.");
-  }
-  if (!Array.isArray(viewer.agent_encoding)) {
-    throw new Error("Replay viewer.agent_encoding must be an array.");
-  }
-  for (const [index, frame] of viewer.frames.entries()) {
-    if (!frame || typeof frame !== "object") {
-      throw new Error(`Replay frame ${index} must be an object.`);
-    }
-    if (!Array.isArray(frame.agents)) {
-      throw new Error(`Replay frame ${index} is missing agents.`);
-    }
-    if (!Array.isArray(frame.species_counts)) {
-      throw new Error(`Replay frame ${index} is missing species_counts.`);
-    }
-  }
-
-  for (const field of REQUIRED_AGENT_FIELDS) {
-    if (!viewer.agent_encoding.includes(field)) {
-      throw new Error(`Replay agent encoding is missing required field ${field}.`);
-    }
-  }
-  if (!viewer.agent_catalog || typeof viewer.agent_catalog !== "object") {
-    throw new Error("Replay viewer.agent_catalog must be an object.");
-  }
-  if (!viewer.species_catalog || typeof viewer.species_catalog !== "object") {
-    throw new Error("Replay viewer.species_catalog must be an object.");
-  }
-
-  return payload;
 }
 
 function buildEncodingMap(fields) {

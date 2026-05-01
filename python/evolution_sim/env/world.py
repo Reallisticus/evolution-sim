@@ -219,6 +219,7 @@ class SimulationWorld:
         self.cached_biotic_state: BioticFieldState | None = None
         self.reproductive_signal_emissions: list[runtime_signals.SignalEmission] = []
         self.communication_signal_emissions: list[runtime_signals.SignalEmission] = []
+        self.tick_signal_emission_events: list[dict[str, object]] = []
         self.tick_signal_totals = runtime_signals.empty_signal_totals()
         self.run_signal_totals = runtime_signals.empty_signal_totals()
         self.signal_state_revision = 0
@@ -314,7 +315,9 @@ class SimulationWorld:
                 trajectory_sink.begin(
                     run_id=self.run_id,
                     config=self.config.to_dict(),
-                    contract=runtime_trajectory.trajectory_contract(),
+                    contract=runtime_trajectory.trajectory_contract(
+                        self.config.signals
+                    ),
                 )
             self._emit(EventType.RUN_STARTED, data={"run_id": self.run_id})
             for tick in range(self.config.max_ticks):
@@ -378,6 +381,7 @@ class SimulationWorld:
         self.tick_carcass_deposited_energy = 0.0
         self.tick_feeding_events = []
         self.tick_trajectory_records = []
+        self.tick_signal_emission_events = []
         self.tick_signal_totals = runtime_signals.empty_signal_totals()
         self.tick_animal_resource_consumption_by_meat_mode = (
             self._empty_grouped_animal_resource_consumption_counts(MEAT_MODE_CODES)
@@ -463,18 +467,7 @@ class SimulationWorld:
                 acted_trajectory_agent_ids.add(agent_id)
             self._invalidate_biotic_state()
 
-        self._emit_reproductive_readiness_signals(self.alive_agents())
-
-        for agent_id in sorted(self.agents):
-            agent = self.agents[agent_id]
-            if not agent.alive:
-                continue
-            reproduction_block_reason = self._reproduction_block_reason(agent)
-            if reproduction_block_reason is None:
-                if self._reproduce(agent):
-                    births_this_tick += 1
-            elif reproduction_block_reason != "biological":
-                self._record_reproduction_blocked(agent, reproduction_block_reason)
+        births_this_tick = runtime_reproduction.run_reproduction_phase(self)
 
         for agent_id in sorted(self.agents):
             agent = self.agents[agent_id]
@@ -1314,12 +1307,6 @@ class SimulationWorld:
 
     def _decay_signal_emissions(self) -> None:
         runtime_signals.decay_signal_emissions(self)
-
-    def _emit_reproductive_readiness_signals(
-        self,
-        agents: list[Agent],
-    ) -> dict[str, object]:
-        return runtime_signals.emit_reproductive_readiness_signals(self, agents)
 
     @staticmethod
     def _merge_fresh_kill_deposit_group(deposits: list[FreshKillDeposit]) -> FreshKillDeposit:
@@ -4124,6 +4111,11 @@ class SimulationWorld:
             return False, outcome
         if action == "stay":
             return False, outcome
+        if action.startswith("signal_"):
+            outcome["signal"] = runtime_signals.emit_communication_signal_action(
+                self, agent, action
+            )
+            return False, outcome
         if action.startswith("attack_"):
             for candidate, dx, dy in self._movement_actions():
                 if action != candidate.replace("move_", "attack_"):
@@ -5830,6 +5822,9 @@ class SimulationWorld:
                 "signal_flow": runtime_signals.finalize_signal_totals(
                     self.tick_signal_totals
                 ),
+                "signal_emissions": runtime_signals.signal_emission_debug_snapshot(
+                    self
+                ),
                 "habitat_state_counts": surfaces["habitat_counts"],
                 "habitat_state_codes": surfaces["habitat_codes"],
                 "hydrology_primary_counts": surfaces["hydrology_primary_counts"],
@@ -6356,7 +6351,10 @@ class SimulationWorld:
             species_ids=sorted(self.species_registry),
         )
     def _build_trajectory_payload(self) -> dict[str, object]:
-        return runtime_trajectory.build_trajectory_payload(self.trajectory_records)
+        return runtime_trajectory.build_trajectory_payload(
+            self.trajectory_records,
+            signal_config=self.config.signals,
+        )
 
     def _build_collapse_events(
         self,
@@ -6580,7 +6578,8 @@ class SimulationWorld:
                 {
                     "taxonomy_mode": REPLAY_TAXONOMY_MODE,
                     "mind_contracts": runtime_trajectory.build_trajectory_summary(
-                        self.trajectory_records
+                        self.trajectory_records,
+                        signal_config=self.config.signals,
                     ),
                     "species_created": len(self.species_registry),
                     "alive_species_count": len(self.current_species_records),

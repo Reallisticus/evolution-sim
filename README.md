@@ -84,12 +84,14 @@ names, species labels, or signal meanings to the Mind.
 Implemented Foundation cleanup pieces currently include the masked
 `ActionContract` slots, reproductive signal contract/config scaffolding,
 biology-gated reproductive readiness signal emission with deterministic
-decay/diffusion, reproductive genome mutation traits, Stage 0 reproductive-group
-summary/replay registry, Stage 1 same-group facultative sexed reproduction,
-grouped genome recombination helper contracts, and placeholder learned-state
-inheritance metadata. The `mate` action remains reserved and masked; Stage 1 is
-biology-gated, not policy-driven. Communication signal slots remain reserved and
-opaque while the first live signal field is limited to reproductive readiness.
+decay/diffusion, debug-only signal profile/provenance metadata in full replay,
+reproductive genome mutation traits, Stage 0 reproductive-group summary/replay
+registry, Stage 1 same-group facultative sexed reproduction, grouped genome
+recombination helper contracts, and placeholder learned-state inheritance
+metadata. The `mate` action remains reserved and masked; Stage 1 is
+biology-gated, not policy-driven. Communication signal slots remain opaque and
+disabled by default, with an opt-in trait-gated emission path covered by tests;
+the default heuristic still never emits communication tokens.
 
 ## Test
 
@@ -146,6 +148,8 @@ Smoke-check the viewer:
 
 ```bash
 cd /Users/njm/Projects/evolution-sim
+npm run viewer:validate
+npm run viewer:smoke:malformed
 npm run viewer:smoke
 ```
 
@@ -159,6 +163,8 @@ npm run sim:test
 npm run sim:gate:quick
 npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json
 npm run sim:inspect output/sim-runs/species-check.json
+npm run viewer:validate
+npm run viewer:smoke:malformed
 REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke
 ```
 

@@ -1,12 +1,15 @@
 import { chromium } from "playwright";
+import { ensureViewerServer, stopViewerServer } from "./smoke_server.mjs";
 
 const replayPath = process.env.REPLAY_PATH ?? "../output/sim-runs/species-check.json";
 const viewerUrl = `http://127.0.0.1:4173/viewer/index.html?replay=${encodeURIComponent(replayPath)}`;
 
-const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+const viewerServer = await ensureViewerServer();
+let browser;
 
 try {
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   await page.goto(viewerUrl, { waitUntil: "networkidle" });
   await page.waitForFunction(() => window.__viewerDebug?.loaded === true);
   await page.waitForFunction(() => window.__viewerDebug?.frame?.agents?.length > 0);
@@ -215,5 +218,8 @@ try {
   const selectedAgentId = await page.evaluate(() => window.__viewerDebug?.selectedAgentId);
   console.log(`viewer_smoke_ok selected_agent=${selectedAgentId} final_frame=${frameCount - 1}`);
 } finally {
-  await browser.close();
+  if (browser) {
+    await browser.close();
+  }
+  await stopViewerServer(viewerServer);
 }

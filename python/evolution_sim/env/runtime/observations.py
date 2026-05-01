@@ -9,8 +9,8 @@ import struct
 from typing import Any
 import zlib
 
-from evolution_sim.env.runtime.action_contract import action_contract
-from evolution_sim.env.runtime.action_space import ACTION_NAMES, build_action_mask
+from evolution_sim.env.runtime.action_contract import action_contract, action_names
+from evolution_sim.env.runtime.action_space import build_action_mask
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_SIGNAL_FIELD,
     REPRODUCTIVE_SIGNAL_FIELD,
@@ -183,7 +183,7 @@ OBSERVATION_INPUT_VECTOR_SIZE = len(SELF_INPUT_FIELDS) + (
 )
 
 
-def observation_contract() -> dict[str, object]:
+def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "local_patch_radius": LOCAL_PATCH_RADIUS,
@@ -194,9 +194,9 @@ def observation_contract() -> dict[str, object]:
         "navigation_radius": NAVIGATION_RADIUS,
         "navigation_targets": list(NAVIGATION_TARGETS),
         "navigation_fields": list(NAVIGATION_FIELDS),
-        "action_names": list(ACTION_NAMES),
-        "action_contract": action_contract(),
-        "signal_contract": signal_contract(),
+        "action_names": list(action_names(signal_config)),
+        "action_contract": action_contract(signal_config),
+        "signal_contract": signal_contract(signal_config),
         "mind_inheritance_placeholder": {
             "schema_version": MIND_INHERITANCE_PLACEHOLDER_VERSION,
             "policy_visible": False,

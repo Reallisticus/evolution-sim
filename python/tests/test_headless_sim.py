@@ -86,6 +86,10 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertIn("signal_fields", result.viewer["frames"][-1])
         self.assertIn("signal_field_stats", result.viewer["frames"][-1])
         self.assertIn("signal_flow", result.viewer["frames"][-1])
+        self.assertIn("signal_emissions", result.viewer["frames"][-1])
+        self.assertFalse(
+            result.viewer["frames"][-1]["signal_emissions"]["policy_visible"]
+        )
         self.assertIn("fresh_kill_energy_codes", result.viewer["frames"][-1])
         self.assertIn("fresh_kill_stats", result.viewer["frames"][-1])
         self.assertIn("fresh_kill_patches", result.viewer["frames"][-1])

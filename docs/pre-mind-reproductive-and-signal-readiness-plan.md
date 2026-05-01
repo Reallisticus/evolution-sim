@@ -43,9 +43,12 @@ Implemented slices as of 2026-04-30:
 - Stage 1 same-group facultative sexed reproduction, trait-gated and local, with
   grouped recombination, both-parent cost/cooldown, dual-parent replay metadata,
   and asexual fallback when no valid partner exists.
+- Signal contract v2 profile/provenance metadata for the reproductive readiness
+  field, including debug-only source agent IDs, profile IDs, source positions,
+  radius, duration, decay, and energy-cost data in full replay frames.
 
-Not implemented yet: pheromone fields, X/Y/Z-like expression, hybridization,
-multi-offspring strategies, or learned state inheritance.
+Not implemented yet: default/emergent communication use, X/Y/Z-like expression,
+hybridization, multi-offspring strategies, or learned state inheritance.
 
 ## Non-Goals
 
@@ -162,6 +165,12 @@ Each signal emission should have:
 Internally, the substrate can be continuous. Policy-facing emission control
 should begin as discrete profiles so the action contract stays manageable.
 
+Current implementation status: the live reproductive readiness signal uses
+`foundation_signal_contract_v2`. Full replay frames carry per-tick debug
+emission metadata with source agent ID, profile ID, source position, intensity,
+radius, duration, decay, and energy cost. Policy observations still expose only
+opaque numeric local signal values.
+
 Signal physics must be deterministic for a fixed seed.
 
 ## Pheromones
@@ -183,7 +192,8 @@ Current implementation status: the reproductive-readiness field is live on the
 default Foundation path. It is emitted automatically by biologically ready
 agents, diffuses deterministically across land tiles, decays by config, can
 charge a configured energy cost, and is surfaced as opaque numeric observation
-and replay data. It does not drive scripted movement or unmask any policy action.
+data plus debug-only replay provenance. It does not drive scripted movement or
+unmask any policy action.
 
 Pheromones should primarily signal readiness. A small self-stabilizing component
 can be allowed for local scarcity, reproductive-group scarcity, or role
@@ -216,6 +226,18 @@ Default behavior:
 
 This lets communication become a learned/evolved phenomenon later without
 requiring a replay/action schema rewrite.
+
+Current implementation status: communication profiles are reserved in the signal
+contract as opaque token/profile slots and have a separate decay-rate config
+field. The observation and trajectory contracts are generated from the active
+`SignalConfig`, and reserved action keys/masks now use the same configured
+token/profile counts. Replay and streaming trajectory metadata therefore cannot
+declare a different communication capacity than the policy-facing action
+surface. An opt-in `communication_signal_emission_enabled` path can unmask
+trait-gated opaque signal actions and emit numeric communication fields with
+debug-only provenance; the default Foundation config keeps communication
+emission disabled, the token/profile counts are explicitly bounded, and the
+default heuristic never emits communication tokens.
 
 ## Genome Structure
 
@@ -564,17 +586,21 @@ X/Y/Z and hybridization slices:
    as a rare facultative path: individuals can unlock it through reproductive
    gene mutation, both local same-group parents must be biologically ready, both
    pay cost/cooldown, and current asexual reproduction remains the fallback.
-5. Reproductive runtime cleanup before signal substrate. Extract reproductive
-   eligibility, child construction, mate selection orchestration, accounting,
-   and readiness reporting out of `world.py` behind a narrow runtime boundary,
-   without changing replay/golden semantics.
+5. Reproductive runtime cleanup before signal substrate. Implemented: the
+   reproductive runtime owns eligibility, child construction, mate selection
+   orchestration, accounting, readiness reporting, and the tick-level
+   reproductive signaling/birth phase behind a narrow boundary, without
+   changing replay/golden semantics.
 6. Pheromone substrate with readiness emissions and numeric sensing.
    Implemented for the reproductive-readiness path: biologically ready agents
    emit deterministic numeric fields with configured intensity, radius, duration,
    decay, and energy-cost hooks. Observations, replay frames, summary metrics,
    analytics, and the viewer expose the field. Communication tokens remain
    reserved and opaque.
-7. Communication substrate with trait-gated opaque emission.
+7. Communication substrate with trait-gated opaque emission. Implemented as an
+   opt-in config path: communication actions remain disabled by default, but can
+   be unmasked by `SignalConfig` plus agent signal-emission traits and emit
+   opaque numeric fields without simulator-assigned token meanings.
 8. X/Y/Z stage system.
 9. Rare multi-offspring sexed strategy.
 10. Late hybridization/introgression.

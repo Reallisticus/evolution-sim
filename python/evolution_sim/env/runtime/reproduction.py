@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 import evolution_sim.env.runtime.mating as runtime_mating
+import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
 from evolution_sim.env.runtime.state import (
     Agent,
@@ -447,6 +448,27 @@ def reproduction_block_reason(world: Any, agent: Agent) -> str | None:
 
 def is_reproduction_ready(world: Any, agent: Agent) -> bool:
     return reproduction_block_reason(world, agent) is None
+
+
+def run_reproduction_phase(world: Any) -> int:
+    """Run reproductive signaling and births for one tick."""
+
+    runtime_signals.emit_reproductive_readiness_signals(
+        world,
+        world.alive_agents(),
+    )
+    births_this_tick = 0
+    for agent_id in sorted(world.agents):
+        agent = world.agents[agent_id]
+        if not agent.alive:
+            continue
+        block_reason = reproduction_block_reason(world, agent)
+        if block_reason is None:
+            if reproduce(world, agent):
+                births_this_tick += 1
+        elif block_reason != "biological":
+            record_reproduction_blocked(world, agent, block_reason)
+    return births_this_tick
 
 
 def record_reproduction_blocked(world: Any, agent: Agent, reason: str) -> None:

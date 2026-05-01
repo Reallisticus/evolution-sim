@@ -25,6 +25,7 @@ from evolution_sim.env.runtime.observations import (
     validate_observation_input_payload,
 )
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
+from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
 from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
@@ -1079,6 +1080,67 @@ def _mind_contract_flags(
                     "Observation contract does not declare the canonical policy input encoder.",
                 )
             )
+        signal_contract = observation_contract.get("signal_contract")
+        signal_metadata_fields = (
+            signal_contract.get("emission_debug_metadata_fields")
+            if isinstance(signal_contract, dict)
+            else None
+        )
+        required_signal_metadata_fields = {
+            "profile_id",
+            "source_agent_id",
+            "token_id",
+            "profile_index",
+            "radius",
+            "decay_rate",
+            "energy_cost",
+        }
+        if (
+            not isinstance(signal_contract, dict)
+            or signal_contract.get("schema_version") != SIGNAL_CONTRACT_VERSION
+            or signal_contract.get("profile_metadata_policy_visible") is not False
+            or not isinstance(signal_metadata_fields, list)
+            or not required_signal_metadata_fields.issubset(signal_metadata_fields)
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.trajectory.observation_contract.signal_contract",
+                    "Signal contract does not declare debug-only profile/provenance metadata.",
+                )
+            )
+        elif isinstance(observation_contract, dict):
+            flags.extend(
+                _signal_action_capacity_flags(
+                    scope=scope,
+                    trajectory=trajectory,
+                    observation_contract=observation_contract,
+                    signal_contract=signal_contract,
+                )
+            )
+    frames = viewer.get("frames")
+    last_frame = frames[-1] if isinstance(frames, list) and frames else None
+    signal_emissions = (
+        last_frame.get("signal_emissions")
+        if isinstance(last_frame, dict)
+        else None
+    )
+    if (
+        not isinstance(signal_emissions, dict)
+        or signal_emissions.get("schema_version") != SIGNAL_CONTRACT_VERSION
+        or signal_emissions.get("policy_visible") is not False
+        or not isinstance(signal_emissions.get("events"), list)
+        or not isinstance(signal_emissions.get("active_counts"), dict)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.frames.signal_emissions",
+                "Full replay frames are missing versioned signal emission debug metadata.",
+            )
+        )
     records = trajectory.get("records")
     reward_contract = trajectory.get("reward_contract")
     if (
@@ -1190,6 +1252,108 @@ def _mind_contract_flags(
                 )
             )
     return flags
+
+
+def _signal_action_capacity_flags(
+    *,
+    scope: str,
+    trajectory: dict[str, object],
+    observation_contract: dict[str, object],
+    signal_contract: dict[str, object],
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    token_count = _as_optional_int(signal_contract.get("communication_token_count"))
+    profiles_per_token = _as_optional_int(
+        signal_contract.get("communication_profiles_per_token")
+    )
+    reserved_profiles = signal_contract.get("reserved_profiles")
+    if token_count is None or profiles_per_token is None:
+        return [
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.observation_contract.signal_contract",
+                "Signal contract does not declare communication profile capacity.",
+            )
+        ]
+
+    expected_actions = [
+        f"signal_{token_index}_profile_{profile_index}"
+        for token_index in range(token_count)
+        for profile_index in range(profiles_per_token)
+    ]
+    if (
+        not isinstance(reserved_profiles, list)
+        or len(reserved_profiles) != len(expected_actions)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.observation_contract.signal_contract.reserved_profiles",
+                "Signal contract reserved profile count does not match communication capacity.",
+            )
+        )
+
+    for path, action_contract in (
+        ("viewer.trajectory.action_contract", trajectory.get("action_contract")),
+        (
+            "viewer.trajectory.observation_contract.action_contract",
+            observation_contract.get("action_contract"),
+        ),
+    ):
+        if not _action_contract_matches_signal_capacity(
+            action_contract,
+            token_count=token_count,
+            profiles_per_token=profiles_per_token,
+            expected_actions=expected_actions,
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    path,
+                    "Action contract communication slots do not match signal contract capacity.",
+                )
+            )
+
+    action_names = observation_contract.get("action_names")
+    if not isinstance(action_names, list) or not set(expected_actions).issubset(
+        set(action_names)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.observation_contract.action_names",
+                "Observation action names do not include every reserved communication slot.",
+            )
+        )
+    return flags
+
+
+def _action_contract_matches_signal_capacity(
+    action_contract: object,
+    *,
+    token_count: int,
+    profiles_per_token: int,
+    expected_actions: list[str],
+) -> bool:
+    if not isinstance(action_contract, dict):
+        return False
+    communication = action_contract.get("communication")
+    if not isinstance(communication, dict):
+        return False
+    if communication.get("token_count") != token_count:
+        return False
+    if communication.get("profiles_per_token") != profiles_per_token:
+        return False
+    if communication.get("action_keys") != expected_actions:
+        return False
+    reserved_actions = action_contract.get("reserved_action_keys")
+    return isinstance(reserved_actions, list) and set(expected_actions).issubset(
+        set(reserved_actions)
+    )
 
 
 def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:

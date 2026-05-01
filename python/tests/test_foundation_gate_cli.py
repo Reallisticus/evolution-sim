@@ -20,7 +20,7 @@ from evolution_sim.cli.foundation_gate import (
     _replay_size_bytes,
     _summary_gate_flags,
 )
-from evolution_sim.config import WorldConfig
+from evolution_sim.config import SignalConfig, WorldConfig
 from evolution_sim.env import SimulationWorld
 
 
@@ -1000,6 +1000,75 @@ class FoundationGateCliTests(unittest.TestCase):
             any(
                 flag["severity"] == "error"
                 and flag["field"] == "viewer.trajectory.records.observation_input"
+                for flag in flags
+            )
+        )
+
+    def test_stale_signal_contract_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        viewer["trajectory"]["observation_contract"]["signal_contract"][
+            "schema_version"
+        ] = "stale"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == "viewer.trajectory.observation_contract.signal_contract"
+                for flag in flags
+            )
+        )
+
+    def test_mismatched_action_signal_capacity_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=4,
+                signals=SignalConfig(
+                    communication_token_count=2,
+                    communication_profiles_per_token=3,
+                ),
+            )
+        ).run()
+        viewer = copy.deepcopy(result.viewer)
+        viewer["trajectory"]["action_contract"]["communication"]["token_count"] = 3
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "viewer.trajectory.action_contract"
+                for flag in flags
+            )
+        )
+
+    def test_missing_signal_emission_metadata_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        del viewer["frames"][-1]["signal_emissions"]
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "viewer.frames.signal_emissions"
                 for flag in flags
             )
         )

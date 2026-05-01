@@ -2,13 +2,22 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from math import isfinite
+from typing import ClassVar
 
 
-def _check_integer(name: str, value: int, *, minimum: int | None = None) -> None:
+def _check_integer(
+    name: str,
+    value: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an integer")
     if minimum is not None and value < minimum:
         raise ValueError(f"{name} must be >= {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
 
 
 def _check_number(
@@ -525,6 +534,9 @@ class DietMatchingConfig:
 
 @dataclass(slots=True)
 class SignalConfig:
+    MAX_COMMUNICATION_TOKEN_COUNT: ClassVar[int] = 16
+    MAX_COMMUNICATION_PROFILES_PER_TOKEN: ClassVar[int] = 8
+
     enabled: bool = True
     reproductive_signal_channels: int = 1
     reproductive_signal_emission_enabled: bool = True
@@ -535,6 +547,12 @@ class SignalConfig:
     reproductive_signal_trait_intensity_bonus: float = 0.24
     communication_token_count: int = 4
     communication_profiles_per_token: int = 2
+    communication_signal_emission_enabled: bool = False
+    communication_signal_radius: int = 3
+    communication_signal_duration_ticks: int = 6
+    communication_signal_decay_rate: float = 0.58
+    communication_signal_base_intensity: float = 0.10
+    communication_signal_trait_intensity_bonus: float = 0.20
     max_signal_radius: int = 8
     max_duration_ticks: int = 24
     max_intensity: float = 1.0
@@ -580,11 +598,39 @@ class SignalConfig:
             "signals.communication_token_count",
             self.communication_token_count,
             minimum=1,
+            maximum=self.MAX_COMMUNICATION_TOKEN_COUNT,
         )
         _check_integer(
             "signals.communication_profiles_per_token",
             self.communication_profiles_per_token,
             minimum=1,
+            maximum=self.MAX_COMMUNICATION_PROFILES_PER_TOKEN,
+        )
+        _check_bool(
+            "signals.communication_signal_emission_enabled",
+            self.communication_signal_emission_enabled,
+        )
+        _check_integer(
+            "signals.communication_signal_radius",
+            self.communication_signal_radius,
+            minimum=0,
+        )
+        _check_integer(
+            "signals.communication_signal_duration_ticks",
+            self.communication_signal_duration_ticks,
+            minimum=0,
+        )
+        _check_fraction(
+            "signals.communication_signal_decay_rate",
+            self.communication_signal_decay_rate,
+        )
+        _check_nonnegative(
+            "signals.communication_signal_base_intensity",
+            self.communication_signal_base_intensity,
+        )
+        _check_nonnegative(
+            "signals.communication_signal_trait_intensity_bonus",
+            self.communication_signal_trait_intensity_bonus,
         )
         _check_integer("signals.max_signal_radius", self.max_signal_radius, minimum=0)
         _check_integer("signals.max_duration_ticks", self.max_duration_ticks, minimum=0)
@@ -603,6 +649,16 @@ class SignalConfig:
                 "signals.reproductive_signal_duration_ticks must be <= "
                 "signals.max_duration_ticks"
             )
+        if self.communication_signal_radius > self.max_signal_radius:
+            raise ValueError(
+                "signals.communication_signal_radius must be <= "
+                "signals.max_signal_radius"
+            )
+        if self.communication_signal_duration_ticks > self.max_duration_ticks:
+            raise ValueError(
+                "signals.communication_signal_duration_ticks must be <= "
+                "signals.max_duration_ticks"
+            )
         if (
             self.reproductive_signal_base_intensity
             + self.reproductive_signal_trait_intensity_bonus
@@ -611,6 +667,16 @@ class SignalConfig:
             raise ValueError(
                 "signals.reproductive_signal_base_intensity plus "
                 "signals.reproductive_signal_trait_intensity_bonus must be <= "
+                "signals.max_intensity"
+            )
+        if (
+            self.communication_signal_base_intensity
+            + self.communication_signal_trait_intensity_bonus
+            > self.max_intensity
+        ):
+            raise ValueError(
+                "signals.communication_signal_base_intensity plus "
+                "signals.communication_signal_trait_intensity_bonus must be <= "
                 "signals.max_intensity"
             )
 

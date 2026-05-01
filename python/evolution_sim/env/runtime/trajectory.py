@@ -87,7 +87,7 @@ class TrajectorySink(Protocol):
         ...
 
 
-def trajectory_contract() -> dict[str, object]:
+def trajectory_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": TRAJECTORY_SCHEMA_VERSION,
         "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
@@ -98,10 +98,10 @@ def trajectory_contract() -> dict[str, object]:
         "reward_schema_version": REWARD_SCHEMA_VERSION,
         "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
         "record_fields": list(TRAJECTORY_RECORD_FIELDS),
-        "action_contract": action_contract(),
+        "action_contract": action_contract(signal_config),
         "reproductive_group_contract": reproductive_group_contract(),
         "genome_recombination_contract": genome_recombination_contract(),
-        "observation_contract": observation_contract(),
+        "observation_contract": observation_contract(signal_config),
         "reward_contract": reward_contract(),
     }
 
@@ -319,23 +319,31 @@ def build_reward(
     }
 
 
-def build_trajectory_payload(records: list[dict[str, object]]) -> dict[str, object]:
+def build_trajectory_payload(
+    records: list[dict[str, object]],
+    *,
+    signal_config: Any | None = None,
+) -> dict[str, object]:
     stats = empty_trajectory_stats()
     for record in records:
         update_trajectory_stats(stats, record)
     return {
-        **trajectory_contract(),
+        **trajectory_contract(signal_config),
         **build_trajectory_summary_from_stats(stats),
         "records": records,
     }
 
 
-def build_trajectory_summary(records: list[dict[str, object]]) -> dict[str, object]:
+def build_trajectory_summary(
+    records: list[dict[str, object]],
+    *,
+    signal_config: Any | None = None,
+) -> dict[str, object]:
     stats = empty_trajectory_stats()
     for record in records:
         update_trajectory_stats(stats, record)
     payload = {
-        **trajectory_contract(),
+        **trajectory_contract(signal_config),
         **build_trajectory_summary_from_stats(stats),
     }
     return {

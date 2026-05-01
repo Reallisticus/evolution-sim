@@ -23,6 +23,8 @@
     "sim:bench": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench",
     "sim:bench:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench --warmup 0 --runs 1 --scenario summary_seed7_ticks20 --skip-multiprocess",
     "viewer:serve": "python3 -m http.server 4173",
+    "viewer:validate": "node viewer/validator_smoke.mjs",
+    "viewer:smoke:malformed": "node viewer/malformed_smoke.mjs",
     "viewer:smoke": "node viewer/smoke.mjs"
   },
   "keywords": [],
