@@ -54,6 +54,11 @@ deeper Stage 2/3 reproductive semantics:
   during the same tick without repeatedly scanning world state for every
   candidate, and blocked-reproduction events keep the exact alive-count context
   that produced the block.
+- Costly reproductive-readiness signal emission now preserves signal
+  truthfulness: if paying the opt-in signal energy cost would make an agent fall
+  below its reproduction energy requirement, the readiness signal is skipped
+  and the birth path remains available. Default runs are unchanged because the
+  default signal energy cost is zero.
 
 Validation completed for this pass:
 
@@ -81,6 +86,17 @@ Additional validation after the reproduction availability pass:
 - `npm run sim:gate:quick`: pass with no blockers or warnings.
 - `npm run sim:bench:quick`: pass; `summary_seed7_ticks20` reported
   `median_wall_seconds=0.6139` and `median_peak_rss_kib=92928`.
+- `git diff --check`: pass.
+
+Additional validation after signal-cost truthfulness hardening:
+
+- Focused reproductive-signal tests: pass, including the costly-signal edge.
+- `npm run sim:test`: pass, 206 tests in 123.048s.
+- `npm run sim:golden:quick`: pass with the same `seed7_ticks20` and
+  `seed7_ticks100` hashes above.
+- `npm run sim:gate:quick`: pass with no blockers or warnings.
+- `npm run sim:bench:quick`: pass; `summary_seed7_ticks20` reported
+  `median_wall_seconds=0.6063` and `median_peak_rss_kib=92624`.
 - `git diff --check`: pass.
 
 ## Verification Run

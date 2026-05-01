@@ -419,6 +419,8 @@ def emit_reproductive_readiness_signals(
         if intensity <= SIGNAL_EPSILON:
             continue
         cost = _reproductive_signal_energy_cost(world, intensity)
+        if not _reproductive_signal_cost_preserves_readiness(world, agent, cost):
+            continue
         if cost > 0:
             agent.energy = max(0.0, agent.energy - cost)
             energy_spent += cost
@@ -685,6 +687,18 @@ def _reproductive_signal_energy_cost(world: Any, intensity: float) -> float:
         intensity / max_intensity
     )
     return max(0.0, scaled_cost)
+
+
+def _reproductive_signal_cost_preserves_readiness(
+    world: Any,
+    agent: Any,
+    cost: float,
+) -> bool:
+    if cost <= SIGNAL_EPSILON:
+        return True
+    profile = world._trophic_profile(agent)
+    energy_required = world._reproduction_energy_requirement(agent, profile)
+    return agent.energy - cost >= energy_required
 
 
 def _communication_signal_trait_bias(agent: Any) -> float:

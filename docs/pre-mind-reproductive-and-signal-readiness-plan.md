@@ -615,9 +615,10 @@ X/Y/Z and hybridization slices:
 6. Pheromone substrate with readiness emissions and numeric sensing.
    Implemented for the reproductive-readiness path: biologically ready agents
    emit deterministic numeric fields with configured intensity, radius, duration,
-   decay, and energy-cost hooks. Observations, replay frames, summary metrics,
-   analytics, and the viewer expose the field. Communication tokens remain
-   reserved and opaque.
+   decay, and energy-cost hooks. Costly readiness emission is skipped when
+   paying the cost would make the source no longer reproduction-ready.
+   Observations, replay frames, summary metrics, analytics, and the viewer
+   expose the field. Communication tokens remain reserved and opaque.
 7. Communication substrate with trait-gated opaque emission. Implemented as an
    opt-in config path: communication actions remain disabled by default, but can
    be unmasked by `SignalConfig` plus agent signal-emission traits and emit

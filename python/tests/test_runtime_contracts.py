@@ -2546,6 +2546,31 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(signal_state.reproductive_signal[2][2], 0.0)
         self.assertEqual(world.run_signal_totals["reproductive_emissions"], 0.0)
 
+    def test_reproductive_signal_cost_preserves_readiness_truthfulness(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                max_agents=10,
+                signals=SignalConfig(
+                    reproductive_signal_base_intensity=1.0,
+                    reproductive_signal_trait_intensity_bonus=0.0,
+                    base_emission_energy_cost=0.2,
+                ),
+            )
+        )
+        agent = self._place_ready_agent(world, x=2, y=2)
+        profile = world._trophic_profile(agent)
+        energy_required = world._reproduction_energy_requirement(agent, profile)
+        agent.energy = energy_required + 0.05
+
+        births = runtime_reproduction.run_reproduction_phase(world)
+
+        self.assertEqual(births, 1)
+        self.assertEqual(world.tick_signal_totals["reproductive_emissions"], 0.0)
+        self.assertEqual(world.tick_signal_totals["energy_spent"], 0.0)
+        self.assertEqual(world.reproductive_signal_emissions, [])
+
     def test_communication_signal_actions_are_opt_in_and_trait_gated(self) -> None:
         default_world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         default_agent = default_world.alive_agents()[0]
