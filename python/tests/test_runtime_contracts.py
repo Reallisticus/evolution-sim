@@ -2619,6 +2619,53 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertAlmostEqual(decayed_state.reproductive_signal[2][2], 0.25)
         self.assertEqual(decayed_state.reproductive_signal[6][6], 0.0)
 
+    def test_decayed_signal_active_debug_snapshot_is_opt_in(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                signals=SignalConfig(
+                    reproductive_signal_radius=2,
+                    reproductive_signal_duration_ticks=3,
+                    reproductive_signal_decay_rate=0.5,
+                    reproductive_signal_base_intensity=0.2,
+                    reproductive_signal_trait_intensity_bonus=0.3,
+                    base_emission_energy_cost=0.0,
+                ),
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
+
+        runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        agent.x = 6
+        agent.y = 6
+        agent.alive = False
+        agent.death_tick = world.tick
+        world.tick_signal_emission_events = []
+        runtime_signals.decay_signal_emissions(world)
+
+        default_snapshot = runtime_signals.signal_emission_debug_snapshot(world)
+        detailed_snapshot = runtime_signals.signal_emission_debug_snapshot(
+            world,
+            include_active_emissions=True,
+        )
+        active_reproductive = detailed_snapshot["active_emissions"][
+            "reproductive_signal"
+        ]
+
+        self.assertNotIn("active_emissions", default_snapshot)
+        self.assertEqual(len(active_reproductive), 1)
+        self.assertEqual(active_reproductive[0]["source_agent_id"], agent.agent_id)
+        self.assertEqual(active_reproductive[0]["x"], 2)
+        self.assertEqual(active_reproductive[0]["y"], 2)
+        self.assertEqual(active_reproductive[0]["emitted_tick"], 0)
+        self.assertEqual(active_reproductive[0]["remaining_ticks"], 2)
+        self.assertAlmostEqual(active_reproductive[0]["intensity"], 0.25)
+
     def test_reproductive_signal_is_biology_gated(self) -> None:
         world = SimulationWorld(
             self._ready_reproduction_config(

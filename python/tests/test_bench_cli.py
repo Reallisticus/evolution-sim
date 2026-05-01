@@ -6,6 +6,7 @@ import unittest
 from evolution_sim.cli.bench import (
     BenchScenario,
     _ru_maxrss_to_kib,
+    _run_multi_process_summary_rollout,
     _run_once_isolated,
     _scenario_stats,
 )
@@ -74,6 +75,40 @@ class BenchCliTests(unittest.TestCase):
         self.assertIsNone(result["replay_size_bytes"])
         self.assertIsInstance(result["runtime_cost_counters"], dict)
         self.assertGreater(result["runtime_cost_counters"]["observation_builds"], 0)
+
+    def test_isolated_run_times_out_without_waiting_for_child_exit(self) -> None:
+        with self.assertRaises(TimeoutError):
+            _run_once_isolated(
+                BenchScenario(
+                    "unit_summary_seed7_ticks100",
+                    7,
+                    100,
+                    RunMode.SUMMARY_ONLY,
+                ),
+                timeout_seconds=0.001,
+            )
+
+    def test_multi_process_rollout_reports_timeout_before_all_workers_finish(self) -> None:
+        with self.assertRaisesRegex(TimeoutError, "completed=0/1"):
+            _run_multi_process_summary_rollout(
+                timeout_seconds=0.001,
+                worker_count=1,
+                ticks=100,
+            )
+
+    def test_multi_process_rollout_rejects_invalid_protocol_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "worker_count"):
+            _run_multi_process_summary_rollout(
+                timeout_seconds=1.0,
+                worker_count=0,
+                ticks=1,
+            )
+        with self.assertRaisesRegex(ValueError, "ticks"):
+            _run_multi_process_summary_rollout(
+                timeout_seconds=1.0,
+                worker_count=1,
+                ticks=0,
+            )
 
 
 if __name__ == "__main__":

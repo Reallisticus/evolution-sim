@@ -30,6 +30,7 @@ from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_n
 from evolution_sim.env.runtime.collectors import collector_for_mode
 from evolution_sim.env.runtime.derived import reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
+import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
 import evolution_sim.env.runtime.observations as runtime_observations
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.ticks as runtime_ticks
@@ -4856,70 +4857,6 @@ class SimulationWorld:
             meat_mode_counts[self._meat_mode(agent)] += 1
         return trophic_role_counts, meat_mode_counts
 
-    def _empty_trophic_role_counts(self) -> dict[str, int]:
-        return {role: 0 for role in TROPHIC_ROLE_CODES if role != "none"}
-
-    def _empty_meat_mode_counts(self) -> dict[str, int]:
-        return {mode: 0 for mode in MEAT_MODE_CODES}
-
-    def _agent_counts_by_trophic_surface(
-        self,
-        agents: list[Agent],
-    ) -> tuple[dict[str, int], dict[str, int]]:
-        role_counts = self._empty_trophic_role_counts()
-        mode_counts = self._empty_meat_mode_counts()
-        for agent in agents:
-            role_counts[self._trophic_role(agent)] += 1
-            mode_counts[self._meat_mode(agent)] += 1
-        return role_counts, mode_counts
-
-    def _agents_alive_at_tick(self, tick: int) -> list[Agent]:
-        return [
-            agent
-            for agent in self.agents.values()
-            if agent.birth_tick <= tick
-            and (agent.death_tick is None or agent.death_tick > tick)
-        ]
-
-    @staticmethod
-    def _survival_record(initial_count: int, alive_count: int) -> dict[str, object]:
-        return {
-            "initial_agents": initial_count,
-            "alive_initial_agents": alive_count,
-            "survival_rate": round(alive_count / initial_count, 4)
-            if initial_count
-            else None,
-        }
-
-    @staticmethod
-    def _sorted_count_map(counts: dict[str, int]) -> dict[str, int]:
-        return {key: int(counts[key]) for key in sorted(counts)}
-
-    @staticmethod
-    def _tick_band_name(tick: int, ticks_executed: int) -> str:
-        span = max(1, ticks_executed)
-        if tick < span * 0.25:
-            return "early"
-        if tick < span * 0.5:
-            return "mid"
-        if tick < span * 0.75:
-            return "late"
-        return "terminal"
-
-    def _empty_tick_band_meat_mode_counts(self) -> dict[str, dict[str, int]]:
-        return {
-            band: self._empty_meat_mode_counts()
-            for band in ("early", "mid", "late", "terminal")
-        }
-
-    def _empty_tick_band_meat_mode_cause_counts(
-        self,
-    ) -> dict[str, dict[str, dict[str, int]]]:
-        return {
-            band: {mode: {} for mode in MEAT_MODE_CODES}
-            for band in ("early", "mid", "late", "terminal")
-        }
-
     def _record_death_cause(self, agent: Agent, death_cause: str) -> None:
         role = self._trophic_role(agent)
         mode = self._meat_mode(agent)
@@ -4932,155 +4869,12 @@ class SimulationWorld:
         mode_counts[death_cause] = mode_counts.get(death_cause, 0) + 1
 
     def _trophic_lifecycle_summary(self, *, ticks_executed: int) -> dict[str, object]:
-        initial_agents = [
-            agent for agent in self.agents.values() if agent.parent_id is None
-        ]
-        born_agents = [
-            agent for agent in self.agents.values() if agent.parent_id is not None
-        ]
-        dead_agents = [agent for agent in self.agents.values() if not agent.alive]
-
-        initial_role_counts, initial_mode_counts = self._agent_counts_by_trophic_surface(
-            initial_agents
+        return runtime_lifecycle_summary.build_trophic_lifecycle_summary(
+            self,
+            ticks_executed=ticks_executed,
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
         )
-        child_role_counts, child_mode_counts = self._agent_counts_by_trophic_surface(
-            born_agents
-        )
-        death_role_counts, death_mode_counts = self._agent_counts_by_trophic_surface(
-            dead_agents
-        )
-
-        parent_role_counts = self._empty_trophic_role_counts()
-        parent_mode_counts = self._empty_meat_mode_counts()
-        parent_births_by_band = self._empty_tick_band_meat_mode_counts()
-        child_births_by_band = self._empty_tick_band_meat_mode_counts()
-        for child in born_agents:
-            if child.parent_id is None:
-                continue
-            parent = self.agents.get(child.parent_id)
-            if parent is None:
-                continue
-            band = self._tick_band_name(child.birth_tick, ticks_executed)
-            parent_role_counts[self._trophic_role(parent)] += 1
-            parent_mode_counts[self._meat_mode(parent)] += 1
-            parent_births_by_band[band][self._meat_mode(parent)] += 1
-            child_births_by_band[band][self._meat_mode(child)] += 1
-
-        deaths_by_band = self._empty_tick_band_meat_mode_counts()
-        death_causes_by_band = self._empty_tick_band_meat_mode_cause_counts()
-        for agent in dead_agents:
-            if agent.death_tick is None:
-                continue
-            band = self._tick_band_name(agent.death_tick, ticks_executed)
-            mode = self._meat_mode(agent)
-            cause = self._death_cause(agent)
-            deaths_by_band[band][mode] += 1
-            mode_causes = death_causes_by_band[band][mode]
-            mode_causes[cause] = mode_causes.get(cause, 0) + 1
-
-        last_alive_tick_by_mode = {mode: None for mode in MEAT_MODE_CODES}
-        final_tick = max(0, ticks_executed - 1)
-        for agent in self.agents.values():
-            mode = self._meat_mode(agent)
-            if agent.death_tick is None:
-                last_alive_tick = final_tick
-            else:
-                last_alive_tick = max(agent.birth_tick, min(final_tick, agent.death_tick - 1))
-            current_last = last_alive_tick_by_mode[mode]
-            if current_last is None or last_alive_tick > current_last:
-                last_alive_tick_by_mode[mode] = last_alive_tick
-
-        alive_initial_agents = [agent for agent in initial_agents if agent.alive]
-        alive_initial_role_counts, alive_initial_mode_counts = (
-            self._agent_counts_by_trophic_surface(alive_initial_agents)
-        )
-        initial_role_survival = {
-            role: self._survival_record(
-                initial_role_counts[role],
-                alive_initial_role_counts[role],
-            )
-            for role in initial_role_counts
-        }
-        initial_mode_survival = {
-            mode: self._survival_record(
-                initial_mode_counts[mode],
-                alive_initial_mode_counts[mode],
-            )
-            for mode in initial_mode_counts
-        }
-
-        late_window_size = max(1, ticks_executed // 4)
-        late_window_start = max(0, ticks_executed - late_window_size)
-        sample_ticks = sorted(
-            {
-                late_window_start,
-                (late_window_start + final_tick) // 2,
-                final_tick,
-            }
-        )
-        samples: list[dict[str, object]] = []
-        role_presence_ticks = self._empty_trophic_role_counts()
-        mode_presence_ticks = self._empty_meat_mode_counts()
-        for sample_tick in sample_ticks:
-            sample_agents = self._agents_alive_at_tick(sample_tick)
-            role_counts, mode_counts = self._agent_counts_by_trophic_surface(sample_agents)
-            for role, count in role_counts.items():
-                if count > 0:
-                    role_presence_ticks[role] += 1
-            for mode, count in mode_counts.items():
-                if count > 0:
-                    mode_presence_ticks[mode] += 1
-            samples.append(
-                {
-                    "tick": sample_tick,
-                    "alive_agents": len(sample_agents),
-                    "trophic_role_counts": role_counts,
-                    "meat_mode_counts": mode_counts,
-                }
-            )
-
-        return {
-            "initial_trophic_role_counts": initial_role_counts,
-            "initial_meat_mode_counts": initial_mode_counts,
-            "births_by_parent_trophic_role": parent_role_counts,
-            "births_by_parent_meat_mode": parent_mode_counts,
-            "births_by_child_trophic_role": child_role_counts,
-            "births_by_child_meat_mode": child_mode_counts,
-            "deaths_by_trophic_role": death_role_counts,
-            "deaths_by_meat_mode": death_mode_counts,
-            "death_causes": self._sorted_count_map(self.run_death_cause_counts),
-            "death_causes_by_trophic_role": {
-                role: self._sorted_count_map(counts)
-                for role, counts in self.run_death_causes_by_trophic_role.items()
-            },
-            "death_causes_by_meat_mode": {
-                mode: self._sorted_count_map(counts)
-                for mode, counts in self.run_death_causes_by_meat_mode.items()
-            },
-            "meat_mode_persistence": {
-                "last_alive_tick_by_meat_mode": last_alive_tick_by_mode,
-                "births_by_parent_meat_mode_by_tick_band": parent_births_by_band,
-                "births_by_child_meat_mode_by_tick_band": child_births_by_band,
-                "deaths_by_meat_mode_by_tick_band": deaths_by_band,
-                "death_causes_by_meat_mode_by_tick_band": {
-                    band: {
-                        mode: self._sorted_count_map(causes)
-                        for mode, causes in mode_counts.items()
-                    }
-                    for band, mode_counts in death_causes_by_band.items()
-                },
-            },
-            "initial_cohort_survival_by_trophic_role": initial_role_survival,
-            "initial_cohort_survival_by_meat_mode": initial_mode_survival,
-            "late_window": {
-                "start_tick": late_window_start,
-                "end_tick": final_tick,
-                "sample_ticks": sample_ticks,
-                "samples": samples,
-                "presence_ticks_by_trophic_role": role_presence_ticks,
-                "presence_ticks_by_meat_mode": mode_presence_ticks,
-            },
-        }
 
     def _animal_mode_stabilized_child_genome(
         self,

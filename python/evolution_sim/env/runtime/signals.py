@@ -636,20 +636,36 @@ def signal_field_stats(
     return stats
 
 
-def signal_emission_debug_snapshot(world: Any) -> dict[str, object]:
-    return {
+def signal_emission_debug_snapshot(
+    world: Any,
+    *,
+    include_active_emissions: bool = False,
+) -> dict[str, object]:
+    reproductive_emissions = list(
+        getattr(world, "reproductive_signal_emissions", [])
+    )
+    communication_emissions = list(
+        getattr(world, "communication_signal_emissions", [])
+    )
+    snapshot: dict[str, object] = {
         "schema_version": SIGNAL_CONTRACT_VERSION,
         "policy_visible": False,
         "events": list(getattr(world, "tick_signal_emission_events", [])),
         "active_counts": {
-            REPRODUCTIVE_SIGNAL_FIELD: len(
-                getattr(world, "reproductive_signal_emissions", [])
-            ),
-            COMMUNICATION_SIGNAL_FIELD: len(
-                getattr(world, "communication_signal_emissions", [])
-            ),
+            REPRODUCTIVE_SIGNAL_FIELD: len(reproductive_emissions),
+            COMMUNICATION_SIGNAL_FIELD: len(communication_emissions),
         },
     }
+    if include_active_emissions:
+        snapshot["active_emissions"] = {
+            REPRODUCTIVE_SIGNAL_FIELD: [
+                emission.to_debug_dict() for emission in reproductive_emissions
+            ],
+            COMMUNICATION_SIGNAL_FIELD: [
+                emission.to_debug_dict() for emission in communication_emissions
+            ],
+        }
+    return snapshot
 
 
 def _decay_emission_list(emissions: list[SignalEmission]) -> bool:

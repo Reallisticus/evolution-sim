@@ -6,13 +6,14 @@ import math
 import multiprocessing as mp
 import os
 import platform
-import queue
 import resource
 import statistics
+import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
 from tempfile import TemporaryDirectory
+from typing import Any
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
@@ -104,12 +105,14 @@ def _run_once(scenario: BenchScenario) -> dict[str, object]:
 
 def _run_once_worker(
     scenario: BenchScenario,
-    result_queue: mp.Queue,
+    result_connection: Any,
 ) -> None:
     try:
-        result_queue.put({"result": _run_once(scenario)})
+        result_connection.send({"result": _run_once(scenario)})
     except BaseException:
-        result_queue.put({"error": traceback.format_exc()})
+        result_connection.send({"error": traceback.format_exc()})
+    finally:
+        result_connection.close()
 
 
 def _run_once_isolated(
@@ -118,26 +121,48 @@ def _run_once_isolated(
     timeout_seconds: float,
 ) -> dict[str, object]:
     context = mp.get_context()
-    result_queue = context.Queue()
-    process = context.Process(target=_run_once_worker, args=(scenario, result_queue))
+    result_connection, worker_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_run_once_worker,
+        args=(scenario, worker_connection),
+    )
     process.start()
-    process.join(timeout_seconds)
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        raise TimeoutError(
-            f"Benchmark scenario {scenario.name} exceeded {timeout_seconds:g}s"
-        )
+    worker_connection.close()
 
     try:
-        message = result_queue.get(timeout=1.0)
-    except queue.Empty as exc:
+        if not result_connection.poll(timeout_seconds):
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=5.0)
+                raise TimeoutError(
+                    f"Benchmark scenario {scenario.name} exceeded {timeout_seconds:g}s"
+                )
+            raise RuntimeError(
+                f"Benchmark scenario {scenario.name} exited without a result "
+                f"(exitcode={process.exitcode})"
+            )
+        message = result_connection.recv()
+    except EOFError as exc:
         raise RuntimeError(
             f"Benchmark scenario {scenario.name} exited without a result "
             f"(exitcode={process.exitcode})"
         ) from exc
     finally:
-        result_queue.close()
+        result_connection.close()
+
+    process.join(timeout=5.0)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5.0)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5.0)
+        raise RuntimeError(
+            f"Benchmark scenario {scenario.name} produced a result but did not exit"
+        )
 
     if "error" in message:
         raise RuntimeError(
@@ -151,6 +176,79 @@ def _multi_instance_worker(payload: tuple[int, int]) -> float:
     start = time.perf_counter()
     SimulationWorld(WorldConfig(seed=seed, max_ticks=ticks)).run(mode=RunMode.SUMMARY_ONLY)
     return time.perf_counter() - start
+
+
+def _run_multi_process_summary_rollout(
+    *,
+    timeout_seconds: float,
+    worker_count: int | None = None,
+    ticks: int = 100,
+) -> dict[str, object]:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if ticks <= 0:
+        raise ValueError("ticks must be positive")
+    resolved_worker_count = (
+        max(1, min(4, os.cpu_count() or 1))
+        if worker_count is None
+        else worker_count
+    )
+    if resolved_worker_count <= 0:
+        raise ValueError("worker_count must be positive")
+
+    print(
+        "[bench] multiprocess summary rollout start "
+        f"workers={resolved_worker_count} ticks={ticks}",
+        file=sys.stderr,
+        flush=True,
+    )
+    pool = mp.Pool(processes=resolved_worker_count)
+    try:
+        pending: dict[int, Any] = {
+            seed: pool.apply_async(_multi_instance_worker, ((seed, ticks),))
+            for seed in range(1, resolved_worker_count + 1)
+        }
+        rollout_times: list[float] = []
+        deadline = time.perf_counter() + timeout_seconds
+        while pending:
+            for seed, job in list(pending.items()):
+                if not job.ready():
+                    continue
+                rollout_times.append(float(job.get(timeout=0.0)))
+                del pending[seed]
+                print(
+                    "[bench] multiprocess summary worker "
+                    f"seed={seed} complete "
+                    f"({len(rollout_times)}/{resolved_worker_count})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if not pending:
+                break
+            remaining_seconds = deadline - time.perf_counter()
+            if remaining_seconds <= 0:
+                pending_seeds = sorted(pending)
+                completed = len(rollout_times)
+                raise TimeoutError(
+                    "Benchmark multi-process summary rollout exceeded "
+                    f"{timeout_seconds:g}s; completed={completed}/"
+                    f"{resolved_worker_count}; pending_seeds={pending_seeds}"
+                )
+            time.sleep(min(0.1, remaining_seconds))
+    except BaseException:
+        pool.terminate()
+        pool.join()
+        raise
+    else:
+        pool.close()
+        pool.join()
+
+    print("[bench] multiprocess summary rollout complete", file=sys.stderr, flush=True)
+    return {
+        "workers": resolved_worker_count,
+        "median_wall_seconds": round(statistics.median(rollout_times), 4),
+        "p95_wall_seconds": round(_percentile(rollout_times, 0.95), 4),
+    }
 
 
 def _percentile(values: list[float | int], percentile: float) -> float:
@@ -249,19 +347,42 @@ def main() -> None:
     )
     results: list[dict[str, object]] = []
     for scenario in scenarios:
-        for _ in range(args.warmup):
+        print(f"[bench] scenario {scenario.name} start", file=sys.stderr, flush=True)
+        for index in range(args.warmup):
+            print(
+                f"[bench] scenario {scenario.name} warmup {index + 1}/{args.warmup} start",
+                file=sys.stderr,
+                flush=True,
+            )
             _run_once_isolated(
                 scenario,
                 timeout_seconds=args.scenario_timeout_seconds,
             )
-        runs = [
-            _run_once_isolated(
-                scenario,
-                timeout_seconds=args.scenario_timeout_seconds,
+            print(
+                f"[bench] scenario {scenario.name} warmup {index + 1}/{args.warmup} complete",
+                file=sys.stderr,
+                flush=True,
             )
-            for _ in range(args.runs)
-        ]
+        runs: list[dict[str, object]] = []
+        for index in range(args.runs):
+            print(
+                f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} start",
+                file=sys.stderr,
+                flush=True,
+            )
+            runs.append(
+                _run_once_isolated(
+                    scenario,
+                    timeout_seconds=args.scenario_timeout_seconds,
+                )
+            )
+            print(
+                f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} complete",
+                file=sys.stderr,
+                flush=True,
+            )
         results.append(_scenario_stats(scenario, runs))
+        print(f"[bench] scenario {scenario.name} complete", file=sys.stderr, flush=True)
 
     payload = {
         "protocol": {
@@ -288,18 +409,9 @@ def main() -> None:
         "multi_process_summary_rollout": None,
     }
     if not args.skip_multiprocess:
-        worker_count = max(1, min(4, os.cpu_count() or 1))
-        batch_payload = [(seed, 100) for seed in range(1, worker_count + 1)]
-        with mp.Pool(processes=worker_count) as pool:
-            jobs = [pool.apply_async(_multi_instance_worker, (payload,)) for payload in batch_payload]
-            rollout_times = [
-                job.get(timeout=args.multiprocess_timeout_seconds) for job in jobs
-            ]
-        payload["multi_process_summary_rollout"] = {
-            "workers": worker_count,
-            "median_wall_seconds": round(statistics.median(rollout_times), 4),
-            "p95_wall_seconds": round(_percentile(rollout_times, 0.95), 4),
-        }
+        payload["multi_process_summary_rollout"] = _run_multi_process_summary_rollout(
+            timeout_seconds=args.multiprocess_timeout_seconds,
+        )
     print(json.dumps(payload, indent=2))
 
 
