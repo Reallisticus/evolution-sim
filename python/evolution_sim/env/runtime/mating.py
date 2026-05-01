@@ -106,6 +106,35 @@ def multi_offspring_unlocked(
     )
 
 
+def multi_offspring_count_for_pair(
+    left: Agent,
+    right: Agent,
+    config: ReproductionConfig,
+) -> int:
+    if not config.multi_offspring_enabled or config.multi_offspring_max_count <= 1:
+        return 1
+    if not (
+        multi_offspring_unlocked(left.genome, config)
+        and multi_offspring_unlocked(right.genome, config)
+    ):
+        return 1
+    pair_fecundity = min(
+        float(left.genome.reproductive.fecundity_potential),
+        float(right.genome.reproductive.fecundity_potential),
+    )
+    threshold = float(config.multi_offspring_threshold)
+    if pair_fecundity < threshold:
+        return 1
+    max_count = int(config.multi_offspring_max_count)
+    if threshold >= 1.0:
+        return max_count if pair_fecundity >= 1.0 else 1
+    max_extra = max_count - 1
+    if max_extra <= 1:
+        return 2
+    scaled = max(0.0, min(1.0, (pair_fecundity - threshold) / (1.0 - threshold)))
+    return 1 + min(max_extra, 1 + int(scaled * (max_extra - 1)))
+
+
 def reproductive_capabilities_for_genome(
     genome: Genome,
     config: ReproductionConfig,

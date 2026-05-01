@@ -153,8 +153,10 @@ const cases = [
         agent_id: 1,
         data: {
           schema_version: "reproduction_event_v1",
+          child_id: 2,
           child_reproductive_group_id: 1,
           reproduction_mode: "asexual",
+          offspring_count: 1,
           hybrid: false,
         },
       });
@@ -171,13 +173,43 @@ const cases = [
         agent_id: 1,
         data: {
           schema_version: "stale",
+          child_id: 2,
           child_reproductive_group_id: 1,
           reproduction_mode: "asexual",
+          offspring_count: 1,
           hybrid: false,
         },
       });
     }),
     expected: "reproduction_event_v1",
+  },
+  {
+    name: "incomplete_multi_offspring_sibling_group",
+    fileName: "incomplete-multi-offspring-sibling-group.json",
+    payload: malformedValidBase((payload) => {
+      payload.events.push({
+        tick: 0,
+        type: "agent_reproduced",
+        agent_id: 1,
+        data: {
+          schema_version: "reproduction_event_v1",
+          child_id: 2,
+          child_reproductive_group_id: 1,
+          reproduction_mode: "same_group_sexual",
+          offspring_count: 2,
+          offspring_index: 1,
+          sibling_child_ids: [2, 3],
+          multi_offspring: true,
+          parent_ids: [1, 1],
+          parent_energy_costs_total: [
+            { agent_id: 1, energy_cost: 0.2 },
+            { agent_id: 1, energy_cost: 0.2 },
+          ],
+          hybrid: false,
+        },
+      });
+    }),
+    expected: "multi-offspring sibling group",
   },
   {
     name: "unknown_reproductive_expression",

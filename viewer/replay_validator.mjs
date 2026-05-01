@@ -399,6 +399,7 @@ function reproductiveBirthCountsFromEvents(events, groups) {
   assertArray(events, "Replay events");
   const groupIds = new Set(Object.keys(groups));
   const counts = new Map();
+  const multiOffspringGroups = new Map();
   for (const groupId of groupIds) {
     counts.set(groupId, emptyBirthCounts());
   }
@@ -426,6 +427,11 @@ function reproductiveBirthCountsFromEvents(events, groups) {
     if (typeof event.data.hybrid !== "boolean") {
       throw new Error(`Replay reproduction event ${eventIndex} hybrid must be boolean.`);
     }
+    validateReproductionEventOffspringMetadata(
+      event.data,
+      eventIndex,
+      multiOffspringGroups,
+    );
     const groupCounts = counts.get(groupId);
     if (event.data.reproduction_mode === ASEXUAL_REPRODUCTION_MODE) {
       groupCounts.asexual_births += 1;
@@ -445,7 +451,138 @@ function reproductiveBirthCountsFromEvents(events, groups) {
       );
     }
   }
+  validateMultiOffspringGroups(multiOffspringGroups);
   return counts;
+}
+
+function validateReproductionEventOffspringMetadata(
+  data,
+  eventIndex,
+  multiOffspringGroups,
+) {
+  const basePath = `Replay events[${eventIndex}].data`;
+  assertNonnegativeInteger(data.child_id, `${basePath}.child_id`);
+  assertPositiveInteger(data.offspring_count, `${basePath}.offspring_count`);
+  if (data.offspring_count === 1) {
+    if (data.multi_offspring === true) {
+      throw new Error(
+        `Replay reproduction event ${eventIndex} single-child birth cannot be marked multi_offspring.`,
+      );
+    }
+    for (const field of [
+      "offspring_index",
+      "sibling_child_ids",
+      "parent_energy_costs_total",
+    ]) {
+      if (field in data) {
+        throw new Error(
+          `Replay reproduction event ${eventIndex} single-child birth cannot carry ${field}.`,
+        );
+      }
+    }
+    return;
+  }
+  if (data.reproduction_mode !== SEXUAL_REPRODUCTION_MODE) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi-offspring birth must be sexual.`,
+    );
+  }
+  if (data.multi_offspring !== true) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} multi-offspring birth must set multi_offspring true.`,
+    );
+  }
+  assertPositiveInteger(data.offspring_index, `${basePath}.offspring_index`);
+  if (data.offspring_index > data.offspring_count) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} offspring_index exceeds offspring_count.`,
+    );
+  }
+  assertArray(data.sibling_child_ids, `${basePath}.sibling_child_ids`);
+  if (data.sibling_child_ids.length !== data.offspring_count) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} sibling_child_ids must contain offspring_count entries.`,
+    );
+  }
+  const siblingIds = new Set();
+  for (const [index, childId] of data.sibling_child_ids.entries()) {
+    assertNonnegativeInteger(childId, `${basePath}.sibling_child_ids[${index}]`);
+    if (siblingIds.has(childId)) {
+      throw new Error(
+        `Replay reproduction event ${eventIndex} sibling_child_ids cannot contain duplicates.`,
+      );
+    }
+    siblingIds.add(childId);
+  }
+  if (!siblingIds.has(data.child_id)) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} sibling_child_ids must include child_id.`,
+    );
+  }
+  if (data.sibling_child_ids[data.offspring_index - 1] !== data.child_id) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} offspring_index must identify child_id within sibling_child_ids.`,
+    );
+  }
+  assertArray(data.parent_energy_costs_total, `${basePath}.parent_energy_costs_total`);
+  if (Array.isArray(data.parent_ids) && data.parent_energy_costs_total.length !== data.parent_ids.length) {
+    throw new Error(
+      `Replay reproduction event ${eventIndex} parent_energy_costs_total must match parent_ids length.`,
+    );
+  }
+  for (const [index, entry] of data.parent_energy_costs_total.entries()) {
+    assertObject(entry, `${basePath}.parent_energy_costs_total[${index}]`);
+    assertNonnegativeInteger(
+      entry.agent_id,
+      `${basePath}.parent_energy_costs_total[${index}].agent_id`,
+    );
+    if (
+      typeof entry.energy_cost !== "number" ||
+      !Number.isFinite(entry.energy_cost) ||
+      entry.energy_cost < 0
+    ) {
+      throw new Error(
+        `${basePath}.parent_energy_costs_total[${index}].energy_cost must be a nonnegative finite number.`,
+      );
+    }
+  }
+  const siblingKey = data.sibling_child_ids.join(",");
+  const group = multiOffspringGroups.get(siblingKey) ?? {
+    offspringCount: data.offspring_count,
+    seenChildIds: new Set(),
+    seenIndexes: new Set(),
+  };
+  if (group.offspringCount !== data.offspring_count) {
+    throw new Error(
+      `Replay multi-offspring sibling group ${siblingKey} has inconsistent offspring_count values.`,
+    );
+  }
+  if (group.seenChildIds.has(data.child_id)) {
+    throw new Error(
+      `Replay multi-offspring sibling group ${siblingKey} repeats child_id ${data.child_id}.`,
+    );
+  }
+  if (group.seenIndexes.has(data.offspring_index)) {
+    throw new Error(
+      `Replay multi-offspring sibling group ${siblingKey} repeats offspring_index ${data.offspring_index}.`,
+    );
+  }
+  group.seenChildIds.add(data.child_id);
+  group.seenIndexes.add(data.offspring_index);
+  multiOffspringGroups.set(siblingKey, group);
+}
+
+function validateMultiOffspringGroups(groups) {
+  for (const [siblingKey, group] of groups.entries()) {
+    if (
+      group.seenChildIds.size !== group.offspringCount ||
+      group.seenIndexes.size !== group.offspringCount
+    ) {
+      throw new Error(
+        `Replay multi-offspring sibling group ${siblingKey} has incomplete child events.`,
+      );
+    }
+  }
 }
 
 function emptyBirthCounts() {

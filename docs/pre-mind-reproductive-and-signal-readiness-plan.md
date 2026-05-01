@@ -483,9 +483,12 @@ Current implementation status: reproduction events now carry
 including parent IDs, parent lineage IDs, parent reproductive group IDs, child
 lineage/group/stage/expression fields, parent energy costs, compatibility and
 inbreeding fields, offspring count, and inert Mind inheritance metadata. Hybrid
-births remain a future behavior slice. Rare multi-offspring readiness is now a
-config-gated, observable capability using `fecundity_potential`; event expansion
-still remains future work, so current birth events continue to produce one child.
+births remain a future behavior slice. Rare multi-offspring is now implemented as
+a disabled-by-default sexual strategy requiring both parents' pair fecundity,
+parent energy, population capacity, and adjacent destination availability.
+Multi-offspring attempts emit one replay event per child so existing birth
+accounting remains child-count based, with validator-checked sibling metadata on
+each event.
 
 Metrics should distinguish:
 
@@ -655,7 +658,10 @@ X/Y/Z and hybridization slices:
 10. Rare multi-offspring sexed strategy. Initial contract slice implemented:
    `ReproductionConfig` gates multi-offspring readiness with conservative
    defaults, reproductive capability counts expose ready agents, and live
-   multi-child event expansion remains off until the behavior slice is designed.
+   multi-child expansion is available only on explicitly enabled sexual pairs
+   where both parents qualify. The runtime clamps the litter size by pair
+   fecundity, parent energy, population capacity, and local empty birth
+   destinations.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 

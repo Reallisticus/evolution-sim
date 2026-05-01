@@ -200,7 +200,75 @@ function expectError(name, mutate, expectedMessage) {
   throw new Error(`${name}: expected validation failure`);
 }
 
+function expectValid(name, mutate) {
+  const payload = clone(validPayload());
+  mutate(payload);
+  try {
+    validateReplayPayload(payload);
+  } catch (error) {
+    throw new Error(`${name}: expected validation success, got ${error.message}`);
+  }
+}
+
 validateReplayPayload(validPayload());
+
+expectValid("valid multi-offspring sibling group", (payload) => {
+  payload.viewer.agent_catalog["4"] = {
+    agent_id: 4,
+    parent_id: null,
+    secondary_parent_id: null,
+    parent_ids: [],
+    lineage_id: 1,
+    reproductive_group_id: 1,
+    reproductive_stage: "stage0_asexual",
+    reproductive_expression: "asexual",
+    birth_tick: 0,
+    death_tick: 1,
+    genome: {},
+    mind_inheritance: { schema_version: "mind_inheritance_placeholder_v1" },
+  };
+  for (const childId of [2, 3]) {
+    payload.viewer.agent_catalog[String(childId)] = {
+      agent_id: childId,
+      parent_id: 1,
+      secondary_parent_id: 4,
+      parent_ids: [1, 4],
+      lineage_id: 1,
+      reproductive_group_id: 1,
+      reproductive_stage: "stage0_asexual",
+      reproductive_expression: "asexual",
+      birth_tick: 1,
+      death_tick: 1,
+      genome: {},
+      mind_inheritance: { schema_version: "mind_inheritance_placeholder_v1" },
+    };
+  }
+  payload.viewer.reproductive_group_catalog.groups["1"].member_count = 4;
+  payload.viewer.reproductive_group_catalog.groups["1"].sexual_births = 2;
+  for (const [offspringIndex, childId] of [2, 3].entries()) {
+    payload.events.push({
+      tick: 1,
+      type: "agent_reproduced",
+      agent_id: 1,
+      data: {
+        schema_version: "reproduction_event_v1",
+        child_id: childId,
+        child_reproductive_group_id: 1,
+        reproduction_mode: "same_group_sexual",
+        offspring_count: 2,
+        offspring_index: offspringIndex + 1,
+        sibling_child_ids: [2, 3],
+        multi_offspring: true,
+        parent_ids: [1, 4],
+        parent_energy_costs_total: [
+          { agent_id: 1, energy_cost: 0.2 },
+          { agent_id: 4, energy_cost: 0.2 },
+        ],
+        hybrid: false,
+      },
+    });
+  }
+});
 
 expectError(
   "ragged terrain",
@@ -358,8 +426,10 @@ expectError(
       agent_id: 1,
       data: {
         schema_version: "reproduction_event_v1",
+        child_id: 2,
         child_reproductive_group_id: 1,
         reproduction_mode: "asexual",
+        offspring_count: 1,
         hybrid: false,
       },
     });
@@ -375,13 +445,42 @@ expectError(
       agent_id: 1,
       data: {
         schema_version: "stale",
+        child_id: 2,
         child_reproductive_group_id: 1,
         reproduction_mode: "asexual",
+        offspring_count: 1,
         hybrid: false,
       },
     });
   },
   "reproduction_event_v1",
+);
+expectError(
+  "incomplete multi-offspring sibling group",
+  (payload) => {
+    payload.events.push({
+      tick: 0,
+      type: "agent_reproduced",
+      agent_id: 1,
+      data: {
+        schema_version: "reproduction_event_v1",
+        child_id: 2,
+        child_reproductive_group_id: 1,
+        reproduction_mode: "same_group_sexual",
+        offspring_count: 2,
+        offspring_index: 1,
+        sibling_child_ids: [2, 3],
+        multi_offspring: true,
+        parent_ids: [1, 1],
+        parent_energy_costs_total: [
+          { agent_id: 1, energy_cost: 0.2 },
+          { agent_id: 1, energy_cost: 0.2 },
+        ],
+        hybrid: false,
+      },
+    });
+  },
+  "multi-offspring sibling group",
 );
 expectError(
   "unknown reproductive expression",

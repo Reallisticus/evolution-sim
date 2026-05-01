@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import multiprocessing as mp
 import queue
 import sys
 import time
 import traceback
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
@@ -2055,6 +2057,7 @@ def _reproductive_group_birth_counts_from_events(
         }
         for group_key in group_keys
     }
+    multi_offspring_groups: dict[tuple[int, ...], dict[str, object]] = {}
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             flags.append(
@@ -2132,6 +2135,15 @@ def _reproductive_group_birth_counts_from_events(
                 )
             )
             hybrid = False
+        flags.extend(
+            _reproduction_event_offspring_metadata_flags(
+                scope=scope,
+                index=index,
+                data=data,
+                reproduction_mode=reproduction_mode,
+                multi_offspring_groups=multi_offspring_groups,
+            )
+        )
         if reproduction_mode == ASEXUAL_REPRODUCTION_MODE:
             counts[group_key]["asexual_births"] += 1
             if hybrid:
@@ -2162,7 +2174,378 @@ def _reproductive_group_birth_counts_from_events(
                     ),
                 )
             )
+    flags.extend(
+        _multi_offspring_group_flags(
+            scope=scope,
+            multi_offspring_groups=multi_offspring_groups,
+        )
+    )
     return counts, flags
+
+
+def _reproduction_event_offspring_metadata_flags(
+    *,
+    scope: str,
+    index: int,
+    data: Mapping[object, object],
+    reproduction_mode: object,
+    multi_offspring_groups: dict[tuple[int, ...], dict[str, object]],
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    child_id = _as_optional_int(data.get("child_id"))
+    if child_id is None or child_id < 0:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.child_id",
+                f"Reproduction event {index} child_id must be a nonnegative integer.",
+            )
+        )
+        return flags
+    offspring_count = _as_optional_int(data.get("offspring_count"))
+    if offspring_count is None or offspring_count <= 0:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.offspring_count",
+                (
+                    f"Reproduction event {index} offspring_count must be a "
+                    "positive integer."
+                ),
+            )
+        )
+        return flags
+    if offspring_count == 1:
+        if data.get("multi_offspring") is True:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.multi_offspring",
+                    (
+                        f"Reproduction event {index} single-child birth cannot "
+                        "be marked multi_offspring."
+                    ),
+                )
+            )
+        for field in (
+            "offspring_index",
+            "sibling_child_ids",
+            "parent_energy_costs_total",
+        ):
+            if field in data:
+                flags.append(
+                    _flag(
+                        "error",
+                        scope,
+                        f"events.agent_reproduced.{field}",
+                        (
+                            f"Reproduction event {index} single-child birth "
+                            f"cannot carry {field}."
+                        ),
+                    )
+                )
+        return flags
+    if reproduction_mode != SEXUAL_REPRODUCTION_MODE:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.reproduction_mode",
+                f"Reproduction event {index} multi-offspring birth must be sexual.",
+            )
+        )
+    if data.get("multi_offspring") is not True:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring",
+                (
+                    f"Reproduction event {index} multi-offspring birth must set "
+                    "multi_offspring true."
+                ),
+            )
+        )
+    offspring_index = _as_optional_int(data.get("offspring_index"))
+    if (
+        offspring_index is None
+        or offspring_index <= 0
+        or offspring_index > offspring_count
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.offspring_index",
+                (
+                    f"Reproduction event {index} offspring_index must be within "
+                    "offspring_count."
+                ),
+            )
+        )
+        return flags
+    raw_sibling_ids = data.get("sibling_child_ids")
+    if not isinstance(raw_sibling_ids, Sequence) or isinstance(
+        raw_sibling_ids, (str, bytes, bytearray)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.sibling_child_ids",
+                f"Reproduction event {index} sibling_child_ids must be a sequence.",
+            )
+        )
+        return flags
+    sibling_ids: list[int] = []
+    for raw_child_id in raw_sibling_ids:
+        parsed_child_id = _as_optional_int(raw_child_id)
+        if parsed_child_id is None or parsed_child_id < 0:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.sibling_child_ids",
+                    (
+                        f"Reproduction event {index} sibling_child_ids must "
+                        "contain nonnegative integers."
+                    ),
+                )
+            )
+            return flags
+        sibling_ids.append(parsed_child_id)
+    if len(sibling_ids) != offspring_count:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.sibling_child_ids",
+                (
+                    f"Reproduction event {index} sibling_child_ids must contain "
+                    "offspring_count entries."
+                ),
+            )
+        )
+        return flags
+    if len(set(sibling_ids)) != len(sibling_ids):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.sibling_child_ids",
+                (
+                    f"Reproduction event {index} sibling_child_ids cannot "
+                    "contain duplicates."
+                ),
+            )
+        )
+        return flags
+    if child_id not in sibling_ids:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.sibling_child_ids",
+                (
+                    f"Reproduction event {index} sibling_child_ids must include "
+                    "child_id."
+                ),
+            )
+        )
+        return flags
+    if sibling_ids[offspring_index - 1] != child_id:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.offspring_index",
+                (
+                    f"Reproduction event {index} offspring_index must identify "
+                    "child_id within sibling_child_ids."
+                ),
+            )
+        )
+    flags.extend(
+        _parent_energy_costs_total_flags(
+            scope=scope,
+            index=index,
+            data=data,
+        )
+    )
+    sibling_key = tuple(sibling_ids)
+    group = multi_offspring_groups.setdefault(
+        sibling_key,
+        {
+            "offspring_count": offspring_count,
+            "child_ids": set(),
+            "offspring_indexes": set(),
+        },
+    )
+    if group["offspring_count"] != offspring_count:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.multi_offspring",
+                (
+                    f"Reproduction event {index} sibling group has inconsistent "
+                    "offspring_count values."
+                ),
+            )
+        )
+    child_ids = group["child_ids"]
+    offspring_indexes = group["offspring_indexes"]
+    if isinstance(child_ids, set):
+        if child_id in child_ids:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.child_id",
+                    (
+                        f"Reproduction event {index} repeats child_id {child_id} "
+                        "within a multi-offspring sibling group."
+                    ),
+                )
+            )
+        child_ids.add(child_id)
+    if isinstance(offspring_indexes, set):
+        if offspring_index in offspring_indexes:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.offspring_index",
+                    (
+                        f"Reproduction event {index} repeats offspring_index "
+                        f"{offspring_index} within a multi-offspring sibling group."
+                    ),
+                )
+            )
+        offspring_indexes.add(offspring_index)
+    return flags
+
+
+def _parent_energy_costs_total_flags(
+    *,
+    scope: str,
+    index: int,
+    data: Mapping[object, object],
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    raw_costs = data.get("parent_energy_costs_total")
+    if not isinstance(raw_costs, Sequence) or isinstance(
+        raw_costs, (str, bytes, bytearray)
+    ):
+        return [
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.parent_energy_costs_total",
+                (
+                    f"Reproduction event {index} parent_energy_costs_total must "
+                    "be a sequence."
+                ),
+            )
+        ]
+    parent_ids = data.get("parent_ids")
+    if (
+        isinstance(parent_ids, Sequence)
+        and not isinstance(parent_ids, (str, bytes, bytearray))
+        and len(raw_costs) != len(parent_ids)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "events.agent_reproduced.parent_energy_costs_total",
+                (
+                    f"Reproduction event {index} parent_energy_costs_total must "
+                    "match parent_ids length."
+                ),
+            )
+        )
+    for entry in raw_costs:
+        if not isinstance(entry, Mapping):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.parent_energy_costs_total",
+                    (
+                        f"Reproduction event {index} parent_energy_costs_total "
+                        "entries must be objects."
+                    ),
+                )
+            )
+            continue
+        agent_id = _as_optional_int(entry.get("agent_id"))
+        energy_cost = entry.get("energy_cost")
+        if agent_id is None or agent_id < 0:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.parent_energy_costs_total",
+                    (
+                        f"Reproduction event {index} parent_energy_costs_total "
+                        "agent_id must be a nonnegative integer."
+                    ),
+                )
+            )
+        if (
+            not isinstance(energy_cost, (int, float))
+            or isinstance(energy_cost, bool)
+            or not math.isfinite(float(energy_cost))
+            or energy_cost < 0
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.parent_energy_costs_total",
+                    (
+                        f"Reproduction event {index} parent_energy_costs_total "
+                        "energy_cost must be a nonnegative number."
+                    ),
+                )
+            )
+    return flags
+
+
+def _multi_offspring_group_flags(
+    *,
+    scope: str,
+    multi_offspring_groups: Mapping[tuple[int, ...], Mapping[str, object]],
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    for sibling_ids, group in multi_offspring_groups.items():
+        offspring_count = group.get("offspring_count")
+        child_ids = group.get("child_ids")
+        offspring_indexes = group.get("offspring_indexes")
+        if not isinstance(offspring_count, int):
+            continue
+        if (
+            not isinstance(child_ids, set)
+            or not isinstance(offspring_indexes, set)
+            or len(child_ids) != offspring_count
+            or len(offspring_indexes) != offspring_count
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.multi_offspring",
+                    (
+                        "Multi-offspring sibling group "
+                        f"{list(sibling_ids)} has incomplete child events."
+                    ),
+                )
+            )
+    return flags
 
 
 def _increment_nested_count(

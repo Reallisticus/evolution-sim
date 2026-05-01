@@ -3848,6 +3848,242 @@ class RuntimeContractTests(unittest.TestCase):
             world.tick_reproduction_mate_search_events[0]["fallback_reason"]
         )
 
+    def test_gated_multi_offspring_sexual_reproduction_emits_sibling_births(self) -> None:
+        reproduction = ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=0,
+            min_hydration_fraction=0.0,
+            energy_cost=0.1,
+            sexual_partner_radius=1,
+            multi_offspring_enabled=True,
+            multi_offspring_threshold=0.8,
+            multi_offspring_max_count=3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=20,
+                reproduction=reproduction,
+            )
+        )
+        sexualized = self._sexualized_genome(self._mixed_genome())
+        fecund_genome = replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                fecundity_potential=1.0,
+            ),
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=3,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=3,
+            y=4,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        parent_energy = parent.energy
+        partner_energy = partner.energy
+        parent_cost = world._sexual_reproduction_energy_cost(
+            world._trophic_profile(parent)
+        )
+        partner_cost = world._sexual_reproduction_energy_cost(
+            world._trophic_profile(partner)
+        )
+
+        birth_count = runtime_reproduction.reproduce_birth_count(world, parent)
+
+        children = [
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+            and agent.secondary_parent_id == partner.agent_id
+        ]
+        events = [
+            event.to_dict()
+            for event in world.events
+            if event.type == EventType.AGENT_REPRODUCED
+        ]
+        child_ids = sorted(child.agent_id for child in children)
+        summary = world._build_summary(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertEqual(birth_count, 3)
+        self.assertEqual(world.births, 3)
+        self.assertEqual(len(children), 3)
+        self.assertEqual(len(events), 3)
+        self.assertEqual(
+            sorted(child_id for _, child_id in world.tick_birth_pairs),
+            child_ids,
+        )
+        self.assertAlmostEqual(parent.energy, parent_energy - parent_cost * 3)
+        self.assertAlmostEqual(partner.energy, partner_energy - partner_cost * 3)
+        self.assertEqual(summary["reproductive_groups_end"]["sexual_births"], 3)
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts["sexual_successes"],
+            1,
+        )
+        for index, event in enumerate(events, start=1):
+            data = event["data"]
+            self.assertEqual(data["reproduction_mode"], SEXUAL_REPRODUCTION_MODE)
+            self.assertEqual(data["offspring_count"], 3)
+            self.assertEqual(data["offspring_index"], index)
+            self.assertEqual(data["sibling_child_ids"], child_ids)
+            self.assertTrue(data["multi_offspring"])
+            self.assertEqual(data["parent_ids"], [parent.agent_id, partner.agent_id])
+            self.assertEqual(
+                data["parent_energy_costs"][0],
+                {"agent_id": parent.agent_id, "energy_cost": round(parent_cost, 4)},
+            )
+            self.assertEqual(
+                data["parent_energy_costs"][1],
+                {"agent_id": partner.agent_id, "energy_cost": round(partner_cost, 4)},
+            )
+            self.assertEqual(
+                data["parent_energy_costs_total"][0],
+                {"agent_id": parent.agent_id, "energy_cost": round(parent_cost * 3, 4)},
+            )
+            self.assertEqual(
+                data["parent_energy_costs_total"][1],
+                {"agent_id": partner.agent_id, "energy_cost": round(partner_cost * 3, 4)},
+            )
+
+    def test_multi_offspring_respects_population_capacity(self) -> None:
+        reproduction = ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=0,
+            min_hydration_fraction=0.0,
+            energy_cost=0.0,
+            sexual_partner_radius=1,
+            multi_offspring_enabled=True,
+            multi_offspring_threshold=0.8,
+            multi_offspring_max_count=3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=3,
+                reproduction=reproduction,
+            )
+        )
+        sexualized = self._sexualized_genome(self._mixed_genome())
+        fecund_genome = replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                fecundity_potential=1.0,
+            ),
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=3,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=3,
+            y=4,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+
+        birth_count = runtime_reproduction.reproduce_birth_count(
+            world,
+            parent,
+            alive_count=2,
+        )
+
+        event = world.events[-1].to_dict()
+        self.assertEqual(birth_count, 1)
+        self.assertEqual(world.births, 1)
+        self.assertEqual(len(world.alive_agents()), 3)
+        self.assertEqual(event["data"]["offspring_count"], 1)
+        self.assertNotIn("multi_offspring", event["data"])
+
+    def test_multi_offspring_requires_both_parents_to_qualify(self) -> None:
+        reproduction = ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=0,
+            min_hydration_fraction=0.0,
+            energy_cost=0.0,
+            sexual_partner_radius=1,
+            multi_offspring_enabled=True,
+            multi_offspring_threshold=0.8,
+            multi_offspring_max_count=3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=20,
+                reproduction=reproduction,
+            )
+        )
+        sexualized = self._sexualized_genome(self._mixed_genome())
+        fecund_genome = replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                fecundity_potential=1.0,
+            ),
+        )
+        low_fecundity_genome = replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                fecundity_potential=0.2,
+            ),
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=3,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=3,
+            y=4,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=low_fecundity_genome,
+        )
+
+        birth_count = runtime_reproduction.reproduce_birth_count(world, parent)
+
+        event = world.events[-1].to_dict()
+        self.assertEqual(birth_count, 1)
+        self.assertEqual(world.births, 1)
+        self.assertEqual(event["data"]["offspring_count"], 1)
+        self.assertNotIn("multi_offspring", event["data"])
+
     def test_sexual_child_starting_fraction_blends_parent_profiles(self) -> None:
         plant_profile = self._test_trophic_profile("none")
         hunter_profile = self._test_trophic_profile("hunter")

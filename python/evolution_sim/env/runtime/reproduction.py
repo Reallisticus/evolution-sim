@@ -668,9 +668,10 @@ def run_reproduction_phase(world: Any) -> int:
         availability = reproduction_availability(world, alive_agents=alive_count)
         block_reason = reproduction_block_reason(world, agent, availability)
         if block_reason is None:
-            if reproduce(world, agent, alive_count=alive_count):
-                births_this_tick += 1
-                alive_count += 1
+            birth_count = reproduce_birth_count(world, agent, alive_count=alive_count)
+            if birth_count > 0:
+                births_this_tick += birth_count
+                alive_count += birth_count
         elif block_reason != "biological":
             record_reproduction_blocked(
                 world,
@@ -1332,6 +1333,15 @@ def reproduce(
     *,
     alive_count: int | None = None,
 ) -> bool:
+    return reproduce_birth_count(world, parent, alive_count=alive_count) > 0
+
+
+def reproduce_birth_count(
+    world: Any,
+    parent: Agent,
+    *,
+    alive_count: int | None = None,
+) -> int:
     destination = world._find_empty_neighbor(parent.x, parent.y)
     if destination is None:
         record_reproduction_blocked(
@@ -1340,7 +1350,7 @@ def reproduce(
             "destination_unavailable",
             alive_count=alive_count,
         )
-        return False
+        return 0
 
     parent_profile = world._trophic_profile(parent)
     if runtime_mating.sexual_reproduction_unlocked(
@@ -1357,16 +1367,17 @@ def reproduce(
             record_mate_search_report(world, parent, mate_report)
             if mate_report.selected is not None:
                 mate_candidate = mate_report.selected
-                return reproduce_sexual(
+                return _reproduce_sexual_birth_count(
                     world,
                     parent,
                     mate_candidate,
                     destination,
                     parent_profile,
+                    alive_count=alive_count,
                 )
         else:
             record_sexual_parent_energy_fallback(world, parent)
-    return reproduce_asexual(world, parent, destination, parent_profile)
+    return 1 if reproduce_asexual(world, parent, destination, parent_profile) else 0
 
 
 def reproduce_asexual(
@@ -1442,23 +1453,56 @@ def reproduce_sexual(
     destination: tuple[int, int],
     parent_profile: TrophicProfile,
 ) -> bool:
+    return (
+        _reproduce_sexual_birth_count(
+            world,
+            parent,
+            mate_candidate,
+            destination,
+            parent_profile,
+        )
+        > 0
+    )
+
+
+def _reproduce_sexual_birth_count(
+    world: Any,
+    parent: Agent,
+    mate_candidate: runtime_mating.MateCandidate,
+    destination: tuple[int, int],
+    parent_profile: TrophicProfile,
+    *,
+    alive_count: int | None = None,
+) -> int:
     partner = mate_candidate.agent
     partner_profile = world._trophic_profile(partner)
-    child_genome = sexual_child_stabilized_genome(
+    parent_cost = sexual_reproduction_energy_cost(world, parent_profile)
+    partner_cost = sexual_reproduction_energy_cost(world, partner_profile)
+    offspring_count = _actual_sexual_offspring_count(
         world,
-        parent.genome,
-        partner.genome,
-        recombine_genomes(parent.genome, partner.genome, world.rng).mutate(
-            world.rng
-        ),
-        parent_profile,
-        partner_profile,
+        parent,
+        partner,
+        parent_cost=parent_cost,
+        partner_cost=partner_cost,
+        alive_count=alive_count,
     )
-    child_genome = apply_inbreeding_penalty(
-        child_genome,
-        penalty=mate_candidate.inbreeding_penalty,
-        scale=world.config.reproduction.sexual_inbreeding_gene_penalty,
+    if offspring_count <= 0:
+        return 0
+    destinations = _sexual_offspring_destinations(
+        world,
+        parent,
+        first_destination=destination,
+        requested_count=offspring_count,
     )
+    offspring_count = len(destinations)
+    if offspring_count <= 0:
+        record_reproduction_blocked(
+            world,
+            parent,
+            "destination_unavailable",
+            alive_count=alive_count,
+        )
+        return 0
     child_energy_fraction = sexual_child_starting_fraction(
         world.config.reproduction.child_energy_fraction,
         world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
@@ -1471,58 +1515,138 @@ def reproduce_sexual(
         parent_profile,
         partner_profile,
     )
-    reproductive_state = reproductive_state_for_child(world, parent, child_genome)
-    child_lineage_id = sexual_child_lineage_id(
-        parent,
-        partner,
-        child_agent_id=world.next_agent_id,
-    )
-    child = build_child_agent(
-        agent_id=world.next_agent_id,
-        primary_parent=parent,
-        secondary_parent=partner,
-        lineage_id=child_lineage_id,
-        birth_tick=world.tick,
-        destination=destination,
-        genome=child_genome,
-        energy_fraction=child_energy_fraction,
-        hydration_fraction=child_hydration_fraction,
-        health_fraction=world.config.reproduction.child_health_fraction,
-        reproductive_state=reproductive_state,
-        mind_inheritance_metadata=empty_mind_inheritance_metadata(),
-    )
-    parent_cost = sexual_reproduction_energy_cost(world, parent_profile)
-    partner_cost = sexual_reproduction_energy_cost(world, partner_profile)
-    parent.energy -= parent_cost
-    partner.energy -= partner_cost
+    children: list[Agent] = []
+    next_agent_id = world.next_agent_id
+    for index, child_destination in enumerate(destinations):
+        child_genome = sexual_child_stabilized_genome(
+            world,
+            parent.genome,
+            partner.genome,
+            recombine_genomes(parent.genome, partner.genome, world.rng).mutate(
+                world.rng
+            ),
+            parent_profile,
+            partner_profile,
+        )
+        child_genome = apply_inbreeding_penalty(
+            child_genome,
+            penalty=mate_candidate.inbreeding_penalty,
+            scale=world.config.reproduction.sexual_inbreeding_gene_penalty,
+        )
+        reproductive_state = reproductive_state_for_child(world, parent, child_genome)
+        child_agent_id = next_agent_id + index
+        child_lineage_id = sexual_child_lineage_id(
+            parent,
+            partner,
+            child_agent_id=child_agent_id,
+        )
+        children.append(
+            build_child_agent(
+                agent_id=child_agent_id,
+                primary_parent=parent,
+                secondary_parent=partner,
+                lineage_id=child_lineage_id,
+                birth_tick=world.tick,
+                destination=child_destination,
+                genome=child_genome,
+                energy_fraction=child_energy_fraction,
+                hydration_fraction=child_hydration_fraction,
+                health_fraction=world.config.reproduction.child_health_fraction,
+                reproductive_state=reproductive_state,
+                mind_inheritance_metadata=empty_mind_inheritance_metadata(),
+            )
+        )
+
+    parent.energy -= parent_cost * offspring_count
+    partner.energy -= partner_cost * offspring_count
     parent.last_reproduction_tick = world.tick
     partner.last_reproduction_tick = world.tick
-    world._place_agent(child)
-    record_sexual_birth(
-        world.reproductive_groups,
+    child_ids = [child.agent_id for child in children]
+    for index, child in enumerate(children):
+        world._place_agent(child)
+        record_sexual_birth(
+            world.reproductive_groups,
+            parent,
+            partner,
+            child,
+            tick=world.tick,
+        )
+        if world.record_tick_details:
+            world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
+        world._emit(
+            EventType.AGENT_REPRODUCED,
+            agent_id=parent.agent_id,
+            data=_reproduction_event_payload(
+                child=child,
+                parents=(parent, partner),
+                reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
+                parent_energy_costs=(parent_cost, partner_cost),
+                mate_candidate=mate_candidate,
+                offspring_count=offspring_count,
+                offspring_index=index + 1,
+                sibling_child_ids=child_ids,
+            ),
+        )
+    world.next_agent_id += offspring_count
+    world.births += offspring_count
+    world.last_birth_tick = world.tick
+    world._invalidate_biotic_state()
+    return offspring_count
+
+
+def _actual_sexual_offspring_count(
+    world: Any,
+    parent: Agent,
+    partner: Agent,
+    *,
+    parent_cost: float,
+    partner_cost: float,
+    alive_count: int | None,
+) -> int:
+    desired_count = runtime_mating.multi_offspring_count_for_pair(
         parent,
         partner,
-        child,
-        tick=world.tick,
+        world.config.reproduction,
     )
-    world.next_agent_id += 1
-    world.births += 1
-    world.last_birth_tick = world.tick
-    if world.record_tick_details:
-        world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-    world._invalidate_biotic_state()
-    world._emit(
-        EventType.AGENT_REPRODUCED,
-        agent_id=parent.agent_id,
-        data=_reproduction_event_payload(
-            child=child,
-            parents=(parent, partner),
-            reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
-            parent_energy_costs=(parent_cost, partner_cost),
-            mate_candidate=mate_candidate,
-        ),
-    )
-    return True
+    current_alive = len(world.alive_agents()) if alive_count is None else alive_count
+    population_slots = max(0, int(world.config.max_agents) - current_alive)
+    if population_slots <= 0:
+        return 0
+    affordable_count = desired_count
+    if parent_cost > 0:
+        affordable_count = min(affordable_count, int(parent.energy // parent_cost))
+    if partner_cost > 0:
+        affordable_count = min(affordable_count, int(partner.energy // partner_cost))
+    return max(0, min(desired_count, population_slots, affordable_count))
+
+
+def _sexual_offspring_destinations(
+    world: Any,
+    parent: Agent,
+    *,
+    first_destination: tuple[int, int],
+    requested_count: int,
+) -> list[tuple[int, int]]:
+    if requested_count <= 0:
+        return []
+    destinations = [first_destination]
+    if requested_count <= 1:
+        return destinations
+    neighbors = [
+        (parent.x + 1, parent.y),
+        (parent.x - 1, parent.y),
+        (parent.x, parent.y + 1),
+        (parent.x, parent.y - 1),
+    ]
+    world.rng.shuffle(neighbors)
+    for candidate in neighbors:
+        if candidate in destinations:
+            continue
+        if world._can_move_to(*candidate):
+            destinations.append(candidate)
+            if len(destinations) >= requested_count:
+                break
+    return destinations
 
 
 def _reproduction_event_payload(
@@ -1532,6 +1656,9 @@ def _reproduction_event_payload(
     reproduction_mode: str,
     parent_energy_costs: tuple[float, ...],
     mate_candidate: runtime_mating.MateCandidate | None = None,
+    offspring_count: int = 1,
+    offspring_index: int | None = None,
+    sibling_child_ids: list[int] | None = None,
 ) -> dict[str, object]:
     parent_ids = [parent.agent_id for parent in parents]
     parent_group_ids = [
@@ -1565,7 +1692,7 @@ def _reproduction_event_payload(
             }
             for index, parent in enumerate(parents)
         ],
-        "offspring_count": 1,
+        "offspring_count": offspring_count,
         "compatibility_score": None,
         "inbreeding_penalty": None,
         "mate_distance": None,
@@ -1575,6 +1702,20 @@ def _reproduction_event_payload(
     }
     if len(parents) > 1:
         payload["partner_id"] = parents[1].agent_id
+    if offspring_count > 1:
+        payload["offspring_index"] = offspring_index
+        payload["sibling_child_ids"] = list(sibling_child_ids or [])
+        payload["multi_offspring"] = True
+        payload["parent_energy_costs_total"] = [
+            {
+                "agent_id": parent.agent_id,
+                "energy_cost": round(
+                    float(parent_energy_costs[index]) * offspring_count,
+                    4,
+                ),
+            }
+            for index, parent in enumerate(parents)
+        ]
     if mate_candidate is not None:
         payload.update(
             {
