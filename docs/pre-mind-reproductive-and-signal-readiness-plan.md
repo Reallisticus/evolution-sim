@@ -625,9 +625,16 @@ X/Y/Z and hybridization slices:
    expression and Stage 3 X/Y/Z expression, update reproductive group stages,
    and gate same-group mate compatibility without changing default heuristic
    behavior or removing asexual fallback.
-9. Rare multi-offspring sexed strategy.
-10. Late hybridization/introgression.
-11. Mind v1 sequence/world-model work only after Foundation gates stabilize.
+9. Reproductive observability hardening before deeper role behavior.
+   Implemented: mate-search diagnostics now distinguish group scarcity, partner
+   readiness, distance, expression incompatibility, selected partner, and
+   sex-capable asexual fallback paths. Summary/replay reproductive stats report
+   stage, expression, capability, group-readiness, and per-group alive
+   composition so Stage 2/3 behavior can be audited before it becomes a stronger
+   live selection pressure.
+10. Rare multi-offspring sexed strategy.
+11. Late hybridization/introgression.
+12. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 
 The user direction is to put this on the default Foundation path, not behind a
 separate experimental profile. That means each behavior slice must update gates

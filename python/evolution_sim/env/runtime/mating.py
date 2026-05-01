@@ -26,6 +26,13 @@ Y_EXPRESSION = "y"
 Z_EXPRESSION = "z_plastic"
 SEXUAL_REPRODUCTION_MODE = "same_group_sexual"
 ASEXUAL_REPRODUCTION_MODE = "asexual"
+MATE_SEARCH_BLOCK_REASON_KEYS = (
+    "different_group",
+    "partner_sexual_locked",
+    "partner_out_of_radius",
+    "partner_not_ready",
+    "expression_incompatible",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +41,16 @@ class MateCandidate:
     distance: int
     compatibility_score: float
     inbreeding_penalty: float
+
+
+@dataclass(frozen=True, slots=True)
+class MateSearchReport:
+    selected: MateCandidate | None
+    scanned_agents: int
+    same_group_candidates: int
+    reason_counts: dict[str, int]
+    expression_compatible_candidates: int
+    expression_incompatible_candidates: int
 
 
 def sexual_reproduction_unlocked(
@@ -129,22 +146,74 @@ def choose_same_group_mate(
     config: ReproductionConfig,
     biologically_ready: Callable[[Agent], bool],
 ) -> MateCandidate | None:
+    return same_group_mate_search_report(
+        parent,
+        agents,
+        config=config,
+        biologically_ready=biologically_ready,
+    ).selected
+
+
+def same_group_mate_search_report(
+    parent: Agent,
+    agents: Iterable[Agent],
+    *,
+    config: ReproductionConfig,
+    biologically_ready: Callable[[Agent], bool],
+) -> MateSearchReport:
     if not sexual_reproduction_unlocked(parent.genome, config):
-        return None
-    candidates = [
-        candidate
-        for candidate in (
-            _candidate_for(parent, agent, config, biologically_ready)
-            for agent in agents
+        return MateSearchReport(
+            selected=None,
+            scanned_agents=0,
+            same_group_candidates=0,
+            reason_counts=_empty_mate_search_reason_counts(),
+            expression_compatible_candidates=0,
+            expression_incompatible_candidates=0,
         )
-        if candidate is not None
-    ]
-    if not candidates:
-        return None
-    return sorted(
-        candidates,
-        key=lambda item: (-item.compatibility_score, item.distance, item.agent.agent_id),
-    )[0]
+    candidates: list[MateCandidate] = []
+    reason_counts = _empty_mate_search_reason_counts()
+    scanned_agents = 0
+    same_group_candidates = 0
+    for agent in agents:
+        candidate, block_reason = _candidate_for_with_reason(
+            parent,
+            agent,
+            config,
+            biologically_ready,
+        )
+        if block_reason == "ignored":
+            continue
+        scanned_agents += 1
+        if block_reason != "different_group":
+            same_group_candidates += 1
+        if candidate is not None:
+            candidates.append(candidate)
+            continue
+        if block_reason in reason_counts:
+            reason_counts[block_reason] += 1
+
+    selected = None
+    if candidates:
+        selected = sorted(
+            candidates,
+            key=lambda item: (
+                -item.compatibility_score,
+                item.distance,
+                item.agent.agent_id,
+            ),
+        )[0]
+    return MateSearchReport(
+        selected=selected,
+        scanned_agents=scanned_agents,
+        same_group_candidates=same_group_candidates,
+        reason_counts=reason_counts,
+        expression_compatible_candidates=len(candidates),
+        expression_incompatible_candidates=reason_counts["expression_incompatible"],
+    )
+
+
+def _empty_mate_search_reason_counts() -> dict[str, int]:
+    return {reason: 0 for reason in MATE_SEARCH_BLOCK_REASON_KEYS}
 
 
 def _candidate_for(
@@ -153,28 +222,46 @@ def _candidate_for(
     config: ReproductionConfig,
     biologically_ready: Callable[[Agent], bool],
 ) -> MateCandidate | None:
+    candidate, _ = _candidate_for_with_reason(
+        parent,
+        agent,
+        config,
+        biologically_ready,
+    )
+    return candidate
+
+
+def _candidate_for_with_reason(
+    parent: Agent,
+    agent: Agent,
+    config: ReproductionConfig,
+    biologically_ready: Callable[[Agent], bool],
+) -> tuple[MateCandidate | None, str]:
     if agent.agent_id == parent.agent_id or not agent.alive:
-        return None
+        return None, "ignored"
     if (agent.reproductive_group_id or agent.lineage_id) != (
         parent.reproductive_group_id or parent.lineage_id
     ):
-        return None
+        return None, "different_group"
     if not sexual_reproduction_unlocked(agent.genome, config):
-        return None
+        return None, "partner_sexual_locked"
     distance = abs(agent.x - parent.x) + abs(agent.y - parent.y)
     if distance > config.sexual_partner_radius:
-        return None
+        return None, "partner_out_of_radius"
     if not biologically_ready(agent):
-        return None
+        return None, "partner_not_ready"
     expression_allowed, _ = expression_compatibility(parent, agent, config)
     if not expression_allowed:
-        return None
+        return None, "expression_incompatible"
     penalty = close_kinship_penalty(parent, agent)
-    return MateCandidate(
-        agent=agent,
-        distance=distance,
-        compatibility_score=_compatibility_score(parent, agent, distance, config),
-        inbreeding_penalty=penalty,
+    return (
+        MateCandidate(
+            agent=agent,
+            distance=distance,
+            compatibility_score=_compatibility_score(parent, agent, distance, config),
+            inbreeding_penalty=penalty,
+        ),
+        "compatible",
     )
 
 

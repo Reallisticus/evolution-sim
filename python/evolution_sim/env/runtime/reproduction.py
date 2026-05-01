@@ -52,6 +52,8 @@ class ReproductiveGroupRecord:
         *,
         member_count: int,
         alive_member_count: int,
+        alive_stage_counts: dict[str, int] | None = None,
+        alive_expression_counts: dict[str, int] | None = None,
     ) -> dict[str, object]:
         return {
             "group_id": self.group_id,
@@ -63,6 +65,8 @@ class ReproductiveGroupRecord:
             "parent_group_ids": list(self.parent_group_ids),
             "member_count": member_count,
             "alive_member_count": alive_member_count,
+            "alive_stage_counts": dict(alive_stage_counts or {}),
+            "alive_expression_counts": dict(alive_expression_counts or {}),
             "asexual_births": self.asexual_births,
             "sexual_births": self.sexual_births,
             "hybrid_births": self.hybrid_births,
@@ -291,13 +295,24 @@ def build_reproductive_group_catalog(
     registry: dict[int, ReproductiveGroupRecord],
     agents: Iterable[Agent],
 ) -> dict[str, object]:
-    member_counts, alive_member_counts = _member_counts(agents)
+    agent_list = list(agents)
+    member_counts, alive_member_counts = _member_counts(agent_list)
+    alive_stage_counts = _alive_grouped_attr_counts(
+        agent_list,
+        attr_name="reproductive_stage",
+    )
+    alive_expression_counts = _alive_grouped_attr_counts(
+        agent_list,
+        attr_name="reproductive_expression",
+    )
     return {
         "schema_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
         "groups": {
             str(group_id): record.to_dict(
                 member_count=member_counts.get(group_id, 0),
                 alive_member_count=alive_member_counts.get(group_id, 0),
+                alive_stage_counts=alive_stage_counts.get(group_id, {}),
+                alive_expression_counts=alive_expression_counts.get(group_id, {}),
             )
             for group_id, record in sorted(registry.items())
         },
@@ -310,6 +325,14 @@ def build_reproductive_group_summary(
 ) -> dict[str, object]:
     agent_list = list(agents)
     member_counts, alive_member_counts = _member_counts(agent_list)
+    alive_stage_counts_by_group = _alive_grouped_attr_counts(
+        agent_list,
+        attr_name="reproductive_stage",
+    )
+    alive_expression_counts_by_group = _alive_grouped_attr_counts(
+        agent_list,
+        attr_name="reproductive_expression",
+    )
     return {
         "schema_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
         "group_count": len(registry),
@@ -320,11 +343,23 @@ def build_reproductive_group_summary(
         "sexual_births": sum(record.sexual_births for record in registry.values()),
         "hybrid_births": sum(record.hybrid_births for record in registry.values()),
         "stage_counts": _stage_counts(registry),
+        "alive_stage_counts": _alive_stage_counts(agent_list),
         "alive_expression_counts": _alive_expression_counts(agent_list),
+        "alive_expression_counts_by_stage": _alive_expression_counts_by_stage(
+            agent_list
+        ),
         "top_groups": [
             record.to_dict(
                 member_count=member_counts.get(record.group_id, 0),
                 alive_member_count=alive_member_counts.get(record.group_id, 0),
+                alive_stage_counts=alive_stage_counts_by_group.get(
+                    record.group_id,
+                    {},
+                ),
+                alive_expression_counts=alive_expression_counts_by_group.get(
+                    record.group_id,
+                    {},
+                ),
             )
             for record in sorted(
                 registry.values(),
@@ -349,9 +384,27 @@ def _member_counts(agents: Iterable[Agent]) -> tuple[dict[int, int], dict[int, i
     return dict(member_counts), dict(alive_member_counts)
 
 
+def _alive_grouped_attr_counts(
+    agents: Iterable[Agent],
+    *,
+    attr_name: str,
+) -> dict[int, dict[str, int]]:
+    counts_by_group: dict[int, Counter[str]] = {}
+    for agent in agents:
+        if not agent.alive:
+            continue
+        group_id = agent.reproductive_group_id or agent.lineage_id
+        group_counts = counts_by_group.setdefault(group_id, Counter())
+        group_counts[str(getattr(agent, attr_name))] += 1
+    return {
+        group_id: _sorted_count_dict(group_counts)
+        for group_id, group_counts in sorted(counts_by_group.items())
+    }
+
+
 def _stage_counts(registry: dict[int, ReproductiveGroupRecord]) -> dict[str, int]:
     counts: Counter[str] = Counter(record.stage for record in registry.values())
-    return {stage: counts[stage] for stage in sorted(counts)}
+    return _sorted_stage_count_dict(counts)
 
 
 def _promote_record_stage(
@@ -367,7 +420,46 @@ def _alive_expression_counts(agents: Iterable[Agent]) -> dict[str, int]:
     counts: Counter[str] = Counter(
         agent.reproductive_expression for agent in agents if agent.alive
     )
-    return {expression: counts[expression] for expression in sorted(counts)}
+    return _sorted_count_dict(counts)
+
+
+def _alive_stage_counts(agents: Iterable[Agent]) -> dict[str, int]:
+    counts: Counter[str] = Counter(
+        agent.reproductive_stage for agent in agents if agent.alive
+    )
+    return _sorted_stage_count_dict(counts)
+
+
+def _alive_expression_counts_by_stage(
+    agents: Iterable[Agent],
+) -> dict[str, dict[str, int]]:
+    counts_by_stage: dict[str, Counter[str]] = {}
+    for agent in agents:
+        if not agent.alive:
+            continue
+        stage_counts = counts_by_stage.setdefault(agent.reproductive_stage, Counter())
+        stage_counts[agent.reproductive_expression] += 1
+    return {
+        stage: _sorted_count_dict(expression_counts)
+        for stage, expression_counts in sorted(
+            counts_by_stage.items(),
+            key=lambda item: (runtime_mating.stage_rank(item[0]), item[0]),
+        )
+    }
+
+
+def _sorted_stage_count_dict(counts: Counter[str]) -> dict[str, int]:
+    return {
+        stage: counts[stage]
+        for stage in sorted(
+            counts,
+            key=lambda item: (runtime_mating.stage_rank(item), item),
+        )
+    }
+
+
+def _sorted_count_dict(counts: Counter[str]) -> dict[str, int]:
+    return {key: counts[key] for key in sorted(counts)}
 
 
 def empty_reproduction_blocked_counts() -> dict[str, int]:
@@ -376,6 +468,34 @@ def empty_reproduction_blocked_counts() -> dict[str, int]:
         "local_crowding": 0,
         "destination_unavailable": 0,
     }
+
+
+def empty_reproduction_mate_search_counts() -> dict[str, int]:
+    counts = {
+        "sexual_parent_candidates": 0,
+        "sexual_searches": 0,
+        "sexual_successes": 0,
+        "asexual_fallbacks_after_sexual_candidate": 0,
+        "fallback_parent_energy_shortfall": 0,
+        "fallback_no_same_group_partner": 0,
+        "fallback_partner_sexual_locked": 0,
+        "fallback_partner_out_of_radius": 0,
+        "fallback_partner_not_ready": 0,
+        "fallback_expression_incompatible": 0,
+        "fallback_no_compatible_partner": 0,
+        "expression_compatible_candidates": 0,
+        "expression_incompatible_candidates": 0,
+    }
+    for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS:
+        counts[f"candidate_{reason}"] = 0
+    return counts
+
+
+def finalize_reproduction_mate_search_counts(
+    counts: dict[str, int],
+) -> dict[str, int]:
+    template = empty_reproduction_mate_search_counts()
+    return {key: int(counts.get(key, 0)) for key in template}
 
 
 def empty_reproduction_readiness_counts() -> dict[str, int]:
@@ -579,6 +699,23 @@ def reproduction_readiness_counts(
         mode: empty_reproduction_energy_readiness_counts()
         for mode in meat_mode_codes
     }
+    stage_counts: Counter[str] = Counter()
+    expression_counts: Counter[str] = Counter()
+    capability_counts: Counter[str] = Counter(
+        {
+            "sexual_reproduction": 0,
+            "proto_role_differentiation": 0,
+            "xyz_expression": 0,
+            "hybridization": 0,
+            "multi_offspring": 0,
+        }
+    )
+    biologically_ready_stage_counts: Counter[str] = Counter()
+    ready_stage_counts: Counter[str] = Counter()
+    biologically_ready_expression_counts: Counter[str] = Counter()
+    ready_expression_counts: Counter[str] = Counter()
+    biologically_ready_group_ids: set[int] = set()
+    ready_group_ids: set[int] = set()
     biologically_ready = 0
     blocked_by_max_population = 0
     blocked_by_local_crowding = 0
@@ -615,6 +752,15 @@ def reproduction_readiness_counts(
             counts["energy_gap_total"] = float(counts["energy_gap_total"]) + energy_gap
 
     for agent in alive:
+        stage_counts[agent.reproductive_stage] += 1
+        expression_counts[agent.reproductive_expression] += 1
+        capabilities = runtime_mating.reproductive_capabilities_for_genome(
+            agent.genome,
+            world.config.reproduction,
+        )
+        for capability, enabled in capabilities.items():
+            if enabled:
+                capability_counts[capability] += 1
         increment_readiness(agent, "alive_agents")
         profile = world._trophic_profile(agent)
         increment_energy_readiness(agent, profile)
@@ -624,6 +770,9 @@ def reproduction_readiness_counts(
                 increment_blocker(agent, reason)
             continue
         biologically_ready += 1
+        biologically_ready_group_ids.add(agent.reproductive_group_id or agent.lineage_id)
+        biologically_ready_stage_counts[agent.reproductive_stage] += 1
+        biologically_ready_expression_counts[agent.reproductive_expression] += 1
         increment_readiness(agent, "biologically_ready_agents")
         if population_saturated:
             blocked_by_max_population += 1
@@ -633,6 +782,9 @@ def reproduction_readiness_counts(
             increment_readiness(agent, "blocked_by_local_crowding_agents")
         else:
             ready += 1
+            ready_group_ids.add(agent.reproductive_group_id or agent.lineage_id)
+            ready_stage_counts[agent.reproductive_stage] += 1
+            ready_expression_counts[agent.reproductive_expression] += 1
             increment_readiness(agent, "ready_agents")
 
     return {
@@ -646,7 +798,31 @@ def reproduction_readiness_counts(
         "ready_agents": ready,
         "blocked_by_max_population_agents": blocked_by_max_population,
         "blocked_by_local_crowding_agents": blocked_by_local_crowding,
+        "biologically_ready_group_count": len(biologically_ready_group_ids),
+        "ready_group_count": len(ready_group_ids),
+        "reproductive_stage_counts": _sorted_stage_count_dict(stage_counts),
+        "reproductive_expression_counts": _sorted_count_dict(expression_counts),
+        "reproductive_capability_counts": {
+            key: int(capability_counts[key]) for key in sorted(capability_counts)
+        },
+        "biologically_ready_by_reproductive_stage": _sorted_stage_count_dict(
+            biologically_ready_stage_counts
+        ),
+        "ready_by_reproductive_stage": _sorted_stage_count_dict(ready_stage_counts),
+        "biologically_ready_by_reproductive_expression": _sorted_count_dict(
+            biologically_ready_expression_counts
+        ),
+        "ready_by_reproductive_expression": _sorted_count_dict(
+            ready_expression_counts
+        ),
         "blocked_run_counts": dict(world.run_reproduction_blocked_counts),
+        "mate_search_run_counts": finalize_reproduction_mate_search_counts(
+            getattr(
+                world,
+                "run_reproduction_mate_search_counts",
+                empty_reproduction_mate_search_counts(),
+            )
+        ),
         "blocked_run_counts_by_trophic_role": {
             role: dict(counts)
             for role, counts in world.run_reproduction_blocked_counts_by_trophic_role.items()
@@ -669,6 +845,30 @@ def reproduction_readiness_counts(
         "by_trophic_role": readiness_by_role,
         "by_meat_mode": readiness_by_mode,
     }
+
+
+def build_frame_reproduction_stats(
+    world: Any,
+    alive: list[Agent],
+    *,
+    trophic_role_codes: dict[str, int],
+    meat_mode_codes: dict[str, int],
+) -> dict[str, object]:
+    stats = reproduction_readiness_counts(
+        world,
+        alive,
+        trophic_role_codes=trophic_role_codes,
+        meat_mode_codes=meat_mode_codes,
+    )
+    blocked_this_tick = empty_reproduction_blocked_counts()
+    for event in world.tick_reproduction_blocked_events:
+        blocked_this_tick[str(event["reason"])] += 1
+    stats["blocked_this_tick"] = blocked_this_tick
+    stats["mate_search_this_tick"] = finalize_reproduction_mate_search_counts(
+        world.tick_reproduction_mate_search_counts
+    )
+    stats["mate_search_events"] = list(world.tick_reproduction_mate_search_events)
+    return stats
 
 
 def animal_mode_stabilized_child_genome(
@@ -833,6 +1033,137 @@ def sexual_partner_ready(world: Any, agent: Agent) -> bool:
     )
 
 
+def record_sexual_parent_energy_fallback(world: Any, parent: Agent) -> None:
+    _increment_mate_search_counts(
+        world,
+        {
+            "sexual_parent_candidates": 1,
+            "asexual_fallbacks_after_sexual_candidate": 1,
+            "fallback_parent_energy_shortfall": 1,
+        },
+    )
+    _record_mate_search_event(
+        world,
+        parent,
+        selected_partner_id=None,
+        fallback_reason="parent_energy_shortfall",
+        reason_counts={
+            reason: 0 for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
+        },
+        scanned_agents=0,
+        same_group_candidates=0,
+        expression_compatible_candidates=0,
+        expression_incompatible_candidates=0,
+    )
+
+
+def record_mate_search_report(
+    world: Any,
+    parent: Agent,
+    report: runtime_mating.MateSearchReport,
+) -> None:
+    selected_partner_id = (
+        report.selected.agent.agent_id if report.selected is not None else None
+    )
+    fallback_reason = (
+        None
+        if report.selected is not None
+        else _mate_search_fallback_reason(report)
+    )
+    increments = {
+        "sexual_parent_candidates": 1,
+        "sexual_searches": 1,
+        "expression_compatible_candidates": report.expression_compatible_candidates,
+        "expression_incompatible_candidates": report.expression_incompatible_candidates,
+    }
+    for reason, count in report.reason_counts.items():
+        increments[f"candidate_{reason}"] = count
+    if report.selected is not None:
+        increments["sexual_successes"] = 1
+    else:
+        increments["asexual_fallbacks_after_sexual_candidate"] = 1
+        increments[f"fallback_{fallback_reason}"] = 1
+    _increment_mate_search_counts(world, increments)
+    _record_mate_search_event(
+        world,
+        parent,
+        selected_partner_id=selected_partner_id,
+        fallback_reason=fallback_reason,
+        reason_counts=report.reason_counts,
+        scanned_agents=report.scanned_agents,
+        same_group_candidates=report.same_group_candidates,
+        expression_compatible_candidates=report.expression_compatible_candidates,
+        expression_incompatible_candidates=report.expression_incompatible_candidates,
+    )
+
+
+def _increment_mate_search_counts(
+    world: Any,
+    increments: dict[str, int],
+) -> None:
+    for key, value in increments.items():
+        if key not in world.tick_reproduction_mate_search_counts:
+            raise ValueError(f"Unsupported mate search count: {key}")
+        world.tick_reproduction_mate_search_counts[key] += int(value)
+        world.run_reproduction_mate_search_counts[key] += int(value)
+
+
+def _record_mate_search_event(
+    world: Any,
+    parent: Agent,
+    *,
+    selected_partner_id: int | None,
+    fallback_reason: str | None,
+    reason_counts: dict[str, int],
+    scanned_agents: int,
+    same_group_candidates: int,
+    expression_compatible_candidates: int,
+    expression_incompatible_candidates: int,
+) -> None:
+    if not world.record_tick_details:
+        return
+    world.tick_reproduction_mate_search_events.append(
+        {
+            "agent_id": parent.agent_id,
+            "reproductive_group_id": parent.reproductive_group_id
+            or parent.lineage_id,
+            "reproductive_stage": parent.reproductive_stage,
+            "reproductive_expression": parent.reproductive_expression,
+            "selected_partner_id": selected_partner_id,
+            "fallback_reason": fallback_reason,
+            "scanned_agents": scanned_agents,
+            "same_group_candidates": same_group_candidates,
+            "reason_counts": {
+                reason: int(reason_counts.get(reason, 0))
+                for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
+            },
+            "expression_compatible_candidates": expression_compatible_candidates,
+            "expression_incompatible_candidates": expression_incompatible_candidates,
+        }
+    )
+
+
+def _mate_search_fallback_reason(
+    report: runtime_mating.MateSearchReport,
+) -> str:
+    if report.same_group_candidates == 0:
+        return "no_same_group_partner"
+    reason_counts = report.reason_counts
+    if (
+        reason_counts["expression_incompatible"] > 0
+        and report.expression_compatible_candidates == 0
+    ):
+        return "expression_incompatible"
+    for reason in (
+        "partner_not_ready",
+        "partner_out_of_radius",
+        "partner_sexual_locked",
+    ):
+        if reason_counts[reason] > 0:
+            return reason
+    return "no_compatible_partner"
+
+
 def reproduce(world: Any, parent: Agent) -> bool:
     destination = world._find_empty_neighbor(parent.x, parent.y)
     if destination is None:
@@ -840,21 +1171,29 @@ def reproduce(world: Any, parent: Agent) -> bool:
         return False
 
     parent_profile = world._trophic_profile(parent)
-    if parent.energy >= sexual_reproduction_energy_cost(world, parent_profile):
-        mate_candidate = runtime_mating.choose_same_group_mate(
-            parent,
-            world.agents.values(),
-            config=world.config.reproduction,
-            biologically_ready=lambda agent: sexual_partner_ready(world, agent),
-        )
-        if mate_candidate is not None:
-            return reproduce_sexual(
-                world,
+    if runtime_mating.sexual_reproduction_unlocked(
+        parent.genome,
+        world.config.reproduction,
+    ):
+        if parent.energy >= sexual_reproduction_energy_cost(world, parent_profile):
+            mate_report = runtime_mating.same_group_mate_search_report(
                 parent,
-                mate_candidate,
-                destination,
-                parent_profile,
+                world.agents.values(),
+                config=world.config.reproduction,
+                biologically_ready=lambda agent: sexual_partner_ready(world, agent),
             )
+            record_mate_search_report(world, parent, mate_report)
+            if mate_report.selected is not None:
+                mate_candidate = mate_report.selected
+                return reproduce_sexual(
+                    world,
+                    parent,
+                    mate_candidate,
+                    destination,
+                    parent_profile,
+                )
+        else:
+            record_sexual_parent_energy_fallback(world, parent)
     return reproduce_asexual(world, parent, destination, parent_profile)
 
 

@@ -170,6 +170,7 @@ class SimulationWorld:
         self.tick_fresh_kill_events: list[dict[str, object]] = []
         self.tick_fresh_kill_deposit_events: list[dict[str, object]] = []
         self.tick_reproduction_blocked_events: list[dict[str, object]] = []
+        self.tick_reproduction_mate_search_events: list[dict[str, object]] = []
         self.tick_fresh_kill_to_carcass_energy = 0.0
         self.tick_carcass_energy_decayed = 0.0
         self.tick_feeding_events: list[dict[str, object]] = []
@@ -214,6 +215,9 @@ class SimulationWorld:
             mode: self._empty_reproduction_blocked_counts()
             for mode in MEAT_MODE_CODES
         }
+        self.run_reproduction_mate_search_counts = (
+            runtime_reproduction.empty_reproduction_mate_search_counts()
+        )
         self.biotic_state_revision = 0
         self.cached_biotic_state_revision: int | None = None
         self.cached_biotic_state: BioticFieldState | None = None
@@ -221,6 +225,9 @@ class SimulationWorld:
         self.communication_signal_emissions: list[runtime_signals.SignalEmission] = []
         self.tick_signal_emission_events: list[dict[str, object]] = []
         self.tick_signal_totals = runtime_signals.empty_signal_totals()
+        self.tick_reproduction_mate_search_counts = (
+            runtime_reproduction.empty_reproduction_mate_search_counts()
+        )
         self.run_signal_totals = runtime_signals.empty_signal_totals()
         self.signal_state_revision = 0
         self.cached_signal_state_revision: int | None = None
@@ -375,6 +382,7 @@ class SimulationWorld:
         self.tick_fresh_kill_events = []
         self.tick_fresh_kill_deposit_events = []
         self.tick_reproduction_blocked_events = []
+        self.tick_reproduction_mate_search_events = []
         self.tick_fresh_kill_to_carcass_energy = 0.0
         self.tick_carcass_energy_decayed = 0.0
         self.tick_fresh_kill_deposited_energy = 0.0
@@ -383,6 +391,9 @@ class SimulationWorld:
         self.tick_trajectory_records = []
         self.tick_signal_emission_events = []
         self.tick_signal_totals = runtime_signals.empty_signal_totals()
+        self.tick_reproduction_mate_search_counts = (
+            runtime_reproduction.empty_reproduction_mate_search_counts()
+        )
         self.tick_animal_resource_consumption_by_meat_mode = (
             self._empty_grouped_animal_resource_consumption_counts(MEAT_MODE_CODES)
         )
@@ -1183,6 +1194,10 @@ class SimulationWorld:
     @staticmethod
     def _empty_reproduction_blocked_counts() -> dict[str, int]:
         return runtime_reproduction.empty_reproduction_blocked_counts()
+
+    @staticmethod
+    def _empty_reproduction_mate_search_counts() -> dict[str, int]:
+        return runtime_reproduction.empty_reproduction_mate_search_counts()
 
     @staticmethod
     def _empty_reproduction_readiness_counts() -> dict[str, int]:
@@ -5801,11 +5816,12 @@ class SimulationWorld:
         frame_diet_by_trophic_role = self._finalize_grouped_diet_totals(diet_by_trophic_role)
         frame_diet_by_meat_mode = self._finalize_grouped_diet_totals(diet_by_meat_mode)
         trophic_role_counts, meat_mode_counts = self._population_trophic_counts(alive)
-        reproduction_stats = self._reproduction_readiness_counts(alive)
-        blocked_this_tick = self._empty_reproduction_blocked_counts()
-        for event in self.tick_reproduction_blocked_events:
-            blocked_this_tick[str(event["reason"])] += 1
-        reproduction_stats["blocked_this_tick"] = blocked_this_tick
+        reproduction_stats = runtime_reproduction.build_frame_reproduction_stats(
+            self,
+            alive,
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
+        )
         self.run_fresh_kill_totals["fresh_kill_tiles"] = surfaces["fresh_kill_stats"]["fresh_kill_tiles"]
         self.run_fresh_kill_totals["total_fresh_kill_energy"] = surfaces["fresh_kill_stats"]["total_fresh_kill_energy"]
         self.run_carcass_totals["carcass_tiles"] = surfaces["carcass_stats"]["carcass_tiles"]
