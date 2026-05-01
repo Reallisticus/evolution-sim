@@ -455,6 +455,9 @@ class ReproductionConfig:
     z_plasticity_threshold: float = 0.68
     role_complementarity_bonus: float = 0.06
     z_z_pairing_penalty: float = 0.08
+    multi_offspring_enabled: bool = False
+    multi_offspring_threshold: float = 0.92
+    multi_offspring_max_count: int = 2
 
     def __post_init__(self) -> None:
         self.validate()
@@ -534,10 +537,26 @@ class ReproductionConfig:
             self.role_complementarity_bonus,
         )
         _check_fraction("reproduction.z_z_pairing_penalty", self.z_z_pairing_penalty)
+        _check_bool("reproduction.multi_offspring_enabled", self.multi_offspring_enabled)
+        _check_fraction(
+            "reproduction.multi_offspring_threshold",
+            self.multi_offspring_threshold,
+        )
+        _check_integer(
+            "reproduction.multi_offspring_max_count",
+            self.multi_offspring_max_count,
+            minimum=1,
+            maximum=4,
+        )
         if self.xyz_expression_threshold < self.role_differentiation_threshold:
             raise ValueError(
                 "reproduction.xyz_expression_threshold must be >= "
                 "reproduction.role_differentiation_threshold"
+            )
+        if self.multi_offspring_enabled and self.multi_offspring_max_count < 2:
+            raise ValueError(
+                "reproduction.multi_offspring_max_count must be >= 2 when "
+                "reproduction.multi_offspring_enabled is true"
             )
 
 

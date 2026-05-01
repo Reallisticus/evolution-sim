@@ -483,7 +483,9 @@ Current implementation status: reproduction events now carry
 including parent IDs, parent lineage IDs, parent reproductive group IDs, child
 lineage/group/stage/expression fields, parent energy costs, compatibility and
 inbreeding fields, offspring count, and inert Mind inheritance metadata. Hybrid
-births and multi-offspring event expansion remain future behavior slices.
+births remain a future behavior slice. Rare multi-offspring readiness is now a
+config-gated, observable capability using `fecundity_potential`; event expansion
+still remains future work, so current birth events continue to produce one child.
 
 Metrics should distinguish:
 
@@ -645,8 +647,15 @@ X/Y/Z and hybridization slices:
    Stage 2/3 readiness diagnostics, summary-vs-viewer reproductive catalog
    reconciliation, deterministic signal/reproduction config-edge coverage, and
    a first behavior-preserving extraction of trajectory finalization out of
-   `world.py`.
-10. Rare multi-offspring sexed strategy.
+   `world.py`. The current cleanup pass continues that direction with
+   behavior-preserving extraction of tick orchestration and summary end-surface
+   construction, plus invariant coverage for decayed signal source snapshots and
+   real fixture worlds that make Stage 2/3 role imbalance warn without default
+   drift.
+10. Rare multi-offspring sexed strategy. Initial contract slice implemented:
+   `ReproductionConfig` gates multi-offspring readiness with conservative
+   defaults, reproductive capability counts expose ready agents, and live
+   multi-child event expansion remains off until the behavior slice is designed.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 

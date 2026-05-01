@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
+
+from evolution_sim.env.runtime.state import RunMode
 
 LAND_TERRAINS = ("plain", "forest", "wetland", "rocky")
 HYDROLOGY_REASONS = ("none", "adjacent_water", "wetland", "flooded")
@@ -54,6 +56,64 @@ class SpeciesMetricSample:
     refuge_score: float
     injury_load: float
     reproduction_ready: bool
+
+
+def summary_end_surface_state(world: Any, mode: RunMode) -> dict[str, object]:
+    latest_frame = (
+        world.viewer_frames[-1]
+        if world.viewer_frames and mode == RunMode.FULL_REPLAY
+        else None
+    )
+    if latest_frame is not None:
+        return {
+            "hydrology_primary_counts": latest_frame["hydrology_primary_counts"],
+            "hydrology_support_counts": latest_frame["hydrology_support_counts"],
+            "hydrology_primary_stats": latest_frame["hydrology_primary_stats"],
+            "refuge_counts": latest_frame["refuge_counts"],
+            "refuge_stats": latest_frame["refuge_stats"],
+            "hazard_counts": latest_frame["hazard_counts"],
+            "hazard_stats": latest_frame["hazard_stats"],
+            "fresh_kill_stats": latest_frame["fresh_kill_stats"],
+            "carcass_stats": latest_frame["carcass_stats"],
+            "biotic_field_stats": latest_frame["biotic_field_stats"],
+            "signal_field_stats": latest_frame["signal_field_stats"],
+            "ecology_counts": latest_frame["ecology_state_counts"],
+            "ecology_stats": latest_frame["ecology_stats"],
+            "habitat_counts": latest_frame["habitat_state_counts"],
+            "latest_species_metrics": latest_frame["species_metrics"],
+        }
+    (
+        _,
+        _,
+        hydrology_primary_counts,
+        hydrology_support_counts,
+        hydrology_primary_stats,
+    ) = world._hydrology_snapshot()
+    _, _, refuge_counts, refuge_stats = world._refuge_snapshot()
+    _, _, hazard_counts, hazard_stats = world._hazard_snapshot()
+    _, fresh_kill_stats = world._fresh_kill_snapshot()
+    _, _, carcass_stats = world._carcass_snapshot()
+    _, biotic_field_stats = world._biotic_field_snapshot()
+    _, signal_field_stats = world._signal_field_snapshot()
+    _, ecology_counts, ecology_stats = world._ecology_snapshot()
+    habitat_counts = world._habitat_state_grid()[1]
+    return {
+        "hydrology_primary_counts": hydrology_primary_counts,
+        "hydrology_support_counts": hydrology_support_counts,
+        "hydrology_primary_stats": hydrology_primary_stats,
+        "refuge_counts": refuge_counts,
+        "refuge_stats": refuge_stats,
+        "hazard_counts": hazard_counts,
+        "hazard_stats": hazard_stats,
+        "fresh_kill_stats": fresh_kill_stats,
+        "carcass_stats": carcass_stats,
+        "biotic_field_stats": biotic_field_stats,
+        "signal_field_stats": signal_field_stats,
+        "ecology_counts": ecology_counts,
+        "ecology_stats": ecology_stats,
+        "habitat_counts": habitat_counts,
+        "latest_species_metrics": {},
+    }
 
 
 def empty_combat_totals() -> dict[str, float]:

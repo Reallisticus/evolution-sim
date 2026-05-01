@@ -90,8 +90,10 @@ registry, Stage 1 same-group facultative sexed reproduction, grouped genome
 recombination helper contracts, and placeholder learned-state inheritance
 metadata. Current Mind-facing replay contracts include reproductive expression
 in `mind_observation_v3` and stable per-action signal outcome metadata in
-`mind_action_outcome_v2`. The `mate` action remains reserved and masked; Stage 1 is
-biology-gated, not policy-driven. Communication signal slots remain opaque and
+`mind_action_outcome_v2`. Rare multi-offspring readiness is config-gated and
+observable through reproductive capability counts, but live birth expansion still
+emits one child per event. The `mate` action remains reserved and masked; Stage 1
+is biology-gated, not policy-driven. Communication signal slots remain opaque and
 disabled by default, with an opt-in trait-gated emission path covered by tests;
 the default heuristic still never emits communication tokens.
 

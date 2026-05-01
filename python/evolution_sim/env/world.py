@@ -31,6 +31,7 @@ from evolution_sim.env.runtime.derived import reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.observations as runtime_observations
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
+import evolution_sim.env.runtime.ticks as runtime_ticks
 from evolution_sim.env.runtime.reporting import (
     build_collapse_events,
     build_replay_analytics,
@@ -45,6 +46,7 @@ from evolution_sim.env.runtime.reporting import (
     empty_hydrology_exposure_counts,
     empty_terrain_occupancy,
     SpeciesMetricSample,
+    summary_end_surface_state,
 )
 import evolution_sim.env.runtime.trajectory as runtime_trajectory
 from evolution_sim.env.runtime.state import (
@@ -370,170 +372,7 @@ class SimulationWorld:
             self.trajectory_sink = previous_trajectory_sink
 
     def _run_tick(self) -> tuple[int, int]:
-        births_this_tick = 0
-        deaths_before_tick = self.deaths
-        self.tick_birth_pairs = []
-        self.tick_death_agent_ids = []
-        self.tick_death_events = []
-        self.tick_attack_events = []
-        self.tick_damage_events = []
-        self.tick_carcass_deposit_events = []
-        self.tick_carcass_events = []
-        self.tick_fresh_kill_events = []
-        self.tick_fresh_kill_deposit_events = []
-        self.tick_reproduction_blocked_events = []
-        self.tick_reproduction_mate_search_events = []
-        self.tick_fresh_kill_to_carcass_energy = 0.0
-        self.tick_carcass_energy_decayed = 0.0
-        self.tick_fresh_kill_deposited_energy = 0.0
-        self.tick_carcass_deposited_energy = 0.0
-        self.tick_feeding_events = []
-        self.tick_trajectory_records = []
-        self.tick_signal_emission_events = []
-        self.tick_signal_totals = runtime_signals.empty_signal_totals()
-        self.tick_reproduction_mate_search_counts = (
-            runtime_reproduction.empty_reproduction_mate_search_counts()
-        )
-        self.tick_animal_resource_consumption_by_meat_mode = (
-            self._empty_grouped_animal_resource_consumption_counts(MEAT_MODE_CODES)
-        )
-        self.tick_hazard_exposure_agents = set()
-        self._invalidate_biotic_state()
-        self._decay_signal_emissions()
-        climate_state = self._climate_state()
-        self._emit(
-            EventType.TICK_STARTED,
-            data={
-                "alive_agents": len(self.alive_agents()),
-                "season": self._season_state()["name"],
-                "disturbance_type": climate_state["disturbance_type"],
-                "disturbance_strength": climate_state["disturbance_strength"],
-            },
-        )
-        self._regrow_resources()
-        tick_start_alive = self.alive_agents()
-        _, opportunity_meat_mode_counts = self._population_trophic_counts(tick_start_alive)
-        opportunity_reachability_by_meat_mode = (
-            self._animal_resource_reachability_by_meat_mode(tick_start_alive)
-        )
-        observation_snapshots = {
-            agent.agent_id: self._observe_agent(agent)
-            for agent in tick_start_alive
-        }
-        trajectory_contexts = (
-            {
-                agent.agent_id: self._begin_trajectory_decision(
-                    agent,
-                    observation_snapshots[agent.agent_id],
-                )
-                for agent in tick_start_alive
-            }
-            if self.record_trajectory
-            else {}
-        )
-        pending_trajectory_records: list[dict[str, object]] = []
-        acted_trajectory_agent_ids: set[int] = set()
-
-        for agent_id in sorted(self.agents):
-            agent = self.agents[agent_id]
-            if not agent.alive:
-                continue
-            self._decay_recent_diet(agent)
-            trajectory_context = (
-                trajectory_contexts[agent_id]
-                if self.record_trajectory and agent_id in trajectory_contexts
-                else None
-            )
-            action = self._choose_action(agent, observation_snapshots.get(agent_id))
-            live_action_mask = self._action_mask(agent)
-            if trajectory_context is not None:
-                moved, action_outcome = self._resolve_action_with_outcome(
-                    agent,
-                    action,
-                    observation_action_mask=trajectory_context["action_mask"],
-                    resolution_action_mask=live_action_mask,
-                )
-                resolved_action = str(action_outcome["resolved_action"])
-            else:
-                moved = self._resolve_action(agent, action)
-                resolved_action = action if live_action_mask.get(action, False) else "stay"
-                action_outcome = None
-            self._apply_metabolism(agent, moved=moved)
-            self._apply_health_and_hazards(agent, moved=moved)
-            agent.age += 1
-            if trajectory_context is not None:
-                trajectory_context.update(
-                    {
-                        "requested_action": action,
-                        "action_source": self._policy_action_source,
-                        "policy_id": self._policy_id,
-                        "policy_version": self._policy_version,
-                        "resolution_action_mask": live_action_mask,
-                        "resolved_action": resolved_action,
-                        "moved": moved,
-                        "action_outcome": action_outcome,
-                    }
-                )
-                pending_trajectory_records.append(trajectory_context)
-                acted_trajectory_agent_ids.add(agent_id)
-            self._invalidate_biotic_state()
-
-        births_this_tick = runtime_reproduction.run_reproduction_phase(self)
-
-        for agent_id in sorted(self.agents):
-            agent = self.agents[agent_id]
-            if agent.alive and self._should_die(agent):
-                self._kill_agent(agent, cause=self._death_cause(agent))
-
-        if self.record_trajectory:
-            for agent_id, trajectory_context in trajectory_contexts.items():
-                if agent_id in acted_trajectory_agent_ids:
-                    continue
-                agent = self.agents[agent_id]
-                if agent.alive or agent.death_tick != self.tick:
-                    continue
-                action_mask = dict(trajectory_context["action_mask"])
-                action_mask["stay"] = True
-                passive_outcome = self._base_action_outcome(
-                    requested_action="stay",
-                    resolved_action="stay",
-                    observation_action_mask=action_mask,
-                    resolution_action_mask=action_mask,
-                )
-                trajectory_context.update(
-                    {
-                        "requested_action": "stay",
-                        "action_source": "passive",
-                        "policy_id": None,
-                        "policy_version": None,
-                        "resolution_action_mask": action_mask,
-                        "resolved_action": "stay",
-                        "moved": False,
-                        "action_outcome": passive_outcome,
-                    }
-                )
-                pending_trajectory_records.append(trajectory_context)
-            self._finalize_trajectory_decisions(pending_trajectory_records)
-
-        deaths_this_tick = self.deaths - deaths_before_tick
-        alive_count = len(self.alive_agents())
-        self.peak_alive_agents = max(self.peak_alive_agents, alive_count)
-        self._record_animal_resource_opportunity_tick(
-            opportunity_meat_mode_counts,
-            opportunity_reachability_by_meat_mode,
-        )
-        self._emit(
-            EventType.TICK_COMPLETED,
-            data={
-                "alive_agents": alive_count,
-                "births": births_this_tick,
-                "deaths": deaths_this_tick,
-                "season": self._season_state()["name"],
-                "disturbance_type": climate_state["disturbance_type"],
-                "disturbance_strength": climate_state["disturbance_strength"],
-            },
-        )
-        return births_this_tick, deaths_this_tick
+        return runtime_ticks.run_tick(self, meat_mode_codes=MEAT_MODE_CODES)
 
     def _build_grid(self) -> list[list[Tile]]:
         grid: list[list[Tile]] = []
@@ -6358,40 +6197,22 @@ class SimulationWorld:
         field_stats = self._field_stats()
         climate_end = self._climate_state()
         terrain_counts = self._terrain_counts()
-        latest_frame = self.viewer_frames[-1] if self.viewer_frames and mode == RunMode.FULL_REPLAY else None
-        if latest_frame is not None:
-            hydrology_primary_counts = latest_frame["hydrology_primary_counts"]
-            hydrology_support_counts = latest_frame["hydrology_support_counts"]
-            hydrology_primary_stats = latest_frame["hydrology_primary_stats"]
-            refuge_counts = latest_frame["refuge_counts"]
-            refuge_stats = latest_frame["refuge_stats"]
-            hazard_counts = latest_frame["hazard_counts"]
-            hazard_stats = latest_frame["hazard_stats"]
-            fresh_kill_stats = latest_frame["fresh_kill_stats"]
-            carcass_stats = latest_frame["carcass_stats"]
-            biotic_field_stats = latest_frame["biotic_field_stats"]
-            signal_field_stats = latest_frame["signal_field_stats"]
-            ecology_counts = latest_frame["ecology_state_counts"]
-            ecology_stats = latest_frame["ecology_stats"]
-            habitat_counts = latest_frame["habitat_state_counts"]
-            latest_species_metrics = latest_frame["species_metrics"]
-        else:
-            (
-                _,
-                _,
-                hydrology_primary_counts,
-                hydrology_support_counts,
-                hydrology_primary_stats,
-            ) = self._hydrology_snapshot()
-            _, _, refuge_counts, refuge_stats = self._refuge_snapshot()
-            _, _, hazard_counts, hazard_stats = self._hazard_snapshot()
-            _, fresh_kill_stats = self._fresh_kill_snapshot()
-            _, _, carcass_stats = self._carcass_snapshot()
-            _, biotic_field_stats = self._biotic_field_snapshot()
-            _, signal_field_stats = self._signal_field_snapshot()
-            _, ecology_counts, ecology_stats = self._ecology_snapshot()
-            habitat_counts = self._habitat_state_grid()[1]
-            latest_species_metrics = {}
+        end_surfaces = summary_end_surface_state(self, mode)
+        hydrology_primary_counts = end_surfaces["hydrology_primary_counts"]
+        hydrology_support_counts = end_surfaces["hydrology_support_counts"]
+        hydrology_primary_stats = end_surfaces["hydrology_primary_stats"]
+        refuge_counts = end_surfaces["refuge_counts"]
+        refuge_stats = end_surfaces["refuge_stats"]
+        hazard_counts = end_surfaces["hazard_counts"]
+        hazard_stats = end_surfaces["hazard_stats"]
+        fresh_kill_stats = end_surfaces["fresh_kill_stats"]
+        carcass_stats = end_surfaces["carcass_stats"]
+        biotic_field_stats = end_surfaces["biotic_field_stats"]
+        signal_field_stats = end_surfaces["signal_field_stats"]
+        ecology_counts = end_surfaces["ecology_counts"]
+        ecology_stats = end_surfaces["ecology_stats"]
+        habitat_counts = end_surfaces["habitat_counts"]
+        latest_species_metrics = end_surfaces["latest_species_metrics"]
         land_tile_count = self.config.width * self.config.height - terrain_counts["water"]
         trophic_role_counts, meat_mode_counts = self._population_trophic_counts(alive)
         reproduction_end = self._reproduction_readiness_counts(alive)

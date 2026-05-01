@@ -93,6 +93,19 @@ def xyz_expression_unlocked(
     )
 
 
+def multi_offspring_unlocked(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> bool:
+    return (
+        sexual_reproduction_unlocked(genome, config)
+        and config.multi_offspring_enabled
+        and config.multi_offspring_max_count > 1
+        and genome.reproductive.fecundity_potential
+        >= config.multi_offspring_threshold
+    )
+
+
 def reproductive_capabilities_for_genome(
     genome: Genome,
     config: ReproductionConfig,
@@ -102,7 +115,7 @@ def reproductive_capabilities_for_genome(
         "proto_role_differentiation": role_differentiation_unlocked(genome, config),
         "xyz_expression": xyz_expression_unlocked(genome, config),
         "hybridization": False,
-        "multi_offspring": False,
+        "multi_offspring": multi_offspring_unlocked(genome, config),
     }
 
 

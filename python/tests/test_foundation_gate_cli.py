@@ -21,11 +21,115 @@ from evolution_sim.cli.foundation_gate import (
     _reproductive_role_readiness_flags,
     _summary_gate_flags,
 )
-from evolution_sim.config import SignalConfig, WorldConfig
-from evolution_sim.env import SimulationWorld
+from evolution_sim.config import (
+    DietMatchingConfig,
+    ReproductionConfig,
+    SignalConfig,
+    WorldConfig,
+)
+from evolution_sim.env import RunMode, SimulationWorld
+import evolution_sim.env.runtime.mating as runtime_mating
+import evolution_sim.env.runtime.reproduction as runtime_reproduction
+from evolution_sim.env.runtime.state import Agent
+from evolution_sim.genome import Genome, ReproductiveGenome
+from evolution_sim.genome.species import genome_vector
 
 
 class FoundationGateCliTests(unittest.TestCase):
+    def _role_fixture_world(self) -> SimulationWorld:
+        return SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                max_agents=12,
+                width=6,
+                height=6,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+                base_energy_drain=0.0,
+                base_hydration_drain=0.0,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.0,
+                    sexual_partner_radius=1,
+                ),
+                diet_matching=DietMatchingConfig(
+                    specialist_threshold=0.0,
+                    omnivore_threshold=0.0,
+                ),
+            )
+        )
+
+    def _role_fixture_genome(
+        self,
+        world: SimulationWorld,
+        *,
+        role_drive: float,
+        expression_bias: float,
+        plasticity: float = 0.0,
+    ) -> Genome:
+        genome = Genome.sample_initial(world.rng)
+        return replace(
+            genome,
+            reproductive=ReproductiveGenome(
+                sexual_reproduction_drive=0.9,
+                recombination_affinity=0.9,
+                role_differentiation_drive=role_drive,
+                sex_expression_bias=expression_bias,
+                sex_plasticity=plasticity,
+            ),
+        )
+
+    def _place_role_fixture_agent(
+        self,
+        world: SimulationWorld,
+        *,
+        x: int,
+        y: int,
+        genome: Genome,
+    ) -> Agent:
+        config = world.config.reproduction
+        agent = Agent(
+            agent_id=world.next_agent_id,
+            parent_id=None,
+            lineage_id=1,
+            birth_tick=0,
+            death_tick=None,
+            x=x,
+            y=y,
+            energy=genome.max_energy * 1.25,
+            hydration=genome.max_hydration,
+            health=genome.max_health,
+            max_health=genome.max_health,
+            injury_load=0.0,
+            age=10,
+            alive=True,
+            last_reproduction_tick=-10_000,
+            last_damage_source="none",
+            recent_plant_energy=0.0,
+            recent_fresh_kill_energy=0.0,
+            recent_carcass_energy=0.0,
+            genome_vector=genome_vector(genome),
+            genome=genome,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+        )
+        world._place_agent(agent)
+        world.next_agent_id += 1
+        return agent
+
     def test_ecology_profile_is_summary_only_seed_bank(self) -> None:
         self.assertIs(PROFILES["ecology"], ECOLOGY_PROFILE)
         self.assertEqual(ECOLOGY_PROFILE.summary_seeds, tuple(range(1, 21)))
@@ -1324,6 +1428,49 @@ class FoundationGateCliTests(unittest.TestCase):
                 "ready_by_reproductive_stage": {},
                 "mate_search_run_counts": {},
             },
+        )
+
+        self.assertEqual(flags, [])
+
+    def test_role_imbalance_fixture_world_emits_gate_warnings(self) -> None:
+        world = self._role_fixture_world()
+        proto_x = self._role_fixture_genome(
+            world,
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        same_proto_x = self._role_fixture_genome(
+            world,
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        self._place_role_fixture_agent(world, x=2, y=2, genome=proto_x)
+        self._place_role_fixture_agent(world, x=3, y=2, genome=same_proto_x)
+
+        runtime_reproduction.run_reproduction_phase(world)
+        flags = _reproductive_role_readiness_flags(
+            scope="fixture",
+            reproduction=world._reproduction_readiness_counts(world.alive_agents()),
+        )
+        warning_fields = {
+            flag["field"] for flag in flags if flag["severity"] == "warning"
+        }
+
+        self.assertIn("reproduction.reproductive_expression_counts", warning_fields)
+        self.assertIn("reproduction.mate_search_run_counts", warning_fields)
+        self.assertIn(
+            "reproduction.mate_search_run_counts.constraint_expression_incompatible",
+            warning_fields,
+        )
+
+    def test_default_fixture_world_does_not_drift_into_role_warnings(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=6)).run(
+            mode=RunMode.SUMMARY_ONLY,
+        )
+
+        flags = _reproductive_role_readiness_flags(
+            scope="default",
+            reproduction=result.summary["reproduction_end"],
         )
 
         self.assertEqual(flags, [])

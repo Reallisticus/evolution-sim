@@ -1763,6 +1763,39 @@ class RuntimeContractTests(unittest.TestCase):
                     reproduction=ReproductionConfig(z_z_pairing_penalty=1.2)
                 ),
             ),
+            (
+                "reproduction.multi_offspring_enabled",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        multi_offspring_enabled=1,  # type: ignore[arg-type]
+                    )
+                ),
+            ),
+            (
+                "reproduction.multi_offspring_threshold",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        multi_offspring_threshold=1.2,
+                    )
+                ),
+            ),
+            (
+                "reproduction.multi_offspring_max_count",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        multi_offspring_max_count=0,
+                    )
+                ),
+            ),
+            (
+                "reproduction.multi_offspring_max_count",
+                lambda: WorldConfig(
+                    reproduction=ReproductionConfig(
+                        multi_offspring_enabled=True,
+                        multi_offspring_max_count=1,
+                    )
+                ),
+            ),
         )
 
         for expected_message, build_config in invalid_configs:
@@ -2461,8 +2494,8 @@ class RuntimeContractTests(unittest.TestCase):
     def test_reproductive_signal_emits_for_ready_agents_and_decays(self) -> None:
         world = SimulationWorld(
             self._ready_reproduction_config(
-                width=5,
-                height=5,
+                width=7,
+                height=7,
                 signals=SignalConfig(
                     reproductive_signal_radius=2,
                     reproductive_signal_duration_ticks=3,
@@ -2524,6 +2557,50 @@ class RuntimeContractTests(unittest.TestCase):
             signal_state.reproductive_signal[2][2],
         )
         self.assertEqual(decayed_state.communication_signal[2][2], 0.0)
+
+    def test_decayed_reproductive_signal_retains_emission_source_snapshot(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                signals=SignalConfig(
+                    reproductive_signal_radius=2,
+                    reproductive_signal_duration_ticks=3,
+                    reproductive_signal_decay_rate=0.5,
+                    reproductive_signal_base_intensity=0.2,
+                    reproductive_signal_trait_intensity_bonus=0.3,
+                    base_emission_energy_cost=0.0,
+                ),
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
+
+        runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        emission = world.reproductive_signal_emissions[0]
+        source_agent_id = agent.agent_id
+        agent.x = 6
+        agent.y = 6
+        agent.alive = False
+        agent.death_tick = world.tick
+        world.tick_signal_emission_events = []
+
+        runtime_signals.decay_signal_emissions(world)
+        snapshot = runtime_signals.signal_emission_debug_snapshot(world)
+        decayed_state = world._current_signal_state()
+
+        self.assertEqual(snapshot["events"], [])
+        self.assertEqual(snapshot["active_counts"]["reproductive_signal"], 1)
+        self.assertEqual(emission.source_agent_id, source_agent_id)
+        self.assertEqual(emission.x, 2)
+        self.assertEqual(emission.y, 2)
+        self.assertEqual(emission.emitted_tick, 0)
+        self.assertEqual(emission.remaining_ticks, 2)
+        self.assertAlmostEqual(decayed_state.reproductive_signal[2][2], 0.25)
+        self.assertEqual(decayed_state.reproductive_signal[6][6], 0.0)
 
     def test_reproductive_signal_is_biology_gated(self) -> None:
         world = SimulationWorld(
@@ -3025,6 +3102,65 @@ class RuntimeContractTests(unittest.TestCase):
                 "hybridization": False,
                 "multi_offspring": False,
             },
+        )
+
+    def test_multi_offspring_capability_is_config_gated_and_observable(self) -> None:
+        gated_config = ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=0,
+            min_hydration_fraction=0.0,
+            multi_offspring_enabled=True,
+            multi_offspring_threshold=0.8,
+            multi_offspring_max_count=2,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                reproduction=gated_config,
+            )
+        )
+        sexualized_genome = self._sexualized_genome(self._mixed_genome())
+        genome = replace(
+            sexualized_genome,
+            reproductive=replace(
+                sexualized_genome.reproductive,
+                fecundity_potential=0.9,
+            ),
+        )
+        stage = runtime_mating.reproductive_stage_for_genome(genome, gated_config)
+        expression = runtime_mating.reproductive_expression_for_genome(
+            genome,
+            gated_config,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=stage,
+            reproductive_expression=expression,
+            genome=genome,
+        )
+
+        default_config = ReproductionConfig()
+        stats = world._reproduction_readiness_counts(world.alive_agents())
+
+        self.assertFalse(
+            runtime_mating.multi_offspring_unlocked(genome, default_config)
+        )
+        self.assertTrue(runtime_mating.multi_offspring_unlocked(genome, gated_config))
+        self.assertEqual(
+            runtime_mating.reproductive_capabilities_for_genome(
+                genome,
+                gated_config,
+            )["multi_offspring"],
+            True,
+        )
+        self.assertEqual(
+            stats["reproductive_capability_counts"]["multi_offspring"],
+            1,
         )
 
     def test_proto_role_mating_requires_complementary_expression(self) -> None:
