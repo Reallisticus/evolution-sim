@@ -18,8 +18,10 @@ def reset_derived_caches(world: Any, *, include_biotic: bool = True) -> None:
     world.cached_effective_fields_tick = None
     world.cached_effective_fields_grid = None
     world._biotic_diffusion_target_cache = {}
+    world._signal_diffusion_target_cache = {}
     if include_biotic:
         world._invalidate_biotic_state()
+        world._invalidate_signal_state()
 
 
 @dataclass(slots=True)

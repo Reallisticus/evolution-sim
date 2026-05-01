@@ -1,7 +1,7 @@
 # Pre-Mind Reproductive And Signal Readiness Plan
 
 Date: 2026-04-30
-Status: architecture plan, not yet simulator behavior
+Status: architecture plan with initial Foundation scaffold slices implemented
 
 This document defines the Foundation cleanup needed before Mind v1 around
 reproduction, signals, communication, and future learned-controller contracts.
@@ -31,6 +31,21 @@ The next Foundation direction is:
 
 The first implementation slice after this document should be scaffolding with
 unchanged behavior and unchanged replay goldens where possible.
+
+Implemented slices as of 2026-04-30:
+
+- behavior-preserving action/signal/reproductive-genome scaffolding, with future
+  `mate` and opaque signal slots present but masked;
+- Stage 0 live reproductive-group registry, recorded in summary and replay
+  catalog surfaces while behavior remains single-parent asexual;
+- grouped genome recombination contract and deterministic helper for future
+  two-parent births, kept separate from current mutation logic.
+- Stage 1 same-group facultative sexed reproduction, trait-gated and local, with
+  grouped recombination, both-parent cost/cooldown, dual-parent replay metadata,
+  and asexual fallback when no valid partner exists.
+
+Not implemented yet: pheromone fields, X/Y/Z-like expression, hybridization,
+multi-offspring strategies, or learned state inheritance.
 
 ## Non-Goals
 
@@ -164,6 +179,12 @@ Initial design:
 - no hardcoded heuristic movement toward pheromones;
 - no semantic label is exposed to the Mind.
 
+Current implementation status: the reproductive-readiness field is live on the
+default Foundation path. It is emitted automatically by biologically ready
+agents, diffuses deterministically across land tiles, decays by config, can
+charge a configured energy cost, and is surfaced as opaque numeric observation
+and replay data. It does not drive scripted movement or unmask any policy action.
+
 Pheromones should primarily signal readiness. A small self-stabilizing component
 can be allowed for local scarcity, reproductive-group scarcity, or role
 imbalance, but it must not become a scripted "find mate" behavior.
@@ -215,6 +236,11 @@ Recommended groups:
 Stage 0 can keep current effective behavior: one parent mutates a genome and
 creates a child. The representation should still be compatible with later
 chromosome-like grouped recombination so Stage 1 does not require a rewrite.
+
+Current implementation note: `python/evolution_sim/genome/recombination.py`
+groups every active scalar genome field exactly once and includes the inert
+reproductive module. Signal-specific and Mind-inheritance groups should be added
+only when those heritable fields exist, rather than represented as empty groups.
 
 ## Reproductive Genome Module
 
@@ -523,22 +549,36 @@ X/Y/Z and hybridization slices:
 
 ## Implementation Order
 
-1. Documentation and audit alignment.
-2. Behavior-preserving scaffolding:
+1. Documentation and audit alignment. Implemented as this plan plus the
+   readiness-audit/readme updates.
+2. Behavior-preserving scaffolding. Implemented:
    - `ActionContract`;
    - reserved `mate` and communication slots;
    - signal config and no-op substrate types;
    - reproductive genome module with inert defaults;
    - Mind inheritance placeholder metadata;
    - zero/no-op observation fields.
-3. Reproductive groups and grouped genome recombination helpers.
-4. Stage 1 same-group sexed reproduction, default Foundation path.
-5. Pheromone substrate with readiness emissions and numeric sensing.
-6. Communication substrate with trait-gated opaque emission.
-7. X/Y/Z stage system.
-8. Rare multi-offspring sexed strategy.
-9. Late hybridization/introgression.
-10. Mind v1 sequence/world-model work only after Foundation gates stabilize.
+3. Reproductive groups and grouped genome recombination helpers. Implemented as
+   Stage 0 registry plus two-parent grouped recombination helper.
+4. Stage 1 same-group sexed reproduction, default Foundation path. Implemented
+   as a rare facultative path: individuals can unlock it through reproductive
+   gene mutation, both local same-group parents must be biologically ready, both
+   pay cost/cooldown, and current asexual reproduction remains the fallback.
+5. Reproductive runtime cleanup before signal substrate. Extract reproductive
+   eligibility, child construction, mate selection orchestration, accounting,
+   and readiness reporting out of `world.py` behind a narrow runtime boundary,
+   without changing replay/golden semantics.
+6. Pheromone substrate with readiness emissions and numeric sensing.
+   Implemented for the reproductive-readiness path: biologically ready agents
+   emit deterministic numeric fields with configured intensity, radius, duration,
+   decay, and energy-cost hooks. Observations, replay frames, summary metrics,
+   analytics, and the viewer expose the field. Communication tokens remain
+   reserved and opaque.
+7. Communication substrate with trait-gated opaque emission.
+8. X/Y/Z stage system.
+9. Rare multi-offspring sexed strategy.
+10. Late hybridization/introgression.
+11. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 
 The user direction is to put this on the default Foundation path, not behind a
 separate experimental profile. That means each behavior slice must update gates

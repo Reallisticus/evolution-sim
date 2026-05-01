@@ -117,6 +117,7 @@ try {
       inspector.textContent.includes("Health") &&
       inspector.textContent.includes("Last Damage Source") &&
       inspector.textContent.includes("Hazard Here") &&
+      inspector.textContent.includes("Reproductive Signal Here") &&
       inspector.textContent.includes("Carcass Dominant Source") &&
       inspector.textContent.includes("Carcass Source Mix") &&
       inspector.textContent.includes("Water Access Reason") &&
@@ -195,6 +196,10 @@ try {
   await page.locator("#overlay-mode").selectOption("carcass");
   await page.waitForFunction(() => {
     return document.querySelector("#overlay-label")?.textContent?.includes("Carcass");
+  });
+  await page.locator("#overlay-mode").selectOption("reproductive_signal");
+  await page.waitForFunction(() => {
+    return document.querySelector("#overlay-label")?.textContent?.includes("Reproductive Signal");
   });
   await page.locator("#overlay-mode").selectOption("trophic");
   await page.waitForFunction(() => {

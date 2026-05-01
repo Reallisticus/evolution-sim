@@ -297,9 +297,15 @@ function drawTerrain() {
           color: overlayColor,
           alpha:
             isWaterTile &&
-            ["hydrology", "shoreline", "refuge", "hazard", "carcass", "ecology"].includes(
-              state.overlayMode,
-            )
+            [
+              "hydrology",
+              "shoreline",
+              "refuge",
+              "hazard",
+              "carcass",
+              "reproductive_signal",
+              "ecology",
+            ].includes(state.overlayMode)
               ? 0.84
               : 0.72,
         });
@@ -566,6 +572,10 @@ function updateInspector() {
     isAliveNow ? (frame.hazard_level_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
   const currentCarcassEnergy =
     isAliveNow ? (frame.carcass_energy_codes?.[current.y]?.[current.x] ?? 0) / 100 : null;
+  const currentReproductiveSignal =
+    isAliveNow ? frame.signal_fields?.reproductive_signal?.[current.y]?.[current.x] ?? 0 : null;
+  const currentCommunicationSignal =
+    isAliveNow ? frame.signal_fields?.communication_signal?.[current.y]?.[current.x] ?? 0 : null;
   const currentCarcassPatch =
     isAliveNow
       ? frame.carcass_patches?.find((patch) => patch.x === current.x && patch.y === current.y) ?? null
@@ -628,6 +638,8 @@ function updateInspector() {
     ["Last Damage Source", isAliveNow ? titleCase(current.lastDamageSource ?? "none") : "-"],
     ["Hazard Here", currentHazardType ? titleCase(currentHazardType) : "-"],
     ["Hazard Level", isAliveNow ? formatPercent(currentHazardLevel ?? 0) : "-"],
+    ["Reproductive Signal Here", isAliveNow ? roundValue(currentReproductiveSignal ?? 0) : "-"],
+    ["Communication Signal Here", isAliveNow ? roundValue(currentCommunicationSignal ?? 0) : "-"],
     ["Carcass Here", isAliveNow ? roundValue(currentCarcassEnergy ?? 0) : "-"],
     ["Carcass Freshness", currentCarcassPatch ? formatPercent(currentCarcassPatch.avg_freshness ?? 0) : "-"],
     ["Carcass Deposits", currentCarcassPatch?.deposit_count ?? "-"],
@@ -1501,6 +1513,17 @@ function carcassColor(energyCode, freshnessCode, terrainCode) {
   return blendColor(0x5b2c06, 0xfbbf24, energy * 0.55 + freshness * 0.45);
 }
 
+function signalColor(value, terrainCode) {
+  if (terrainCode === terrainCodeByName("water")) {
+    return terrainColor(terrainCodeByName("water"));
+  }
+  const intensity = clamp01(Number(value ?? 0));
+  if (intensity <= 0) {
+    return blendColor(0x1f2937, terrainBaseColor(terrainCode), 0.5);
+  }
+  return blendColor(0x0f172a, 0x2dd4bf, Math.sqrt(intensity));
+}
+
 function trophicColor(code, terrainCode) {
   if (terrainCode === terrainCodeByName("water")) {
     return terrainColor(terrainCodeByName("water"));
@@ -1588,6 +1611,9 @@ function overlayColorForTile(payload, frame, x, y, terrainCode) {
       terrainCode,
     );
   }
+  if (state.overlayMode === "reproductive_signal") {
+    return signalColor(frame.signal_fields?.reproductive_signal?.[y]?.[x], terrainCode);
+  }
   if (state.overlayMode === "trophic") {
     return trophicColor(frame.trophic_role_codes?.[y]?.[x] ?? 0, terrainCode);
   }
@@ -1606,6 +1632,9 @@ function overlayColorForTile(payload, frame, x, y, terrainCode) {
 function effectiveFieldValue(payload, frame, fieldName, x, y) {
   if (fieldName === "habitat") {
     return frame.habitat_state_codes?.[y]?.[x] ?? 0;
+  }
+  if (fieldName === "reproductive_signal" || fieldName === "communication_signal") {
+    return frame.signal_fields?.[fieldName]?.[y]?.[x] ?? 0;
   }
   const base = payload.viewer.map.base_tile_fields ?? payload.viewer.map.environment_fields;
   const config = payload.config?.environment ?? {};

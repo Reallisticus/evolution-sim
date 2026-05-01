@@ -81,6 +81,16 @@ future bounded learned-state inheritance metadata. These are Foundation
 contracts, not learned-controller work. Do not expose human-readable action
 names, species labels, or signal meanings to the Mind.
 
+Implemented Foundation cleanup pieces currently include the masked
+`ActionContract` slots, reproductive signal contract/config scaffolding,
+biology-gated reproductive readiness signal emission with deterministic
+decay/diffusion, reproductive genome mutation traits, Stage 0 reproductive-group
+summary/replay registry, Stage 1 same-group facultative sexed reproduction,
+grouped genome recombination helper contracts, and placeholder learned-state
+inheritance metadata. The `mate` action remains reserved and masked; Stage 1 is
+biology-gated, not policy-driven. Communication signal slots remain reserved and
+opaque while the first live signal field is limited to reproductive readiness.
+
 ## Test
 
 ```bash

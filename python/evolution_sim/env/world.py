@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import replace
 from math import cos, pi, sin
 from random import Random
 
@@ -12,8 +11,10 @@ from evolution_sim.env.fields import EnvironmentFieldMaps, generate_environment_
 from evolution_sim.env.runtime.actions import DecisionContext, build_decision_context
 import evolution_sim.env.runtime.action_space as runtime_action_space
 import evolution_sim.env.runtime.actions as runtime_actions
+import evolution_sim.env.runtime.mating as runtime_mating
 import evolution_sim.env.runtime.policy as runtime_policy
 import evolution_sim.env.runtime.resources as runtime_resources
+import evolution_sim.env.runtime.signals as runtime_signals
 import evolution_sim.env.runtime.surfaces as runtime_surfaces
 from evolution_sim.env.runtime.biotic import (
     build_biotic_state as build_runtime_biotic_state,
@@ -29,6 +30,7 @@ from evolution_sim.env.runtime.collectors import collector_for_mode
 from evolution_sim.env.runtime.derived import reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.observations as runtime_observations
+import evolution_sim.env.runtime.reproduction as runtime_reproduction
 from evolution_sim.env.runtime.reporting import (
     build_collapse_events,
     build_replay_analytics,
@@ -146,6 +148,10 @@ class SimulationWorld:
         self.peak_alive_agents = 0
         self.last_birth_tick: int | None = None
         self.species_registry: dict[int, dict[str, object]] = {}
+        self.reproductive_groups: dict[
+            int,
+            runtime_reproduction.ReproductiveGroupRecord,
+        ] = {}
         self.next_ecotype_id = 1
         self.ecotype_registry: dict[int, dict[str, object]] = {}
         self.current_species_map: dict[int, int] = {}
@@ -211,6 +217,13 @@ class SimulationWorld:
         self.biotic_state_revision = 0
         self.cached_biotic_state_revision: int | None = None
         self.cached_biotic_state: BioticFieldState | None = None
+        self.reproductive_signal_emissions: list[runtime_signals.SignalEmission] = []
+        self.communication_signal_emissions: list[runtime_signals.SignalEmission] = []
+        self.tick_signal_totals = runtime_signals.empty_signal_totals()
+        self.run_signal_totals = runtime_signals.empty_signal_totals()
+        self.signal_state_revision = 0
+        self.cached_signal_state_revision: int | None = None
+        self.cached_signal_state: runtime_signals.SignalFieldState | None = None
         self.climate_phase = self._build_climate_phase()
         self.cached_climate_tick: int | None = None
         self.cached_climate_state: dict[str, object] | None = None
@@ -221,6 +234,10 @@ class SimulationWorld:
         self.cached_habitat_counts: dict[str, int] | None = None
         self._trophic_profile_cache: dict[tuple[float, ...], TrophicProfile] = {}
         self._biotic_diffusion_target_cache: dict[
+            int,
+            tuple[tuple[tuple[int, float], ...], ...],
+        ] = {}
+        self._signal_diffusion_target_cache: dict[
             int,
             tuple[tuple[tuple[int, float], ...], ...],
         ] = {}
@@ -248,6 +265,13 @@ class SimulationWorld:
             "biotic_diffusions": 0,
             "biotic_diffusion_target_cache_hits": 0,
             "biotic_diffusion_target_cache_misses": 0,
+            "signal_state_builds": 0,
+            "signal_state_cache_hits": 0,
+            "signal_state_invalidations": 0,
+            "signal_diffusions": 0,
+            "signal_diffusion_target_cache_hits": 0,
+            "signal_diffusion_target_cache_misses": 0,
+            "signal_emissions": 0,
         }
 
     def _record_runtime_cost(self, name: str, amount: int = 1) -> None:
@@ -354,11 +378,13 @@ class SimulationWorld:
         self.tick_carcass_deposited_energy = 0.0
         self.tick_feeding_events = []
         self.tick_trajectory_records = []
+        self.tick_signal_totals = runtime_signals.empty_signal_totals()
         self.tick_animal_resource_consumption_by_meat_mode = (
             self._empty_grouped_animal_resource_consumption_counts(MEAT_MODE_CODES)
         )
         self.tick_hazard_exposure_agents = set()
         self._invalidate_biotic_state()
+        self._decay_signal_emissions()
         climate_state = self._climate_state()
         self._emit(
             EventType.TICK_STARTED,
@@ -436,6 +462,8 @@ class SimulationWorld:
                 pending_trajectory_records.append(trajectory_context)
                 acted_trajectory_agent_ids.add(agent_id)
             self._invalidate_biotic_state()
+
+        self._emit_reproductive_readiness_signals(self.alive_agents())
 
         for agent_id in sorted(self.agents):
             agent = self.agents[agent_id]
@@ -909,6 +937,9 @@ class SimulationWorld:
         for _ in range(self.config.initial_agents):
             x, y = self._random_initial_spawn_tile()
             genome = Genome.sample_initial(self.rng)
+            reproductive_state = runtime_reproduction.founder_reproductive_state(
+                self.next_agent_id
+            )
             agent = Agent(
                 agent_id=self.next_agent_id,
                 parent_id=None,
@@ -931,12 +962,17 @@ class SimulationWorld:
                 recent_carcass_energy=0.0,
                 genome_vector=genome_vector(genome),
                 genome=genome,
-                reproductive_group_id=self.next_agent_id,
-                reproductive_stage="stage0_asexual",
-                reproductive_expression="asexual",
+                reproductive_group_id=reproductive_state.group_id,
+                reproductive_stage=reproductive_state.stage,
+                reproductive_expression=reproductive_state.expression,
                 mind_inheritance_metadata=empty_mind_inheritance_metadata(),
             )
             self._place_agent(agent)
+            runtime_reproduction.register_founder_group(
+                self.reproductive_groups,
+                agent,
+                tick=0,
+            )
             self.next_agent_id += 1
 
     def _random_initial_spawn_tile(self) -> tuple[int, int]:
@@ -1153,54 +1189,27 @@ class SimulationWorld:
 
     @staticmethod
     def _empty_reproduction_blocked_counts() -> dict[str, int]:
-        return {
-            "max_population": 0,
-            "local_crowding": 0,
-            "destination_unavailable": 0,
-        }
+        return runtime_reproduction.empty_reproduction_blocked_counts()
 
     @staticmethod
     def _empty_reproduction_readiness_counts() -> dict[str, int]:
-        return {
-            "alive_agents": 0,
-            "biologically_ready_agents": 0,
-            "ready_agents": 0,
-            "blocked_by_max_population_agents": 0,
-            "blocked_by_local_crowding_agents": 0,
-        }
+        return runtime_reproduction.empty_reproduction_readiness_counts()
 
     @staticmethod
     def _empty_reproduction_biological_blocker_counts() -> dict[str, int]:
-        return {
-            "age": 0,
-            "cooldown": 0,
-            "energy": 0,
-            "hydration": 0,
-            "health": 0,
-            "matched_diet": 0,
-        }
+        return runtime_reproduction.empty_reproduction_biological_blocker_counts()
 
     @staticmethod
     def _empty_reproduction_energy_readiness_counts() -> dict[str, int | float]:
-        return {
-            "alive_agents": 0,
-            "energy_shortfall_agents": 0,
-            "energy_total": 0.0,
-            "energy_required_total": 0.0,
-            "energy_gap_total": 0.0,
-        }
+        return runtime_reproduction.empty_reproduction_energy_readiness_counts()
 
     @staticmethod
     def _finalize_reproduction_energy_readiness_counts(
         counts: dict[str, int | float],
     ) -> dict[str, int | float]:
-        return {
-            "alive_agents": int(counts["alive_agents"]),
-            "energy_shortfall_agents": int(counts["energy_shortfall_agents"]),
-            "energy_total": round(float(counts["energy_total"]), 4),
-            "energy_required_total": round(float(counts["energy_required_total"]), 4),
-            "energy_gap_total": round(float(counts["energy_gap_total"]), 4),
-        }
+        return runtime_reproduction.finalize_reproduction_energy_readiness_counts(
+            counts
+        )
 
     @staticmethod
     def _accumulate_diet_totals(
@@ -1299,6 +1308,18 @@ class SimulationWorld:
     def _invalidate_biotic_state(self) -> None:
         self._record_runtime_cost("biotic_state_invalidations")
         invalidate_runtime_biotic_state(self)
+
+    def _invalidate_signal_state(self) -> None:
+        runtime_signals.invalidate_signal_state(self)
+
+    def _decay_signal_emissions(self) -> None:
+        runtime_signals.decay_signal_emissions(self)
+
+    def _emit_reproductive_readiness_signals(
+        self,
+        agents: list[Agent],
+    ) -> dict[str, object]:
+        return runtime_signals.emit_reproductive_readiness_signals(self, agents)
 
     @staticmethod
     def _merge_fresh_kill_deposit_group(deposits: list[FreshKillDeposit]) -> FreshKillDeposit:
@@ -2385,6 +2406,15 @@ class SimulationWorld:
             }
         return maps, stats
 
+    def _signal_field_snapshot(
+        self,
+    ) -> tuple[dict[str, list[list[float]]], dict[str, dict[str, float]]]:
+        state = self._current_signal_state()
+        return state.to_serializable(), runtime_signals.signal_field_stats(
+            state,
+            self.grid,
+        )
+
     def _trophic_role_grid(self, alive: list[Agent]) -> list[list[int]]:
         grid = [
             [TROPHIC_ROLE_CODES["none"] for _ in range(self.config.width)]
@@ -3416,6 +3446,21 @@ class SimulationWorld:
         self.cached_biotic_state = self._build_biotic_state()
         self.cached_biotic_state_revision = self.biotic_state_revision
         return self.cached_biotic_state
+
+    def _build_signal_state(self) -> runtime_signals.SignalFieldState:
+        self._record_runtime_cost("signal_state_builds")
+        return runtime_signals.build_signal_state(self)
+
+    def _current_signal_state(self) -> runtime_signals.SignalFieldState:
+        if (
+            self.cached_signal_state_revision == self.signal_state_revision
+            and self.cached_signal_state is not None
+        ):
+            self._record_runtime_cost("signal_state_cache_hits")
+            return self.cached_signal_state
+        self.cached_signal_state = self._build_signal_state()
+        self.cached_signal_state_revision = self.signal_state_revision
+        return self.cached_signal_state
 
     def _local_prey_vulnerability_score(self, hunter: Agent, x: int, y: int) -> float:
         score = 0.0
@@ -4944,219 +4989,49 @@ class SimulationWorld:
         )
 
     def _can_reproduce(self, agent: Agent) -> bool:
-        return self._reproduction_block_reason(agent) is None
+        return runtime_reproduction.can_reproduce(self, agent)
 
     def _reproduction_energy_requirement(
         self,
         agent: Agent,
         profile: TrophicProfile,
     ) -> float:
-        requirement = agent.reproduction_threshold() * (
-            1.0 + profile.breadth * self.config.trophic.breadth_reproduction_penalty
+        return runtime_reproduction.reproduction_energy_requirement(
+            self,
+            agent,
+            profile,
         )
-        if profile.meat_mode != "none":
-            requirement *= self.config.reproduction.animal_mode_energy_requirement_multiplier
-        return requirement
 
     def _biological_reproduction_block_reasons(
         self,
         agent: Agent,
         profile: TrophicProfile | None = None,
     ) -> list[str]:
-        profile = profile or self._trophic_profile(agent)
-        matched_diet_ratio = self._matched_diet_ratio(agent, profile)
-        reasons: list[str] = []
-        if agent.age < self.config.reproduction.min_age:
-            reasons.append("age")
-        if self.tick - agent.last_reproduction_tick < self.config.reproduction.cooldown_ticks:
-            reasons.append("cooldown")
-        if agent.energy < self._reproduction_energy_requirement(agent, profile):
-            reasons.append("energy")
-        if (
-            agent.hydration
-            < agent.genome.max_hydration
-            * self.config.reproduction.min_hydration_fraction
-        ):
-            reasons.append("hydration")
-        health_requirement = self.config.combat.min_reproduction_health_ratio
-        if profile.meat_mode == "scavenger":
-            health_requirement = min(
-                health_requirement,
-                self.config.reproduction.scavenger_min_health_fraction,
-            )
-        if self._health_ratio(agent) < health_requirement:
-            reasons.append("health")
-        if matched_diet_ratio < self._matched_diet_threshold(profile):
-            reasons.append("matched_diet")
-        return reasons
-
-    def _is_biologically_reproduction_ready(self, agent: Agent) -> bool:
-        return not self._biological_reproduction_block_reasons(agent)
-
-    def _reproduction_block_reason(self, agent: Agent) -> str | None:
-        if not self._is_biologically_reproduction_ready(agent):
-            return "biological"
-        if len(self.alive_agents()) >= self.config.max_agents:
-            return "max_population"
-        if not self._has_empty_neighbor(agent.x, agent.y):
-            return "local_crowding"
-        return None
-
-    def _is_reproduction_ready(self, agent: Agent) -> bool:
-        return self._reproduction_block_reason(agent) is None
-
-    def _record_reproduction_blocked(self, agent: Agent, reason: str) -> None:
-        if reason not in self.run_reproduction_blocked_counts:
-            raise ValueError(f"Unsupported reproduction block reason: {reason}")
-        self.run_reproduction_blocked_counts[reason] += 1
-        self.run_reproduction_blocked_counts_by_trophic_role[self._trophic_role(agent)][
-            reason
-        ] += 1
-        self.run_reproduction_blocked_counts_by_meat_mode[self._meat_mode(agent)][
-            reason
-        ] += 1
-        event = {
-            "agent_id": agent.agent_id,
-            "reason": reason,
-            "x": agent.x,
-            "y": agent.y,
-            "alive_agents": len(self.alive_agents()),
-            "max_agents": self.config.max_agents,
-        }
-        if self.record_tick_details:
-            self.tick_reproduction_blocked_events.append(event)
-        self._emit(
-            EventType.AGENT_REPRODUCTION_BLOCKED,
-            agent_id=agent.agent_id,
-            data={
-                "reason": reason,
-                "x": agent.x,
-                "y": agent.y,
-                "alive_agents": event["alive_agents"],
-                "max_agents": event["max_agents"],
-            },
+        return runtime_reproduction.biological_reproduction_block_reasons(
+            self,
+            agent,
+            profile,
         )
 
+    def _is_biologically_reproduction_ready(self, agent: Agent) -> bool:
+        return runtime_reproduction.is_biologically_reproduction_ready(self, agent)
+
+    def _reproduction_block_reason(self, agent: Agent) -> str | None:
+        return runtime_reproduction.reproduction_block_reason(self, agent)
+
+    def _is_reproduction_ready(self, agent: Agent) -> bool:
+        return runtime_reproduction.is_reproduction_ready(self, agent)
+
+    def _record_reproduction_blocked(self, agent: Agent, reason: str) -> None:
+        runtime_reproduction.record_reproduction_blocked(self, agent, reason)
+
     def _reproduction_readiness_counts(self, alive: list[Agent]) -> dict[str, object]:
-        population_saturated = len(alive) >= self.config.max_agents
-        readiness_by_role = {
-            role: self._empty_reproduction_readiness_counts()
-            for role in TROPHIC_ROLE_CODES
-            if role != "none"
-        }
-        readiness_by_mode = {
-            mode: self._empty_reproduction_readiness_counts()
-            for mode in MEAT_MODE_CODES
-        }
-        biological_blockers = self._empty_reproduction_biological_blocker_counts()
-        biological_blockers_by_role = {
-            role: self._empty_reproduction_biological_blocker_counts()
-            for role in TROPHIC_ROLE_CODES
-            if role != "none"
-        }
-        biological_blockers_by_mode = {
-            mode: self._empty_reproduction_biological_blocker_counts()
-            for mode in MEAT_MODE_CODES
-        }
-        energy_readiness_by_role = {
-            role: self._empty_reproduction_energy_readiness_counts()
-            for role in TROPHIC_ROLE_CODES
-            if role != "none"
-        }
-        energy_readiness_by_mode = {
-            mode: self._empty_reproduction_energy_readiness_counts()
-            for mode in MEAT_MODE_CODES
-        }
-        biologically_ready = 0
-        blocked_by_max_population = 0
-        blocked_by_local_crowding = 0
-        ready = 0
-
-        def increment_readiness(agent: Agent, field: str) -> None:
-            readiness_by_role[self._trophic_role(agent)][field] += 1
-            readiness_by_mode[self._meat_mode(agent)][field] += 1
-
-        def increment_blocker(agent: Agent, reason: str) -> None:
-            biological_blockers[reason] += 1
-            biological_blockers_by_role[self._trophic_role(agent)][reason] += 1
-            biological_blockers_by_mode[self._meat_mode(agent)][reason] += 1
-
-        def increment_energy_readiness(
-            agent: Agent,
-            profile: TrophicProfile,
-        ) -> None:
-            energy_required = self._reproduction_energy_requirement(agent, profile)
-            energy_gap = max(0.0, energy_required - agent.energy)
-            for counts in (
-                energy_readiness_by_role[self._trophic_role(agent)],
-                energy_readiness_by_mode[self._meat_mode(agent)],
-            ):
-                counts["alive_agents"] = int(counts["alive_agents"]) + 1
-                if energy_gap > 0:
-                    counts["energy_shortfall_agents"] = (
-                        int(counts["energy_shortfall_agents"]) + 1
-                    )
-                counts["energy_total"] = float(counts["energy_total"]) + agent.energy
-                counts["energy_required_total"] = (
-                    float(counts["energy_required_total"]) + energy_required
-                )
-                counts["energy_gap_total"] = float(counts["energy_gap_total"]) + energy_gap
-
-        for agent in alive:
-            increment_readiness(agent, "alive_agents")
-            profile = self._trophic_profile(agent)
-            increment_energy_readiness(agent, profile)
-            block_reasons = self._biological_reproduction_block_reasons(agent, profile)
-            if block_reasons:
-                for reason in block_reasons:
-                    increment_blocker(agent, reason)
-                continue
-            biologically_ready += 1
-            increment_readiness(agent, "biologically_ready_agents")
-            if population_saturated:
-                blocked_by_max_population += 1
-                increment_readiness(agent, "blocked_by_max_population_agents")
-            elif not self._has_empty_neighbor(agent.x, agent.y):
-                blocked_by_local_crowding += 1
-                increment_readiness(agent, "blocked_by_local_crowding_agents")
-            else:
-                ready += 1
-                increment_readiness(agent, "ready_agents")
-
-        return {
-            "max_agents": self.config.max_agents,
-            "saturation_at_end": round(len(alive) / max(self.config.max_agents, 1), 4),
-            "peak_saturation": round(
-                self.peak_alive_agents / max(self.config.max_agents, 1),
-                4,
-            ),
-            "biologically_ready_agents": biologically_ready,
-            "ready_agents": ready,
-            "blocked_by_max_population_agents": blocked_by_max_population,
-            "blocked_by_local_crowding_agents": blocked_by_local_crowding,
-            "blocked_run_counts": dict(self.run_reproduction_blocked_counts),
-            "blocked_run_counts_by_trophic_role": {
-                role: dict(counts)
-                for role, counts in self.run_reproduction_blocked_counts_by_trophic_role.items()
-            },
-            "blocked_run_counts_by_meat_mode": {
-                mode: dict(counts)
-                for mode, counts in self.run_reproduction_blocked_counts_by_meat_mode.items()
-            },
-            "biological_blocker_counts": biological_blockers,
-            "biological_blocker_counts_by_trophic_role": biological_blockers_by_role,
-            "biological_blocker_counts_by_meat_mode": biological_blockers_by_mode,
-            "energy_readiness_by_trophic_role": {
-                role: self._finalize_reproduction_energy_readiness_counts(counts)
-                for role, counts in energy_readiness_by_role.items()
-            },
-            "energy_readiness_by_meat_mode": {
-                mode: self._finalize_reproduction_energy_readiness_counts(counts)
-                for mode, counts in energy_readiness_by_mode.items()
-            },
-            "by_trophic_role": readiness_by_role,
-            "by_meat_mode": readiness_by_mode,
-        }
+        return runtime_reproduction.reproduction_readiness_counts(
+            self,
+            alive,
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
+        )
 
     def _population_trophic_counts(
         self,
@@ -5395,119 +5270,18 @@ class SimulationWorld:
             },
         }
 
-    @staticmethod
-    def _clamp_gene_value(name: str, value: float) -> float:
-        lower, upper = GENE_LIMITS[name]
-        return max(lower, min(upper, value))
-
-    @staticmethod
-    def _blend_gene(child_value: float, parent_value: float, stability: float) -> float:
-        return child_value * (1.0 - stability) + parent_value * stability
-
     def _animal_mode_stabilized_child_genome(
         self,
         parent_genome: Genome,
         child_genome: Genome,
         parent_profile: TrophicProfile,
     ) -> Genome:
-        if parent_profile.meat_mode == "none":
-            return child_genome
-
-        def stabilize(stability: float) -> Genome:
-            meat_efficiency = max(
-                child_genome.meat_efficiency,
-                self._blend_gene(
-                    child_genome.meat_efficiency,
-                    parent_genome.meat_efficiency,
-                    stability,
-                ),
-            )
-            plant_bias = min(
-                child_genome.plant_bias,
-                self._blend_gene(child_genome.plant_bias, parent_genome.plant_bias, stability),
-            )
-            food_efficiency = min(
-                child_genome.food_efficiency,
-                self._blend_gene(
-                    child_genome.food_efficiency,
-                    parent_genome.food_efficiency,
-                    stability,
-                ),
-            )
-            carrion_bias = child_genome.carrion_bias
-            live_prey_bias = child_genome.live_prey_bias
-            attack_power = child_genome.attack_power
-            attack_cost_multiplier = child_genome.attack_cost_multiplier
-            defense_rating = child_genome.defense_rating
-
-            if parent_profile.meat_mode in {"scavenger", "mixed"}:
-                carrion_bias = max(
-                    child_genome.carrion_bias,
-                    self._blend_gene(
-                        child_genome.carrion_bias,
-                        parent_genome.carrion_bias,
-                        stability,
-                    ),
-                )
-            if parent_profile.meat_mode in {"hunter", "mixed"}:
-                live_prey_bias = max(
-                    child_genome.live_prey_bias,
-                    self._blend_gene(
-                        child_genome.live_prey_bias,
-                        parent_genome.live_prey_bias,
-                        stability,
-                    ),
-                )
-                attack_power = max(
-                    child_genome.attack_power,
-                    self._blend_gene(
-                        child_genome.attack_power,
-                        parent_genome.attack_power,
-                        stability,
-                    ),
-                )
-                attack_cost_multiplier = min(
-                    child_genome.attack_cost_multiplier,
-                    self._blend_gene(
-                        child_genome.attack_cost_multiplier,
-                        parent_genome.attack_cost_multiplier,
-                        stability,
-                    ),
-                )
-                defense_rating = max(
-                    child_genome.defense_rating,
-                    self._blend_gene(
-                        child_genome.defense_rating,
-                        parent_genome.defense_rating,
-                        stability,
-                    ),
-                )
-
-            return replace(
-                child_genome,
-                food_efficiency=self._clamp_gene_value("food_efficiency", food_efficiency),
-                plant_bias=self._clamp_gene_value("plant_bias", plant_bias),
-                meat_efficiency=self._clamp_gene_value("meat_efficiency", meat_efficiency),
-                carrion_bias=self._clamp_gene_value("carrion_bias", carrion_bias),
-                live_prey_bias=self._clamp_gene_value("live_prey_bias", live_prey_bias),
-                attack_power=self._clamp_gene_value("attack_power", attack_power),
-                attack_cost_multiplier=self._clamp_gene_value(
-                    "attack_cost_multiplier",
-                    attack_cost_multiplier,
-                ),
-                defense_rating=self._clamp_gene_value("defense_rating", defense_rating),
-            )
-
-        configured_stability = (
-            self.config.reproduction.animal_mode_offspring_trait_stability
+        return runtime_reproduction.animal_mode_stabilized_child_genome(
+            self,
+            parent_genome,
+            child_genome,
+            parent_profile,
         )
-        stabilized = stabilize(configured_stability)
-        stabilized_mode = self._trophic_profile_for_genome(stabilized).meat_mode
-        if stabilized_mode == parent_profile.meat_mode or (
-            parent_profile.meat_mode == "mixed" and stabilized_mode != "none"
-        ):
-            return stabilized
-        return stabilize(1.0)
 
     def _child_starting_fraction(
         self,
@@ -5515,91 +5289,71 @@ class SimulationWorld:
         multiplier: float,
         parent_profile: TrophicProfile,
     ) -> float:
-        if parent_profile.meat_mode == "none":
-            return base_fraction
-        return min(1.0, base_fraction * multiplier)
+        return runtime_reproduction.child_starting_fraction(
+            base_fraction,
+            multiplier,
+            parent_profile,
+        )
 
     def _reproduction_energy_cost(
         self,
         parent_profile: TrophicProfile,
     ) -> float:
-        if parent_profile.meat_mode == "none":
-            return self.config.reproduction.energy_cost
-        return (
-            self.config.reproduction.energy_cost
-            * self.config.reproduction.animal_mode_reproduction_cost_multiplier
+        return runtime_reproduction.reproduction_energy_cost(self, parent_profile)
+
+    def _sexual_reproduction_energy_cost(
+        self,
+        parent_profile: TrophicProfile,
+    ) -> float:
+        return runtime_reproduction.sexual_reproduction_energy_cost(
+            self,
+            parent_profile,
         )
+
+    def _reproductive_state_for_child(
+        self,
+        parent: Agent,
+        child_genome: Genome,
+    ) -> runtime_reproduction.ReproductiveState:
+        return runtime_reproduction.reproductive_state_for_child(
+            self,
+            parent,
+            child_genome,
+        )
+
+    def _sexual_partner_ready(self, agent: Agent) -> bool:
+        return runtime_reproduction.sexual_partner_ready(self, agent)
 
     def _reproduce(self, parent: Agent) -> bool:
-        destination = self._find_empty_neighbor(parent.x, parent.y)
-        if destination is None:
-            self._record_reproduction_blocked(parent, "destination_unavailable")
-            return False
+        return runtime_reproduction.reproduce(self, parent)
 
-        parent_profile = self._trophic_profile(parent)
-        child_genome = self._animal_mode_stabilized_child_genome(
-            parent.genome,
-            parent.genome.mutate(self.rng),
+    def _reproduce_asexual(
+        self,
+        parent: Agent,
+        destination: tuple[int, int],
+        parent_profile: TrophicProfile,
+    ) -> bool:
+        return runtime_reproduction.reproduce_asexual(
+            self,
+            parent,
+            destination,
             parent_profile,
         )
-        child_energy_fraction = self._child_starting_fraction(
-            self.config.reproduction.child_energy_fraction,
-            self.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+
+    def _reproduce_sexual(
+        self,
+        parent: Agent,
+        mate_candidate: runtime_mating.MateCandidate,
+        destination: tuple[int, int],
+        parent_profile: TrophicProfile,
+    ) -> bool:
+        return runtime_reproduction.reproduce_sexual(
+            self,
+            parent,
+            mate_candidate,
+            destination,
             parent_profile,
         )
-        child_hydration_fraction = self._child_starting_fraction(
-            self.config.reproduction.child_hydration_fraction,
-            self.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
-            parent_profile,
-        )
-        child = Agent(
-            agent_id=self.next_agent_id,
-            parent_id=parent.agent_id,
-            lineage_id=parent.lineage_id,
-            birth_tick=self.tick,
-            death_tick=None,
-            x=destination[0],
-            y=destination[1],
-            energy=child_genome.max_energy * child_energy_fraction,
-            hydration=child_genome.max_hydration * child_hydration_fraction,
-            health=child_genome.max_health * self.config.reproduction.child_health_fraction,
-            max_health=child_genome.max_health,
-            injury_load=0.0,
-            age=0,
-            alive=True,
-            last_reproduction_tick=-10_000,
-            last_damage_source="none",
-            recent_plant_energy=0.0,
-            recent_fresh_kill_energy=0.0,
-            recent_carcass_energy=0.0,
-            genome_vector=genome_vector(child_genome),
-            genome=child_genome,
-            reproductive_group_id=parent.reproductive_group_id or parent.lineage_id,
-            reproductive_stage=parent.reproductive_stage,
-            reproductive_expression=parent.reproductive_expression,
-            mind_inheritance_metadata=empty_mind_inheritance_metadata(),
-        )
-        parent.energy -= self._reproduction_energy_cost(parent_profile)
-        parent.last_reproduction_tick = self.tick
-        self._place_agent(child)
-        self.next_agent_id += 1
-        self.births += 1
-        self.last_birth_tick = self.tick
-        if self.record_tick_details:
-            self.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-        self._invalidate_biotic_state()
-        self._emit(
-            EventType.AGENT_REPRODUCED,
-            agent_id=parent.agent_id,
-            data={
-                "child_id": child.agent_id,
-                "child_x": child.x,
-                "child_y": child.y,
-                "lineage_id": child.lineage_id,
-                "birth_tick": child.birth_tick,
-            },
-        )
-        return True
 
     def _should_die(self, agent: Agent) -> bool:
         return (
@@ -6071,6 +5825,11 @@ class SimulationWorld:
                 "field_state": surfaces["climate_state"],
                 "biotic_fields": surfaces["biotic_fields"],
                 "biotic_field_stats": surfaces["biotic_field_stats"],
+                "signal_fields": surfaces["signal_fields"],
+                "signal_field_stats": surfaces["signal_field_stats"],
+                "signal_flow": runtime_signals.finalize_signal_totals(
+                    self.tick_signal_totals
+                ),
                 "habitat_state_counts": surfaces["habitat_counts"],
                 "habitat_state_codes": surfaces["habitat_codes"],
                 "hydrology_primary_counts": surfaces["hydrology_primary_counts"],
@@ -6504,6 +6263,12 @@ class SimulationWorld:
                 str(agent.agent_id): {
                     "agent_id": agent.agent_id,
                     "parent_id": agent.parent_id,
+                    "secondary_parent_id": agent.secondary_parent_id,
+                    "parent_ids": [
+                        parent_id
+                        for parent_id in (agent.parent_id, agent.secondary_parent_id)
+                        if parent_id is not None
+                    ],
                     "lineage_id": agent.lineage_id,
                     "reproductive_group_id": agent.reproductive_group_id,
                     "reproductive_stage": agent.reproductive_stage,
@@ -6515,6 +6280,10 @@ class SimulationWorld:
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             },
+            "reproductive_group_catalog": runtime_reproduction.build_reproductive_group_catalog(
+                self.reproductive_groups,
+                self.agents.values(),
+            ),
             "taxonomy": {
                 "species_identity": "lineage",
                 "ecotype_identity": "frame_local_genome_cluster",
@@ -6622,6 +6391,7 @@ class SimulationWorld:
             fresh_kill_stats = latest_frame["fresh_kill_stats"]
             carcass_stats = latest_frame["carcass_stats"]
             biotic_field_stats = latest_frame["biotic_field_stats"]
+            signal_field_stats = latest_frame["signal_field_stats"]
             ecology_counts = latest_frame["ecology_state_counts"]
             ecology_stats = latest_frame["ecology_stats"]
             habitat_counts = latest_frame["habitat_state_counts"]
@@ -6639,12 +6409,17 @@ class SimulationWorld:
             _, fresh_kill_stats = self._fresh_kill_snapshot()
             _, _, carcass_stats = self._carcass_snapshot()
             _, biotic_field_stats = self._biotic_field_snapshot()
+            _, signal_field_stats = self._signal_field_snapshot()
             _, ecology_counts, ecology_stats = self._ecology_snapshot()
             habitat_counts = self._habitat_state_grid()[1]
             latest_species_metrics = {}
         land_tile_count = self.config.width * self.config.height - terrain_counts["water"]
         trophic_role_counts, meat_mode_counts = self._population_trophic_counts(alive)
         reproduction_end = self._reproduction_readiness_counts(alive)
+        reproductive_groups_end = runtime_reproduction.build_reproductive_group_summary(
+            self.reproductive_groups,
+            self.agents.values(),
+        )
         ticks_executed = self.tick + 1
         trophic_lifecycle = self._trophic_lifecycle_summary(
             ticks_executed=ticks_executed
@@ -6740,6 +6515,7 @@ class SimulationWorld:
                 ),
                 key=lambda item: (-item["alive_agents"], -item["total_agents"], item["lineage_id"]),
             )[:10],
+            "reproductive_groups_end": reproductive_groups_end,
             "ecotypes_created": len(self.ecotype_registry),
             "alive_ecotype_count": len(self.current_ecotype_records),
             "last_birth_tick": self.last_birth_tick,
@@ -6755,12 +6531,16 @@ class SimulationWorld:
             "hazard_counts_at_end": hazard_counts,
             "hazard_stats_at_end": hazard_stats,
             "biotic_field_stats_at_end": biotic_field_stats,
+            "signal_field_stats_at_end": signal_field_stats,
             "fresh_kill_stats_at_end": fresh_kill_stats,
             "carcass_stats_at_end": carcass_stats,
             "trophic_role_counts_at_end": trophic_role_counts,
             "meat_mode_counts_at_end": meat_mode_counts,
             "trophic_lifecycle": trophic_lifecycle,
             "reproduction_end": reproduction_end,
+            "signal_end": runtime_signals.finalize_signal_totals(
+                self.run_signal_totals
+            ),
             "combat_end": {
                 key: round(value, 4) if isinstance(value, float) else value
                 for key, value in self.run_combat_totals.items()

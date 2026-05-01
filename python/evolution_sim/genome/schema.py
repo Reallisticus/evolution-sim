@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 from random import Random
 
 
@@ -46,8 +47,28 @@ def _clamp(name: str, value: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _clamp_reproductive(name: str, value: float) -> float:
+    lower, upper = REPRODUCTIVE_GENE_LIMITS[name]
+    return max(lower, min(upper, value))
+
+
 def _mix(lower: float, upper: float, share: float) -> float:
     return lower + (upper - lower) * share
+
+
+def _derived_reproductive_rng(
+    values: dict[str, float],
+    reproductive: "ReproductiveGenome",
+) -> Random:
+    material = "|".join(
+        [f"{gene}:{values[gene]:.8f}" for gene in GENE_LIMITS]
+        + [
+            f"{name}:{float(getattr(reproductive, name)):.8f}"
+            for name in REPRODUCTIVE_GENE_LIMITS
+        ]
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).digest()
+    return Random(int.from_bytes(digest[:8], "big"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +85,18 @@ class ReproductiveGenome:
 
     def to_dict(self) -> dict[str, float]:
         return asdict(self)
+
+    def mutate(self, rng: Random, scale: float) -> "ReproductiveGenome":
+        sigma = max(0.0, float(scale)) * 0.38
+        return ReproductiveGenome(
+            **{
+                name: _clamp_reproductive(
+                    name,
+                    float(getattr(self, name)) + rng.gauss(0.0, sigma),
+                )
+                for name in REPRODUCTIVE_GENE_LIMITS
+            }
+        )
 
 
 @dataclass(slots=True)
@@ -218,81 +251,87 @@ class Genome:
         plant_shift = rng.gauss(0.0, sigma * 0.85)
         scavenger_shift = rng.gauss(0.0, sigma * 0.75)
         hunter_shift = rng.gauss(0.0, sigma * 0.75)
-        return Genome(
-            max_energy=_clamp("max_energy", self.max_energy + rng.gauss(0.0, sigma)),
-            max_hydration=_clamp(
+        values = {
+            "max_energy": _clamp("max_energy", self.max_energy + rng.gauss(0.0, sigma)),
+            "max_hydration": _clamp(
                 "max_hydration", self.max_hydration + rng.gauss(0.0, sigma)
             ),
-            max_health=_clamp("max_health", self.max_health + rng.gauss(0.0, sigma)),
-            move_cost=_clamp(
+            "max_health": _clamp("max_health", self.max_health + rng.gauss(0.0, sigma)),
+            "move_cost": _clamp(
                 "move_cost", self.move_cost + rng.gauss(0.0, sigma * 0.2)
             ),
-            food_efficiency=_clamp(
+            "food_efficiency": _clamp(
                 "food_efficiency",
                 self.food_efficiency + plant_shift + rng.gauss(0.0, sigma * 0.35),
             ),
-            water_efficiency=_clamp(
+            "water_efficiency": _clamp(
                 "water_efficiency", self.water_efficiency + rng.gauss(0.0, sigma)
             ),
-            attack_power=_clamp(
+            "attack_power": _clamp(
                 "attack_power",
                 self.attack_power + hunter_shift * 0.95 + rng.gauss(0.0, sigma * 0.35),
             ),
-            attack_cost_multiplier=_clamp(
+            "attack_cost_multiplier": _clamp(
                 "attack_cost_multiplier",
                 self.attack_cost_multiplier
                 - hunter_shift * 0.18
                 + rng.gauss(0.0, sigma * 0.18),
             ),
-            defense_rating=_clamp(
+            "defense_rating": _clamp(
                 "defense_rating",
                 self.defense_rating + hunter_shift * 0.52 + rng.gauss(0.0, sigma * 0.3),
             ),
-            meat_efficiency=_clamp(
+            "meat_efficiency": _clamp(
                 "meat_efficiency",
                 self.meat_efficiency
                 + (scavenger_shift + hunter_shift) * 0.62
                 + rng.gauss(0.0, sigma * 0.3),
             ),
-            healing_efficiency=_clamp(
+            "healing_efficiency": _clamp(
                 "healing_efficiency", self.healing_efficiency + rng.gauss(0.0, sigma)
             ),
-            plant_bias=_clamp(
+            "plant_bias": _clamp(
                 "plant_bias",
                 self.plant_bias + plant_shift * 1.05 + rng.gauss(0.0, sigma * 0.3),
             ),
-            carrion_bias=_clamp(
+            "carrion_bias": _clamp(
                 "carrion_bias",
                 self.carrion_bias + scavenger_shift * 1.08 + rng.gauss(0.0, sigma * 0.28),
             ),
-            live_prey_bias=_clamp(
+            "live_prey_bias": _clamp(
                 "live_prey_bias",
                 self.live_prey_bias + hunter_shift * 1.08 + rng.gauss(0.0, sigma * 0.28),
             ),
-            forest_affinity=_clamp(
+            "forest_affinity": _clamp(
                 "forest_affinity", self.forest_affinity + rng.gauss(0.0, sigma)
             ),
-            plain_affinity=_clamp(
+            "plain_affinity": _clamp(
                 "plain_affinity", self.plain_affinity + rng.gauss(0.0, sigma)
             ),
-            wetland_affinity=_clamp(
+            "wetland_affinity": _clamp(
                 "wetland_affinity", self.wetland_affinity + rng.gauss(0.0, sigma)
             ),
-            rocky_affinity=_clamp(
+            "rocky_affinity": _clamp(
                 "rocky_affinity", self.rocky_affinity + rng.gauss(0.0, sigma)
             ),
-            heat_tolerance=_clamp(
+            "heat_tolerance": _clamp(
                 "heat_tolerance", self.heat_tolerance + rng.gauss(0.0, sigma)
             ),
-            reproduction_threshold=_clamp(
+            "reproduction_threshold": _clamp(
                 "reproduction_threshold",
                 self.reproduction_threshold + rng.gauss(0.0, sigma),
             ),
-            mutation_scale=_clamp(
+            "mutation_scale": _clamp(
                 "mutation_scale",
                 self.mutation_scale + rng.gauss(0.0, sigma * 0.15),
             ),
-            reproductive=self.reproductive,
+        }
+        return Genome(
+            **values,
+            reproductive=self.reproductive.mutate(
+                _derived_reproductive_rng(values, self.reproductive),
+                sigma,
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:

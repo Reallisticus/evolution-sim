@@ -435,6 +435,12 @@ class ReproductionConfig:
     animal_mode_child_hydration_fraction_multiplier: float = 1.18
     animal_mode_offspring_trait_stability: float = 0.82
     scavenger_min_health_fraction: float = 0.48
+    sexual_reproduction_enabled: bool = True
+    sexual_drive_threshold: float = 0.12
+    sexual_recombination_threshold: float = 0.12
+    sexual_partner_radius: int = 1
+    sexual_parent_cost_multiplier: float = 0.72
+    sexual_inbreeding_gene_penalty: float = 0.08
 
     def __post_init__(self) -> None:
         self.validate()
@@ -482,6 +488,24 @@ class ReproductionConfig:
             "reproduction.scavenger_min_health_fraction",
             self.scavenger_min_health_fraction,
         )
+        _check_bool("reproduction.sexual_reproduction_enabled", self.sexual_reproduction_enabled)
+        _check_fraction("reproduction.sexual_drive_threshold", self.sexual_drive_threshold)
+        _check_fraction(
+            "reproduction.sexual_recombination_threshold",
+            self.sexual_recombination_threshold,
+        )
+        _check_integer("reproduction.sexual_partner_radius", self.sexual_partner_radius, minimum=1)
+        _check_number(
+            "reproduction.sexual_parent_cost_multiplier",
+            self.sexual_parent_cost_multiplier,
+            minimum=0.0,
+            maximum=1.0,
+            inclusive_minimum=False,
+        )
+        _check_fraction(
+            "reproduction.sexual_inbreeding_gene_penalty",
+            self.sexual_inbreeding_gene_penalty,
+        )
 
 
 @dataclass(slots=True)
@@ -503,6 +527,12 @@ class DietMatchingConfig:
 class SignalConfig:
     enabled: bool = True
     reproductive_signal_channels: int = 1
+    reproductive_signal_emission_enabled: bool = True
+    reproductive_signal_radius: int = 3
+    reproductive_signal_duration_ticks: int = 6
+    reproductive_signal_decay_rate: float = 0.58
+    reproductive_signal_base_intensity: float = 0.16
+    reproductive_signal_trait_intensity_bonus: float = 0.24
     communication_token_count: int = 4
     communication_profiles_per_token: int = 2
     max_signal_radius: int = 8
@@ -519,6 +549,32 @@ class SignalConfig:
             "signals.reproductive_signal_channels",
             self.reproductive_signal_channels,
             minimum=1,
+        )
+        _check_bool(
+            "signals.reproductive_signal_emission_enabled",
+            self.reproductive_signal_emission_enabled,
+        )
+        _check_integer(
+            "signals.reproductive_signal_radius",
+            self.reproductive_signal_radius,
+            minimum=0,
+        )
+        _check_integer(
+            "signals.reproductive_signal_duration_ticks",
+            self.reproductive_signal_duration_ticks,
+            minimum=0,
+        )
+        _check_fraction(
+            "signals.reproductive_signal_decay_rate",
+            self.reproductive_signal_decay_rate,
+        )
+        _check_nonnegative(
+            "signals.reproductive_signal_base_intensity",
+            self.reproductive_signal_base_intensity,
+        )
+        _check_nonnegative(
+            "signals.reproductive_signal_trait_intensity_bonus",
+            self.reproductive_signal_trait_intensity_bonus,
         )
         _check_integer(
             "signals.communication_token_count",
@@ -537,6 +593,26 @@ class SignalConfig:
             "signals.base_emission_energy_cost",
             self.base_emission_energy_cost,
         )
+        if self.reproductive_signal_radius > self.max_signal_radius:
+            raise ValueError(
+                "signals.reproductive_signal_radius must be <= "
+                "signals.max_signal_radius"
+            )
+        if self.reproductive_signal_duration_ticks > self.max_duration_ticks:
+            raise ValueError(
+                "signals.reproductive_signal_duration_ticks must be <= "
+                "signals.max_duration_ticks"
+            )
+        if (
+            self.reproductive_signal_base_intensity
+            + self.reproductive_signal_trait_intensity_bonus
+            > self.max_intensity
+        ):
+            raise ValueError(
+                "signals.reproductive_signal_base_intensity plus "
+                "signals.reproductive_signal_trait_intensity_bonus must be <= "
+                "signals.max_intensity"
+            )
 
 
 @dataclass(slots=True)

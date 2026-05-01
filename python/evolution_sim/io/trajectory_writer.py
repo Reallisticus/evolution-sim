@@ -109,6 +109,13 @@ class JsonlTrajectoryWriter:
             "schema_version": contract.get("schema_version"),
             "observation_schema_version": contract.get("observation_schema_version"),
             "policy_interface_version": contract.get("policy_interface_version"),
+            "action_contract_version": contract.get("action_contract_version"),
+            "reproductive_group_contract_version": contract.get(
+                "reproductive_group_contract_version"
+            ),
+            "genome_recombination_contract_version": contract.get(
+                "genome_recombination_contract_version"
+            ),
             "reward_schema_version": contract.get("reward_schema_version"),
             "action_outcome_schema_version": contract.get("action_outcome_schema_version"),
             **build_trajectory_summary_from_stats(self._stats),
