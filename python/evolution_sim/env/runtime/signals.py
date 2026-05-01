@@ -208,10 +208,7 @@ def reserved_communication_signal_profiles(
     profiles: list[SignalProfile] = []
     for token_id in range(token_count):
         for profile_index in range(profiles_per_token):
-            if (
-                config is not None
-                and bool(config.communication_signal_emission_enabled)
-            ):
+            if config is not None and communication_signal_emission_enabled(config):
                 profiles.append(
                     communication_signal_profile(
                         config,
@@ -277,9 +274,9 @@ def signal_contract(config: Any | None = None) -> dict[str, object]:
             "energy_cost",
             "emitted_tick",
         ],
-        "reproductive_readiness_profile": (
-            reproductive_readiness_signal_profile(config).to_dict()
-        ),
+        "reproductive_readiness_profile": _contract_reproductive_profile(
+            config
+        ).to_dict(),
         "reserved_profiles": [
             profile.to_dict()
             for profile in reserved_communication_signal_profiles(
@@ -288,8 +285,12 @@ def signal_contract(config: Any | None = None) -> dict[str, object]:
         ],
         "communication_token_count": int(config.communication_token_count),
         "communication_profiles_per_token": int(config.communication_profiles_per_token),
-        "communication_signal_emission_enabled": bool(
-            config.communication_signal_emission_enabled
+        "signal_substrate_enabled": signal_substrate_enabled(config),
+        "reproductive_signal_emission_enabled": (
+            reproductive_signal_emission_enabled(config)
+        ),
+        "communication_signal_emission_enabled": (
+            communication_signal_emission_enabled(config)
         ),
         "communication_signal_radius": int(config.communication_signal_radius),
         "communication_signal_duration_ticks": int(
@@ -310,6 +311,62 @@ def signal_contract(config: Any | None = None) -> dict[str, object]:
         "reproductive_readiness_emission_enabled_by_default": True,
         "communication_emission_enabled_by_default": False,
     }
+
+
+def _contract_reproductive_profile(config: Any) -> SignalProfile:
+    if reproductive_signal_emission_enabled(config):
+        return reproductive_readiness_signal_profile(config)
+    return inert_signal_profile(
+        REPRODUCTIVE_READINESS_PROFILE_ID,
+        field_name=REPRODUCTIVE_SIGNAL_FIELD,
+        source_kind="biology_gated_reproduction_readiness",
+        profile_index=0,
+    )
+
+
+def signal_substrate_enabled(config: Any) -> bool:
+    return bool(getattr(config, "enabled", True))
+
+
+def reproductive_signal_emission_enabled(config: Any) -> bool:
+    return (
+        signal_substrate_enabled(config)
+        and bool(getattr(config, "reproductive_signal_emission_enabled", False))
+        and float(getattr(config, "max_intensity", 0.0)) > 0.0
+        and int(getattr(config, "reproductive_signal_duration_ticks", 0)) > 0
+        and _positive_signal_intensity_ceiling(
+            config,
+            base_attr="reproductive_signal_base_intensity",
+            bonus_attr="reproductive_signal_trait_intensity_bonus",
+        )
+    )
+
+
+def communication_signal_emission_enabled(config: Any) -> bool:
+    return (
+        signal_substrate_enabled(config)
+        and bool(getattr(config, "communication_signal_emission_enabled", False))
+        and float(getattr(config, "max_intensity", 0.0)) > 0.0
+        and int(getattr(config, "communication_signal_duration_ticks", 0)) > 0
+        and _positive_signal_intensity_ceiling(
+            config,
+            base_attr="communication_signal_base_intensity",
+            bonus_attr="communication_signal_trait_intensity_bonus",
+        )
+    )
+
+
+def _positive_signal_intensity_ceiling(
+    config: Any,
+    *,
+    base_attr: str,
+    bonus_attr: str,
+) -> bool:
+    configured_ceiling = (
+        float(getattr(config, base_attr, 0.0))
+        + float(getattr(config, bonus_attr, 0.0))
+    )
+    return min(float(getattr(config, "max_intensity", 0.0)), configured_ceiling) > 0.0
 
 
 def invalidate_signal_state(world: Any) -> None:
@@ -344,12 +401,7 @@ def emit_reproductive_readiness_signals(
     agents: Iterable[Any],
 ) -> dict[str, object]:
     config = world.config.signals
-    if (
-        not config.enabled
-        or not config.reproductive_signal_emission_enabled
-        or config.max_intensity <= 0
-        or config.reproductive_signal_duration_ticks <= 0
-    ):
+    if not reproductive_signal_emission_enabled(config):
         return finalize_signal_totals(empty_signal_totals())
 
     emitted = 0
@@ -421,10 +473,7 @@ def communication_signal_action_available(
 ) -> bool:
     config = world.config.signals
     if (
-        not config.enabled
-        or not config.communication_signal_emission_enabled
-        or config.max_intensity <= 0
-        or config.communication_signal_duration_ticks <= 0
+        not communication_signal_emission_enabled(config)
         or not agent.alive
         or not world._in_bounds(agent.x, agent.y)
         or world.grid[agent.y][agent.x].terrain == "water"

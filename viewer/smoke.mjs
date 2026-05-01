@@ -116,6 +116,10 @@ try {
       inspector &&
       inspector.textContent.includes("Species") &&
       inspector.textContent.includes("Terrain Here") &&
+      inspector.textContent.includes("Parents") &&
+      inspector.textContent.includes("Reproductive Group") &&
+      inspector.textContent.includes("Reproductive Stage") &&
+      inspector.textContent.includes("Reproductive Expression") &&
       inspector.textContent.includes("Trophic Role") &&
       inspector.textContent.includes("Health") &&
       inspector.textContent.includes("Last Damage Source") &&

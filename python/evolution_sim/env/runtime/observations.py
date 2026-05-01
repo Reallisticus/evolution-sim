@@ -11,6 +11,16 @@ import zlib
 
 from evolution_sim.env.runtime.action_contract import action_contract, action_names
 from evolution_sim.env.runtime.action_space import build_action_mask
+from evolution_sim.env.runtime.mating import (
+    ASEXUAL_REPRODUCTION_MODE,
+    PROTO_X_EXPRESSION,
+    PROTO_Y_EXPRESSION,
+    PROTO_Z_EXPRESSION,
+    SEXUAL_EXPRESSION,
+    X_EXPRESSION,
+    Y_EXPRESSION,
+    Z_EXPRESSION,
+)
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_SIGNAL_FIELD,
     REPRODUCTIVE_SIGNAL_FIELD,
@@ -18,8 +28,8 @@ from evolution_sim.env.runtime.signals import (
 )
 from evolution_sim.env.runtime.state import MIND_INHERITANCE_PLACEHOLDER_VERSION, Agent
 
-OBSERVATION_SCHEMA_VERSION = "mind_observation_v2"
-OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v1"
+OBSERVATION_SCHEMA_VERSION = "mind_observation_v3"
+OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2"
 OBSERVATION_INPUT_DTYPE = "float32"
 OBSERVATION_STORAGE_DTYPE = "int16"
 OBSERVATION_STORAGE_ENCODING = "zlib_base64_little_endian_int16"
@@ -47,6 +57,7 @@ SELF_FIELDS: tuple[str, ...] = (
     "tile_vegetation",
     "tile_recovery_debt",
     "reproductive_stage",
+    "reproductive_expression",
     "sexual_reproduction_unlocked",
     "reproductive_signal",
     "communication_signal",
@@ -98,6 +109,7 @@ SELF_INPUT_FIELDS: tuple[str, ...] = (
     "tile_vegetation",
     "tile_recovery_debt",
     "reproductive_stage_code",
+    "reproductive_expression_code",
     "sexual_reproduction_unlocked",
     "reproductive_signal",
     "communication_signal",
@@ -150,6 +162,16 @@ REPRODUCTIVE_STAGE_VOCAB: tuple[str, ...] = (
     "stage3_x_y_z",
     "stage4_hybridization",
 )
+REPRODUCTIVE_EXPRESSION_VOCAB: tuple[str, ...] = (
+    ASEXUAL_REPRODUCTION_MODE,
+    SEXUAL_EXPRESSION,
+    PROTO_X_EXPRESSION,
+    PROTO_Y_EXPRESSION,
+    PROTO_Z_EXPRESSION,
+    X_EXPRESSION,
+    Y_EXPRESSION,
+    Z_EXPRESSION,
+)
 WATER_ACCESS_REASON_VOCAB: tuple[str, ...] = (
     "none",
     "adjacent_water",
@@ -171,6 +193,7 @@ ENUM_VOCABS: dict[str, tuple[str, ...]] = {
     "trophic_role": TROPHIC_ROLE_VOCAB,
     "meat_mode": MEAT_MODE_VOCAB,
     "reproductive_stage": REPRODUCTIVE_STAGE_VOCAB,
+    "reproductive_expression": REPRODUCTIVE_EXPRESSION_VOCAB,
     "water_access_reason": WATER_ACCESS_REASON_VOCAB,
     "hazard_type": HAZARD_TYPE_VOCAB,
     "ecology_state": ECOLOGY_STATE_VOCAB,
@@ -258,6 +281,7 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
             "tile_vegetation": _round(tile.vegetation),
             "tile_recovery_debt": _round(tile.recovery_debt),
             "reproductive_stage": agent.reproductive_stage,
+            "reproductive_expression": agent.reproductive_expression,
             "sexual_reproduction_unlocked": agent.reproductive_stage != "stage0_asexual",
             REPRODUCTIVE_SIGNAL_FIELD: _round(
                 signal_state.reproductive_signal[agent.y][agent.x]
@@ -669,6 +693,10 @@ def _self_input_values(self_state: dict[str, object]) -> list[float]:
         _unit_value(self_state["tile_vegetation"]),
         _unit_value(self_state["tile_recovery_debt"]),
         _enum_value(self_state["reproductive_stage"], REPRODUCTIVE_STAGE_VOCAB),
+        _enum_value(
+            self_state["reproductive_expression"],
+            REPRODUCTIVE_EXPRESSION_VOCAB,
+        ),
         _bool_value(self_state["sexual_reproduction_unlocked"]),
         _nonnegative_signal_value(self_state[REPRODUCTIVE_SIGNAL_FIELD]),
         _nonnegative_signal_value(self_state[COMMUNICATION_SIGNAL_FIELD]),

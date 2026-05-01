@@ -1026,6 +1026,245 @@ class FoundationGateCliTests(unittest.TestCase):
             )
         )
 
+    def test_stale_stage1_contract_versions_block_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        summary = copy.deepcopy(result.summary)
+        viewer = copy.deepcopy(result.viewer)
+        summary["mind_contracts"]["action_contract_version"] = "stale"
+        summary["mind_contracts"]["reproductive_group_contract_version"] = "stale"
+        viewer["trajectory"]["observation_schema_version"] = "stale"
+        viewer["trajectory"]["genome_recombination_contract_version"] = "stale"
+        viewer["trajectory"]["reward_schema_version"] = "stale"
+        viewer["trajectory"]["action_outcome_schema_version"] = "stale"
+        viewer["trajectory"]["action_contract"]["schema_version"] = "stale"
+        viewer["trajectory"]["action_contract"]["communication"][
+            "emission_enabled"
+        ] = True
+        viewer["trajectory"]["action_contract"]["active_action_keys"].append(
+            "signal_0_profile_0"
+        )
+        viewer["trajectory"]["observation_contract"]["action_contract"][
+            "schema_version"
+        ] = "stale"
+        viewer["trajectory"]["reproductive_group_contract"]["schema_version"] = "stale"
+        viewer["trajectory"]["reward_contract"]["schema_version"] = "stale"
+        viewer["reproductive_group_catalog"]["schema_version"] = "stale"
+        viewer["trajectory"]["records"][0]["observation_schema"] = "stale"
+        viewer["trajectory"]["records"][0]["reward"]["schema_version"] = "stale"
+        viewer["trajectory"]["records"][0]["outcome"]["schema_version"] = "stale"
+        del viewer["trajectory"]["records"][0]["outcome"]["signal"]
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=summary,
+            viewer=viewer,
+        )
+        error_fields = {flag["field"] for flag in flags if flag["severity"] == "error"}
+
+        self.assertIn("summary.mind_contracts.action_contract_version", error_fields)
+        self.assertIn(
+            "summary.mind_contracts.reproductive_group_contract_version",
+            error_fields,
+        )
+        self.assertIn(
+            "viewer.trajectory.observation_schema_version",
+            error_fields,
+        )
+        self.assertIn(
+            "viewer.trajectory.genome_recombination_contract_version",
+            error_fields,
+        )
+        self.assertIn("viewer.trajectory.reward_schema_version", error_fields)
+        self.assertIn("viewer.trajectory.action_outcome_schema_version", error_fields)
+        self.assertIn(
+            "viewer.trajectory.action_contract.schema_version",
+            error_fields,
+        )
+        self.assertIn("viewer.trajectory.action_contract", error_fields)
+        self.assertIn(
+            "viewer.trajectory.observation_contract.action_contract.schema_version",
+            error_fields,
+        )
+        self.assertIn(
+            "viewer.trajectory.reproductive_group_contract.schema_version",
+            error_fields,
+        )
+        self.assertIn("viewer.trajectory.reward_contract", error_fields)
+        self.assertIn("viewer.reproductive_group_catalog", error_fields)
+        self.assertIn("viewer.trajectory.records.observation_schema", error_fields)
+        self.assertIn("viewer.trajectory.records.reward", error_fields)
+        self.assertIn("viewer.trajectory.records.outcome", error_fields)
+        self.assertIn("viewer.trajectory.records.outcome.signal", error_fields)
+
+    def test_stale_later_trajectory_record_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        self.assertGreater(len(viewer["trajectory"]["records"]), 1)
+        viewer["trajectory"]["records"][1]["outcome"]["schema_version"] = "stale"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "viewer.trajectory.records.outcome"
+                and "record 1" in flag["message"]
+                for flag in flags
+            )
+        )
+
+    def test_mismatched_reproductive_group_catalog_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        first_group = next(iter(viewer["reproductive_group_catalog"]["groups"].values()))
+        first_group["member_count"] += 1
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == "viewer.reproductive_group_catalog.groups.member_count"
+                for flag in flags
+            )
+        )
+
+    def test_mismatched_reproductive_group_birth_events_block_full_replay_probe(
+        self,
+    ) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        viewer = copy.deepcopy(result.viewer)
+        reproduction_event = next(
+            event for event in result.events if event.get("type") == "agent_reproduced"
+        )
+        group_key = str(reproduction_event["data"]["child_reproductive_group_id"])
+        viewer["reproductive_group_catalog"]["groups"][group_key]["asexual_births"] += 1
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+            events=result.events,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == "viewer.reproductive_group_catalog.groups.asexual_births"
+                for flag in flags
+            )
+        )
+
+    def test_stale_reproductive_birth_event_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        events = copy.deepcopy(result.events)
+        reproduction_event = next(
+            event for event in events if event.get("type") == "agent_reproduced"
+        )
+        reproduction_event["data"]["schema_version"] = "stale"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=result.viewer,
+            events=events,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "events.agent_reproduced.schema_version"
+                for flag in flags
+            )
+        )
+
+    def test_mismatched_reproductive_summary_birth_events_block_full_replay_probe(
+        self,
+    ) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
+        summary = copy.deepcopy(result.summary)
+        summary["births"] += 1
+        summary["reproductive_groups_end"]["asexual_births"] += 1
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=summary,
+            viewer=result.viewer,
+            events=result.events,
+        )
+        error_fields = {flag["field"] for flag in flags if flag["severity"] == "error"}
+
+        self.assertIn("summary.births", error_fields)
+        self.assertIn("summary.reproductive_groups_end.asexual_births", error_fields)
+
+    def test_unknown_reproductive_catalog_expression_blocks_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        first_agent = next(iter(viewer["agent_catalog"].values()))
+        first_agent["reproductive_expression"] = "mystery"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "viewer.agent_catalog.reproductive_expression"
+                for flag in flags
+            )
+        )
+
+    def test_invalid_reproductive_agent_catalog_fields_block_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        first_agent = next(iter(viewer["agent_catalog"].values()))
+        first_agent["reproductive_group_id"] = None
+        first_agent["death_tick"] = "later"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+        error_fields = {flag["field"] for flag in flags if flag["severity"] == "error"}
+
+        self.assertIn("viewer.agent_catalog.reproductive_group_id", error_fields)
+        self.assertIn("viewer.agent_catalog.death_tick", error_fields)
+
+    def test_malformed_reproductive_group_ids_block_full_replay_probe(self) -> None:
+        result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
+        viewer = copy.deepcopy(result.viewer)
+        first_agent = next(iter(viewer["agent_catalog"].values()))
+        first_agent["reproductive_group_id"] = "1"
+        first_group = next(iter(viewer["reproductive_group_catalog"]["groups"].values()))
+        first_group["group_id"] = "1"
+
+        flags = _mind_contract_flags(
+            scope="unit",
+            summary=result.summary,
+            viewer=viewer,
+        )
+        error_fields = {flag["field"] for flag in flags if flag["severity"] == "error"}
+
+        self.assertIn("viewer.agent_catalog.reproductive_group_id", error_fields)
+        self.assertIn(
+            "viewer.reproductive_group_catalog.groups.group_id",
+            error_fields,
+        )
+
     def test_mismatched_action_signal_capacity_blocks_full_replay_probe(self) -> None:
         result = SimulationWorld(
             WorldConfig(

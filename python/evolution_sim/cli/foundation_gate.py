@@ -18,19 +18,39 @@ from evolution_sim.env.world import (
     ANIMAL_RESOURCE_KINDS,
     ANIMAL_RESOURCE_POLICY_BLOCKERS,
 )
+from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_ENCODER_VERSION,
     OBSERVATION_INPUT_VECTOR_SIZE,
     OBSERVATION_SCHEMA_VERSION,
     validate_observation_input_payload,
 )
+from evolution_sim.env.runtime.mating import (
+    ASEXUAL_REPRODUCTION_MODE,
+    PROTO_X_EXPRESSION,
+    PROTO_Y_EXPRESSION,
+    PROTO_Z_EXPRESSION,
+    REPRODUCTIVE_STAGE_ORDER,
+    SEXUAL_EXPRESSION,
+    SEXUAL_REPRODUCTION_MODE,
+    X_EXPRESSION,
+    Y_EXPRESSION,
+    Z_EXPRESSION,
+    stage_rank,
+)
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
+from evolution_sim.env.runtime.reproduction import (
+    REPRODUCTION_EVENT_SCHEMA_VERSION,
+    REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+)
 from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
 from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
+    TRAJECTORY_RECORD_FIELDS,
     TRAJECTORY_SCHEMA_VERSION,
 )
+from evolution_sim.genome.recombination import GENOME_RECOMBINATION_CONTRACT_VERSION
 
 from .evaluate import (
     build_evaluation_report_from_runs,
@@ -163,6 +183,16 @@ PROFILES: dict[str, GateProfile] = {
     QUICK_PROFILE.name: QUICK_PROFILE,
     ECOLOGY_PROFILE.name: ECOLOGY_PROFILE,
     RELEASE_PROFILE.name: RELEASE_PROFILE,
+}
+REPRODUCTIVE_EXPRESSION_VALUES = {
+    ASEXUAL_REPRODUCTION_MODE,
+    SEXUAL_EXPRESSION,
+    PROTO_X_EXPRESSION,
+    PROTO_Y_EXPRESSION,
+    PROTO_Z_EXPRESSION,
+    X_EXPRESSION,
+    Y_EXPRESSION,
+    Z_EXPRESSION,
 }
 
 
@@ -981,6 +1011,7 @@ def _mind_contract_flags(
     scope: str,
     summary: dict[str, object],
     viewer: dict[str, object],
+    events: Sequence[object] | None = None,
 ) -> list[dict[str, object]]:
     flags: list[dict[str, object]] = []
     contracts = summary.get("mind_contracts")
@@ -1000,6 +1031,11 @@ def _mind_contract_flags(
             "schema_version": TRAJECTORY_SCHEMA_VERSION,
             "reward_schema_version": REWARD_SCHEMA_VERSION,
             "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
+            "action_contract_version": ACTION_CONTRACT_VERSION,
+            "reproductive_group_contract_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+            "genome_recombination_contract_version": (
+                GENOME_RECOMBINATION_CONTRACT_VERSION
+            ),
         }
         for field, expected in expected_versions.items():
             if contracts.get(field) != expected:
@@ -1032,22 +1068,90 @@ def _mind_contract_flags(
             )
         )
         return flags
-    if trajectory.get("schema_version") != TRAJECTORY_SCHEMA_VERSION:
+    expected_trajectory_versions = {
+        "schema_version": TRAJECTORY_SCHEMA_VERSION,
+        "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+        "policy_interface_version": POLICY_INTERFACE_VERSION,
+        "action_contract_version": ACTION_CONTRACT_VERSION,
+        "reproductive_group_contract_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+        "genome_recombination_contract_version": GENOME_RECOMBINATION_CONTRACT_VERSION,
+        "reward_schema_version": REWARD_SCHEMA_VERSION,
+        "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
+    }
+    for field, expected in expected_trajectory_versions.items():
+        if trajectory.get(field) != expected:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    f"viewer.trajectory.{field}",
+                    f"Expected {expected}, found {trajectory.get(field)!r}.",
+                )
+            )
+    action_contract = trajectory.get("action_contract")
+    if (
+        not isinstance(action_contract, dict)
+        or action_contract.get("schema_version") != ACTION_CONTRACT_VERSION
+    ):
         flags.append(
             _flag(
                 "error",
                 scope,
-                "viewer.trajectory.schema_version",
-                "Trajectory schema version is missing or stale.",
+                "viewer.trajectory.action_contract.schema_version",
+                "Action contract metadata is missing or stale.",
             )
         )
-    if trajectory.get("policy_interface_version") != POLICY_INTERFACE_VERSION:
+    reproductive_group_contract = trajectory.get("reproductive_group_contract")
+    if (
+        not isinstance(reproductive_group_contract, dict)
+        or reproductive_group_contract.get("schema_version")
+        != REPRODUCTIVE_GROUP_CONTRACT_VERSION
+    ):
         flags.append(
             _flag(
                 "error",
                 scope,
-                "viewer.trajectory.policy_interface_version",
-                "Trajectory payload is missing the current policy interface version.",
+                "viewer.trajectory.reproductive_group_contract.schema_version",
+                "Reproductive group contract metadata is missing or stale.",
+            )
+        )
+    genome_recombination_contract = trajectory.get("genome_recombination_contract")
+    if (
+        not isinstance(genome_recombination_contract, dict)
+        or genome_recombination_contract.get("schema_version")
+        != GENOME_RECOMBINATION_CONTRACT_VERSION
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.genome_recombination_contract.schema_version",
+                "Genome recombination contract metadata is missing or stale.",
+            )
+        )
+    reproductive_group_catalog = viewer.get("reproductive_group_catalog")
+    if (
+        not isinstance(reproductive_group_catalog, dict)
+        or reproductive_group_catalog.get("schema_version")
+        != REPRODUCTIVE_GROUP_CONTRACT_VERSION
+        or not isinstance(reproductive_group_catalog.get("groups"), dict)
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.reproductive_group_catalog",
+                "Viewer reproductive group catalog is missing or stale.",
+            )
+        )
+    else:
+        flags.extend(
+            _reproductive_group_catalog_flags(
+                scope=scope,
+                summary=summary,
+                viewer=viewer,
+                reproductive_group_catalog=reproductive_group_catalog,
+                events=events,
             )
         )
     observation_contract = trajectory.get("observation_contract")
@@ -1078,6 +1182,20 @@ def _mind_contract_flags(
                     scope,
                     "viewer.trajectory.observation_contract.policy_input",
                     "Observation contract does not declare the canonical policy input encoder.",
+                )
+            )
+        embedded_action_contract = observation_contract.get("action_contract")
+        if (
+            not isinstance(embedded_action_contract, dict)
+            or embedded_action_contract.get("schema_version")
+            != ACTION_CONTRACT_VERSION
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.trajectory.observation_contract.action_contract.schema_version",
+                    "Observation contract action metadata is missing or stale.",
                 )
             )
         signal_contract = observation_contract.get("signal_contract")
@@ -1167,91 +1285,712 @@ def _mind_contract_flags(
             )
         )
         return flags
-    first_record = records[0]
-    required_record_fields = {
-        "observation_metadata",
-        "observation_input",
-        "observation_digest",
-        "action_mask",
-        "resolution_action_mask",
-        "requested_action",
-        "policy_id",
-        "policy_version",
-        "action_valid",
-        "resolution_action_valid",
-        "resolved_action",
-        "outcome",
-        "reward",
-    }
-    if not isinstance(first_record, dict) or not required_record_fields.issubset(first_record):
+    for index, record in enumerate(records):
+        flags.extend(
+            _trajectory_record_contract_flags(
+                scope=scope,
+                record=record,
+                index=index,
+            )
+        )
+    return flags
+
+
+def _trajectory_record_contract_flags(
+    *,
+    scope: str,
+    record: object,
+    index: int,
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    required_record_fields = set(TRAJECTORY_RECORD_FIELDS)
+    if not isinstance(record, dict) or not required_record_fields.issubset(record):
         flags.append(
             _flag(
                 "error",
                 scope,
                 "viewer.trajectory.records",
-                "Trajectory records do not include action, outcome, mask, and reward fields.",
+                (
+                    f"Trajectory record {index} does not include the canonical "
+                    "contract fields."
+                ),
+            )
+        )
+        return flags
+
+    if record.get("observation_schema") != OBSERVATION_SCHEMA_VERSION:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.records.observation_schema",
+                (
+                    f"Trajectory record {index} does not declare the current "
+                    "observation schema."
+                ),
+            )
+        )
+    observation_metadata = record.get("observation_metadata")
+    if (
+        not isinstance(observation_metadata, dict)
+        or observation_metadata.get("agent_id") != record.get("agent_id")
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.records.observation_metadata",
+                (
+                    f"Trajectory record {index} does not include policy-excluded "
+                    "observation metadata."
+                ),
+            )
+        )
+    observation_input = record.get("observation_input")
+    if not isinstance(observation_input, dict):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.records.observation_input",
+                f"Trajectory record {index} does not include encoded observation inputs.",
             )
         )
     else:
-        observation_metadata = first_record.get("observation_metadata")
-        if (
-            not isinstance(observation_metadata, dict)
-            or observation_metadata.get("agent_id") != first_record.get("agent_id")
-        ):
-            flags.append(
-                _flag(
-                    "error",
-                    scope,
-                    "viewer.trajectory.records.observation_metadata",
-                    "Trajectory records do not include policy-excluded observation metadata.",
-                )
-            )
-        observation_input = first_record.get("observation_input")
-        if not isinstance(observation_input, dict):
+        validation_errors = validate_observation_input_payload(observation_input)
+        if validation_errors:
             flags.append(
                 _flag(
                     "error",
                     scope,
                     "viewer.trajectory.records.observation_input",
-                    "Trajectory records do not include encoded observation inputs.",
+                    f"Trajectory record {index}: {validation_errors[0]}",
                 )
             )
-        else:
-            validation_errors = validate_observation_input_payload(observation_input)
-            if validation_errors:
-                flags.append(
-                    _flag(
-                        "error",
-                        scope,
-                        "viewer.trajectory.records.observation_input",
-                        validation_errors[0],
-                    )
-                )
-        if not isinstance(first_record.get("reward"), dict) or first_record["reward"].get(
-            "schema_version"
-        ) != REWARD_SCHEMA_VERSION:
-            flags.append(
-                _flag(
-                    "error",
-                    scope,
-                    "viewer.trajectory.records.reward",
-                    "Trajectory records do not include versioned reward components.",
-                )
+    reward = record.get("reward")
+    if (
+        not isinstance(reward, dict)
+        or reward.get("schema_version") != REWARD_SCHEMA_VERSION
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.records.reward",
+                f"Trajectory record {index} does not include versioned reward components.",
             )
-        outcome = first_record.get("outcome")
+        )
+    outcome = record.get("outcome")
+    if (
+        not isinstance(outcome, dict)
+        or outcome.get("schema_version") != ACTION_OUTCOME_SCHEMA_VERSION
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.records.outcome",
+                f"Trajectory record {index} does not include a versioned action outcome.",
+            )
+        )
+    if isinstance(outcome, dict):
+        signal_outcome = outcome.get("signal")
+        required_signal_outcome_fields = {
+            "emitted",
+            "token_id",
+            "profile_index",
+            "intensity",
+            "radius",
+            "duration_ticks",
+            "decay_rate",
+            "energy_cost",
+            "invalid_reason",
+        }
         if (
-            not isinstance(outcome, dict)
-            or outcome.get("schema_version") != ACTION_OUTCOME_SCHEMA_VERSION
+            not isinstance(signal_outcome, dict)
+            or not isinstance(signal_outcome.get("emitted"), bool)
+            or not required_signal_outcome_fields.issubset(signal_outcome)
         ):
             flags.append(
                 _flag(
                     "error",
                     scope,
-                    "viewer.trajectory.records.outcome",
-                    "Trajectory records do not include a versioned action outcome.",
+                    "viewer.trajectory.records.outcome.signal",
+                    (
+                        f"Trajectory record {index} action outcome must include "
+                        "stable signal outcome metadata."
+                    ),
                 )
             )
     return flags
+
+
+def _reproductive_group_catalog_flags(
+    *,
+    scope: str,
+    summary: dict[str, object],
+    viewer: dict[str, object],
+    reproductive_group_catalog: dict[str, object],
+    events: Sequence[object] | None = None,
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    groups = reproductive_group_catalog.get("groups")
+    agent_catalog = viewer.get("agent_catalog")
+    if not isinstance(groups, dict):
+        return [
+            _flag(
+                "error",
+                scope,
+                "viewer.reproductive_group_catalog.groups",
+                "Viewer reproductive group catalog does not declare groups.",
+            )
+        ]
+    if not isinstance(agent_catalog, dict):
+        return [
+            _flag(
+                "error",
+                scope,
+                "viewer.agent_catalog",
+                "Viewer agent catalog is missing while validating reproductive groups.",
+            )
+        ]
+
+    event_birth_counts, event_flags = _reproductive_group_birth_counts_from_events(
+        scope=scope,
+        events=events,
+        groups=groups,
+    )
+    flags.extend(event_flags)
+
+    member_counts: dict[str, int] = {}
+    alive_member_counts: dict[str, int] = {}
+    alive_stage_counts: dict[str, dict[str, int]] = {}
+    alive_expression_counts: dict[str, dict[str, int]] = {}
+    for raw_agent_id, agent_payload in agent_catalog.items():
+        if not isinstance(agent_payload, dict):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog",
+                    f"Agent catalog entry {raw_agent_id} is not an object.",
+                )
+            )
+            continue
+        group_id = agent_payload.get("reproductive_group_id")
+        reproductive_stage = agent_payload.get("reproductive_stage")
+        reproductive_expression = agent_payload.get("reproductive_expression")
+        if "death_tick" not in agent_payload:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.death_tick",
+                    f"Agent catalog entry {raw_agent_id} is missing death_tick.",
+                )
+            )
+        elif (
+            agent_payload.get("death_tick") is not None
+            and (
+                _as_optional_int(agent_payload.get("death_tick")) is None
+                or int(agent_payload["death_tick"]) < 0
+            )
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.death_tick",
+                    (
+                        f"Agent catalog entry {raw_agent_id} death_tick must "
+                        "be a nonnegative integer or null."
+                    ),
+                )
+            )
+        if reproductive_stage not in REPRODUCTIVE_STAGE_ORDER:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.reproductive_stage",
+                    (
+                        f"Agent catalog entry {raw_agent_id} has unknown "
+                        "reproductive stage."
+                    ),
+                )
+            )
+        if reproductive_expression not in REPRODUCTIVE_EXPRESSION_VALUES:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.reproductive_expression",
+                    (
+                        f"Agent catalog entry {raw_agent_id} has unknown "
+                        "reproductive expression."
+                    ),
+                )
+            )
+        if group_id is None:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.reproductive_group_id",
+                    f"Agent catalog entry {raw_agent_id} is missing a reproductive group.",
+                )
+            )
+            continue
+        parsed_group_id = _as_optional_int(group_id)
+        if parsed_group_id is None or parsed_group_id < 0:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.reproductive_group_id",
+                    (
+                        f"Agent catalog entry {raw_agent_id} reproductive_group_id "
+                        "must be a nonnegative integer."
+                    ),
+                )
+            )
+            continue
+        group_key = str(group_id)
+        if group_key not in groups:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.agent_catalog.reproductive_group_id",
+                    (
+                        f"Agent catalog entry {raw_agent_id} references missing "
+                        f"reproductive group {group_key}."
+                    ),
+                )
+            )
+            continue
+        member_counts[group_key] = member_counts.get(group_key, 0) + 1
+        if agent_payload.get("death_tick") is None:
+            alive_member_counts[group_key] = alive_member_counts.get(group_key, 0) + 1
+            _increment_nested_count(
+                alive_stage_counts,
+                group_key,
+                str(reproductive_stage),
+            )
+            _increment_nested_count(
+                alive_expression_counts,
+                group_key,
+                str(reproductive_expression),
+            )
+
+    for group_key, group_payload in groups.items():
+        if not isinstance(group_payload, dict):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups",
+                    f"Reproductive group {group_key} is not an object.",
+                )
+            )
+            continue
+        parsed_payload_group_id = _as_optional_int(group_payload.get("group_id"))
+        if parsed_payload_group_id is None or parsed_payload_group_id < 0:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.group_id",
+                    f"Reproductive group {group_key} group_id must be a nonnegative integer.",
+                )
+            )
+        elif str(parsed_payload_group_id) != str(group_key):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.group_id",
+                    f"Reproductive group {group_key} group_id does not match its key.",
+                )
+            )
+        expected_member_count = member_counts.get(str(group_key), 0)
+        expected_alive_member_count = alive_member_counts.get(str(group_key), 0)
+        member_count = _as_optional_int(group_payload.get("member_count"))
+        alive_member_count = _as_optional_int(group_payload.get("alive_member_count"))
+        actual_stage_counts = _as_count_dict(group_payload.get("alive_stage_counts"))
+        actual_expression_counts = _as_count_dict(
+            group_payload.get("alive_expression_counts")
+        )
+        if member_count != expected_member_count:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.member_count",
+                    (
+                        f"Reproductive group {group_key} member_count does not "
+                        "match the agent catalog."
+                    ),
+                )
+            )
+        if alive_member_count != expected_alive_member_count:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.alive_member_count",
+                    (
+                        f"Reproductive group {group_key} alive_member_count does "
+                        "not match the agent catalog."
+                    ),
+                )
+            )
+        expected_stage_counts = alive_stage_counts.get(str(group_key), {})
+        expected_expression_counts = alive_expression_counts.get(str(group_key), {})
+        if actual_stage_counts != expected_stage_counts:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.alive_stage_counts",
+                    (
+                        f"Reproductive group {group_key} alive_stage_counts does "
+                        "not match the agent catalog."
+                    ),
+                )
+            )
+        if actual_expression_counts != expected_expression_counts:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.alive_expression_counts",
+                    (
+                        f"Reproductive group {group_key} alive_expression_counts "
+                        "does not match the agent catalog."
+                    ),
+                )
+            )
+        birth_counts = {
+            field: _as_optional_int(group_payload.get(field))
+            for field in ("asexual_births", "sexual_births", "hybrid_births")
+        }
+        group_stage = group_payload.get("stage")
+        if group_stage not in REPRODUCTIVE_STAGE_ORDER:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.stage",
+                    f"Reproductive group {group_key} has unknown stage.",
+                )
+            )
+        for field, count in birth_counts.items():
+            if count is None or count < 0:
+                flags.append(
+                    _flag(
+                        "error",
+                        scope,
+                        f"viewer.reproductive_group_catalog.groups.{field}",
+                        (
+                            f"Reproductive group {group_key} {field} must be a "
+                            "nonnegative integer."
+                        ),
+                    )
+                )
+        if event_birth_counts is not None:
+            expected_event_births = event_birth_counts.get(str(group_key), {})
+            for field, count in birth_counts.items():
+                if count is None or count < 0:
+                    continue
+                expected_count = expected_event_births.get(field, 0)
+                if count != expected_count:
+                    flags.append(
+                        _flag(
+                            "error",
+                            scope,
+                            f"viewer.reproductive_group_catalog.groups.{field}",
+                            (
+                                f"Reproductive group {group_key} {field} does "
+                                "not match agent_reproduced events."
+                            ),
+                        )
+                    )
+        sexual_births = birth_counts.get("sexual_births")
+        hybrid_births = birth_counts.get("hybrid_births")
+        if (
+            sexual_births is not None
+            and hybrid_births is not None
+            and hybrid_births > sexual_births
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.hybrid_births",
+                    (
+                        f"Reproductive group {group_key} hybrid_births exceeds "
+                        "sexual_births."
+                    ),
+                )
+            )
+        highest_alive_stage = _highest_counted_stage(expected_stage_counts)
+        if (
+            highest_alive_stage is not None
+            and isinstance(group_stage, str)
+            and stage_rank(group_stage) < stage_rank(highest_alive_stage)
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.reproductive_group_catalog.groups.stage",
+                    (
+                        f"Reproductive group {group_key} stage is below an "
+                        "alive member stage."
+                    ),
+                )
+            )
+    if event_birth_counts is not None:
+        flags.extend(
+            _reproductive_summary_birth_flags(
+                scope=scope,
+                summary=summary,
+                event_birth_counts=event_birth_counts,
+            )
+        )
+    return flags
+
+
+def _reproductive_summary_birth_flags(
+    *,
+    scope: str,
+    summary: dict[str, object],
+    event_birth_counts: Mapping[str, Mapping[str, int]],
+) -> list[dict[str, object]]:
+    flags: list[dict[str, object]] = []
+    event_totals = {
+        field: sum(
+            int(group_counts.get(field, 0))
+            for group_counts in event_birth_counts.values()
+        )
+        for field in ("asexual_births", "sexual_births", "hybrid_births")
+    }
+    event_birth_total = event_totals["asexual_births"] + event_totals["sexual_births"]
+    summary_births = _as_optional_int(summary.get("births"))
+    if summary_births is None or summary_births != event_birth_total:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "summary.births",
+                "Summary births does not match agent_reproduced events.",
+            )
+        )
+    reproductive_groups_end = summary.get("reproductive_groups_end")
+    if not isinstance(reproductive_groups_end, Mapping):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "summary.reproductive_groups_end",
+                "Full replay summary is missing reproductive group totals.",
+            )
+        )
+        return flags
+    if (
+        reproductive_groups_end.get("schema_version")
+        != REPRODUCTIVE_GROUP_CONTRACT_VERSION
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "summary.reproductive_groups_end.schema_version",
+                "Summary reproductive group totals are missing or stale.",
+            )
+        )
+    for field, expected_count in event_totals.items():
+        summary_count = _as_optional_int(reproductive_groups_end.get(field))
+        if summary_count is None or summary_count != expected_count:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    f"summary.reproductive_groups_end.{field}",
+                    (
+                        f"Summary reproductive group {field} does not match "
+                        "agent_reproduced events."
+                    ),
+                )
+            )
+    return flags
+
+
+def _reproductive_group_birth_counts_from_events(
+    *,
+    scope: str,
+    events: Sequence[object] | None,
+    groups: Mapping[object, object],
+) -> tuple[dict[str, dict[str, int]] | None, list[dict[str, object]]]:
+    flags: list[dict[str, object]] = []
+    if events is None:
+        return None, flags
+    if isinstance(events, (str, bytes, bytearray)):
+        return None, [
+            _flag(
+                "error",
+                scope,
+                "events",
+                "Full replay events must be a sequence of event objects.",
+            )
+        ]
+
+    group_keys = {str(group_key) for group_key in groups}
+    counts: dict[str, dict[str, int]] = {
+        group_key: {
+            "asexual_births": 0,
+            "sexual_births": 0,
+            "hybrid_births": 0,
+        }
+        for group_key in group_keys
+    }
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events",
+                    f"Full replay event {index} is not an object.",
+                )
+            )
+            continue
+        if event.get("type") != "agent_reproduced":
+            continue
+        data = event.get("data")
+        if not isinstance(data, Mapping):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.data",
+                    f"Reproduction event {index} is missing a data object.",
+                )
+            )
+            continue
+        if data.get("schema_version") != REPRODUCTION_EVENT_SCHEMA_VERSION:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.schema_version",
+                    (
+                        f"Reproduction event {index} must declare "
+                        f"{REPRODUCTION_EVENT_SCHEMA_VERSION}."
+                    ),
+                )
+            )
+        raw_group_id = data.get("child_reproductive_group_id")
+        group_id = _as_optional_int(raw_group_id)
+        if group_id is None or group_id < 0:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.child_reproductive_group_id",
+                    (
+                        f"Reproduction event {index} child_reproductive_group_id "
+                        "must be a nonnegative integer."
+                    ),
+                )
+            )
+            continue
+        group_key = str(group_id)
+        if group_key not in group_keys:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.child_reproductive_group_id",
+                    (
+                        f"Reproduction event {index} references missing "
+                        f"reproductive group {group_key}."
+                    ),
+                )
+            )
+            continue
+        reproduction_mode = data.get("reproduction_mode")
+        hybrid = data.get("hybrid")
+        if not isinstance(hybrid, bool):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.hybrid",
+                    f"Reproduction event {index} hybrid must be boolean.",
+                )
+            )
+            hybrid = False
+        if reproduction_mode == ASEXUAL_REPRODUCTION_MODE:
+            counts[group_key]["asexual_births"] += 1
+            if hybrid:
+                flags.append(
+                    _flag(
+                        "error",
+                        scope,
+                        "events.agent_reproduced.hybrid",
+                        (
+                            f"Reproduction event {index} cannot mark an "
+                            "asexual birth as hybrid."
+                        ),
+                    )
+                )
+        elif reproduction_mode == SEXUAL_REPRODUCTION_MODE:
+            counts[group_key]["sexual_births"] += 1
+            if hybrid:
+                counts[group_key]["hybrid_births"] += 1
+        else:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "events.agent_reproduced.reproduction_mode",
+                    (
+                        f"Reproduction event {index} has unsupported "
+                        f"reproduction_mode {reproduction_mode!r}."
+                    ),
+                )
+            )
+    return counts, flags
+
+
+def _increment_nested_count(
+    counts: dict[str, dict[str, int]],
+    group_key: str,
+    field_value: str,
+) -> None:
+    group_counts = counts.setdefault(group_key, {})
+    group_counts[field_value] = group_counts.get(field_value, 0) + 1
+
+
+def _highest_counted_stage(stage_counts: dict[str, int]) -> str | None:
+    stages = [stage for stage, count in stage_counts.items() if count > 0]
+    if not stages:
+        return None
+    return max(stages, key=stage_rank)
+
+
+def _as_count_dict(value: object) -> dict[str, int] | None:
+    if not isinstance(value, Mapping):
+        return None
+    counts: dict[str, int] = {}
+    for key, count in value.items():
+        parsed_count = _as_optional_int(count)
+        if parsed_count is None or parsed_count < 0:
+            return None
+        counts[str(key)] = parsed_count
+    return counts
 
 
 def _signal_action_capacity_flags(
@@ -1266,14 +2005,21 @@ def _signal_action_capacity_flags(
     profiles_per_token = _as_optional_int(
         signal_contract.get("communication_profiles_per_token")
     )
+    communication_enabled = signal_contract.get(
+        "communication_signal_emission_enabled"
+    )
     reserved_profiles = signal_contract.get("reserved_profiles")
-    if token_count is None or profiles_per_token is None:
+    if (
+        token_count is None
+        or profiles_per_token is None
+        or not isinstance(communication_enabled, bool)
+    ):
         return [
             _flag(
                 "error",
                 scope,
                 "viewer.trajectory.observation_contract.signal_contract",
-                "Signal contract does not declare communication profile capacity.",
+                "Signal contract does not declare communication capacity and enablement.",
             )
         ]
 
@@ -1307,6 +2053,7 @@ def _signal_action_capacity_flags(
             token_count=token_count,
             profiles_per_token=profiles_per_token,
             expected_actions=expected_actions,
+            communication_enabled=communication_enabled,
         ):
             flags.append(
                 _flag(
@@ -1338,11 +2085,14 @@ def _action_contract_matches_signal_capacity(
     token_count: int,
     profiles_per_token: int,
     expected_actions: list[str],
+    communication_enabled: bool,
 ) -> bool:
     if not isinstance(action_contract, dict):
         return False
     communication = action_contract.get("communication")
     if not isinstance(communication, dict):
+        return False
+    if communication.get("emission_enabled") is not communication_enabled:
         return False
     if communication.get("token_count") != token_count:
         return False
@@ -1351,9 +2101,18 @@ def _action_contract_matches_signal_capacity(
     if communication.get("action_keys") != expected_actions:
         return False
     reserved_actions = action_contract.get("reserved_action_keys")
-    return isinstance(reserved_actions, list) and set(expected_actions).issubset(
+    if not isinstance(reserved_actions, list) or not set(expected_actions).issubset(
         set(reserved_actions)
-    )
+    ):
+        return False
+    active_actions = action_contract.get("active_action_keys")
+    if not isinstance(active_actions, list):
+        return False
+    active_set = set(active_actions)
+    expected_set = set(expected_actions)
+    if communication_enabled:
+        return expected_set.issubset(active_set)
+    return active_set.isdisjoint(expected_set)
 
 
 def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
@@ -1403,7 +2162,14 @@ def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
                     "Full replay probe did not include species metrics.",
                 )
             )
-        flags.extend(_mind_contract_flags(scope=probe.name, summary=summary, viewer=result.viewer))
+        flags.extend(
+            _mind_contract_flags(
+                scope=probe.name,
+                summary=summary,
+                viewer=result.viewer,
+                events=result.events,
+            )
+        )
 
     if int(summary["alive_species_count"]) < probe.min_alive_species:
         flags.append(

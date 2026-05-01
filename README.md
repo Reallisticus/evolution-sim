@@ -88,7 +88,9 @@ decay/diffusion, debug-only signal profile/provenance metadata in full replay,
 reproductive genome mutation traits, Stage 0 reproductive-group summary/replay
 registry, Stage 1 same-group facultative sexed reproduction, grouped genome
 recombination helper contracts, and placeholder learned-state inheritance
-metadata. The `mate` action remains reserved and masked; Stage 1 is
+metadata. Current Mind-facing replay contracts include reproductive expression
+in `mind_observation_v3` and stable per-action signal outcome metadata in
+`mind_action_outcome_v2`. The `mate` action remains reserved and masked; Stage 1 is
 biology-gated, not policy-driven. Communication signal slots remain opaque and
 disabled by default, with an opt-in trait-gated emission path covered by tests;
 the default heuristic still never emits communication tokens.

@@ -16,7 +16,55 @@ export const REQUIRED_AGENT_FIELDS = [
   "species_id",
 ];
 
+const TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1";
+const OBSERVATION_SCHEMA_VERSION = "mind_observation_v3";
+const OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2";
+const OBSERVATION_INPUT_DECODED_DTYPE = "float32";
+const OBSERVATION_INPUT_STORAGE_DTYPE = "int16";
+const OBSERVATION_INPUT_STORAGE_ENCODING = "zlib_base64_little_endian_int16";
+const OBSERVATION_INPUT_VECTOR_SIZE = 542;
+const OBSERVATION_INPUT_VALUE_RANGE = [-1, 1];
+const POLICY_INTERFACE_VERSION = "mind_policy_interface_v1";
+const ACTION_CONTRACT_VERSION = "mind_action_contract_v1";
+const SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v2";
+const REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1";
+const GENOME_RECOMBINATION_CONTRACT_VERSION = "genome_recombination_contract_v1";
+const REWARD_SCHEMA_VERSION = "mind_reward_v1";
+const ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2";
+const REPRODUCTION_EVENT_SCHEMA_VERSION = "reproduction_event_v1";
+const ASEXUAL_REPRODUCTION_MODE = "asexual";
+const SEXUAL_REPRODUCTION_MODE = "same_group_sexual";
 const REQUIRED_MAP_FIELDS = ["fertility", "moisture", "heat"];
+const REQUIRED_AGENT_CATALOG_FIELDS = [
+  "agent_id",
+  "parent_id",
+  "secondary_parent_id",
+  "parent_ids",
+  "lineage_id",
+  "reproductive_group_id",
+  "reproductive_stage",
+  "reproductive_expression",
+  "birth_tick",
+  "death_tick",
+  "genome",
+  "mind_inheritance",
+];
+const REQUIRED_REPRODUCTIVE_GROUP_FIELDS = [
+  "group_id",
+  "founder_lineage_id",
+  "founder_agent_id",
+  "created_tick",
+  "last_seen_tick",
+  "stage",
+  "parent_group_ids",
+  "member_count",
+  "alive_member_count",
+  "alive_stage_counts",
+  "alive_expression_counts",
+  "asexual_births",
+  "sexual_births",
+  "hybrid_births",
+];
 const REQUIRED_FRAME_MATRIX_FIELDS = [
   "fresh_kill_energy_codes",
   "carcass_energy_codes",
@@ -51,20 +99,58 @@ const REQUIRED_SIGNAL_EMISSION_FIELDS = [
   "energy_cost",
   "emitted_tick",
 ];
+const REQUIRED_SIGNAL_OUTCOME_FIELDS = [
+  "emitted",
+  "token_id",
+  "profile_index",
+  "intensity",
+  "radius",
+  "duration_ticks",
+  "decay_rate",
+  "energy_cost",
+  "invalid_reason",
+];
 const REQUIRED_TRAJECTORY_RECORD_FIELDS = [
+  "tick",
+  "agent_id",
+  "lineage_id",
+  "runtime_species_id",
+  "runtime_ecotype_id",
+  "observation_schema",
   "observation_metadata",
   "observation_input",
   "observation_digest",
   "action_mask",
   "resolution_action_mask",
   "requested_action",
+  "action_source",
   "policy_id",
   "policy_version",
   "action_valid",
   "resolution_action_valid",
   "resolved_action",
+  "moved",
+  "before",
+  "after",
   "outcome",
   "reward",
+];
+const REPRODUCTIVE_STAGE_ORDER = [
+  "stage0_asexual",
+  "stage1_facultative_sex",
+  "stage2_proto_roles",
+  "stage3_x_y_z",
+  "stage4_hybridization",
+];
+const REPRODUCTIVE_EXPRESSIONS = [
+  "asexual",
+  "same_group_compatible",
+  "proto_x_like",
+  "proto_y_like",
+  "proto_z_plastic",
+  "x",
+  "y",
+  "z_plastic",
 ];
 
 export function validateReplayPayload(payload) {
@@ -75,9 +161,16 @@ export function validateReplayPayload(payload) {
   const { summary, viewer } = payload;
   const map = validateMap(viewer.map);
   validateAgentEncoding(viewer.agent_encoding);
-  validateCatalogs(viewer);
   validateTrajectory(viewer.trajectory);
-  validateFrames(viewer.frames, map, summary, viewer.agent_encoding, viewer.trajectory);
+  validateCatalogs(viewer, viewer.trajectory, payload.events);
+  validateFrames(
+    viewer.frames,
+    map,
+    summary,
+    viewer.agent_encoding,
+    viewer.trajectory,
+    viewer.agent_catalog,
+  );
 
   return payload;
 }
@@ -111,27 +204,379 @@ function validateAgentEncoding(agentEncoding) {
   }
 }
 
-function validateCatalogs(viewer) {
+function validateCatalogs(viewer, trajectory, events = undefined) {
   assertObject(viewer.agent_catalog, "Replay viewer.agent_catalog");
   assertObject(viewer.species_catalog, "Replay viewer.species_catalog");
   if (viewer.ecotype_catalog !== undefined) {
     assertObject(viewer.ecotype_catalog, "Replay viewer.ecotype_catalog");
   }
+  assertObject(
+    viewer.reproductive_group_catalog,
+    "Replay viewer.reproductive_group_catalog",
+  );
+  if (
+    viewer.reproductive_group_catalog.schema_version !==
+    trajectory.reproductive_group_contract_version
+  ) {
+    throw new Error(
+      "Replay reproductive group catalog schema version must match trajectory contract.",
+    );
+  }
+  assertObject(
+    viewer.reproductive_group_catalog.groups,
+    "Replay viewer.reproductive_group_catalog.groups",
+  );
+  const groupCounts = new Map();
+  const aliveGroupCounts = new Map();
+  const aliveStageCounts = new Map();
+  const aliveExpressionCounts = new Map();
+  const reproductiveEventBirthCounts = reproductiveBirthCountsFromEvents(
+    events,
+    viewer.reproductive_group_catalog.groups,
+  );
+
+  for (const [agentId, agent] of Object.entries(viewer.agent_catalog)) {
+    assertObject(agent, `Replay viewer.agent_catalog.${agentId}`);
+    for (const field of REQUIRED_AGENT_CATALOG_FIELDS) {
+      if (!(field in agent)) {
+        throw new Error(`Replay agent catalog entry is missing field ${field}.`);
+      }
+    }
+    if (String(agent.agent_id) !== agentId) {
+      throw new Error(`Replay agent catalog entry ${agentId} has mismatched id.`);
+    }
+    if (!REPRODUCTIVE_STAGE_ORDER.includes(agent.reproductive_stage)) {
+      throw new Error(
+        `Replay agent catalog entry ${agentId} has unknown reproductive stage.`,
+      );
+    }
+    if (!REPRODUCTIVE_EXPRESSIONS.includes(agent.reproductive_expression)) {
+      throw new Error(
+        `Replay agent catalog entry ${agentId} has unknown reproductive expression.`,
+      );
+    }
+    assertArray(agent.parent_ids, `Replay viewer.agent_catalog.${agentId}.parent_ids`);
+    assertObject(agent.genome, `Replay viewer.agent_catalog.${agentId}.genome`);
+    assertObject(
+      agent.mind_inheritance,
+      `Replay viewer.agent_catalog.${agentId}.mind_inheritance`,
+    );
+    if (agent.reproductive_group_id == null) {
+      throw new Error(
+        `Replay agent catalog entry ${agentId} is missing reproductive group.`,
+      );
+    }
+    assertNonnegativeInteger(
+      agent.reproductive_group_id,
+      `Replay viewer.agent_catalog.${agentId}.reproductive_group_id`,
+    );
+    if (agent.death_tick !== null) {
+      assertNonnegativeInteger(
+        agent.death_tick,
+        `Replay viewer.agent_catalog.${agentId}.death_tick`,
+      );
+    }
+    if (
+      !(String(agent.reproductive_group_id) in
+        viewer.reproductive_group_catalog.groups)
+    ) {
+      throw new Error(
+        `Replay agent catalog entry ${agentId} references missing reproductive group.`,
+      );
+    }
+    const groupId = String(agent.reproductive_group_id);
+    incrementCount(groupCounts, groupId);
+    if (agent.death_tick == null) {
+      incrementCount(aliveGroupCounts, groupId);
+      incrementNestedCount(aliveStageCounts, groupId, agent.reproductive_stage);
+      incrementNestedCount(
+        aliveExpressionCounts,
+        groupId,
+        agent.reproductive_expression,
+      );
+    }
+  }
+
+  for (const [groupId, group] of Object.entries(
+    viewer.reproductive_group_catalog.groups,
+  )) {
+    assertObject(group, `Replay viewer.reproductive_group_catalog.groups.${groupId}`);
+    for (const field of REQUIRED_REPRODUCTIVE_GROUP_FIELDS) {
+      if (!(field in group)) {
+        throw new Error(
+          `Replay reproductive group catalog entry is missing field ${field}.`,
+        );
+      }
+    }
+    if (String(group.group_id) !== groupId) {
+      throw new Error(
+        `Replay reproductive group catalog entry ${groupId} has mismatched id.`,
+      );
+    }
+    assertNonnegativeInteger(
+      group.group_id,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.group_id`,
+    );
+    if (!REPRODUCTIVE_STAGE_ORDER.includes(group.stage)) {
+      throw new Error(
+        `Replay reproductive group catalog entry ${groupId} has unknown stage.`,
+      );
+    }
+    assertArray(
+      group.parent_group_ids,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.parent_group_ids`,
+    );
+    assertObject(
+      group.alive_stage_counts,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.alive_stage_counts`,
+    );
+    assertObject(
+      group.alive_expression_counts,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.alive_expression_counts`,
+    );
+    assertNonnegativeInteger(
+      group.member_count,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.member_count`,
+    );
+    assertNonnegativeInteger(
+      group.alive_member_count,
+      `Replay viewer.reproductive_group_catalog.groups.${groupId}.alive_member_count`,
+    );
+    for (const birthField of ["asexual_births", "sexual_births", "hybrid_births"]) {
+      assertNonnegativeInteger(
+        group[birthField],
+        `Replay viewer.reproductive_group_catalog.groups.${groupId}.${birthField}`,
+      );
+    }
+    if (group.hybrid_births > group.sexual_births) {
+      throw new Error(
+        `Replay reproductive group ${groupId} has more hybrid births than sexual births.`,
+      );
+    }
+    if (reproductiveEventBirthCounts !== null) {
+      const eventCounts = reproductiveEventBirthCounts.get(groupId) ?? emptyBirthCounts();
+      for (const birthField of ["asexual_births", "sexual_births", "hybrid_births"]) {
+        if (group[birthField] !== eventCounts[birthField]) {
+          throw new Error(
+            `Replay reproductive group ${groupId} ${birthField} does not match agent_reproduced events.`,
+          );
+        }
+      }
+    }
+    if (group.member_count !== (groupCounts.get(groupId) ?? 0)) {
+      throw new Error(
+        `Replay reproductive group ${groupId} member_count does not match agent catalog.`,
+      );
+    }
+    if (group.alive_member_count !== (aliveGroupCounts.get(groupId) ?? 0)) {
+      throw new Error(
+        `Replay reproductive group ${groupId} alive_member_count does not match agent catalog.`,
+      );
+    }
+    assertExactCountObject(
+      group.alive_stage_counts,
+      aliveStageCounts.get(groupId) ?? new Map(),
+      `Replay reproductive group ${groupId} alive_stage_counts`,
+    );
+    assertExactCountObject(
+      group.alive_expression_counts,
+      aliveExpressionCounts.get(groupId) ?? new Map(),
+      `Replay reproductive group ${groupId} alive_expression_counts`,
+    );
+    const highestAliveStage = highestStage(aliveStageCounts.get(groupId) ?? new Map());
+    if (highestAliveStage && stageRank(group.stage) < stageRank(highestAliveStage)) {
+      throw new Error(
+        `Replay reproductive group ${groupId} stage is below an alive member stage.`,
+      );
+    }
+  }
+}
+
+function reproductiveBirthCountsFromEvents(events, groups) {
+  if (events === undefined) {
+    return null;
+  }
+  assertArray(events, "Replay events");
+  const groupIds = new Set(Object.keys(groups));
+  const counts = new Map();
+  for (const groupId of groupIds) {
+    counts.set(groupId, emptyBirthCounts());
+  }
+  for (const [eventIndex, event] of events.entries()) {
+    assertObject(event, `Replay events[${eventIndex}]`);
+    if (event.type !== "agent_reproduced") {
+      continue;
+    }
+    assertObject(event.data, `Replay events[${eventIndex}].data`);
+    validateVersion(
+      event.data.schema_version,
+      REPRODUCTION_EVENT_SCHEMA_VERSION,
+      `Replay events[${eventIndex}].data.schema_version`,
+    );
+    assertNonnegativeInteger(
+      event.data.child_reproductive_group_id,
+      `Replay events[${eventIndex}].data.child_reproductive_group_id`,
+    );
+    const groupId = String(event.data.child_reproductive_group_id);
+    if (!groupIds.has(groupId)) {
+      throw new Error(
+        `Replay reproduction event ${eventIndex} references missing reproductive group.`,
+      );
+    }
+    if (typeof event.data.hybrid !== "boolean") {
+      throw new Error(`Replay reproduction event ${eventIndex} hybrid must be boolean.`);
+    }
+    const groupCounts = counts.get(groupId);
+    if (event.data.reproduction_mode === ASEXUAL_REPRODUCTION_MODE) {
+      groupCounts.asexual_births += 1;
+      if (event.data.hybrid) {
+        throw new Error(
+          `Replay reproduction event ${eventIndex} cannot mark an asexual birth as hybrid.`,
+        );
+      }
+    } else if (event.data.reproduction_mode === SEXUAL_REPRODUCTION_MODE) {
+      groupCounts.sexual_births += 1;
+      if (event.data.hybrid) {
+        groupCounts.hybrid_births += 1;
+      }
+    } else {
+      throw new Error(
+        `Replay reproduction event ${eventIndex} has unsupported reproduction_mode.`,
+      );
+    }
+  }
+  return counts;
+}
+
+function emptyBirthCounts() {
+  return {
+    asexual_births: 0,
+    sexual_births: 0,
+    hybrid_births: 0,
+  };
+}
+
+function incrementCount(counts, key) {
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function incrementNestedCount(countsByKey, key, nestedKey) {
+  const nestedCounts = countsByKey.get(key) ?? new Map();
+  countsByKey.set(key, nestedCounts);
+  incrementCount(nestedCounts, String(nestedKey));
+}
+
+function assertExactCountObject(actual, expected, path) {
+  const expectedKeys = [...expected.keys()].sort();
+  const actualKeys = Object.keys(actual).sort();
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    throw new Error(`${path} keys do not match agent catalog counts.`);
+  }
+  for (const key of expectedKeys) {
+    if (actual[key] !== expected.get(key)) {
+      throw new Error(`${path}.${key} does not match agent catalog counts.`);
+    }
+  }
+}
+
+function highestStage(stageCounts) {
+  let highest = null;
+  for (const stage of stageCounts.keys()) {
+    if (highest === null || stageRank(stage) > stageRank(highest)) {
+      highest = stage;
+    }
+  }
+  return highest;
+}
+
+function stageRank(stage) {
+  const index = REPRODUCTIVE_STAGE_ORDER.indexOf(stage);
+  return index >= 0 ? index : 0;
 }
 
 function validateTrajectory(trajectory) {
   assertObject(trajectory, "Replay viewer.trajectory");
+  validateVersion(
+    trajectory.schema_version,
+    TRAJECTORY_SCHEMA_VERSION,
+    "Replay viewer.trajectory.schema_version",
+  );
+  validateVersion(
+    trajectory.observation_schema_version,
+    OBSERVATION_SCHEMA_VERSION,
+    "Replay viewer.trajectory.observation_schema_version",
+  );
+  validateVersion(
+    trajectory.policy_interface_version,
+    POLICY_INTERFACE_VERSION,
+    "Replay viewer.trajectory.policy_interface_version",
+  );
+  validateVersion(
+    trajectory.action_contract_version,
+    ACTION_CONTRACT_VERSION,
+    "Replay viewer.trajectory.action_contract_version",
+  );
+  validateVersion(
+    trajectory.reproductive_group_contract_version,
+    REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+    "Replay viewer.trajectory.reproductive_group_contract_version",
+  );
+  validateVersion(
+    trajectory.genome_recombination_contract_version,
+    GENOME_RECOMBINATION_CONTRACT_VERSION,
+    "Replay viewer.trajectory.genome_recombination_contract_version",
+  );
+  validateVersion(
+    trajectory.reward_schema_version,
+    REWARD_SCHEMA_VERSION,
+    "Replay viewer.trajectory.reward_schema_version",
+  );
+  validateVersion(
+    trajectory.action_outcome_schema_version,
+    ACTION_OUTCOME_SCHEMA_VERSION,
+    "Replay viewer.trajectory.action_outcome_schema_version",
+  );
   assertArray(trajectory.records, "Replay viewer.trajectory.records");
   assertObject(
     trajectory.observation_contract,
     "Replay viewer.trajectory.observation_contract",
   );
   const observationContract = trajectory.observation_contract;
+  validateVersion(
+    observationContract.schema_version,
+    OBSERVATION_SCHEMA_VERSION,
+    "Replay viewer.trajectory.observation_contract.schema_version",
+  );
+  validateObservationPolicyInput(observationContract.policy_input);
+  validateSchemaContract(
+    trajectory.reproductive_group_contract,
+    REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+    "Replay viewer.trajectory.reproductive_group_contract",
+  );
+  validateSchemaContract(
+    trajectory.genome_recombination_contract,
+    GENOME_RECOMBINATION_CONTRACT_VERSION,
+    "Replay viewer.trajectory.genome_recombination_contract",
+  );
+  validateSchemaContract(
+    trajectory.reward_contract,
+    REWARD_SCHEMA_VERSION,
+    "Replay viewer.trajectory.reward_contract",
+  );
   const signalContract = trajectory.observation_contract.signal_contract;
   assertObject(
     signalContract,
     "Replay viewer.trajectory.observation_contract.signal_contract",
   );
+  validateVersion(
+    signalContract.schema_version,
+    SIGNAL_CONTRACT_VERSION,
+    "Replay viewer.trajectory.observation_contract.signal_contract.schema_version",
+  );
+  validateSignalEnablementContract(signalContract);
   validateSignalCommunicationContract(signalContract);
   if (signalContract.profile_metadata_policy_visible !== false) {
     throw new Error(
@@ -161,23 +606,131 @@ function validateTrajectory(trajectory) {
     observationContract.action_names,
   );
 
-  if (trajectory.records.length > 0) {
-    const firstRecord = trajectory.records[0];
-    assertObject(firstRecord, "Replay viewer.trajectory.records[0]");
-    for (const field of REQUIRED_TRAJECTORY_RECORD_FIELDS) {
-      if (!(field in firstRecord)) {
-        throw new Error(`Replay trajectory record is missing field ${field}.`);
-      }
-    }
-    assertObject(
-      firstRecord.observation_input,
-      "Replay viewer.trajectory.records[0].observation_input",
-    );
-    assertObject(
-      firstRecord.observation_metadata,
-      "Replay viewer.trajectory.records[0].observation_metadata",
-    );
+  for (const [index, record] of trajectory.records.entries()) {
+    validateTrajectoryRecord(record, index);
   }
+}
+
+function validateTrajectoryRecord(record, index) {
+  const path = `Replay viewer.trajectory.records[${index}]`;
+  assertObject(record, path);
+  for (const field of REQUIRED_TRAJECTORY_RECORD_FIELDS) {
+    if (!(field in record)) {
+      throw new Error(`Replay trajectory record is missing field ${field}.`);
+    }
+  }
+  validateVersion(
+    record.observation_schema,
+    OBSERVATION_SCHEMA_VERSION,
+    `${path}.observation_schema`,
+  );
+  assertInteger(record.tick, `${path}.tick`);
+  assertInteger(record.agent_id, `${path}.agent_id`);
+  validateObservationInput(record.observation_input, `${path}.observation_input`);
+  assertObject(record.observation_metadata, `${path}.observation_metadata`);
+  if (record.observation_metadata.agent_id !== record.agent_id) {
+    throw new Error(`${path}.observation_metadata.agent_id must match record agent_id.`);
+  }
+  assertObject(record.before, `${path}.before`);
+  assertObject(record.after, `${path}.after`);
+  assertObject(record.outcome, `${path}.outcome`);
+  validateVersion(
+    record.outcome.schema_version,
+    ACTION_OUTCOME_SCHEMA_VERSION,
+    `${path}.outcome.schema_version`,
+  );
+  assertObject(record.outcome.signal, `${path}.outcome.signal`);
+  for (const field of REQUIRED_SIGNAL_OUTCOME_FIELDS) {
+    if (!(field in record.outcome.signal)) {
+      throw new Error(`Replay trajectory signal outcome is missing field ${field}.`);
+    }
+  }
+  if (typeof record.outcome.signal.emitted !== "boolean") {
+    throw new Error("Replay trajectory signal outcome must declare emitted.");
+  }
+  assertObject(record.reward, `${path}.reward`);
+  validateVersion(
+    record.reward.schema_version,
+    REWARD_SCHEMA_VERSION,
+    `${path}.reward.schema_version`,
+  );
+}
+
+function validateObservationInput(observationInput, path) {
+  assertObject(observationInput, path);
+  validateVersion(
+    observationInput.schema_version,
+    OBSERVATION_SCHEMA_VERSION,
+    `${path}.schema_version`,
+  );
+  validateVersion(
+    observationInput.encoder_version,
+    OBSERVATION_ENCODER_VERSION,
+    `${path}.encoder_version`,
+  );
+  validateVersion(
+    observationInput.decoded_dtype,
+    OBSERVATION_INPUT_DECODED_DTYPE,
+    `${path}.decoded_dtype`,
+  );
+  validateVersion(
+    observationInput.storage_dtype,
+    OBSERVATION_INPUT_STORAGE_DTYPE,
+    `${path}.storage_dtype`,
+  );
+  validateVersion(
+    observationInput.storage_encoding,
+    OBSERVATION_INPUT_STORAGE_ENCODING,
+    `${path}.storage_encoding`,
+  );
+  assertExactNumberArray(
+    observationInput.shape,
+    [OBSERVATION_INPUT_VECTOR_SIZE],
+    `${path}.shape`,
+  );
+  assertExactNumberArray(
+    observationInput.value_range,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    `${path}.value_range`,
+  );
+  if (typeof observationInput.data !== "string") {
+    throw new Error(`${path}.data must be a string.`);
+  }
+}
+
+function validateObservationPolicyInput(policyInput) {
+  const path = "Replay viewer.trajectory.observation_contract.policy_input";
+  assertObject(policyInput, path);
+  validateVersion(
+    policyInput.encoder_version,
+    OBSERVATION_ENCODER_VERSION,
+    `${path}.encoder_version`,
+  );
+  validateVersion(
+    policyInput.decoded_dtype,
+    OBSERVATION_INPUT_DECODED_DTYPE,
+    `${path}.decoded_dtype`,
+  );
+  validateVersion(
+    policyInput.storage_dtype,
+    OBSERVATION_INPUT_STORAGE_DTYPE,
+    `${path}.storage_dtype`,
+  );
+  validateVersion(
+    policyInput.storage_encoding,
+    OBSERVATION_INPUT_STORAGE_ENCODING,
+    `${path}.storage_encoding`,
+  );
+  assertExactNumberArray(
+    policyInput.shape,
+    [OBSERVATION_INPUT_VECTOR_SIZE],
+    `${path}.shape`,
+  );
+  assertExactNumberArray(
+    policyInput.value_range,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    `${path}.value_range`,
+  );
 }
 
 function validateSignalCommunicationContract(signalContract) {
@@ -218,6 +771,18 @@ function validateSignalCommunicationContract(signalContract) {
   }
 }
 
+function validateSignalEnablementContract(signalContract) {
+  for (const field of [
+    "signal_substrate_enabled",
+    "reproductive_signal_emission_enabled",
+    "communication_signal_emission_enabled",
+  ]) {
+    if (typeof signalContract[field] !== "boolean") {
+      throw new Error(`Replay signal contract ${field} must be boolean.`);
+    }
+  }
+}
+
 function validateActionSignalContract(
   actionContract,
   signalContract,
@@ -225,7 +790,20 @@ function validateActionSignalContract(
   observationActionNames = undefined,
 ) {
   assertObject(actionContract, path);
+  validateVersion(
+    actionContract.schema_version,
+    ACTION_CONTRACT_VERSION,
+    `${path}.schema_version`,
+  );
   assertObject(actionContract.communication, `${path}.communication`);
+  if (
+    actionContract.communication.emission_enabled !==
+    signalContract.communication_signal_emission_enabled
+  ) {
+    throw new Error(
+      `${path}.communication.emission_enabled must match signal contract communication enablement.`,
+    );
+  }
   assertPositiveInteger(
     actionContract.communication.token_count,
     `${path}.communication.token_count`,
@@ -249,6 +827,7 @@ function validateActionSignalContract(
   );
   assertArray(actionContract.communication.action_keys, `${path}.communication.action_keys`);
   assertStringArray(actionContract.communication.action_keys, `${path}.communication.action_keys`);
+  assertStringArray(actionContract.active_action_keys, `${path}.active_action_keys`);
   assertStringArray(actionContract.reserved_action_keys, `${path}.reserved_action_keys`);
   assertExactStringArray(
     actionContract.communication.action_keys,
@@ -257,9 +836,19 @@ function validateActionSignalContract(
   );
 
   const reserved = new Set(actionContract.reserved_action_keys);
+  const active = new Set(actionContract.active_action_keys);
   for (const actionKey of expectedActionKeys) {
     if (!reserved.has(actionKey)) {
       throw new Error(`${path}.reserved_action_keys is missing ${actionKey}.`);
+    }
+    if (signalContract.communication_signal_emission_enabled) {
+      if (!active.has(actionKey)) {
+        throw new Error(`${path}.active_action_keys is missing active ${actionKey}.`);
+      }
+    } else if (active.has(actionKey)) {
+      throw new Error(
+        `${path}.active_action_keys must not include inactive ${actionKey}.`,
+      );
     }
   }
 
@@ -290,7 +879,7 @@ function communicationActionKeys(tokenCount, profilesPerToken) {
   return keys;
 }
 
-function validateFrames(frames, map, summary, agentEncoding, trajectory) {
+function validateFrames(frames, map, summary, agentEncoding, trajectory, agentCatalog) {
   assertArray(frames, "Replay viewer.frames");
   if (frames.length === 0) {
     throw new Error("Replay viewer.frames must be a non-empty array.");
@@ -319,7 +908,14 @@ function validateFrames(frames, map, summary, agentEncoding, trajectory) {
     previousTick = frame.tick;
 
     assertArray(frame.agents, `Replay frame ${index}.agents`);
-    validateAgents(frame.agents, agentEncoding.length, agentFieldMap, map, index);
+    validateAgents(
+      frame.agents,
+      agentEncoding.length,
+      agentFieldMap,
+      agentCatalog,
+      map,
+      index,
+    );
     assertArray(frame.species_counts, `Replay frame ${index}.species_counts`);
     assertObject(frame.field_state, `Replay frame ${index}.field_state`);
     assertObject(frame.signal_flow, `Replay frame ${index}.signal_flow`);
@@ -349,7 +945,14 @@ function validateFrames(frames, map, summary, agentEncoding, trajectory) {
   }
 }
 
-function validateAgents(agents, encodedLength, agentFieldMap, map, frameIndex) {
+function validateAgents(
+  agents,
+  encodedLength,
+  agentFieldMap,
+  agentCatalog,
+  map,
+  frameIndex,
+) {
   for (const [agentIndex, encoded] of agents.entries()) {
     assertArray(encoded, `Replay frame ${frameIndex}.agents[${agentIndex}]`);
     if (encoded.length !== encodedLength) {
@@ -361,6 +964,11 @@ function validateAgents(agents, encodedLength, agentFieldMap, map, frameIndex) {
     const x = encoded[agentFieldMap.x];
     const y = encoded[agentFieldMap.y];
     assertInteger(agentId, `Replay frame ${frameIndex}.agents[${agentIndex}].agent_id`);
+    if (!(String(agentId) in agentCatalog)) {
+      throw new Error(
+        `Replay frame ${frameIndex}.agents[${agentIndex}] references missing agent catalog entry.`,
+      );
+    }
     assertInteger(x, `Replay frame ${frameIndex}.agents[${agentIndex}].x`);
     assertInteger(y, `Replay frame ${frameIndex}.agents[${agentIndex}].y`);
     if (x < 0 || x >= map.width || y < 0 || y >= map.height) {
@@ -368,6 +976,17 @@ function validateAgents(agents, encodedLength, agentFieldMap, map, frameIndex) {
         `Replay frame ${frameIndex}.agents[${agentIndex}] position is outside the map.`,
       );
     }
+  }
+}
+
+function validateSchemaContract(contract, expected, path) {
+  assertObject(contract, path);
+  validateVersion(contract.schema_version, expected, `${path}.schema_version`);
+}
+
+function validateVersion(actual, expected, path) {
+  if (actual !== expected) {
+    throw new Error(`${path} must be ${expected}.`);
   }
 }
 
@@ -470,10 +1089,27 @@ function assertExactStringArray(actual, expected, path) {
   }
 }
 
+function assertExactNumberArray(actual, expected, path) {
+  assertArray(actual, path);
+  if (
+    actual.length !== expected.length ||
+    actual.some((value, index) => value !== expected[index])
+  ) {
+    throw new Error(`${path} must be [${expected.join(", ")}].`);
+  }
+}
+
 function assertPositiveInteger(value, path) {
   assertInteger(value, path);
   if (value <= 0) {
     throw new Error(`${path} must be greater than zero.`);
+  }
+}
+
+function assertNonnegativeInteger(value, path) {
+  assertInteger(value, path);
+  if (value < 0) {
+    throw new Error(`${path} must be nonnegative.`);
   }
 }
 

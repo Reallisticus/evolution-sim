@@ -592,6 +592,7 @@ function updateInspector() {
           })
           .join(", ")
       : "-";
+  const parentIds = Array.isArray(catalog.parent_ids) ? catalog.parent_ids : [];
 
   const entries = [
     ["Agent", state.selectedAgentId],
@@ -608,6 +609,18 @@ function updateInspector() {
     ["Split Tick", speciesRecord?.split_tick ?? "-"],
     ["Lineage", catalog.lineage_id],
     ["Parent", catalog.parent_id ?? "root"],
+    ["Parents", parentIds.length ? parentIds.join(", ") : "root"],
+    ["Reproductive Group", catalog.reproductive_group_id ?? "-"],
+    [
+      "Reproductive Stage",
+      catalog.reproductive_stage ? titleCase(catalog.reproductive_stage) : "-",
+    ],
+    [
+      "Reproductive Expression",
+      catalog.reproductive_expression
+        ? titleCase(catalog.reproductive_expression)
+        : "-",
+    ],
     ["Alive Now", isAliveNow ? "yes" : "no"],
     ["Position", isAliveNow ? `${current.x}, ${current.y}` : "-"],
     ["Terrain Here", currentTerrainName ? titleCase(currentTerrainName) : "-"],

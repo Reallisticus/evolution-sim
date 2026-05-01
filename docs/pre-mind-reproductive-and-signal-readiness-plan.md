@@ -634,7 +634,11 @@ X/Y/Z and hybridization slices:
    live selection pressure. The mate-search contract records both the primary
    fallback reason and all overlapping partner constraints, so distance,
    readiness, and expression dead ends are not collapsed into a single lossy
-   reason.
+   reason. Follow-on hardening also pins reproductive expression into
+   `mind_observation_v3`, upgrades action outcomes to `mind_action_outcome_v2`
+   with stable signal metadata, and makes replay gates/viewer validation check
+   action, reproductive-group, recombination, reward, and action-outcome
+   contract versions together.
 10. Rare multi-offspring sexed strategy.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.

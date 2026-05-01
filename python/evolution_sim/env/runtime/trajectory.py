@@ -24,7 +24,7 @@ from evolution_sim.genome.recombination import (
 
 TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1"
 REWARD_SCHEMA_VERSION = "mind_reward_v1"
-ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v1"
+ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2"
 REWARD_COMPONENT_BOUNDS: dict[str, tuple[float, float]] = {
     "survival_continuation": (-1.0, 0.02),
     "energy_stability": (-1.0, 1.0),
@@ -225,6 +225,7 @@ def empty_action_outcome(
         "attack": {"attempted": False},
         "feeding": {"ate": False},
         "drinking": {"drank": False},
+        "signal": _empty_signal_outcome(),
         "passive": {
             "acted": True,
             "damage_taken": 0.0,
@@ -252,11 +253,12 @@ def complete_action_outcome(
     reproduction_ready_after: bool,
 ) -> dict[str, object]:
     outcome = dict(action_outcome)
-    outcome.setdefault("schema_version", ACTION_OUTCOME_SCHEMA_VERSION)
+    outcome["schema_version"] = ACTION_OUTCOME_SCHEMA_VERSION
     outcome.setdefault("movement", {"moved": False})
     outcome.setdefault("attack", {"attempted": False})
     outcome.setdefault("feeding", {"ate": False})
     outcome.setdefault("drinking", {"drank": False})
+    outcome["signal"] = _complete_signal_outcome(outcome.get("signal"))
     outcome.setdefault(
         "passive",
         {
@@ -276,6 +278,27 @@ def complete_action_outcome(
     outcome["died"] = died
     outcome["reproduction_ready_after"] = reproduction_ready_after
     return outcome
+
+
+def _empty_signal_outcome() -> dict[str, object]:
+    return {
+        "emitted": False,
+        "token_id": None,
+        "profile_index": None,
+        "intensity": 0.0,
+        "radius": 0,
+        "duration_ticks": 0,
+        "decay_rate": 0.0,
+        "energy_cost": 0.0,
+        "invalid_reason": None,
+    }
+
+
+def _complete_signal_outcome(signal: object) -> dict[str, object]:
+    complete = _empty_signal_outcome()
+    if isinstance(signal, dict):
+        complete.update(signal)
+    return complete
 
 
 def build_reward(

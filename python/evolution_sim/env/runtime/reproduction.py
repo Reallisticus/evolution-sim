@@ -12,9 +12,13 @@ from evolution_sim.env.runtime.state import (
     TrophicProfile,
     empty_mind_inheritance_metadata,
 )
-from evolution_sim.genome.schema import Genome
 from evolution_sim.genome.recombination import apply_inbreeding_penalty, recombine_genomes
-from evolution_sim.genome.schema import GENE_LIMITS
+from evolution_sim.genome.schema import (
+    GENE_LIMITS,
+    REPRODUCTIVE_GENE_LIMITS,
+    Genome,
+    ReproductiveGenome,
+)
 from evolution_sim.genome.species import genome_vector
 
 REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1"
@@ -983,6 +987,52 @@ def animal_mode_stabilized_child_genome(
     return stabilize(1.0)
 
 
+def sexual_child_stabilized_genome(
+    world: Any,
+    primary_parent_genome: Genome,
+    secondary_parent_genome: Genome,
+    child_genome: Genome,
+    primary_parent_profile: TrophicProfile,
+    secondary_parent_profile: TrophicProfile,
+) -> Genome:
+    stabilization_profile = _sexual_child_stabilization_profile(
+        primary_parent_profile,
+        secondary_parent_profile,
+    )
+    if stabilization_profile is None:
+        return child_genome
+    anchor_genome = _blended_parent_genome(
+        primary_parent_genome,
+        secondary_parent_genome,
+    )
+    return animal_mode_stabilized_child_genome(
+        world,
+        anchor_genome,
+        child_genome,
+        stabilization_profile,
+    )
+
+
+def _sexual_child_stabilization_profile(
+    primary_parent_profile: TrophicProfile,
+    secondary_parent_profile: TrophicProfile,
+) -> TrophicProfile | None:
+    primary_mode = primary_parent_profile.meat_mode
+    secondary_mode = secondary_parent_profile.meat_mode
+    animal_modes = {primary_mode, secondary_mode} - {"none"}
+    if not animal_modes:
+        return None
+    if len(animal_modes) == 1:
+        mode = next(iter(animal_modes))
+    else:
+        mode = "mixed"
+    if primary_mode == mode:
+        return primary_parent_profile
+    if secondary_mode == mode:
+        return secondary_parent_profile
+    return replace(primary_parent_profile, meat_mode=mode)
+
+
 def child_starting_fraction(
     base_fraction: float,
     multiplier: float,
@@ -991,6 +1041,25 @@ def child_starting_fraction(
     if parent_profile.meat_mode == "none":
         return base_fraction
     return min(1.0, base_fraction * multiplier)
+
+
+def sexual_child_starting_fraction(
+    base_fraction: float,
+    multiplier: float,
+    primary_parent_profile: TrophicProfile,
+    secondary_parent_profile: TrophicProfile,
+) -> float:
+    primary_fraction = child_starting_fraction(
+        base_fraction,
+        multiplier,
+        primary_parent_profile,
+    )
+    secondary_fraction = child_starting_fraction(
+        base_fraction,
+        multiplier,
+        secondary_parent_profile,
+    )
+    return min(1.0, (primary_fraction + secondary_fraction) / 2.0)
 
 
 def reproduction_energy_cost(world: Any, parent_profile: TrophicProfile) -> float:
@@ -1028,6 +1097,17 @@ def reproductive_state_for_child(
             world.config.reproduction,
         ),
     )
+
+
+def sexual_child_lineage_id(
+    primary_parent: Agent,
+    secondary_parent: Agent,
+    *,
+    child_agent_id: int,
+) -> int:
+    if primary_parent.lineage_id == secondary_parent.lineage_id:
+        return primary_parent.lineage_id
+    return child_agent_id
 
 
 def sexual_partner_ready(world: Any, agent: Agent) -> bool:
@@ -1306,36 +1386,44 @@ def reproduce_sexual(
 ) -> bool:
     partner = mate_candidate.agent
     partner_profile = world._trophic_profile(partner)
-    child_genome = recombine_genomes(parent.genome, partner.genome, world.rng).mutate(
-        world.rng
-    )
-    child_genome = animal_mode_stabilized_child_genome(
+    child_genome = sexual_child_stabilized_genome(
         world,
         parent.genome,
-        child_genome,
+        partner.genome,
+        recombine_genomes(parent.genome, partner.genome, world.rng).mutate(
+            world.rng
+        ),
         parent_profile,
+        partner_profile,
     )
     child_genome = apply_inbreeding_penalty(
         child_genome,
         penalty=mate_candidate.inbreeding_penalty,
         scale=world.config.reproduction.sexual_inbreeding_gene_penalty,
     )
-    child_energy_fraction = child_starting_fraction(
+    child_energy_fraction = sexual_child_starting_fraction(
         world.config.reproduction.child_energy_fraction,
         world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
         parent_profile,
+        partner_profile,
     )
-    child_hydration_fraction = child_starting_fraction(
+    child_hydration_fraction = sexual_child_starting_fraction(
         world.config.reproduction.child_hydration_fraction,
         world.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
         parent_profile,
+        partner_profile,
     )
     reproductive_state = reproductive_state_for_child(world, parent, child_genome)
+    child_lineage_id = sexual_child_lineage_id(
+        parent,
+        partner,
+        child_agent_id=world.next_agent_id,
+    )
     child = build_child_agent(
         agent_id=world.next_agent_id,
         primary_parent=parent,
         secondary_parent=partner,
-        lineage_id=parent.lineage_id,
+        lineage_id=child_lineage_id,
         birth_tick=world.tick,
         destination=destination,
         genome=child_genome,
@@ -1444,6 +1532,29 @@ def _reproduction_event_payload(
 def _clamp_gene_value(name: str, value: float) -> float:
     lower, upper = GENE_LIMITS[name]
     return max(lower, min(upper, value))
+
+
+def _blended_parent_genome(left: Genome, right: Genome) -> Genome:
+    reproductive = ReproductiveGenome(
+        **{
+            name: (
+                getattr(left.reproductive, name)
+                + getattr(right.reproductive, name)
+            )
+            / 2.0
+            for name in REPRODUCTIVE_GENE_LIMITS
+        }
+    )
+    return Genome(
+        **{
+            name: _clamp_gene_value(
+                name,
+                (getattr(left, name) + getattr(right, name)) / 2.0,
+            )
+            for name in GENE_LIMITS
+        },
+        reproductive=reproductive,
+    )
 
 
 def _blend_gene(child_value: float, parent_value: float, stability: float) -> float:

@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from evolution_sim.config.schema import SignalConfig
+import evolution_sim.env.runtime.signals as runtime_signals
 
 ACTION_CONTRACT_VERSION = "mind_action_contract_v1"
 
@@ -108,13 +109,14 @@ def action_contract(signal_config: Any | None = None) -> dict[str, object]:
         "schema_version": ACTION_CONTRACT_VERSION,
         "policy_id_encoding": "zero_based_action_id",
         "debug_key_encoding": "stable_string_key",
-        "active_action_keys": list(ACTIVE_ACTION_NAMES),
+        "active_action_keys": [spec.key for spec in specs if spec.active],
         "reserved_action_keys": list(reserved_action_names(signal_config)),
         "mate_action_key": MATE_ACTION,
         "communication": {
             "token_count": token_count,
             "profiles_per_token": profiles_per_token,
             "action_keys": list(communication_actions),
+            "emission_enabled": _communication_emission_enabled(signal_config),
             "meaning": "simulator_opaque",
         },
         "actions": [spec.to_dict() for spec in specs],
@@ -153,4 +155,10 @@ def _active_for_key(
         return True
     if not key.startswith("signal_") or signal_config is None:
         return False
-    return bool(getattr(signal_config, "communication_signal_emission_enabled", False))
+    return _communication_emission_enabled(signal_config)
+
+
+def _communication_emission_enabled(signal_config: Any | None) -> bool:
+    if signal_config is None:
+        return False
+    return runtime_signals.communication_signal_emission_enabled(signal_config)

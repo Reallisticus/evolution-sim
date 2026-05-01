@@ -160,6 +160,8 @@ These updates track work begun from this audit in the current working tree:
 - 2026-05-01 reproductive observability validation: compileall for touched runtime/tests, focused mate-search/stage/group regressions, `npm run sim:test` (182 tests in 111.409s), refreshed and verified all replay goldens, `npm run sim:gate:quick` (pass, no blockers or warnings), `npm run sim:bench:quick` (`summary_seed7_ticks20` median wall `0.6125s`, median RSS `92704 KiB`), `npm run viewer:validate`, seed-7 300-tick replay generation plus `viewer:smoke`, `git diff --check`, and port `4173` listener check passed. Refreshed golden hashes: `seed7_ticks20=218839d702a5875550eea19c5ca7df18ea99909b0412f869ffa98c890e3ac6ad`, `seed7_ticks100=e60c38ba3a75e29e9acdc4c14737476e9cd15ea479e7cfc8d909dfd124d5b3ac`, `speciation_seed_ticks320=9de17eea66ccfb37d330ec88b1e343383010c402f54c500071fc64377f887dfc`, and `seed5_ticks120_provenance=c705579c29ab70f0b4e5a5d2ab24680ee829dcb646127ad030397b204faa141f`.
 - 2026-05-01: Re-hardened mate-search observability to keep diagnostics lossless. The runtime now preserves primary fallback counts for stable summaries, while also recording all overlapping candidate constraints and partner-pool counts: scanned agents, same-group candidates, same-group sex-capable candidates, in-radius candidates, biologically ready candidates, and per-constraint blockers. Tick-detail event rows are skipped when tick details are disabled, preserving lightweight summary-only behavior.
 - 2026-05-01 mate-search diagnostic hardening validation: compileall for touched runtime/tests, focused overlapping-constraint and lightweight tick-detail regressions, `npm run sim:test` (184 tests in 110.973s), refreshed/verified full replay goldens, `npm run sim:gate:quick` (pass, no blockers or warnings), `npm run sim:bench:quick` (`summary_seed7_ticks20` median wall `0.6107s`, median RSS `92768 KiB`), `npm run viewer:validate`, and seed-7 300-tick replay generation plus `viewer:smoke` passed. Refreshed golden hashes: `seed7_ticks20=9bdda95d1425f4203c64c14f120cc2ba957222635c5f748fd0f434e0263f7beb`, `seed7_ticks100=879bc83beab696c521b8142c5adfc15f5222cce05d320c8c05b9c53593431895`, `speciation_seed_ticks320=2121506a986f71147a876b03ca7a595e859862ec84e94c6a33225afe3c28df7b`, and `seed5_ticks120_provenance=7609e94cb801a77b19f3e16f5cbee26594085c8ba16f6b5201447d4c0e95d7d3`.
+- 2026-05-01: Follow-on reproductive/signal contract hardening closed audit gaps found after the Stage 1 slice. Effective communication action activation now requires the global signal substrate, communication enablement, positive max intensity, and positive communication duration. Disabled reproductive and communication signal profiles are inert in contracts. `mind_observation_v3` adds reproductive expression to policy input, `mind_action_outcome_v2` requires stable signal outcome metadata on every action outcome, and the Foundation gate plus viewer validator now check action, reproductive-group, recombination, reward, action-outcome, and nested observation/action contract versions.
+- 2026-05-01 follow-on contract hardening validation: focused runtime/gate regressions passed (143 tests), `npm run sim:test` passed (198 tests in 108.253s), `npm run viewer:validate` passed with 22 malformed cases, browser-level `npm run viewer:smoke:malformed` passed with 18 malformed cases, `npm run sim:golden` verified all refreshed replay goldens, `npm run sim:gate:quick` passed with no blockers or warnings, `npm run sim:bench:quick` passed (`summary_seed7_ticks20` median wall `0.5953s`, median RSS `92640 KiB`), seed-7 300-tick replay generation plus `viewer:smoke` passed, and `npm run sim:gate:release` passed with no blockers or warnings in `879.6298s`. Refreshed golden hashes: `seed7_ticks20=681a821eafbea66c0f1c9652581b781afb38dcce3f967b245a924ea1aa660362`, `seed7_ticks100=75eb72f9c52a092d8809b21d7dbb146474c363be3f7852d3a12bd478982cb470`, `speciation_seed_ticks320=71792fdf7a73e2a88fc71540a0467200e704eee283314aa5e4a4efd54888455a`, and `seed5_ticks120_provenance=6ac6c2641e95660edaa9ded66b1b2b1ef4d5c2875e83a7d634dbb2dc8b4045c3`.
 
 Earlier targeted probes from the deeper Foundation pass, retained as audit evidence. Several are now addressed by the implementation progress above, while release-horizon ecology, animal-specialist reproductive strength, and release-scale performance remain open:
 
@@ -271,7 +273,7 @@ Consequence for Mind: two training implementations can both claim to use `mind_o
 
 Required fix: split observation metadata from model input, publish a canonical encoder with shape/range tests, and make the gate validate it.
 
-Status: addressed for the data contract and default policy path. `mind_observation_v2` separates `metadata` from policy input, declares a canonical encoder and enum vocabularies, includes bounded navigation cues, and the gate validates encoded payloads. The default heuristic now consumes this observation boundary through `Policy.decide(observation, action_mask)`.
+Status: addressed for the data contract and default policy path. `mind_observation_v3` separates `metadata` from policy input, declares canonical encoder metadata, includes bounded navigation cues and reproductive expression, and the gate validates encoded payloads. The default heuristic now consumes this observation boundary through `Policy.decide(observation, action_mask)`.
 
 ## High Findings
 
@@ -425,7 +427,7 @@ Consequence for Mind: reward and imitation data will conflate "attacked successf
 
 Required fix: introduce a versioned `ActionOutcome` schema and have trajectory rows attach the resolved outcome produced by `_resolve_action()`, not infer the outcome later from coarse tick events.
 
-Status: addressed for active and passive action outcomes in the 2026-04-27 action-outcome slices. Trajectory rows now carry `mind_action_outcome_v1`, resolution masks, explicit attack and feeding outcome details, invalid-resolution reasons, passive damage/death fields, and passive rows for agents killed before their turn.
+Status: addressed for active and passive action outcomes in the 2026-04-27 action-outcome slices and the 2026-05-01 signal-outcome hardening. Trajectory rows now carry `mind_action_outcome_v2`, resolution masks, explicit attack and feeding outcome details, stable signal outcome metadata, invalid-resolution reasons, passive damage/death fields, and passive rows for agents killed before their turn.
 
 ### 16. `_effective_tile_fields()` has a misleading season parameter
 
@@ -1120,6 +1122,30 @@ Goal: the viewer stays useful through long Mind iteration.
    - trajectory contract shape.
 3. Add a long-session smoke test that loads multiple replays in one browser session.
 4. Add malformed-replay smoke tests that fail with clear validation errors rather than render-time exceptions.
+
+### 2026-05-01 Event-Sourced Validator Hardening
+
+Follow-up audit work closed two replay/gate blind spots:
+
+- Full-replay gate validation now passes reproduction events into the Mind-contract checks and reconciles reproductive group `asexual_births`, `sexual_births`, and `hybrid_births` against `agent_reproduced` events.
+- Full-replay gate validation also reconciles top-level summary `births` and `reproductive_groups_end` birth totals against the same event stream.
+- Python and viewer validators now reject stale reproductive birth event schemas, missing birth group IDs, unsupported reproduction modes, malformed hybrid flags, and catalog/event birth-count drift.
+- The viewer validator now validates both observation-contract `policy_input` headers and trajectory `observation_input` headers for schema, encoder, decoded/storage dtype, storage encoding, shape, value range, and data presence before a replay can load.
+- Malformed replay smoke fixtures now include observation-input and reproductive event drift cases instead of relying on empty placeholder trajectory inputs.
+
+Validation completed for this hardening pass:
+
+- `python3 -m compileall -q python/evolution_sim/cli/foundation_gate.py python/tests/test_foundation_gate_cli.py`
+- `node --check viewer/replay_validator.mjs && node --check viewer/validator_smoke.mjs && node --check viewer/malformed_smoke.mjs`
+- `PYTHONHASHSEED=0 PYTHONPATH=python python3 -m unittest python.tests.test_foundation_gate_cli` - 31 tests passed.
+- `node viewer/validator_smoke.mjs` - 28 malformed validator cases passed.
+- `npm run viewer:smoke:malformed` - 24 browser malformed cases passed.
+- `npm run sim:test` - 201 tests passed.
+- `npm run viewer:validate` - passed.
+- `npm run sim:golden:quick` - verified `seed7_ticks20` and `seed7_ticks100`.
+- `npm run sim:gate:quick` - passed with no blockers or warnings.
+- `npm run sim:bench:quick` - passed; summary seed 7 ticks 20 median wall `0.613s`, peak RSS `92864 KiB`.
+- `npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json` plus `REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke` - passed.
 
 ### Phase 5: Mind v1
 

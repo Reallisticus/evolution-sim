@@ -186,6 +186,7 @@ def same_group_mate_search_report(
     same_group_sexual_candidates = 0
     in_radius_candidates = 0
     biologically_ready_candidates = 0
+    expression_compatible_candidates = 0
     for agent in agents:
         candidate, block_reason, constraints = _candidate_for_with_reason(
             parent,
@@ -202,6 +203,8 @@ def same_group_mate_search_report(
             same_group_candidates += 1
             if "partner_sexual_locked" not in constraints:
                 same_group_sexual_candidates += 1
+                if "expression_incompatible" not in constraints:
+                    expression_compatible_candidates += 1
                 if "partner_out_of_radius" not in constraints:
                     in_radius_candidates += 1
                     if "partner_not_ready" not in constraints:
@@ -231,8 +234,8 @@ def same_group_mate_search_report(
         biologically_ready_candidates=biologically_ready_candidates,
         reason_counts=reason_counts,
         constraint_counts=constraint_counts,
-        expression_compatible_candidates=len(candidates),
-        expression_incompatible_candidates=reason_counts["expression_incompatible"],
+        expression_compatible_candidates=expression_compatible_candidates,
+        expression_incompatible_candidates=constraint_counts["expression_incompatible"],
     )
 
 
