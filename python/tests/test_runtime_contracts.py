@@ -2112,6 +2112,20 @@ class RuntimeContractTests(unittest.TestCase):
         second_bytes = json.dumps(second.summary, separators=(",", ":")).encode("utf-8")
         self.assertEqual(first_bytes, second_bytes)
 
+    def test_full_replay_capture_delegates_to_runtime_frame_boundary(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+
+        with patch("evolution_sim.env.runtime.frames.capture_frame") as capture_frame:
+            world._capture_frame(births_this_tick=2, deaths_this_tick=1)
+
+        capture_frame.assert_called_once()
+        args, kwargs = capture_frame.call_args
+        self.assertEqual(args, (world,))
+        self.assertEqual(kwargs["births_this_tick"], 2)
+        self.assertEqual(kwargs["deaths_this_tick"], 1)
+        self.assertIs(kwargs["trophic_role_codes"], TROPHIC_ROLE_CODES)
+        self.assertIs(kwargs["meat_mode_codes"], MEAT_MODE_CODES)
+
     def test_summary_only_never_invokes_full_replay_paths(self) -> None:
         with patch(
             "evolution_sim.env.runtime.collectors.apply_replay_taxonomy",
@@ -2120,6 +2134,9 @@ class RuntimeContractTests(unittest.TestCase):
             SimulationWorld,
             "_capture_frame",
             side_effect=AssertionError("summary-only should not capture frames"),
+        ), patch(
+            "evolution_sim.env.runtime.frames.capture_frame",
+            side_effect=AssertionError("summary-only should not build frame payloads"),
         ), patch.object(
             SimulationWorld,
             "_build_viewer_payload",
@@ -4815,6 +4832,9 @@ class RuntimeContractTests(unittest.TestCase):
             SimulationWorld,
             "_capture_frame",
             side_effect=AssertionError("trajectory summary mode should not capture frames"),
+        ), patch(
+            "evolution_sim.env.runtime.frames.capture_frame",
+            side_effect=AssertionError("trajectory summary mode should not build frame payloads"),
         ), patch.object(
             SimulationWorld,
             "_build_viewer_payload",
