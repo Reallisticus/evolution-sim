@@ -48,7 +48,11 @@ class MateSearchReport:
     selected: MateCandidate | None
     scanned_agents: int
     same_group_candidates: int
+    same_group_sexual_candidates: int
+    in_radius_candidates: int
+    biologically_ready_candidates: int
     reason_counts: dict[str, int]
+    constraint_counts: dict[str, int]
     expression_compatible_candidates: int
     expression_incompatible_candidates: int
 
@@ -166,16 +170,24 @@ def same_group_mate_search_report(
             selected=None,
             scanned_agents=0,
             same_group_candidates=0,
+            same_group_sexual_candidates=0,
+            in_radius_candidates=0,
+            biologically_ready_candidates=0,
             reason_counts=_empty_mate_search_reason_counts(),
+            constraint_counts=_empty_mate_search_reason_counts(),
             expression_compatible_candidates=0,
             expression_incompatible_candidates=0,
         )
     candidates: list[MateCandidate] = []
     reason_counts = _empty_mate_search_reason_counts()
+    constraint_counts = _empty_mate_search_reason_counts()
     scanned_agents = 0
     same_group_candidates = 0
+    same_group_sexual_candidates = 0
+    in_radius_candidates = 0
+    biologically_ready_candidates = 0
     for agent in agents:
-        candidate, block_reason = _candidate_for_with_reason(
+        candidate, block_reason, constraints = _candidate_for_with_reason(
             parent,
             agent,
             config,
@@ -184,8 +196,16 @@ def same_group_mate_search_report(
         if block_reason == "ignored":
             continue
         scanned_agents += 1
-        if block_reason != "different_group":
+        for constraint in constraints:
+            constraint_counts[constraint] += 1
+        if "different_group" not in constraints:
             same_group_candidates += 1
+            if "partner_sexual_locked" not in constraints:
+                same_group_sexual_candidates += 1
+                if "partner_out_of_radius" not in constraints:
+                    in_radius_candidates += 1
+                    if "partner_not_ready" not in constraints:
+                        biologically_ready_candidates += 1
         if candidate is not None:
             candidates.append(candidate)
             continue
@@ -206,7 +226,11 @@ def same_group_mate_search_report(
         selected=selected,
         scanned_agents=scanned_agents,
         same_group_candidates=same_group_candidates,
+        same_group_sexual_candidates=same_group_sexual_candidates,
+        in_radius_candidates=in_radius_candidates,
+        biologically_ready_candidates=biologically_ready_candidates,
         reason_counts=reason_counts,
+        constraint_counts=constraint_counts,
         expression_compatible_candidates=len(candidates),
         expression_incompatible_candidates=reason_counts["expression_incompatible"],
     )
@@ -222,7 +246,7 @@ def _candidate_for(
     config: ReproductionConfig,
     biologically_ready: Callable[[Agent], bool],
 ) -> MateCandidate | None:
-    candidate, _ = _candidate_for_with_reason(
+    candidate, _, _ = _candidate_for_with_reason(
         parent,
         agent,
         config,
@@ -236,23 +260,28 @@ def _candidate_for_with_reason(
     agent: Agent,
     config: ReproductionConfig,
     biologically_ready: Callable[[Agent], bool],
-) -> tuple[MateCandidate | None, str]:
+) -> tuple[MateCandidate | None, str, tuple[str, ...]]:
     if agent.agent_id == parent.agent_id or not agent.alive:
-        return None, "ignored"
+        return None, "ignored", ()
     if (agent.reproductive_group_id or agent.lineage_id) != (
         parent.reproductive_group_id or parent.lineage_id
     ):
-        return None, "different_group"
-    if not sexual_reproduction_unlocked(agent.genome, config):
-        return None, "partner_sexual_locked"
+        return None, "different_group", ("different_group",)
+    constraints: list[str] = []
+    partner_sexual_unlocked = sexual_reproduction_unlocked(agent.genome, config)
+    if not partner_sexual_unlocked:
+        constraints.append("partner_sexual_locked")
     distance = abs(agent.x - parent.x) + abs(agent.y - parent.y)
     if distance > config.sexual_partner_radius:
-        return None, "partner_out_of_radius"
+        constraints.append("partner_out_of_radius")
     if not biologically_ready(agent):
-        return None, "partner_not_ready"
-    expression_allowed, _ = expression_compatibility(parent, agent, config)
-    if not expression_allowed:
-        return None, "expression_incompatible"
+        constraints.append("partner_not_ready")
+    if partner_sexual_unlocked:
+        expression_allowed, _ = expression_compatibility(parent, agent, config)
+        if not expression_allowed:
+            constraints.append("expression_incompatible")
+    if constraints:
+        return None, _primary_candidate_block_reason(constraints), tuple(constraints)
     penalty = close_kinship_penalty(parent, agent)
     return (
         MateCandidate(
@@ -262,7 +291,16 @@ def _candidate_for_with_reason(
             inbreeding_penalty=penalty,
         ),
         "compatible",
+        (),
     )
+
+
+def _primary_candidate_block_reason(constraints: Iterable[str]) -> str:
+    constraint_set = set(constraints)
+    for reason in MATE_SEARCH_BLOCK_REASON_KEYS:
+        if reason in constraint_set:
+            return reason
+    return "partner_not_ready"
 
 
 def close_kinship_penalty(left: Agent, right: Agent) -> float:

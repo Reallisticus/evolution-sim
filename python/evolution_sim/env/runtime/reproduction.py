@@ -475,6 +475,11 @@ def empty_reproduction_mate_search_counts() -> dict[str, int]:
         "sexual_parent_candidates": 0,
         "sexual_searches": 0,
         "sexual_successes": 0,
+        "scanned_agents": 0,
+        "same_group_candidates": 0,
+        "same_group_sexual_candidates": 0,
+        "in_radius_candidates": 0,
+        "biologically_ready_candidates": 0,
         "asexual_fallbacks_after_sexual_candidate": 0,
         "fallback_parent_energy_shortfall": 0,
         "fallback_no_same_group_partner": 0,
@@ -488,6 +493,7 @@ def empty_reproduction_mate_search_counts() -> dict[str, int]:
     }
     for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS:
         counts[f"candidate_{reason}"] = 0
+        counts[f"constraint_{reason}"] = 0
     return counts
 
 
@@ -1050,8 +1056,14 @@ def record_sexual_parent_energy_fallback(world: Any, parent: Agent) -> None:
         reason_counts={
             reason: 0 for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
         },
+        constraint_counts={
+            reason: 0 for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
+        },
         scanned_agents=0,
         same_group_candidates=0,
+        same_group_sexual_candidates=0,
+        in_radius_candidates=0,
+        biologically_ready_candidates=0,
         expression_compatible_candidates=0,
         expression_incompatible_candidates=0,
     )
@@ -1073,11 +1085,18 @@ def record_mate_search_report(
     increments = {
         "sexual_parent_candidates": 1,
         "sexual_searches": 1,
+        "scanned_agents": report.scanned_agents,
+        "same_group_candidates": report.same_group_candidates,
+        "same_group_sexual_candidates": report.same_group_sexual_candidates,
+        "in_radius_candidates": report.in_radius_candidates,
+        "biologically_ready_candidates": report.biologically_ready_candidates,
         "expression_compatible_candidates": report.expression_compatible_candidates,
         "expression_incompatible_candidates": report.expression_incompatible_candidates,
     }
     for reason, count in report.reason_counts.items():
         increments[f"candidate_{reason}"] = count
+    for reason, count in report.constraint_counts.items():
+        increments[f"constraint_{reason}"] = count
     if report.selected is not None:
         increments["sexual_successes"] = 1
     else:
@@ -1090,8 +1109,12 @@ def record_mate_search_report(
         selected_partner_id=selected_partner_id,
         fallback_reason=fallback_reason,
         reason_counts=report.reason_counts,
+        constraint_counts=report.constraint_counts,
         scanned_agents=report.scanned_agents,
         same_group_candidates=report.same_group_candidates,
+        same_group_sexual_candidates=report.same_group_sexual_candidates,
+        in_radius_candidates=report.in_radius_candidates,
+        biologically_ready_candidates=report.biologically_ready_candidates,
         expression_compatible_candidates=report.expression_compatible_candidates,
         expression_incompatible_candidates=report.expression_incompatible_candidates,
     )
@@ -1115,8 +1138,12 @@ def _record_mate_search_event(
     selected_partner_id: int | None,
     fallback_reason: str | None,
     reason_counts: dict[str, int],
+    constraint_counts: dict[str, int],
     scanned_agents: int,
     same_group_candidates: int,
+    same_group_sexual_candidates: int,
+    in_radius_candidates: int,
+    biologically_ready_candidates: int,
     expression_compatible_candidates: int,
     expression_incompatible_candidates: int,
 ) -> None:
@@ -1133,8 +1160,15 @@ def _record_mate_search_event(
             "fallback_reason": fallback_reason,
             "scanned_agents": scanned_agents,
             "same_group_candidates": same_group_candidates,
+            "same_group_sexual_candidates": same_group_sexual_candidates,
+            "in_radius_candidates": in_radius_candidates,
+            "biologically_ready_candidates": biologically_ready_candidates,
             "reason_counts": {
                 reason: int(reason_counts.get(reason, 0))
+                for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
+            },
+            "constraint_counts": {
+                reason: int(constraint_counts.get(reason, 0))
                 for reason in runtime_mating.MATE_SEARCH_BLOCK_REASON_KEYS
             },
             "expression_compatible_candidates": expression_compatible_candidates,

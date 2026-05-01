@@ -631,7 +631,10 @@ X/Y/Z and hybridization slices:
    sex-capable asexual fallback paths. Summary/replay reproductive stats report
    stage, expression, capability, group-readiness, and per-group alive
    composition so Stage 2/3 behavior can be audited before it becomes a stronger
-   live selection pressure.
+   live selection pressure. The mate-search contract records both the primary
+   fallback reason and all overlapping partner constraints, so distance,
+   readiness, and expression dead ends are not collapsed into a single lossy
+   reason.
 10. Rare multi-offspring sexed strategy.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.

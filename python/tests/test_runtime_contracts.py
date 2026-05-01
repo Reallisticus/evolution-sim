@@ -2853,9 +2853,80 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIsNotNone(report.selected)
         self.assertEqual(report.selected.agent.agent_id, compatible.agent_id)
         self.assertEqual(report.reason_counts["expression_incompatible"], 1)
+        self.assertEqual(report.constraint_counts["expression_incompatible"], 1)
         self.assertEqual(report.expression_compatible_candidates, 1)
         self.assertEqual(report.expression_incompatible_candidates, 1)
         self.assertGreater(mate.compatibility_score, 0.0)
+
+    def test_mate_search_report_preserves_overlapping_constraints(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=4,
+            y=1,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+
+        report = runtime_mating.same_group_mate_search_report(
+            parent,
+            world.agents.values(),
+            config=config,
+            biologically_ready=lambda agent: agent.agent_id != partner.agent_id,
+        )
+
+        self.assertIsNone(report.selected)
+        self.assertEqual(report.same_group_candidates, 1)
+        self.assertEqual(report.same_group_sexual_candidates, 1)
+        self.assertEqual(report.in_radius_candidates, 0)
+        self.assertEqual(report.biologically_ready_candidates, 0)
+        self.assertEqual(report.reason_counts["partner_out_of_radius"], 1)
+        self.assertEqual(report.constraint_counts["partner_out_of_radius"], 1)
+        self.assertEqual(report.constraint_counts["partner_not_ready"], 1)
+        self.assertEqual(report.constraint_counts["expression_incompatible"], 1)
 
     def test_reproduction_readiness_reports_role_stage_capabilities(self) -> None:
         world = SimulationWorld(
@@ -3139,6 +3210,76 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(
             frame_stats["mate_search_events"][0]["reason_counts"][
                 "expression_incompatible"
+            ],
+            1,
+        )
+        self.assertEqual(
+            frame_stats["mate_search_events"][0]["constraint_counts"][
+                "expression_incompatible"
+            ],
+            1,
+        )
+
+    def test_mate_search_diagnostics_skip_event_details_when_not_recording_ticks(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=6,
+                height=6,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        world.record_tick_details = False
+        config = world.config.reproduction
+        genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                genome,
+                config,
+            ),
+            genome=genome,
+        )
+
+        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+
+        self.assertEqual(world.tick_reproduction_mate_search_events, [])
+        self.assertEqual(
+            world.run_reproduction_mate_search_counts[
+                "constraint_expression_incompatible"
             ],
             1,
         )
