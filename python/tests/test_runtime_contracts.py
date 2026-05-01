@@ -3989,6 +3989,97 @@ class RuntimeContractTests(unittest.TestCase):
             action_contract_payload["reserved_action_keys"],
         )
 
+    def test_signal_reproduction_config_edges_keep_contracts_deterministic(
+        self,
+    ) -> None:
+        cases = {
+            "signals_disabled_communication_requested": WorldConfig(
+                seed=7,
+                max_ticks=6,
+                signals=SignalConfig(
+                    enabled=False,
+                    communication_signal_emission_enabled=True,
+                ),
+            ),
+            "communication_duration_zero": WorldConfig(
+                seed=7,
+                max_ticks=6,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_signal_duration_ticks=0,
+                ),
+            ),
+            "communication_enabled_small_capacity": WorldConfig(
+                seed=7,
+                max_ticks=6,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_token_count=2,
+                    communication_profiles_per_token=1,
+                    communication_signal_base_intensity=0.1,
+                    communication_signal_trait_intensity_bonus=0.0,
+                ),
+            ),
+            "sexual_disabled_low_thresholds": WorldConfig(
+                seed=7,
+                max_ticks=6,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    sexual_reproduction_enabled=False,
+                    sexual_drive_threshold=0.0,
+                    sexual_recombination_threshold=0.0,
+                ),
+            ),
+        }
+
+        for name, config in cases.items():
+            with self.subTest(name=name):
+                first = SimulationWorld(config).run()
+                second = SimulationWorld(copy.deepcopy(config)).run()
+                self.assertEqual(first.summary, second.summary)
+                self.assertEqual(first.events, second.events)
+
+                trajectory = first.viewer["trajectory"]
+                signal_contract = trajectory["observation_contract"]["signal_contract"]
+                action_contract_payload = trajectory["action_contract"]
+                communication_actions = set(
+                    action_contract_payload["communication"]["action_keys"]
+                )
+                active_actions = set(action_contract_payload["active_action_keys"])
+                self.assertEqual(
+                    action_contract_payload["communication"]["emission_enabled"],
+                    signal_contract["communication_signal_emission_enabled"],
+                )
+                if signal_contract["communication_signal_emission_enabled"]:
+                    self.assertTrue(communication_actions.issubset(active_actions))
+                else:
+                    self.assertTrue(communication_actions.isdisjoint(active_actions))
+
+                reproduction_events = [
+                    event
+                    for event in first.events
+                    if event.get("type") == "agent_reproduced"
+                ]
+                group_summary = first.summary["reproductive_groups_end"]
+                self.assertEqual(
+                    group_summary["asexual_births"]
+                    + group_summary["sexual_births"],
+                    len(reproduction_events),
+                )
+                self.assertLessEqual(
+                    group_summary["hybrid_births"],
+                    group_summary["sexual_births"],
+                )
+                if name == "sexual_disabled_low_thresholds":
+                    self.assertEqual(
+                        first.summary["reproduction_end"][
+                            "reproductive_stage_counts"
+                        ],
+                        {STAGE0_ASEXUAL: first.summary["alive_agents"]},
+                    )
+
     def test_species_centroid_units_are_explicit(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()
         species_catalog = result.viewer["species_catalog"]

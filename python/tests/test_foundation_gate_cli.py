@@ -18,6 +18,7 @@ from evolution_sim.cli.foundation_gate import (
     _ecology_failure_rollup,
     _mind_contract_flags,
     _replay_size_bytes,
+    _reproductive_role_readiness_flags,
     _summary_gate_flags,
 )
 from evolution_sim.config import SignalConfig, WorldConfig
@@ -1195,6 +1196,10 @@ class FoundationGateCliTests(unittest.TestCase):
         summary = copy.deepcopy(result.summary)
         summary["births"] += 1
         summary["reproductive_groups_end"]["asexual_births"] += 1
+        summary["reproductive_groups_end"]["group_count"] += 1
+        summary["reproductive_groups_end"]["alive_expression_counts"] = {
+            "asexual": 999,
+        }
 
         flags = _mind_contract_flags(
             scope="unit",
@@ -1206,6 +1211,11 @@ class FoundationGateCliTests(unittest.TestCase):
 
         self.assertIn("summary.births", error_fields)
         self.assertIn("summary.reproductive_groups_end.asexual_births", error_fields)
+        self.assertIn("summary.reproductive_groups_end.group_count", error_fields)
+        self.assertIn(
+            "summary.reproductive_groups_end.alive_expression_counts",
+            error_fields,
+        )
 
     def test_unknown_reproductive_catalog_expression_blocks_full_replay_probe(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
@@ -1264,6 +1274,59 @@ class FoundationGateCliTests(unittest.TestCase):
             "viewer.reproductive_group_catalog.groups.group_id",
             error_fields,
         )
+
+    def test_role_stage_scarcity_emits_readiness_warnings(self) -> None:
+        flags = _reproductive_role_readiness_flags(
+            scope="unit",
+            reproduction={
+                "reproductive_stage_counts": {"stage3_x_y_z": 2},
+                "reproductive_expression_counts": {"x": 2},
+                "reproductive_capability_counts": {
+                    "proto_role_differentiation": 2,
+                    "xyz_expression": 2,
+                },
+                "ready_by_reproductive_stage": {},
+                "mate_search_run_counts": {
+                    "sexual_searches": 3,
+                    "sexual_successes": 0,
+                    "fallback_expression_incompatible": 2,
+                    "fallback_no_compatible_partner": 1,
+                    "constraint_expression_incompatible": 3,
+                },
+            },
+        )
+        warning_fields = {
+            flag["field"] for flag in flags if flag["severity"] == "warning"
+        }
+
+        self.assertIn("reproduction.reproductive_expression_counts", warning_fields)
+        self.assertIn(
+            "reproduction.reproductive_expression_counts.z_plastic",
+            warning_fields,
+        )
+        self.assertIn("reproduction.ready_by_reproductive_stage", warning_fields)
+        self.assertIn("reproduction.mate_search_run_counts", warning_fields)
+        self.assertIn(
+            "reproduction.mate_search_run_counts.constraint_expression_incompatible",
+            warning_fields,
+        )
+
+    def test_stage0_reproduction_does_not_emit_role_readiness_warnings(self) -> None:
+        flags = _reproductive_role_readiness_flags(
+            scope="unit",
+            reproduction={
+                "reproductive_stage_counts": {"stage0_asexual": 20},
+                "reproductive_expression_counts": {"asexual": 20},
+                "reproductive_capability_counts": {
+                    "proto_role_differentiation": 0,
+                    "xyz_expression": 0,
+                },
+                "ready_by_reproductive_stage": {},
+                "mate_search_run_counts": {},
+            },
+        )
+
+        self.assertEqual(flags, [])
 
     def test_mismatched_action_signal_capacity_blocks_full_replay_probe(self) -> None:
         result = SimulationWorld(

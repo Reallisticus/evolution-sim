@@ -31,6 +31,41 @@ keep adding staged semantics, measuring release-scale behavior, and representing
 each exposed surface in observation/action/reward/replay contracts before Mind
 v1.
 
+## 2026-05-01 Follow-Up: Reproductive Readiness Hardening
+
+The post-Stage-1 hardening pass added three non-behavioral guardrails before
+deeper Stage 2/3 reproductive semantics:
+
+- Foundation gate summaries and full-replay probes now emit warning-only
+  readiness flags when role-stage reproduction exists without complementary
+  X/Y-like or Z-plastic expression coverage, without any role-stage ready
+  agents, or with mate-search expression incompatibility/fallback dead ends.
+- Full-replay reproductive group validation now reconciles summary
+  `group_count`, `alive_group_count`, stage counts, alive stage counts, and
+  alive expression counts against the viewer reproductive group catalog plus
+  agent catalog, in addition to event-sourced birth totals.
+- Trajectory finalization moved out of `world.py` into
+  `runtime/trajectory.py` behind a behavior-preserving boundary. `world.py`
+  still owns tick orchestration, but passive outcome injection, resource-gain
+  collation, after-state capture, and trajectory record construction now live
+  with the trajectory runtime contract.
+
+Validation completed for this pass:
+
+- Focused gate/runtime trajectory/config-edge tests: pass.
+- `npm run sim:test`: pass, 204 tests in 124.056s.
+- `npm run sim:golden:quick`: pass, verified
+  `seed7_ticks20=681a821eafbea66c0f1c9652581b781afb38dcce3f967b245a924ea1aa660362`
+  and
+  `seed7_ticks100=75eb72f9c52a092d8809b21d7dbb146474c363be3f7852d3a12bd478982cb470`.
+- `npm run sim:gate:quick`: pass with no blockers or warnings.
+- `npm run sim:bench:quick`: pass; `summary_seed7_ticks20` reported
+  `median_wall_seconds=0.6051` and `median_peak_rss_kib=92912`.
+- `npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json`
+  plus `REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke`:
+  pass, `viewer_smoke_ok selected_agent=1 final_frame=299`.
+- `git diff --check`: pass.
+
 ## Verification Run
 
 Latest end-of-batch validation after the animal-resource floor, hunter/carrion acquisition, and carrion-navigation slice:

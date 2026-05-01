@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from evolution_sim.env.runtime.action_contract import (
     ACTION_CONTRACT_VERSION,
@@ -204,6 +204,62 @@ def build_trajectory_record(
         "outcome": outcome,
         "reward": reward,
     }
+
+
+def finalize_trajectory_decision_records(
+    world: Any,
+    pending_records: list[dict[str, object]],
+    *,
+    passive_outcome_for_agent: Callable[..., dict[str, object]],
+    is_reproduction_ready: Callable[[Agent], bool],
+) -> list[dict[str, object]]:
+    reproduced_agents = {parent_id for parent_id, _ in world.tick_birth_pairs}
+    resource_gain_by_agent: dict[int, float] = {}
+    for event in world.tick_feeding_events:
+        agent_id = int(event["agent_id"])
+        resource_gain_by_agent[agent_id] = resource_gain_by_agent.get(
+            agent_id,
+            0.0,
+        ) + float(event["gained_energy"])
+
+    records: list[dict[str, object]] = []
+    for pending in pending_records:
+        agent_id = int(pending["agent_id"])
+        agent = world.agents[agent_id]
+        after = capture_agent_state(world, agent)
+        reproduction_ready_after = bool(agent.alive and is_reproduction_ready(agent))
+        action_outcome = dict(pending["action_outcome"])
+        action_outcome["passive"] = passive_outcome_for_agent(
+            agent_id,
+            acted=str(pending["action_source"]) != "passive",
+        )
+        records.append(
+            build_trajectory_record(
+                tick=world.tick,
+                agent=agent,
+                before=pending["before"],
+                after=after,
+                observation_metadata=pending["observation_metadata"],
+                observation_input=pending["observation_input"],
+                observation_digest=str(pending["observation_digest"]),
+                action_mask=pending["action_mask"],
+                resolution_action_mask=pending["resolution_action_mask"],
+                requested_action=str(pending["requested_action"]),
+                action_source=str(pending["action_source"]),
+                policy_id=pending["policy_id"],
+                policy_version=pending["policy_version"],
+                resolved_action=str(pending["resolved_action"]),
+                moved=bool(pending["moved"]),
+                action_outcome=action_outcome,
+                resource_gain=resource_gain_by_agent.get(agent.agent_id, 0.0),
+                reproduced=agent.agent_id in reproduced_agents,
+                died=not agent.alive and agent.death_tick == world.tick,
+                reproduction_ready_after=reproduction_ready_after,
+                runtime_species_id=pending["runtime_species_id"],
+                runtime_ecotype_id=pending["runtime_ecotype_id"],
+            )
+        )
+    return records
 
 
 def empty_action_outcome(

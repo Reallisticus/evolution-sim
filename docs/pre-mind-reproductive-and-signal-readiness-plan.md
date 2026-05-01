@@ -638,7 +638,11 @@ X/Y/Z and hybridization slices:
    `mind_observation_v3`, upgrades action outcomes to `mind_action_outcome_v2`
    with stable signal metadata, and makes replay gates/viewer validation check
    action, reproductive-group, recombination, reward, and action-outcome
-   contract versions together.
+   contract versions together. The next guardrail pass added warning-only
+   Stage 2/3 readiness diagnostics, summary-vs-viewer reproductive catalog
+   reconciliation, deterministic signal/reproduction config-edge coverage, and
+   a first behavior-preserving extraction of trajectory finalization out of
+   `world.py`.
 10. Rare multi-offspring sexed strategy.
 11. Late hybridization/introgression.
 12. Mind v1 sequence/world-model work only after Foundation gates stabilize.

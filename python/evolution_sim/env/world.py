@@ -3797,48 +3797,13 @@ class SimulationWorld:
         self,
         pending_records: list[dict[str, object]],
     ) -> None:
-        reproduced_agents = {parent_id for parent_id, _ in self.tick_birth_pairs}
-        resource_gain_by_agent: dict[int, float] = {}
-        for event in self.tick_feeding_events:
-            agent_id = int(event["agent_id"])
-            resource_gain_by_agent[agent_id] = resource_gain_by_agent.get(agent_id, 0.0) + float(
-                event["gained_energy"]
-            )
-
-        for pending in pending_records:
-            agent_id = int(pending["agent_id"])
-            agent = self.agents[agent_id]
-            after = runtime_trajectory.capture_agent_state(self, agent)
-            reproduction_ready_after = bool(agent.alive and self._is_reproduction_ready(agent))
-            action_outcome = dict(pending["action_outcome"])
-            action_outcome["passive"] = self._passive_outcome_for_agent(
-                agent_id,
-                acted=str(pending["action_source"]) != "passive",
-            )
-            record = runtime_trajectory.build_trajectory_record(
-                tick=self.tick,
-                agent=agent,
-                before=pending["before"],
-                after=after,
-                observation_metadata=pending["observation_metadata"],
-                observation_input=pending["observation_input"],
-                observation_digest=str(pending["observation_digest"]),
-                action_mask=pending["action_mask"],
-                resolution_action_mask=pending["resolution_action_mask"],
-                requested_action=str(pending["requested_action"]),
-                action_source=str(pending["action_source"]),
-                policy_id=pending["policy_id"],
-                policy_version=pending["policy_version"],
-                resolved_action=str(pending["resolved_action"]),
-                moved=bool(pending["moved"]),
-                action_outcome=action_outcome,
-                resource_gain=resource_gain_by_agent.get(agent.agent_id, 0.0),
-                reproduced=agent.agent_id in reproduced_agents,
-                died=not agent.alive and agent.death_tick == self.tick,
-                reproduction_ready_after=reproduction_ready_after,
-                runtime_species_id=pending["runtime_species_id"],
-                runtime_ecotype_id=pending["runtime_ecotype_id"],
-            )
+        records = runtime_trajectory.finalize_trajectory_decision_records(
+            self,
+            pending_records,
+            passive_outcome_for_agent=self._passive_outcome_for_agent,
+            is_reproduction_ready=self._is_reproduction_ready,
+        )
+        for record in records:
             self.tick_trajectory_records.append(record)
             if self.trajectory_sink is not None:
                 self.trajectory_sink.write_record(record)

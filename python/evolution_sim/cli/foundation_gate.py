@@ -33,6 +33,8 @@ from evolution_sim.env.runtime.mating import (
     REPRODUCTIVE_STAGE_ORDER,
     SEXUAL_EXPRESSION,
     SEXUAL_REPRODUCTION_MODE,
+    STAGE2_PROTO_ROLES,
+    STAGE3_X_Y_Z,
     X_EXPRESSION,
     Y_EXPRESSION,
     Z_EXPRESSION,
@@ -706,6 +708,12 @@ def _summary_gate_flags(
 
     for run in evaluation["runs"]:
         seed = int(run["seed"])
+        flags.extend(
+            _reproductive_role_readiness_flags(
+                scope=f"summary_seed_{seed}",
+                reproduction=run.get("reproduction"),
+            )
+        )
         if run["last_birth_tick"] is None or int(run["last_birth_tick"]) < profile.min_last_birth_tick:
             flags.append(
                 _flag(
@@ -1004,6 +1012,127 @@ def _as_optional_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     return None
+
+
+def _as_int_count_mapping(value: object) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    counts: dict[str, int] = {}
+    for key, raw_count in value.items():
+        parsed_count = _as_optional_int(raw_count)
+        if parsed_count is not None:
+            counts[str(key)] = parsed_count
+    return counts
+
+
+def _reproductive_role_readiness_flags(
+    *,
+    scope: str,
+    reproduction: object,
+) -> list[dict[str, object]]:
+    if not isinstance(reproduction, Mapping):
+        return []
+    stage_counts = _as_int_count_mapping(reproduction.get("reproductive_stage_counts"))
+    expression_counts = _as_int_count_mapping(
+        reproduction.get("reproductive_expression_counts")
+    )
+    capability_counts = _as_int_count_mapping(
+        reproduction.get("reproductive_capability_counts")
+    )
+    role_stage_total = stage_counts.get(STAGE2_PROTO_ROLES, 0) + stage_counts.get(
+        STAGE3_X_Y_Z,
+        0,
+    )
+    if (
+        role_stage_total <= 0
+        and capability_counts.get("proto_role_differentiation", 0) <= 0
+        and capability_counts.get("xyz_expression", 0) <= 0
+    ):
+        return []
+
+    flags: list[dict[str, object]] = []
+    proto_x_count = expression_counts.get(PROTO_X_EXPRESSION, 0)
+    proto_y_count = expression_counts.get(PROTO_Y_EXPRESSION, 0)
+    proto_z_count = expression_counts.get(PROTO_Z_EXPRESSION, 0)
+    x_count = expression_counts.get(X_EXPRESSION, 0)
+    y_count = expression_counts.get(Y_EXPRESSION, 0)
+    z_count = expression_counts.get(Z_EXPRESSION, 0)
+    has_x_like = proto_x_count + x_count > 0
+    has_y_like = proto_y_count + y_count > 0
+    plastic_count = proto_z_count + z_count
+    if role_stage_total > 0 and not ((has_x_like and has_y_like) or plastic_count > 0):
+        flags.append(
+            _flag(
+                "warning",
+                scope,
+                "reproduction.reproductive_expression_counts",
+                (
+                    "Role-stage reproduction is present without complementary "
+                    "X/Y-like or Z-plastic expression coverage."
+                ),
+            )
+        )
+    if stage_counts.get(STAGE3_X_Y_Z, 0) > 0 and z_count <= 0:
+        flags.append(
+            _flag(
+                "warning",
+                scope,
+                "reproduction.reproductive_expression_counts.z_plastic",
+                "Stage 3 X/Y/Z reproduction is present without alive Z-plastic expression.",
+            )
+        )
+
+    ready_stage_counts = _as_int_count_mapping(
+        reproduction.get("ready_by_reproductive_stage")
+    )
+    ready_role_stage_total = ready_stage_counts.get(
+        STAGE2_PROTO_ROLES,
+        0,
+    ) + ready_stage_counts.get(STAGE3_X_Y_Z, 0)
+    if role_stage_total > 0 and ready_role_stage_total <= 0:
+        flags.append(
+            _flag(
+                "warning",
+                scope,
+                "reproduction.ready_by_reproductive_stage",
+                "Role-stage agents are alive but none are currently reproduction-ready.",
+            )
+        )
+
+    mate_search_counts = _as_int_count_mapping(reproduction.get("mate_search_run_counts"))
+    sexual_searches = mate_search_counts.get("sexual_searches", 0)
+    sexual_successes = mate_search_counts.get("sexual_successes", 0)
+    if sexual_searches > 0 and sexual_successes <= 0:
+        fallback_counts = {
+            key: mate_search_counts.get(key, 0)
+            for key in (
+                "fallback_expression_incompatible",
+                "fallback_no_compatible_partner",
+                "fallback_no_same_group_partner",
+            )
+        }
+        if any(count > 0 for count in fallback_counts.values()):
+            flags.append(
+                _flag(
+                    "warning",
+                    scope,
+                    "reproduction.mate_search_run_counts",
+                    (
+                        "Role-stage sexual searches occurred without successes; "
+                        f"fallbacks={fallback_counts}."
+                    ),
+                )
+            )
+    if mate_search_counts.get("constraint_expression_incompatible", 0) > 0:
+        flags.append(
+            _flag(
+                "warning",
+                scope,
+                "reproduction.mate_search_run_counts.constraint_expression_incompatible",
+                "Mate-search diagnostics observed role expression incompatibility.",
+            )
+        )
+    return flags
 
 
 def _mind_contract_flags(
@@ -1759,6 +1888,16 @@ def _reproductive_group_catalog_flags(
                 event_birth_counts=event_birth_counts,
             )
         )
+    flags.extend(
+        _reproductive_summary_catalog_flags(
+            scope=scope,
+            summary=summary,
+            groups=groups,
+            alive_member_counts=alive_member_counts,
+            alive_stage_counts=alive_stage_counts,
+            alive_expression_counts=alive_expression_counts,
+        )
+    )
     return flags
 
 
@@ -1821,6 +1960,67 @@ def _reproductive_summary_birth_flags(
                     (
                         f"Summary reproductive group {field} does not match "
                         "agent_reproduced events."
+                    ),
+                )
+            )
+    return flags
+
+
+def _reproductive_summary_catalog_flags(
+    *,
+    scope: str,
+    summary: dict[str, object],
+    groups: Mapping[object, object],
+    alive_member_counts: Mapping[str, int],
+    alive_stage_counts: Mapping[str, Mapping[str, int]],
+    alive_expression_counts: Mapping[str, Mapping[str, int]],
+) -> list[dict[str, object]]:
+    reproductive_groups_end = summary.get("reproductive_groups_end")
+    if not isinstance(reproductive_groups_end, Mapping):
+        return []
+
+    stage_counts: dict[str, int] = {}
+    for group_payload in groups.values():
+        if not isinstance(group_payload, Mapping):
+            continue
+        stage = group_payload.get("stage")
+        if isinstance(stage, str):
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    catalog_totals = {
+        "group_count": len(groups),
+        "alive_group_count": sum(
+            1 for count in alive_member_counts.values() if count > 0
+        ),
+        "stage_counts": stage_counts,
+        "alive_stage_counts": _sum_grouped_counts(alive_stage_counts),
+        "alive_expression_counts": _sum_grouped_counts(alive_expression_counts),
+    }
+    flags: list[dict[str, object]] = []
+    for field in ("group_count", "alive_group_count"):
+        summary_count = _as_optional_int(reproductive_groups_end.get(field))
+        if summary_count is None or summary_count != catalog_totals[field]:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    f"summary.reproductive_groups_end.{field}",
+                    (
+                        f"Summary reproductive group {field} does not match "
+                        "the viewer catalog."
+                    ),
+                )
+            )
+    for field in ("stage_counts", "alive_stage_counts", "alive_expression_counts"):
+        summary_counts = _as_count_dict(reproductive_groups_end.get(field))
+        if summary_counts != catalog_totals[field]:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    f"summary.reproductive_groups_end.{field}",
+                    (
+                        f"Summary reproductive group {field} does not match "
+                        "the viewer catalog."
                     ),
                 )
             )
@@ -1972,6 +2172,16 @@ def _increment_nested_count(
 ) -> None:
     group_counts = counts.setdefault(group_key, {})
     group_counts[field_value] = group_counts.get(field_value, 0) + 1
+
+
+def _sum_grouped_counts(
+    grouped_counts: Mapping[str, Mapping[str, int]],
+) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for counts in grouped_counts.values():
+        for key, count in counts.items():
+            totals[key] = totals.get(key, 0) + int(count)
+    return totals
 
 
 def _highest_counted_stage(stage_counts: dict[str, int]) -> str | None:
@@ -2168,6 +2378,12 @@ def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
                 summary=summary,
                 viewer=result.viewer,
                 events=result.events,
+            )
+        )
+        flags.extend(
+            _reproductive_role_readiness_flags(
+                scope=probe.name,
+                reproduction=summary.get("reproduction_end"),
             )
         )
 
