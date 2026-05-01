@@ -47,8 +47,9 @@ Implemented slices as of 2026-04-30:
   field, including debug-only source agent IDs, profile IDs, source positions,
   radius, duration, decay, and energy-cost data in full replay frames.
 
-Not implemented yet: default/emergent communication use, X/Y/Z-like expression,
-hybridization, multi-offspring strategies, or learned state inheritance.
+Not implemented yet: default/emergent communication use, full group-imbalance
+Z runtime behavior/costs, hybridization, multi-offspring strategies, or learned
+state inheritance.
 
 ## Non-Goals
 
@@ -362,6 +363,11 @@ Groups can evolve role differentiation before fixed X/Y/Z-like expression:
 - no hard male/female labels are required;
 - asexual fallback can weaken as group-level sexed reproduction becomes stable.
 
+Current implementation status: proto-role and X/Y/Z expression classification
+exist as conservative, high-threshold reproductive genome capabilities. Stage 2
+uses complementary proto expressions for same-group mate compatibility while
+leaving asexual fallback intact.
+
 ### Stage 3: X/Y/Z-Like Expression
 
 Later-stage reproductive groups can express roles:
@@ -386,6 +392,12 @@ Supported pairings:
 - X/Z-as-Y;
 - Y/Z-as-X;
 - Z/Z only with extra penalty.
+
+Current implementation status: Stage 3 X/Y/Z expression classification and
+same-group pairing compatibility are implemented. X/Y and fixed/Z pairings are
+valid, Z/Z carries a compatibility penalty, and same fixed-role pairings are
+blocked. Runtime group-imbalance expression for Z and Z-specific upkeep/cooldown
+costs remain future behavior slices.
 
 X/Y/Z should not directly hardcode behavioral roles like predator, caregiver, or
 forager. Any behavioral difference should come from evolved physiology,
@@ -465,6 +477,13 @@ Required fields for sexed or hybrid births:
 - offspring count for the event;
 - blocked/invalid reason when no birth occurs;
 - inert Mind inheritance metadata placeholder.
+
+Current implementation status: reproduction events now carry
+`reproduction_event_v1` payloads for asexual and same-group sexual births,
+including parent IDs, parent lineage IDs, parent reproductive group IDs, child
+lineage/group/stage/expression fields, parent energy costs, compatibility and
+inbreeding fields, offspring count, and inert Mind inheritance metadata. Hybrid
+births and multi-offspring event expansion remain future behavior slices.
 
 Metrics should distinguish:
 
@@ -601,7 +620,11 @@ X/Y/Z and hybridization slices:
    opt-in config path: communication actions remain disabled by default, but can
    be unmasked by `SignalConfig` plus agent signal-emission traits and emit
    opaque numeric fields without simulator-assigned token meanings.
-8. X/Y/Z stage system.
+8. Proto-role and X/Y/Z stage system. Initial scaffold implemented:
+   high-threshold reproductive genome capabilities classify Stage 2 proto-role
+   expression and Stage 3 X/Y/Z expression, update reproductive group stages,
+   and gate same-group mate compatibility without changing default heuristic
+   behavior or removing asexual fallback.
 9. Rare multi-offspring sexed strategy.
 10. Late hybridization/introgression.
 11. Mind v1 sequence/world-model work only after Foundation gates stabilize.

@@ -450,6 +450,11 @@ class ReproductionConfig:
     sexual_partner_radius: int = 1
     sexual_parent_cost_multiplier: float = 0.72
     sexual_inbreeding_gene_penalty: float = 0.08
+    role_differentiation_threshold: float = 0.48
+    xyz_expression_threshold: float = 0.72
+    z_plasticity_threshold: float = 0.68
+    role_complementarity_bonus: float = 0.06
+    z_z_pairing_penalty: float = 0.08
 
     def __post_init__(self) -> None:
         self.validate()
@@ -515,6 +520,25 @@ class ReproductionConfig:
             "reproduction.sexual_inbreeding_gene_penalty",
             self.sexual_inbreeding_gene_penalty,
         )
+        _check_fraction(
+            "reproduction.role_differentiation_threshold",
+            self.role_differentiation_threshold,
+        )
+        _check_fraction(
+            "reproduction.xyz_expression_threshold",
+            self.xyz_expression_threshold,
+        )
+        _check_fraction("reproduction.z_plasticity_threshold", self.z_plasticity_threshold)
+        _check_fraction(
+            "reproduction.role_complementarity_bonus",
+            self.role_complementarity_bonus,
+        )
+        _check_fraction("reproduction.z_z_pairing_penalty", self.z_z_pairing_penalty)
+        if self.xyz_expression_threshold < self.role_differentiation_threshold:
+            raise ValueError(
+                "reproduction.xyz_expression_threshold must be >= "
+                "reproduction.role_differentiation_threshold"
+            )
 
 
 @dataclass(slots=True)

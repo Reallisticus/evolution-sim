@@ -8,7 +8,22 @@ from evolution_sim.env.runtime.state import Agent
 from evolution_sim.genome.schema import Genome
 
 STAGE1_FACULTATIVE_SEX = "stage1_facultative_sex"
+STAGE2_PROTO_ROLES = "stage2_proto_roles"
+STAGE3_X_Y_Z = "stage3_x_y_z"
+REPRODUCTIVE_STAGE_ORDER = (
+    "stage0_asexual",
+    STAGE1_FACULTATIVE_SEX,
+    STAGE2_PROTO_ROLES,
+    STAGE3_X_Y_Z,
+    "stage4_hybridization",
+)
 SEXUAL_EXPRESSION = "same_group_compatible"
+PROTO_X_EXPRESSION = "proto_x_like"
+PROTO_Y_EXPRESSION = "proto_y_like"
+PROTO_Z_EXPRESSION = "proto_z_plastic"
+X_EXPRESSION = "x"
+Y_EXPRESSION = "y"
+Z_EXPRESSION = "z_plastic"
 SEXUAL_REPRODUCTION_MODE = "same_group_sexual"
 ASEXUAL_REPRODUCTION_MODE = "asexual"
 
@@ -35,10 +50,49 @@ def sexual_reproduction_unlocked(
     )
 
 
+def role_differentiation_unlocked(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> bool:
+    return (
+        sexual_reproduction_unlocked(genome, config)
+        and genome.reproductive.role_differentiation_drive
+        >= config.role_differentiation_threshold
+    )
+
+
+def xyz_expression_unlocked(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> bool:
+    return (
+        role_differentiation_unlocked(genome, config)
+        and genome.reproductive.role_differentiation_drive
+        >= config.xyz_expression_threshold
+    )
+
+
+def reproductive_capabilities_for_genome(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> dict[str, bool]:
+    return {
+        "sexual_reproduction": sexual_reproduction_unlocked(genome, config),
+        "proto_role_differentiation": role_differentiation_unlocked(genome, config),
+        "xyz_expression": xyz_expression_unlocked(genome, config),
+        "hybridization": False,
+        "multi_offspring": False,
+    }
+
+
 def reproductive_stage_for_genome(
     genome: Genome,
     config: ReproductionConfig,
 ) -> str:
+    if xyz_expression_unlocked(genome, config):
+        return STAGE3_X_Y_Z
+    if role_differentiation_unlocked(genome, config):
+        return STAGE2_PROTO_ROLES
     if sexual_reproduction_unlocked(genome, config):
         return STAGE1_FACULTATIVE_SEX
     return "stage0_asexual"
@@ -48,9 +102,24 @@ def reproductive_expression_for_genome(
     genome: Genome,
     config: ReproductionConfig,
 ) -> str:
+    if xyz_expression_unlocked(genome, config):
+        return _xyz_expression_for_genome(genome, config)
+    if role_differentiation_unlocked(genome, config):
+        return _proto_role_expression_for_genome(genome, config)
     if sexual_reproduction_unlocked(genome, config):
         return SEXUAL_EXPRESSION
     return ASEXUAL_REPRODUCTION_MODE
+
+
+def stage_rank(stage: str) -> int:
+    try:
+        return REPRODUCTIVE_STAGE_ORDER.index(stage)
+    except ValueError:
+        return 0
+
+
+def max_reproductive_stage(stages: Iterable[str]) -> str:
+    return max(stages, key=stage_rank, default="stage0_asexual")
 
 
 def choose_same_group_mate(
@@ -96,6 +165,9 @@ def _candidate_for(
     if distance > config.sexual_partner_radius:
         return None
     if not biologically_ready(agent):
+        return None
+    expression_allowed, _ = expression_compatibility(parent, agent, config)
+    if not expression_allowed:
         return None
     penalty = close_kinship_penalty(parent, agent)
     return MateCandidate(
@@ -145,4 +217,70 @@ def _compatibility_score(
     ) / 2.0
     distance_penalty = distance / max(config.sexual_partner_radius, 1) * 0.08
     kinship_penalty = close_kinship_penalty(left, right) * 0.04
-    return round(drive * 0.45 + affinity * 0.45 + tolerance * 0.1 - distance_penalty - kinship_penalty, 6)
+    _, expression_modifier = expression_compatibility(left, right, config)
+    return round(
+        drive * 0.45
+        + affinity * 0.45
+        + tolerance * 0.1
+        + expression_modifier
+        - distance_penalty
+        - kinship_penalty,
+        6,
+    )
+
+
+def expression_compatibility(
+    left: Agent,
+    right: Agent,
+    config: ReproductionConfig,
+) -> tuple[bool, float]:
+    left_expression = left.reproductive_expression
+    right_expression = right.reproductive_expression
+    if ASEXUAL_REPRODUCTION_MODE in {left_expression, right_expression}:
+        return False, 0.0
+    if SEXUAL_EXPRESSION in {left_expression, right_expression}:
+        return True, 0.0
+
+    left_role = _expression_role(left_expression)
+    right_role = _expression_role(right_expression)
+    if left_role is None or right_role is None:
+        return False, 0.0
+    if left_role == "plastic" and right_role == "plastic":
+        return True, -float(config.z_z_pairing_penalty)
+    if "plastic" in {left_role, right_role}:
+        return True, float(config.role_complementarity_bonus) * 0.5
+    if left_role != right_role:
+        return True, float(config.role_complementarity_bonus)
+    return False, 0.0
+
+
+def _proto_role_expression_for_genome(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> str:
+    if genome.reproductive.sex_plasticity >= config.z_plasticity_threshold:
+        return PROTO_Z_EXPRESSION
+    if genome.reproductive.sex_expression_bias < 0:
+        return PROTO_X_EXPRESSION
+    return PROTO_Y_EXPRESSION
+
+
+def _xyz_expression_for_genome(
+    genome: Genome,
+    config: ReproductionConfig,
+) -> str:
+    if genome.reproductive.sex_plasticity >= config.z_plasticity_threshold:
+        return Z_EXPRESSION
+    if genome.reproductive.sex_expression_bias < 0:
+        return X_EXPRESSION
+    return Y_EXPRESSION
+
+
+def _expression_role(expression: str) -> str | None:
+    if expression in {PROTO_X_EXPRESSION, X_EXPRESSION}:
+        return "x"
+    if expression in {PROTO_Y_EXPRESSION, Y_EXPRESSION}:
+        return "y"
+    if expression in {PROTO_Z_EXPRESSION, Z_EXPRESSION}:
+        return "plastic"
+    return None

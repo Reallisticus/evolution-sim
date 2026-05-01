@@ -18,6 +18,7 @@ from evolution_sim.genome.schema import GENE_LIMITS
 from evolution_sim.genome.species import genome_vector
 
 REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1"
+REPRODUCTION_EVENT_SCHEMA_VERSION = "reproduction_event_v1"
 STAGE0_ASEXUAL = "stage0_asexual"
 ASEXUAL_EXPRESSION = "asexual"
 
@@ -84,9 +85,31 @@ def reproductive_group_contract() -> dict[str, object]:
             "birth_mode": "rare_same_group_two_parent_recombination",
             "fallback": "single_parent_asexual_when_no_valid_partner",
         },
+        "stage2": {
+            "stage": "stage2_proto_roles",
+            "expression": [
+                "proto_x_like",
+                "proto_y_like",
+                "proto_z_plastic",
+            ],
+            "birth_mode": "same_group_complementary_role_recombination",
+            "fallback": "single_parent_asexual_when_no_valid_partner",
+        },
+        "stage3": {
+            "stage": "stage3_x_y_z",
+            "expression": ["x", "y", "z_plastic"],
+            "birth_mode": "same_group_x_y_z_role_recombination",
+            "fallback": "single_parent_asexual_when_no_valid_partner",
+        },
         "future_modes": [
-            "role_expression_recombination",
             "rare_gated_hybridization",
+        ],
+        "capability_flags": [
+            "sexual_reproduction",
+            "proto_role_differentiation",
+            "xyz_expression",
+            "hybridization",
+            "multi_offspring",
         ],
     }
 
@@ -185,6 +208,7 @@ def register_founder_group(
             last_seen_tick=tick,
         )
         return
+    _promote_record_stage(record, agent.reproductive_stage)
     record.last_seen_tick = max(record.last_seen_tick, tick)
 
 
@@ -211,6 +235,7 @@ def record_asexual_birth(
             last_seen_tick=tick,
         )
         registry[group_id] = record
+    _promote_record_stage(record, parent.reproductive_stage, child.reproductive_stage)
     record.asexual_births += 1
     record.last_seen_tick = tick
 
@@ -250,6 +275,12 @@ def record_sexual_birth(
             last_seen_tick=tick,
         )
         registry[group_id] = record
+    _promote_record_stage(
+        record,
+        primary_parent.reproductive_stage,
+        secondary_parent.reproductive_stage,
+        child.reproductive_stage,
+    )
     record.sexual_births += 1
     if hybrid:
         record.hybrid_births += 1
@@ -321,6 +352,15 @@ def _member_counts(agents: Iterable[Agent]) -> tuple[dict[int, int], dict[int, i
 def _stage_counts(registry: dict[int, ReproductiveGroupRecord]) -> dict[str, int]:
     counts: Counter[str] = Counter(record.stage for record in registry.values())
     return {stage: counts[stage] for stage in sorted(counts)}
+
+
+def _promote_record_stage(
+    record: ReproductiveGroupRecord,
+    *candidate_stages: str,
+) -> None:
+    record.stage = runtime_mating.max_reproductive_stage(
+        (record.stage, *candidate_stages)
+    )
 
 
 def _alive_expression_counts(agents: Iterable[Agent]) -> dict[str, int]:
@@ -855,7 +895,8 @@ def reproduce_asexual(
         reproductive_state=reproductive_state,
         mind_inheritance_metadata=empty_mind_inheritance_metadata(),
     )
-    parent.energy -= reproduction_energy_cost(world, parent_profile)
+    parent_cost = reproduction_energy_cost(world, parent_profile)
+    parent.energy -= parent_cost
     parent.last_reproduction_tick = world.tick
     world._place_agent(child)
     record_asexual_birth(
@@ -873,15 +914,12 @@ def reproduce_asexual(
     world._emit(
         EventType.AGENT_REPRODUCED,
         agent_id=parent.agent_id,
-        data={
-            "child_id": child.agent_id,
-            "child_x": child.x,
-            "child_y": child.y,
-            "lineage_id": child.lineage_id,
-            "birth_tick": child.birth_tick,
-            "reproduction_mode": runtime_mating.ASEXUAL_REPRODUCTION_MODE,
-            "parent_ids": [parent.agent_id],
-        },
+        data=_reproduction_event_payload(
+            child=child,
+            parents=(parent,),
+            reproduction_mode=runtime_mating.ASEXUAL_REPRODUCTION_MODE,
+            parent_energy_costs=(parent_cost,),
+        ),
     )
     return True
 
@@ -934,8 +972,10 @@ def reproduce_sexual(
         reproductive_state=reproductive_state,
         mind_inheritance_metadata=empty_mind_inheritance_metadata(),
     )
-    parent.energy -= sexual_reproduction_energy_cost(world, parent_profile)
-    partner.energy -= sexual_reproduction_energy_cost(world, partner_profile)
+    parent_cost = sexual_reproduction_energy_cost(world, parent_profile)
+    partner_cost = sexual_reproduction_energy_cost(world, partner_profile)
+    parent.energy -= parent_cost
+    partner.energy -= partner_cost
     parent.last_reproduction_tick = world.tick
     partner.last_reproduction_tick = world.tick
     world._place_agent(child)
@@ -955,20 +995,77 @@ def reproduce_sexual(
     world._emit(
         EventType.AGENT_REPRODUCED,
         agent_id=parent.agent_id,
-        data={
-            "child_id": child.agent_id,
-            "child_x": child.x,
-            "child_y": child.y,
-            "lineage_id": child.lineage_id,
-            "birth_tick": child.birth_tick,
-            "reproduction_mode": runtime_mating.SEXUAL_REPRODUCTION_MODE,
-            "partner_id": partner.agent_id,
-            "parent_ids": [parent.agent_id, partner.agent_id],
-            "compatibility_score": mate_candidate.compatibility_score,
-            "inbreeding_penalty": mate_candidate.inbreeding_penalty,
-        },
+        data=_reproduction_event_payload(
+            child=child,
+            parents=(parent, partner),
+            reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
+            parent_energy_costs=(parent_cost, partner_cost),
+            mate_candidate=mate_candidate,
+        ),
     )
     return True
+
+
+def _reproduction_event_payload(
+    *,
+    child: Agent,
+    parents: tuple[Agent, ...],
+    reproduction_mode: str,
+    parent_energy_costs: tuple[float, ...],
+    mate_candidate: runtime_mating.MateCandidate | None = None,
+) -> dict[str, object]:
+    parent_ids = [parent.agent_id for parent in parents]
+    parent_group_ids = [
+        parent.reproductive_group_id or parent.lineage_id for parent in parents
+    ]
+    payload: dict[str, object] = {
+        "schema_version": REPRODUCTION_EVENT_SCHEMA_VERSION,
+        "child_id": child.agent_id,
+        "child_x": child.x,
+        "child_y": child.y,
+        "lineage_id": child.lineage_id,
+        "child_lineage_id": child.lineage_id,
+        "child_reproductive_group_id": child.reproductive_group_id,
+        "child_reproductive_stage": child.reproductive_stage,
+        "child_reproductive_expression": child.reproductive_expression,
+        "birth_tick": child.birth_tick,
+        "reproduction_mode": reproduction_mode,
+        "parent_ids": parent_ids,
+        "parent_lineage_ids": [parent.lineage_id for parent in parents],
+        "parent_reproductive_group_ids": parent_group_ids,
+        "parent_reproductive_stages": [
+            parent.reproductive_stage for parent in parents
+        ],
+        "parent_reproductive_expressions": [
+            parent.reproductive_expression for parent in parents
+        ],
+        "parent_energy_costs": [
+            {
+                "agent_id": parent.agent_id,
+                "energy_cost": round(float(parent_energy_costs[index]), 4),
+            }
+            for index, parent in enumerate(parents)
+        ],
+        "offspring_count": 1,
+        "compatibility_score": None,
+        "inbreeding_penalty": None,
+        "mate_distance": None,
+        "outbreeding_distance_score": None,
+        "hybrid": False,
+        "mind_inheritance": dict(child.mind_inheritance_metadata),
+    }
+    if len(parents) > 1:
+        payload["partner_id"] = parents[1].agent_id
+    if mate_candidate is not None:
+        payload.update(
+            {
+                "compatibility_score": mate_candidate.compatibility_score,
+                "inbreeding_penalty": mate_candidate.inbreeding_penalty,
+                "mate_distance": mate_candidate.distance,
+                "outbreeding_distance_score": None,
+            }
+        )
+    return payload
 
 
 def _clamp_gene_value(name: str, value: float) -> float:

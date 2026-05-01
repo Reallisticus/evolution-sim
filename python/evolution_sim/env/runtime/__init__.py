@@ -1,7 +1,12 @@
 from .action_contract import ACTION_CONTRACT_VERSION, action_contract
 from .collectors import FullReplayCollector, SummaryCollector, collector_for_mode
 from .observations import OBSERVATION_SCHEMA_VERSION, observation_contract
-from .mating import STAGE1_FACULTATIVE_SEX, SEXUAL_REPRODUCTION_MODE
+from .mating import (
+    STAGE1_FACULTATIVE_SEX,
+    STAGE2_PROTO_ROLES,
+    STAGE3_X_Y_Z,
+    SEXUAL_REPRODUCTION_MODE,
+)
 from .reproduction import (
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,
     reproductive_group_contract,
@@ -33,6 +38,8 @@ __all__ = [
     "SignalEmission",
     "SignalFieldState",
     "STAGE1_FACULTATIVE_SEX",
+    "STAGE2_PROTO_ROLES",
+    "STAGE3_X_Y_Z",
     "SimulationWorldResult",
     "SummaryCollector",
     "Tile",
