@@ -609,7 +609,9 @@ X/Y/Z and hybridization slices:
    reproductive runtime owns eligibility, child construction, mate selection
    orchestration, accounting, readiness reporting, and the tick-level
    reproductive signaling/birth phase behind a narrow boundary, without
-   changing replay/golden semantics.
+   changing replay/golden semantics. Follow-on hardening made tick-local
+   population availability explicit so same-tick births count against later
+   `max_agents` decisions without repeated world-wide alive scans.
 6. Pheromone substrate with readiness emissions and numeric sensing.
    Implemented for the reproductive-readiness path: biologically ready agents
    emit deterministic numeric fields with configured intensity, radius, duration,

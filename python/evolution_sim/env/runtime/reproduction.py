@@ -36,6 +36,18 @@ class ReproductiveState:
     expression: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReproductionAvailability:
+    """Tick-local population availability for reproductive attempts."""
+
+    alive_agents: int
+    max_agents: int
+
+    @property
+    def population_saturated(self) -> bool:
+        return self.alive_agents >= self.max_agents
+
+
 @dataclass(slots=True)
 class ReproductiveGroupRecord:
     """Live compatibility group metadata, not a species or replay taxonomy record."""
@@ -606,10 +618,29 @@ def is_biologically_reproduction_ready(world: Any, agent: Agent) -> bool:
     return not biological_reproduction_block_reasons(world, agent)
 
 
-def reproduction_block_reason(world: Any, agent: Agent) -> str | None:
+def reproduction_availability(
+    world: Any,
+    *,
+    alive_agents: int | None = None,
+) -> ReproductionAvailability:
+    current_alive_agents = (
+        len(world.alive_agents()) if alive_agents is None else alive_agents
+    )
+    return ReproductionAvailability(
+        alive_agents=current_alive_agents,
+        max_agents=world.config.max_agents,
+    )
+
+
+def reproduction_block_reason(
+    world: Any,
+    agent: Agent,
+    availability: ReproductionAvailability | None = None,
+) -> str | None:
     if not is_biologically_reproduction_ready(world, agent):
         return "biological"
-    if len(world.alive_agents()) >= world.config.max_agents:
+    availability = availability or reproduction_availability(world)
+    if availability.population_saturated:
         return "max_population"
     if not world._has_empty_neighbor(agent.x, agent.y):
         return "local_crowding"
@@ -623,25 +654,40 @@ def is_reproduction_ready(world: Any, agent: Agent) -> bool:
 def run_reproduction_phase(world: Any) -> int:
     """Run reproductive signaling and births for one tick."""
 
+    alive_agents = world.alive_agents()
     runtime_signals.emit_reproductive_readiness_signals(
         world,
-        world.alive_agents(),
+        alive_agents,
     )
+    alive_count = len(alive_agents)
     births_this_tick = 0
     for agent_id in sorted(world.agents):
         agent = world.agents[agent_id]
         if not agent.alive:
             continue
-        block_reason = reproduction_block_reason(world, agent)
+        availability = reproduction_availability(world, alive_agents=alive_count)
+        block_reason = reproduction_block_reason(world, agent, availability)
         if block_reason is None:
-            if reproduce(world, agent):
+            if reproduce(world, agent, alive_count=alive_count):
                 births_this_tick += 1
+                alive_count += 1
         elif block_reason != "biological":
-            record_reproduction_blocked(world, agent, block_reason)
+            record_reproduction_blocked(
+                world,
+                agent,
+                block_reason,
+                alive_count=alive_count,
+            )
     return births_this_tick
 
 
-def record_reproduction_blocked(world: Any, agent: Agent, reason: str) -> None:
+def record_reproduction_blocked(
+    world: Any,
+    agent: Agent,
+    reason: str,
+    *,
+    alive_count: int | None = None,
+) -> None:
     if reason not in world.run_reproduction_blocked_counts:
         raise ValueError(f"Unsupported reproduction block reason: {reason}")
     world.run_reproduction_blocked_counts[reason] += 1
@@ -656,7 +702,9 @@ def record_reproduction_blocked(world: Any, agent: Agent, reason: str) -> None:
         "reason": reason,
         "x": agent.x,
         "y": agent.y,
-        "alive_agents": len(world.alive_agents()),
+        "alive_agents": len(world.alive_agents())
+        if alive_count is None
+        else alive_count,
         "max_agents": world.config.max_agents,
     }
     if world.record_tick_details:
@@ -1278,10 +1326,20 @@ def _mate_search_fallback_reason(
     return "no_compatible_partner"
 
 
-def reproduce(world: Any, parent: Agent) -> bool:
+def reproduce(
+    world: Any,
+    parent: Agent,
+    *,
+    alive_count: int | None = None,
+) -> bool:
     destination = world._find_empty_neighbor(parent.x, parent.y)
     if destination is None:
-        record_reproduction_blocked(world, parent, "destination_unavailable")
+        record_reproduction_blocked(
+            world,
+            parent,
+            "destination_unavailable",
+            alive_count=alive_count,
+        )
         return False
 
     parent_profile = world._trophic_profile(parent)

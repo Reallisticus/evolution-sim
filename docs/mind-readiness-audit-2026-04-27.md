@@ -49,6 +49,11 @@ deeper Stage 2/3 reproductive semantics:
   still owns tick orchestration, but passive outcome injection, resource-gain
   collation, after-state capture, and trajectory record construction now live
   with the trajectory runtime contract.
+- Reproduction-phase population availability is now explicit inside
+  `runtime/reproduction.py`. Sequential births count against `max_agents`
+  during the same tick without repeatedly scanning world state for every
+  candidate, and blocked-reproduction events keep the exact alive-count context
+  that produced the block.
 
 Validation completed for this pass:
 
@@ -64,6 +69,18 @@ Validation completed for this pass:
 - `npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json`
   plus `REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke`:
   pass, `viewer_smoke_ok selected_agent=1 final_frame=299`.
+- `git diff --check`: pass.
+
+Additional validation after the reproduction availability pass:
+
+- Focused reproduction-phase tests: pass, including sequential max-population
+  enforcement after an earlier same-tick birth.
+- `npm run sim:test`: pass, 205 tests in 124.258s.
+- `npm run sim:golden:quick`: pass with the same `seed7_ticks20` and
+  `seed7_ticks100` hashes above.
+- `npm run sim:gate:quick`: pass with no blockers or warnings.
+- `npm run sim:bench:quick`: pass; `summary_seed7_ticks20` reported
+  `median_wall_seconds=0.6139` and `median_peak_rss_kib=92928`.
 - `git diff --check`: pass.
 
 ## Verification Run

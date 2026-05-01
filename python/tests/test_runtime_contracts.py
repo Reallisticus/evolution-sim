@@ -22,6 +22,7 @@ from evolution_sim.config import (
     SignalConfig,
 )
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.events import EventType
 from evolution_sim.env.world import MEAT_MODE_CODES, TROPHIC_ROLE_CODES
 from evolution_sim.env.contracts import (
     FULL_ONLY_SUMMARY_FIELDS,
@@ -1917,6 +1918,33 @@ class RuntimeContractTests(unittest.TestCase):
             1,
         )
         self.assertEqual(blocked_events[0]["data"]["reason"], "max_population")
+
+    def test_reproduction_phase_counts_births_against_max_population(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=5, height=5, max_agents=3)
+        )
+        first = self._place_ready_agent(world, x=1, y=1, lineage_id=1)
+        second = self._place_ready_agent(world, x=3, y=3, lineage_id=2)
+
+        births = runtime_reproduction.run_reproduction_phase(world)
+
+        blocked_events = [
+            event
+            for event in world.events
+            if event.type == EventType.AGENT_REPRODUCTION_BLOCKED
+        ]
+        self.assertEqual(births, 1)
+        self.assertEqual(world.births, 1)
+        self.assertEqual(
+            len([agent for agent in world.agents.values() if agent.alive]),
+            3,
+        )
+        self.assertEqual(len(blocked_events), 1)
+        self.assertEqual(blocked_events[0].agent_id, second.agent_id)
+        self.assertEqual(blocked_events[0].data["reason"], "max_population")
+        self.assertEqual(blocked_events[0].data["alive_agents"], 3)
+        self.assertEqual(first.last_reproduction_tick, world.tick)
+        self.assertNotEqual(second.last_reproduction_tick, world.tick)
 
     def test_reproduction_blocked_by_local_crowding_is_reported(self) -> None:
         world = SimulationWorld(
