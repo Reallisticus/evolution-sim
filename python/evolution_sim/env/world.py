@@ -33,13 +33,12 @@ from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
 import evolution_sim.env.runtime.observations as runtime_observations
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
+import evolution_sim.env.runtime.summary as runtime_summary
 import evolution_sim.env.runtime.ticks as runtime_ticks
 from evolution_sim.env.runtime.reporting import (
     build_collapse_events,
     build_replay_analytics,
-    build_run_top_species,
     build_species_metrics as build_shared_species_metrics,
-    build_species_metric_leaderboards,
     empty_carcass_totals,
     empty_combat_totals,
     empty_diet_totals,
@@ -48,7 +47,6 @@ from evolution_sim.env.runtime.reporting import (
     empty_hydrology_exposure_counts,
     empty_terrain_occupancy,
     SpeciesMetricSample,
-    summary_end_surface_state,
 )
 import evolution_sim.env.runtime.trajectory as runtime_trajectory
 from evolution_sim.env.runtime.state import (
@@ -62,7 +60,6 @@ from evolution_sim.env.runtime.state import (
     TrophicProfile,
     empty_mind_inheritance_metadata,
 )
-from evolution_sim.env.taxonomy import REPLAY_TAXONOMY_MODE
 from evolution_sim.genome import Genome, SpeciesMember, SpeciesRecord
 from evolution_sim.genome.schema import GENE_LIMITS
 from evolution_sim.genome.species import (
@@ -1015,24 +1012,6 @@ class SimulationWorld:
         }
 
     @staticmethod
-    def _finalize_animal_resource_opportunity_counts(
-        counts: dict[str, int | float],
-    ) -> dict[str, int | float]:
-        return {
-            key: round(value, 4) if isinstance(value, float) else int(value)
-            for key, value in counts.items()
-        }
-
-    def _finalize_grouped_animal_resource_opportunity_counts(
-        self,
-        grouped_counts: dict[str, dict[str, int | float]],
-    ) -> dict[str, dict[str, int | float]]:
-        return {
-            group: self._finalize_animal_resource_opportunity_counts(counts)
-            for group, counts in grouped_counts.items()
-        }
-
-    @staticmethod
     def _empty_reproduction_blocked_counts() -> dict[str, int]:
         return runtime_reproduction.empty_reproduction_blocked_counts()
 
@@ -1070,53 +1049,6 @@ class SimulationWorld:
             raise ValueError(f"Unsupported food source: {food_source}")
         totals[f"{food_source}_events"] += 1
         totals[f"{food_source}_energy"] += gained_energy
-
-    @staticmethod
-    def _finalize_diet_totals(totals: dict[str, float]) -> dict[str, float]:
-        animal_events = totals["fresh_kill_events"] + totals["carcass_events"]
-        animal_energy = totals["fresh_kill_energy"] + totals["carcass_energy"]
-        total_energy = totals["plant_energy"] + animal_energy
-        return {
-            **{
-                key: round(value, 4) if isinstance(value, float) else value
-                for key, value in totals.items()
-            },
-            "animal_events": animal_events,
-            "animal_energy": round(animal_energy, 4),
-            "plant_energy_share": round(
-                totals["plant_energy"] / max(total_energy, 1e-9),
-                4,
-            )
-            if total_energy > 0
-            else 0.0,
-            "animal_energy_share": round(
-                animal_energy / max(total_energy, 1e-9),
-                4,
-            )
-            if total_energy > 0
-            else 0.0,
-            "fresh_kill_energy_share": round(
-                totals["fresh_kill_energy"] / max(total_energy, 1e-9),
-                4,
-            )
-            if total_energy > 0
-            else 0.0,
-            "carcass_energy_share": round(
-                totals["carcass_energy"] / max(total_energy, 1e-9),
-                4,
-            )
-            if total_energy > 0
-            else 0.0,
-        }
-
-    def _finalize_grouped_diet_totals(
-        self,
-        grouped_totals: dict[str, dict[str, float]],
-    ) -> dict[str, dict[str, float]]:
-        return {
-            group: self._finalize_diet_totals(totals)
-            for group, totals in grouped_totals.items()
-        }
 
     def _emit(
         self,
@@ -5744,213 +5676,7 @@ class SimulationWorld:
         return build_collapse_events(ticks, species_population)
 
     def _build_summary(self, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, object]:
-        alive = self.alive_agents()
-        genomes = [agent.genome for agent in self.agents.values()]
-        alive_genomes = [agent.genome for agent in alive]
-        lineage_sizes: dict[int, int] = {}
-        alive_lineage_sizes: dict[int, int] = {}
-        for agent in self.agents.values():
-            lineage_sizes[agent.lineage_id] = lineage_sizes.get(agent.lineage_id, 0) + 1
-            if agent.alive:
-                alive_lineage_sizes[agent.lineage_id] = alive_lineage_sizes.get(agent.lineage_id, 0) + 1
-
-        field_stats = self._field_stats()
-        climate_end = self._climate_state()
-        terrain_counts = self._terrain_counts()
-        end_surfaces = summary_end_surface_state(self, mode)
-        hydrology_primary_counts = end_surfaces["hydrology_primary_counts"]
-        hydrology_support_counts = end_surfaces["hydrology_support_counts"]
-        hydrology_primary_stats = end_surfaces["hydrology_primary_stats"]
-        refuge_counts = end_surfaces["refuge_counts"]
-        refuge_stats = end_surfaces["refuge_stats"]
-        hazard_counts = end_surfaces["hazard_counts"]
-        hazard_stats = end_surfaces["hazard_stats"]
-        fresh_kill_stats = end_surfaces["fresh_kill_stats"]
-        carcass_stats = end_surfaces["carcass_stats"]
-        biotic_field_stats = end_surfaces["biotic_field_stats"]
-        signal_field_stats = end_surfaces["signal_field_stats"]
-        ecology_counts = end_surfaces["ecology_counts"]
-        ecology_stats = end_surfaces["ecology_stats"]
-        habitat_counts = end_surfaces["habitat_counts"]
-        latest_species_metrics = end_surfaces["latest_species_metrics"]
-        land_tile_count = self.config.width * self.config.height - terrain_counts["water"]
-        trophic_role_counts, meat_mode_counts = self._population_trophic_counts(alive)
-        reproduction_end = self._reproduction_readiness_counts(alive)
-        reproductive_groups_end = runtime_reproduction.build_reproductive_group_summary(
-            self.reproductive_groups,
-            self.agents.values(),
-        )
-        ticks_executed = self.tick + 1
-        trophic_lifecycle = self._trophic_lifecycle_summary(
-            ticks_executed=ticks_executed
-        )
-        fresh_kill_totals = {
-            **self.run_fresh_kill_totals,
-            "fresh_kill_tiles": fresh_kill_stats["fresh_kill_tiles"],
-            "total_fresh_kill_energy": fresh_kill_stats["total_fresh_kill_energy"],
-        }
-        carcass_totals = {
-            **self.run_carcass_totals,
-            "carcass_tiles": carcass_stats["carcass_tiles"],
-            "total_carcass_energy": carcass_stats["total_carcass_energy"],
-        }
-        fresh_kill_conservation_error = (
-            fresh_kill_totals["energy_deposited"]
-            - fresh_kill_totals["energy_converted_to_carcass"]
-            - fresh_kill_totals["energy_consumed"]
-            - fresh_kill_stats["total_fresh_kill_energy"]
-        )
-        carcass_conservation_error = (
-            carcass_totals["energy_deposited"]
-            - carcass_totals["energy_decayed"]
-            - carcass_totals["energy_consumed"]
-            - carcass_stats["total_carcass_energy"]
-        )
-        gene_summary_fields = (
-            "max_energy",
-            "max_health",
-            "move_cost",
-            "food_efficiency",
-            "water_efficiency",
-            "attack_power",
-            "meat_efficiency",
-            "carrion_bias",
-            "live_prey_bias",
-            "forest_affinity",
-            "plain_affinity",
-            "wetland_affinity",
-            "rocky_affinity",
-            "heat_tolerance",
-        )
-
-        def average_gene(source_genomes: list[Genome], field: str) -> float:
-            return round(
-                sum(float(getattr(genome, field)) for genome in source_genomes)
-                / max(len(source_genomes), 1),
-                4,
-            )
-
-        historical_gene_averages = {
-            f"avg_{field}_gene": average_gene(genomes, field)
-            for field in gene_summary_fields
-        }
-        explicit_historical_gene_averages = {
-            f"avg_historical_{field}_gene": value
-            for field, value in (
-                (field, historical_gene_averages[f"avg_{field}_gene"])
-                for field in gene_summary_fields
-            )
-        }
-        alive_gene_averages = {
-            f"avg_alive_{field}_gene": average_gene(alive_genomes, field)
-            for field in gene_summary_fields
-        }
-
-        summary = {
-            "run_id": self.run_id,
-            "seed": self.config.seed,
-            "ticks_executed": ticks_executed,
-            "births": self.births,
-            "deaths": self.deaths,
-            "alive_agents": len(alive),
-            "max_agents": self.config.max_agents,
-            "max_agent_saturation_at_end": reproduction_end["saturation_at_end"],
-            "peak_max_agent_saturation": reproduction_end["peak_saturation"],
-            "peak_alive_agents": self.peak_alive_agents,
-            "extinct": len(alive) == 0,
-            "total_agents_seen": len(self.agents),
-            "season_at_end": self._season_state()["name"],
-            "disturbance_at_end": climate_end["disturbance_type"],
-            "disturbance_strength_at_end": climate_end["disturbance_strength"],
-            "lineages": sorted({agent.lineage_id for agent in self.agents.values()}),
-            "alive_lineages": sorted({agent.lineage_id for agent in alive}),
-            "top_lineages": sorted(
-                (
-                    {
-                        "lineage_id": lineage_id,
-                        "total_agents": size,
-                        "alive_agents": alive_lineage_sizes.get(lineage_id, 0),
-                    }
-                    for lineage_id, size in lineage_sizes.items()
-                ),
-                key=lambda item: (-item["alive_agents"], -item["total_agents"], item["lineage_id"]),
-            )[:10],
-            "reproductive_groups_end": reproductive_groups_end,
-            "ecotypes_created": len(self.ecotype_registry),
-            "alive_ecotype_count": len(self.current_ecotype_records),
-            "last_birth_tick": self.last_birth_tick,
-            "field_stats": field_stats,
-            "terrain_counts": terrain_counts,
-            "land_tile_count": land_tile_count,
-            "habitat_state_counts_at_end": habitat_counts,
-            "hydrology_primary_counts_at_end": hydrology_primary_counts,
-            "hydrology_support_counts_at_end": hydrology_support_counts,
-            "hydrology_primary_stats_at_end": hydrology_primary_stats,
-            "refuge_counts_at_end": refuge_counts,
-            "refuge_stats_at_end": refuge_stats,
-            "hazard_counts_at_end": hazard_counts,
-            "hazard_stats_at_end": hazard_stats,
-            "biotic_field_stats_at_end": biotic_field_stats,
-            "signal_field_stats_at_end": signal_field_stats,
-            "fresh_kill_stats_at_end": fresh_kill_stats,
-            "carcass_stats_at_end": carcass_stats,
-            "trophic_role_counts_at_end": trophic_role_counts,
-            "meat_mode_counts_at_end": meat_mode_counts,
-            "trophic_lifecycle": trophic_lifecycle,
-            "reproduction_end": reproduction_end,
-            "signal_end": runtime_signals.finalize_signal_totals(
-                self.run_signal_totals
-            ),
-            "combat_end": {
-                key: round(value, 4) if isinstance(value, float) else value
-                for key, value in self.run_combat_totals.items()
-            },
-            "fresh_kill_end": {
-                **{
-                    key: round(value, 4) if isinstance(value, float) else value
-                    for key, value in fresh_kill_totals.items()
-                },
-                "conservation_error": round(fresh_kill_conservation_error, 6),
-            },
-            "carcass_end": {
-                **{
-                    key: round(value, 4) if isinstance(value, float) else value
-                    for key, value in carcass_totals.items()
-                },
-                "conservation_error": round(carcass_conservation_error, 6),
-            },
-            "diet_end": self._finalize_diet_totals(self.run_diet_totals),
-            "diet_by_trophic_role_end": self._finalize_grouped_diet_totals(
-                self.run_diet_by_trophic_role
-            ),
-            "diet_by_meat_mode_end": self._finalize_grouped_diet_totals(self.run_diet_by_meat_mode),
-            "animal_resource_opportunity_by_meat_mode_end": (
-                self._finalize_grouped_animal_resource_opportunity_counts(
-                    self.run_animal_resource_opportunity_by_meat_mode
-                )
-            ),
-            "ecology_state_counts_at_end": ecology_counts,
-            "ecology_stats_at_end": ecology_stats,
-            **historical_gene_averages,
-            **explicit_historical_gene_averages,
-            **alive_gene_averages,
-        }
-        if mode == RunMode.FULL_REPLAY:
-            summary.update(
-                {
-                    "taxonomy_mode": REPLAY_TAXONOMY_MODE,
-                    "mind_contracts": runtime_trajectory.build_trajectory_summary(
-                        self.trajectory_records,
-                        signal_config=self.config.signals,
-                    ),
-                    "species_created": len(self.species_registry),
-                    "alive_species_count": len(self.current_species_records),
-                    "alive_species": [record.species_id for record in self.current_species_records],
-                    "top_species": build_run_top_species(self.species_registry),
-                }
-            )
-            summary.update(build_species_metric_leaderboards(latest_species_metrics))
-        return summary
+        return runtime_summary.build_summary(self, mode=mode)
 
     def _field_stats(self) -> dict[str, dict[str, float]]:
         land_tiles = [tile for row in self.grid for tile in row if tile.terrain != "water"]

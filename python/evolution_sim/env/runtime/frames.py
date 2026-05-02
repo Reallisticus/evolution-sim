@@ -4,6 +4,10 @@ from typing import Any
 
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.signals as runtime_signals
+from evolution_sim.env.runtime.reporting import (
+    finalize_diet_totals,
+    finalize_grouped_diet_totals,
+)
 
 
 def _combat_stats(world: Any) -> dict[str, object]:
@@ -107,37 +111,65 @@ def _carcass_flow(world: Any) -> dict[str, object]:
     }
 
 
+def _empty_diet_totals() -> dict[str, float]:
+    return {
+        "plant_events": 0,
+        "plant_energy": 0.0,
+        "fresh_kill_events": 0,
+        "fresh_kill_energy": 0.0,
+        "carcass_events": 0,
+        "carcass_energy": 0.0,
+    }
+
+
+def _empty_grouped_diet_totals(
+    groups: list[str] | dict[str, int],
+) -> dict[str, dict[str, float]]:
+    return {group: _empty_diet_totals() for group in groups}
+
+
+def _accumulate_diet_totals(
+    totals: dict[str, float],
+    food_source: str,
+    gained_energy: float,
+) -> None:
+    if food_source not in {"plant", "fresh_kill", "carcass"}:
+        raise ValueError(f"Unsupported food source: {food_source}")
+    totals[f"{food_source}_events"] += 1
+    totals[f"{food_source}_energy"] += gained_energy
+
+
 def _diet_stats(
     world: Any,
     *,
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    diet_totals = world._empty_diet_totals()
-    diet_by_trophic_role = world._empty_grouped_diet_totals(
+    diet_totals = _empty_diet_totals()
+    diet_by_trophic_role = _empty_grouped_diet_totals(
         [role for role in trophic_role_codes if role != "none"]
     )
-    diet_by_meat_mode = world._empty_grouped_diet_totals(meat_mode_codes)
+    diet_by_meat_mode = _empty_grouped_diet_totals(meat_mode_codes)
     for event in world.tick_feeding_events:
         food_source = str(event["food_source"])
         gained_energy = float(event["gained_energy"])
         trophic_role = str(event["trophic_role"])
         meat_mode = str(event["meat_mode"])
-        world._accumulate_diet_totals(diet_totals, food_source, gained_energy)
-        world._accumulate_diet_totals(
+        _accumulate_diet_totals(diet_totals, food_source, gained_energy)
+        _accumulate_diet_totals(
             diet_by_trophic_role[trophic_role],
             food_source,
             gained_energy,
         )
-        world._accumulate_diet_totals(
+        _accumulate_diet_totals(
             diet_by_meat_mode[meat_mode],
             food_source,
             gained_energy,
         )
     return (
-        world._finalize_diet_totals(diet_totals),
-        world._finalize_grouped_diet_totals(diet_by_trophic_role),
-        world._finalize_grouped_diet_totals(diet_by_meat_mode),
+        finalize_diet_totals(diet_totals),
+        finalize_grouped_diet_totals(diet_by_trophic_role),
+        finalize_grouped_diet_totals(diet_by_meat_mode),
     )
 
 
@@ -180,6 +212,40 @@ def _agent_rows(
         ]
         for agent in alive
     ]
+
+
+def _population_trophic_counts_from_telemetry(
+    alive: list[Any],
+    agent_telemetry: dict[int, dict[str, object]],
+    *,
+    trophic_role_codes: dict[str, int],
+    meat_mode_codes: dict[str, int],
+) -> tuple[dict[str, int], dict[str, int]]:
+    trophic_role_counts = {
+        role: 0 for role in trophic_role_codes if role != "none"
+    }
+    meat_mode_counts = {mode: 0 for mode in meat_mode_codes}
+    for agent in alive:
+        telemetry = agent_telemetry[agent.agent_id]
+        trophic_role_counts[str(telemetry["trophic_role"])] += 1
+        meat_mode_counts[str(telemetry["meat_mode"])] += 1
+    return trophic_role_counts, meat_mode_counts
+
+
+def _agent_category_grid(
+    alive: list[Any],
+    agent_telemetry: dict[int, dict[str, object]],
+    *,
+    width: int,
+    height: int,
+    telemetry_field: str,
+    codes: dict[str, int],
+) -> list[list[int]]:
+    grid = [[codes["none"] for _ in range(width)] for _ in range(height)]
+    for agent in alive:
+        telemetry_value = str(agent_telemetry[agent.agent_id][telemetry_field])
+        grid[agent.y][agent.x] = codes[telemetry_value]
+    return grid
 
 
 def build_frame_payload(
@@ -315,7 +381,12 @@ def capture_frame(
         trophic_role_codes=trophic_role_codes,
         meat_mode_codes=meat_mode_codes,
     )
-    trophic_role_counts, meat_mode_counts = world._population_trophic_counts(alive)
+    trophic_role_counts, meat_mode_counts = _population_trophic_counts_from_telemetry(
+        alive,
+        agent_telemetry,
+        trophic_role_codes=trophic_role_codes,
+        meat_mode_codes=meat_mode_codes,
+    )
     reproduction_stats = runtime_reproduction.build_frame_reproduction_stats(
         world,
         alive,
@@ -349,8 +420,22 @@ def capture_frame(
         trophic_role_counts=trophic_role_counts,
         meat_mode_counts=meat_mode_counts,
         reproduction_stats=reproduction_stats,
-        trophic_role_grid=world._trophic_role_grid(alive),
-        meat_mode_grid=world._meat_mode_grid(alive),
+        trophic_role_grid=_agent_category_grid(
+            alive,
+            agent_telemetry,
+            width=world.config.width,
+            height=world.config.height,
+            telemetry_field="trophic_role",
+            codes=trophic_role_codes,
+        ),
+        meat_mode_grid=_agent_category_grid(
+            alive,
+            agent_telemetry,
+            width=world.config.width,
+            height=world.config.height,
+            telemetry_field="meat_mode",
+            codes=meat_mode_codes,
+        ),
         alive_count=len(alive),
         births_this_tick=births_this_tick,
         deaths_this_tick=deaths_this_tick,

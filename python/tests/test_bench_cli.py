@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import unittest
 
 from evolution_sim.cli.bench import (
@@ -109,6 +112,111 @@ class BenchCliTests(unittest.TestCase):
                 worker_count=1,
                 ticks=0,
             )
+
+    def test_cli_timeout_emits_partial_json_report(self) -> None:
+        environment = {
+            **os.environ,
+            "PYTHONHASHSEED": "0",
+            "PYTHONPATH": "python",
+        }
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "evolution_sim.cli.bench",
+                "--warmup",
+                "0",
+                "--runs",
+                "1",
+                "--scenario",
+                "summary_seed7_ticks100",
+                "--scenario-timeout-seconds",
+                "0.001",
+                "--skip-multiprocess",
+            ],
+            check=False,
+            cwd=os.getcwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout)
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["scenarios"], [])
+        self.assertEqual(payload["error"]["type"], "TimeoutError")
+        self.assertEqual(payload["error"]["completed_scenarios"], 0)
+        self.assertIn("summary_seed7_ticks100", payload["error"]["phase"])
+
+    def test_cli_success_marks_report_complete(self) -> None:
+        environment = {
+            **os.environ,
+            "PYTHONHASHSEED": "0",
+            "PYTHONPATH": "python",
+        }
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "evolution_sim.cli.bench",
+                "--warmup",
+                "0",
+                "--runs",
+                "1",
+                "--scenario",
+                "summary_seed7_ticks20",
+                "--skip-multiprocess",
+            ],
+            check=False,
+            cwd=os.getcwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout)
+        self.assertTrue(payload["complete"])
+        self.assertNotIn("error", payload)
+
+    def test_cli_multiprocess_timeout_emits_partial_json_report(self) -> None:
+        environment = {
+            **os.environ,
+            "PYTHONHASHSEED": "0",
+            "PYTHONPATH": "python",
+        }
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "evolution_sim.cli.bench",
+                "--warmup",
+                "0",
+                "--runs",
+                "1",
+                "--scenario",
+                "summary_seed7_ticks20",
+                "--multiprocess-timeout-seconds",
+                "0.001",
+            ],
+            check=False,
+            cwd=os.getcwd(),
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout)
+        self.assertFalse(payload["complete"])
+        self.assertEqual(len(payload["scenarios"]), 1)
+        self.assertEqual(payload["error"]["phase"], "multiprocess summary rollout")
+        self.assertEqual(payload["error"]["type"], "TimeoutError")
+        self.assertEqual(payload["error"]["completed_scenarios"], 1)
 
 
 if __name__ == "__main__":

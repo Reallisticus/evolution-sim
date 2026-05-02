@@ -58,6 +58,14 @@ class SexualOffspringPlan:
     limit_reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ChildBirthPlan:
+    """Constructed children and per-child parent costs before world mutation."""
+
+    children: tuple[Agent, ...]
+    parent_energy_costs: tuple[float, ...]
+
+
 @dataclass(slots=True)
 class ReproductiveGroupRecord:
     """Live compatibility group metadata, not a species or replay taxonomy record."""
@@ -1396,6 +1404,46 @@ def reproduce_asexual(
     destination: tuple[int, int],
     parent_profile: TrophicProfile,
 ) -> bool:
+    birth_plan = build_asexual_child_birth_plan(
+        world,
+        parent,
+        destination,
+        parent_profile,
+    )
+    child = birth_plan.children[0]
+    parent_cost = birth_plan.parent_energy_costs[0]
+    parent.energy -= parent_cost
+    parent.last_reproduction_tick = world.tick
+    world._place_agent(child)
+    record_asexual_birth(
+        world.reproductive_groups,
+        parent,
+        child,
+        tick=world.tick,
+    )
+    world.next_agent_id += 1
+    world.births += 1
+    world.last_birth_tick = world.tick
+    if world.record_tick_details:
+        world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
+    world._invalidate_biotic_state()
+    emit_reproduction_event(
+        world,
+        actor=parent,
+        child=child,
+        parents=(parent,),
+        reproduction_mode=runtime_mating.ASEXUAL_REPRODUCTION_MODE,
+        parent_energy_costs=(parent_cost,),
+    )
+    return True
+
+
+def build_asexual_child_birth_plan(
+    world: Any,
+    parent: Agent,
+    destination: tuple[int, int],
+    parent_profile: TrophicProfile,
+) -> ChildBirthPlan:
     child_genome = animal_mode_stabilized_child_genome(
         world,
         parent.genome,
@@ -1428,32 +1476,10 @@ def reproduce_asexual(
         mind_inheritance_metadata=empty_mind_inheritance_metadata(),
     )
     parent_cost = reproduction_energy_cost(world, parent_profile)
-    parent.energy -= parent_cost
-    parent.last_reproduction_tick = world.tick
-    world._place_agent(child)
-    record_asexual_birth(
-        world.reproductive_groups,
-        parent,
-        child,
-        tick=world.tick,
+    return ChildBirthPlan(
+        children=(child,),
+        parent_energy_costs=(parent_cost,),
     )
-    world.next_agent_id += 1
-    world.births += 1
-    world.last_birth_tick = world.tick
-    if world.record_tick_details:
-        world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-    world._invalidate_biotic_state()
-    world._emit(
-        EventType.AGENT_REPRODUCED,
-        agent_id=parent.agent_id,
-        data=_reproduction_event_payload(
-            child=child,
-            parents=(parent,),
-            reproduction_mode=runtime_mating.ASEXUAL_REPRODUCTION_MODE,
-            parent_energy_costs=(parent_cost,),
-        ),
-    )
-    return True
 
 
 def reproduce_sexual(
@@ -1516,6 +1542,68 @@ def _reproduce_sexual_birth_count(
     multi_offspring_limit_reasons = list(offspring_plan.limit_reasons)
     if offspring_count < offspring_plan.count:
         multi_offspring_limit_reasons.append("local_destination_capacity")
+    birth_plan = build_sexual_child_birth_plan(
+        world,
+        parent,
+        partner,
+        destinations,
+        parent_profile,
+        partner_profile,
+        mate_candidate,
+        parent_cost=parent_cost,
+        partner_cost=partner_cost,
+    )
+    children = list(birth_plan.children)
+
+    parent.energy -= parent_cost * offspring_count
+    partner.energy -= partner_cost * offspring_count
+    parent.last_reproduction_tick = world.tick
+    partner.last_reproduction_tick = world.tick
+    child_ids = [child.agent_id for child in children]
+    for index, child in enumerate(children):
+        world._place_agent(child)
+        record_sexual_birth(
+            world.reproductive_groups,
+            parent,
+            partner,
+            child,
+            tick=world.tick,
+        )
+        if world.record_tick_details:
+            world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
+        emit_reproduction_event(
+            world,
+            actor=parent,
+            child=child,
+            parents=(parent, partner),
+            reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
+            parent_energy_costs=birth_plan.parent_energy_costs,
+            mate_candidate=mate_candidate,
+            offspring_count=offspring_count,
+            offspring_index=index + 1,
+            sibling_child_ids=child_ids,
+            multi_offspring_desired_count=offspring_plan.desired_count,
+            multi_offspring_limit_reasons=tuple(multi_offspring_limit_reasons),
+        )
+    world.next_agent_id += offspring_count
+    world.births += offspring_count
+    world.last_birth_tick = world.tick
+    world._invalidate_biotic_state()
+    return offspring_count
+
+
+def build_sexual_child_birth_plan(
+    world: Any,
+    parent: Agent,
+    partner: Agent,
+    destinations: list[tuple[int, int]],
+    parent_profile: TrophicProfile,
+    partner_profile: TrophicProfile,
+    mate_candidate: runtime_mating.MateCandidate,
+    *,
+    parent_cost: float,
+    partner_cost: float,
+) -> ChildBirthPlan:
     child_energy_fraction = sexual_child_starting_fraction(
         world.config.reproduction.child_energy_fraction,
         world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
@@ -1570,43 +1658,10 @@ def _reproduce_sexual_birth_count(
             )
         )
 
-    parent.energy -= parent_cost * offspring_count
-    partner.energy -= partner_cost * offspring_count
-    parent.last_reproduction_tick = world.tick
-    partner.last_reproduction_tick = world.tick
-    child_ids = [child.agent_id for child in children]
-    for index, child in enumerate(children):
-        world._place_agent(child)
-        record_sexual_birth(
-            world.reproductive_groups,
-            parent,
-            partner,
-            child,
-            tick=world.tick,
-        )
-        if world.record_tick_details:
-            world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-        world._emit(
-            EventType.AGENT_REPRODUCED,
-            agent_id=parent.agent_id,
-            data=_reproduction_event_payload(
-                child=child,
-                parents=(parent, partner),
-                reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
-                parent_energy_costs=(parent_cost, partner_cost),
-                mate_candidate=mate_candidate,
-                offspring_count=offspring_count,
-                offspring_index=index + 1,
-                sibling_child_ids=child_ids,
-                multi_offspring_desired_count=offspring_plan.desired_count,
-                multi_offspring_limit_reasons=tuple(multi_offspring_limit_reasons),
-            ),
-        )
-    world.next_agent_id += offspring_count
-    world.births += offspring_count
-    world.last_birth_tick = world.tick
-    world._invalidate_biotic_state()
-    return offspring_count
+    return ChildBirthPlan(
+        children=tuple(children),
+        parent_energy_costs=(parent_cost, partner_cost),
+    )
 
 
 def _sexual_offspring_plan(
@@ -1703,7 +1758,40 @@ def _sexual_offspring_destinations(
     return destinations
 
 
-def _reproduction_event_payload(
+def emit_reproduction_event(
+    world: Any,
+    *,
+    actor: Agent,
+    child: Agent,
+    parents: tuple[Agent, ...],
+    reproduction_mode: str,
+    parent_energy_costs: tuple[float, ...],
+    mate_candidate: runtime_mating.MateCandidate | None = None,
+    offspring_count: int = 1,
+    offspring_index: int | None = None,
+    sibling_child_ids: list[int] | None = None,
+    multi_offspring_desired_count: int = 1,
+    multi_offspring_limit_reasons: tuple[str, ...] = (),
+) -> None:
+    world._emit(
+        EventType.AGENT_REPRODUCED,
+        agent_id=actor.agent_id,
+        data=build_reproduction_event_payload(
+            child=child,
+            parents=parents,
+            reproduction_mode=reproduction_mode,
+            parent_energy_costs=parent_energy_costs,
+            mate_candidate=mate_candidate,
+            offspring_count=offspring_count,
+            offspring_index=offspring_index,
+            sibling_child_ids=sibling_child_ids,
+            multi_offspring_desired_count=multi_offspring_desired_count,
+            multi_offspring_limit_reasons=multi_offspring_limit_reasons,
+        ),
+    )
+
+
+def build_reproduction_event_payload(
     *,
     child: Agent,
     parents: tuple[Agent, ...],

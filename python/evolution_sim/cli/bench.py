@@ -311,6 +311,29 @@ def _scenario_stats(scenario: BenchScenario, runs: list[dict[str, object]]) -> d
     }
 
 
+def _benchmark_protocol(*, warmup_runs: int, measured_runs: int) -> dict[str, object]:
+    return {
+        "warmup_runs": warmup_runs,
+        "measured_runs": measured_runs,
+        "machine_profile": {
+            "cpu": platform.processor() or platform.machine(),
+            "ram_gib": round(
+                (
+                    os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+                )
+                / (1024**3),
+                2,
+            )
+            if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names
+            else None,
+            "os": platform.platform(),
+            "python": platform.python_version(),
+        },
+        "rss_unit": "KiB",
+        "scenario_repetition_isolation": "fresh_process",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark simulator modes with a fixed protocol.")
     parser.add_argument("--warmup", type=int, default=1)
@@ -346,72 +369,85 @@ def main() -> None:
         else SCENARIOS
     )
     results: list[dict[str, object]] = []
-    for scenario in scenarios:
-        print(f"[bench] scenario {scenario.name} start", file=sys.stderr, flush=True)
-        for index in range(args.warmup):
-            print(
-                f"[bench] scenario {scenario.name} warmup {index + 1}/{args.warmup} start",
-                file=sys.stderr,
-                flush=True,
-            )
-            _run_once_isolated(
-                scenario,
-                timeout_seconds=args.scenario_timeout_seconds,
-            )
-            print(
-                f"[bench] scenario {scenario.name} warmup {index + 1}/{args.warmup} complete",
-                file=sys.stderr,
-                flush=True,
-            )
-        runs: list[dict[str, object]] = []
-        for index in range(args.runs):
-            print(
-                f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} start",
-                file=sys.stderr,
-                flush=True,
-            )
-            runs.append(
+    payload = {
+        "protocol": _benchmark_protocol(
+            warmup_runs=args.warmup,
+            measured_runs=args.runs,
+        ),
+        "complete": True,
+        "scenarios": results,
+        "multi_process_summary_rollout": None,
+    }
+    current_phase = "startup"
+    try:
+        for scenario in scenarios:
+            current_phase = f"scenario {scenario.name}"
+            print(f"[bench] scenario {scenario.name} start", file=sys.stderr, flush=True)
+            for index in range(args.warmup):
+                current_phase = (
+                    f"scenario {scenario.name} warmup {index + 1}/{args.warmup}"
+                )
+                print(
+                    f"[bench] scenario {scenario.name} warmup "
+                    f"{index + 1}/{args.warmup} start",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 _run_once_isolated(
                     scenario,
                     timeout_seconds=args.scenario_timeout_seconds,
                 )
-            )
-            print(
-                f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} complete",
-                file=sys.stderr,
-                flush=True,
-            )
-        results.append(_scenario_stats(scenario, runs))
-        print(f"[bench] scenario {scenario.name} complete", file=sys.stderr, flush=True)
-
-    payload = {
-        "protocol": {
-            "warmup_runs": args.warmup,
-            "measured_runs": args.runs,
-            "machine_profile": {
-                "cpu": platform.processor() or platform.machine(),
-                "ram_gib": round(
-                    (
-                        os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-                    )
-                    / (1024**3),
-                    2,
+                print(
+                    f"[bench] scenario {scenario.name} warmup "
+                    f"{index + 1}/{args.warmup} complete",
+                    file=sys.stderr,
+                    flush=True,
                 )
-                if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names
-                else None,
-                "os": platform.platform(),
-                "python": platform.python_version(),
-            },
-            "rss_unit": "KiB",
-            "scenario_repetition_isolation": "fresh_process",
-        },
-        "scenarios": results,
-        "multi_process_summary_rollout": None,
-    }
-    if not args.skip_multiprocess:
-        payload["multi_process_summary_rollout"] = _run_multi_process_summary_rollout(
-            timeout_seconds=args.multiprocess_timeout_seconds,
+            runs: list[dict[str, object]] = []
+            for index in range(args.runs):
+                current_phase = (
+                    f"scenario {scenario.name} run {index + 1}/{args.runs}"
+                )
+                print(
+                    f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} start",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                runs.append(
+                    _run_once_isolated(
+                        scenario,
+                        timeout_seconds=args.scenario_timeout_seconds,
+                    )
+                )
+                print(
+                    f"[bench] scenario {scenario.name} run {index + 1}/{args.runs} complete",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            results.append(_scenario_stats(scenario, runs))
+            print(f"[bench] scenario {scenario.name} complete", file=sys.stderr, flush=True)
+
+        if not args.skip_multiprocess:
+            current_phase = "multiprocess summary rollout"
+            payload["multi_process_summary_rollout"] = _run_multi_process_summary_rollout(
+                timeout_seconds=args.multiprocess_timeout_seconds,
+            )
+    except Exception as exc:
+        payload["complete"] = False
+        payload["error"] = {
+            "phase": current_phase,
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "completed_scenarios": len(results),
+            "requested_scenarios": len(scenarios),
+        }
+        print(
+            f"[bench] failed during {current_phase}: {exc}",
+            file=sys.stderr,
+            flush=True,
         )
+        print(json.dumps(payload, indent=2))
+        raise SystemExit(1)
     print(json.dumps(payload, indent=2))
 
 

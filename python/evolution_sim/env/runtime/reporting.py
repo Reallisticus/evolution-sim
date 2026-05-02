@@ -166,6 +166,71 @@ def empty_grouped_diet_totals(groups: list[str] | dict[str, int]) -> dict[str, d
     return {str(group): empty_diet_totals() for group in groups}
 
 
+def finalize_diet_totals(totals: dict[str, float]) -> dict[str, float]:
+    animal_events = totals["fresh_kill_events"] + totals["carcass_events"]
+    animal_energy = totals["fresh_kill_energy"] + totals["carcass_energy"]
+    total_energy = totals["plant_energy"] + animal_energy
+    return {
+        **{
+            key: round(value, 4) if isinstance(value, float) else value
+            for key, value in totals.items()
+        },
+        "animal_events": animal_events,
+        "animal_energy": round(animal_energy, 4),
+        "plant_energy_share": round(
+            totals["plant_energy"] / max(total_energy, 1e-9),
+            4,
+        )
+        if total_energy > 0
+        else 0.0,
+        "animal_energy_share": round(
+            animal_energy / max(total_energy, 1e-9),
+            4,
+        )
+        if total_energy > 0
+        else 0.0,
+        "fresh_kill_energy_share": round(
+            totals["fresh_kill_energy"] / max(total_energy, 1e-9),
+            4,
+        )
+        if total_energy > 0
+        else 0.0,
+        "carcass_energy_share": round(
+            totals["carcass_energy"] / max(total_energy, 1e-9),
+            4,
+        )
+        if total_energy > 0
+        else 0.0,
+    }
+
+
+def finalize_grouped_diet_totals(
+    grouped_totals: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    return {
+        group: finalize_diet_totals(totals)
+        for group, totals in grouped_totals.items()
+    }
+
+
+def finalize_animal_resource_opportunity_counts(
+    counts: dict[str, int | float],
+) -> dict[str, int | float]:
+    return {
+        key: round(value, 4) if isinstance(value, float) else int(value)
+        for key, value in counts.items()
+    }
+
+
+def finalize_grouped_animal_resource_opportunity_counts(
+    grouped_counts: dict[str, dict[str, int | float]],
+) -> dict[str, dict[str, int | float]]:
+    return {
+        group: finalize_animal_resource_opportunity_counts(counts)
+        for group, counts in grouped_counts.items()
+    }
+
+
 def empty_terrain_occupancy() -> dict[str, int]:
     return {**{terrain: 0 for terrain in LAND_TERRAINS}, "water_access": 0}
 
