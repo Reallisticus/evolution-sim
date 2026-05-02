@@ -440,6 +440,10 @@ def build_trajectory_summary(
         "action_outcome_schema_version": payload["action_outcome_schema_version"],
         "record_count": payload["record_count"],
         "invalid_action_count": payload["invalid_action_count"],
+        "invalid_observation_action_count": payload[
+            "invalid_observation_action_count"
+        ],
+        "invalid_resolution_action_count": payload["invalid_resolution_action_count"],
         "action_counts": payload["action_counts"],
         "mean_reward": payload["mean_reward"],
     }
@@ -449,6 +453,8 @@ def empty_trajectory_stats() -> dict[str, object]:
     return {
         "record_count": 0,
         "invalid_action_count": 0,
+        "invalid_observation_action_count": 0,
+        "invalid_resolution_action_count": 0,
         "action_counts": Counter(),
         "total_reward": 0.0,
     }
@@ -461,6 +467,13 @@ def update_trajectory_stats(
     stats["record_count"] = int(stats["record_count"]) + 1
     if not bool(record["action_valid"]):
         stats["invalid_action_count"] = int(stats["invalid_action_count"]) + 1
+        stats["invalid_observation_action_count"] = (
+            int(stats["invalid_observation_action_count"]) + 1
+        )
+    if not bool(record["resolution_action_valid"]):
+        stats["invalid_resolution_action_count"] = (
+            int(stats["invalid_resolution_action_count"]) + 1
+        )
     action_counts = stats["action_counts"]
     if not isinstance(action_counts, Counter):
         raise TypeError("trajectory stats action_counts must be a Counter")
@@ -480,6 +493,12 @@ def build_trajectory_summary_from_stats(stats: dict[str, object]) -> dict[str, o
     return {
         "record_count": record_count,
         "invalid_action_count": int(stats["invalid_action_count"]),
+        "invalid_observation_action_count": int(
+            stats["invalid_observation_action_count"]
+        ),
+        "invalid_resolution_action_count": int(
+            stats["invalid_resolution_action_count"]
+        ),
         "action_counts": {
             action: action_counts[action] for action in sorted(action_counts)
         },

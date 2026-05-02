@@ -11,7 +11,9 @@ from evolution_sim.env.fields import EnvironmentFieldMaps, generate_environment_
 from evolution_sim.env.runtime.actions import DecisionContext, build_decision_context
 import evolution_sim.env.runtime.action_space as runtime_action_space
 import evolution_sim.env.runtime.actions as runtime_actions
+import evolution_sim.env.runtime.feeding as runtime_feeding
 import evolution_sim.env.runtime.frames as runtime_frames
+import evolution_sim.env.runtime.lifecycle as runtime_lifecycle
 import evolution_sim.env.runtime.mating as runtime_mating
 import evolution_sim.env.runtime.policy as runtime_policy
 import evolution_sim.env.runtime.resources as runtime_resources
@@ -28,7 +30,7 @@ from evolution_sim.env.runtime.biotic import (
 )
 from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_neighbor_ratio
 from evolution_sim.env.runtime.collectors import collector_for_mode
-from evolution_sim.env.runtime.derived import reset_derived_caches
+from evolution_sim.env.runtime.derived import DerivedTileMemo, reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
 import evolution_sim.env.runtime.observations as runtime_observations
@@ -41,9 +43,7 @@ from evolution_sim.env.runtime.reporting import (
     build_species_metrics as build_shared_species_metrics,
     empty_carcass_totals,
     empty_combat_totals,
-    empty_diet_totals,
     empty_fresh_kill_totals,
-    empty_grouped_diet_totals,
     empty_hydrology_exposure_counts,
     empty_terrain_occupancy,
     SpeciesMetricSample,
@@ -77,8 +77,8 @@ ECOLOGY_STATE_CODES = {"stable": 0, "lush": 1, "recovering": 2, "depleted": 3}
 HAZARD_TYPE_CODES = {"none": 0, "exposure": 1, "instability": 2}
 TROPHIC_ROLE_CODES = {"none": 0, "herbivore": 1, "omnivore": 2, "carnivore": 3}
 MEAT_MODE_CODES = {"none": 0, "scavenger": 1, "hunter": 2, "mixed": 3}
-ANIMAL_RESOURCE_KINDS = ("fresh_kill", "carcass")
-ANIMAL_RESOURCE_POLICY_BLOCKERS = ("occupant", "hazard", "water", "movement_mask")
+ANIMAL_RESOURCE_KINDS = runtime_feeding.ANIMAL_RESOURCE_KINDS
+ANIMAL_RESOURCE_POLICY_BLOCKERS = runtime_feeding.ANIMAL_RESOURCE_POLICY_BLOCKERS
 NON_LAND_ECOLOGY_CODE = -1
 HYDROLOGY_REASON_CODES = {"none": 0, "adjacent_water": 1, "wetland": 2, "flooded": 3}
 HYDROLOGY_SUPPORT_FLAGS = {"adjacent_to_water": 1, "wetland": 2, "flooded": 4}
@@ -147,6 +147,10 @@ class SimulationWorld:
         self.births = 0
         self.deaths = 0
         self.peak_alive_agents = 0
+        self.carrying_capacity_near_cap_ticks = 0
+        self.carrying_capacity_at_cap_ticks = 0
+        self.carrying_capacity_saturation_births = 0
+        self.carrying_capacity_saturation_deaths = 0
         self.last_birth_tick: int | None = None
         self.species_registry: dict[int, dict[str, object]] = {}
         self.reproductive_groups: dict[
@@ -195,6 +199,9 @@ class SimulationWorld:
         self.run_diet_by_meat_mode = self._empty_grouped_diet_totals(MEAT_MODE_CODES)
         self.run_animal_resource_opportunity_by_meat_mode = (
             self._empty_grouped_animal_resource_opportunity_counts(MEAT_MODE_CODES)
+        )
+        self.run_resource_pressure_totals = (
+            runtime_resources.empty_resource_pressure_totals()
         )
         self.tick_animal_resource_consumption_by_meat_mode = (
             self._empty_grouped_animal_resource_consumption_counts(MEAT_MODE_CODES)
@@ -888,128 +895,39 @@ class SimulationWorld:
 
     @staticmethod
     def _empty_carcass_totals() -> dict[str, float]:
-        return {
-            "carcass_tiles": 0,
-            "total_carcass_energy": 0.0,
-            "deposition_events": 0,
-            "energy_deposited": 0.0,
-            "energy_decayed": 0.0,
-            "consumption_events": 0,
-            "energy_consumed": 0.0,
-            "gained_energy": 0.0,
-        }
+        return empty_carcass_totals()
 
     @staticmethod
     def _empty_fresh_kill_totals() -> dict[str, float]:
-        return {
-            "fresh_kill_tiles": 0,
-            "total_fresh_kill_energy": 0.0,
-            "deposition_events": 0,
-            "energy_deposited": 0.0,
-            "energy_converted_to_carcass": 0.0,
-            "consumption_events": 0,
-            "energy_consumed": 0.0,
-            "gained_energy": 0.0,
-        }
+        return empty_fresh_kill_totals()
 
     @staticmethod
     def _empty_diet_totals() -> dict[str, float]:
-        return {
-            "plant_events": 0,
-            "plant_energy": 0.0,
-            "fresh_kill_events": 0,
-            "fresh_kill_energy": 0.0,
-            "carcass_events": 0,
-            "carcass_energy": 0.0,
-        }
+        return runtime_feeding.empty_diet_totals()
 
     @staticmethod
     def _empty_grouped_diet_totals(groups: list[str] | dict[str, int]) -> dict[str, dict[str, float]]:
-        return {group: SimulationWorld._empty_diet_totals() for group in groups}
+        return runtime_feeding.empty_grouped_diet_totals(groups)
 
     @staticmethod
     def _empty_animal_resource_consumption_counts() -> dict[str, int | float]:
-        return {
-            "fresh_kill_consumption_events": 0,
-            "fresh_kill_energy_consumed": 0.0,
-            "fresh_kill_gained_energy": 0.0,
-            "carcass_consumption_events": 0,
-            "carcass_energy_consumed": 0.0,
-            "carcass_gained_energy": 0.0,
-            "animal_resource_consumption_events": 0,
-            "animal_resource_energy_consumed": 0.0,
-            "animal_resource_gained_energy": 0.0,
-        }
+        return runtime_feeding.empty_animal_resource_consumption_counts()
 
     @staticmethod
     def _empty_grouped_animal_resource_consumption_counts(
         groups: list[str] | dict[str, int],
     ) -> dict[str, dict[str, int | float]]:
-        return {
-            group: SimulationWorld._empty_animal_resource_consumption_counts()
-            for group in groups
-        }
+        return runtime_feeding.empty_grouped_animal_resource_consumption_counts(groups)
 
     @staticmethod
     def _empty_animal_resource_opportunity_counts() -> dict[str, int | float]:
-        counts: dict[str, int | float] = {
-            "alive_ticks": 0,
-            "alive_agent_ticks": 0,
-            "animal_resource_present_ticks": 0,
-            "animal_resource_present_agent_ticks": 0,
-            "animal_resource_absent_ticks": 0,
-            "animal_resource_absent_agent_ticks": 0,
-            "animal_resource_present_unconsumed_ticks": 0,
-            "animal_resource_present_unconsumed_agent_ticks": 0,
-            "animal_resource_reachable_ticks": 0,
-            "animal_resource_reachable_agent_ticks": 0,
-            "animal_resource_reachable_unconsumed_ticks": 0,
-            "animal_resource_reachable_unconsumed_agent_ticks": 0,
-            "animal_resource_present_unreachable_ticks": 0,
-            "animal_resource_present_unreachable_agent_ticks": 0,
-            "animal_resource_consumed_ticks": 0,
-            "fresh_kill_present_ticks": 0,
-            "fresh_kill_present_agent_ticks": 0,
-            "fresh_kill_present_unconsumed_ticks": 0,
-            "fresh_kill_present_unconsumed_agent_ticks": 0,
-            "fresh_kill_reachable_ticks": 0,
-            "fresh_kill_reachable_agent_ticks": 0,
-            "fresh_kill_reachable_unconsumed_ticks": 0,
-            "fresh_kill_reachable_unconsumed_agent_ticks": 0,
-            "fresh_kill_present_unreachable_ticks": 0,
-            "fresh_kill_present_unreachable_agent_ticks": 0,
-            "fresh_kill_consumed_ticks": 0,
-            "carcass_present_ticks": 0,
-            "carcass_present_agent_ticks": 0,
-            "carcass_present_unconsumed_ticks": 0,
-            "carcass_present_unconsumed_agent_ticks": 0,
-            "carcass_reachable_ticks": 0,
-            "carcass_reachable_agent_ticks": 0,
-            "carcass_reachable_unconsumed_ticks": 0,
-            "carcass_reachable_unconsumed_agent_ticks": 0,
-            "carcass_present_unreachable_ticks": 0,
-            "carcass_present_unreachable_agent_ticks": 0,
-            "carcass_consumed_ticks": 0,
-            **SimulationWorld._empty_animal_resource_consumption_counts(),
-        }
-        for resource in ("animal_resource", *ANIMAL_RESOURCE_KINDS):
-            counts[f"{resource}_policy_actionable_ticks"] = 0
-            counts[f"{resource}_policy_actionable_agent_ticks"] = 0
-            counts[f"{resource}_reachable_policy_blocked_ticks"] = 0
-            counts[f"{resource}_reachable_policy_blocked_agent_ticks"] = 0
-            for blocker in ANIMAL_RESOURCE_POLICY_BLOCKERS:
-                counts[f"{resource}_policy_blocked_by_{blocker}_ticks"] = 0
-                counts[f"{resource}_policy_blocked_by_{blocker}_agent_ticks"] = 0
-        return counts
+        return runtime_feeding.empty_animal_resource_opportunity_counts()
 
     @staticmethod
     def _empty_grouped_animal_resource_opportunity_counts(
         groups: list[str] | dict[str, int],
     ) -> dict[str, dict[str, int | float]]:
-        return {
-            group: SimulationWorld._empty_animal_resource_opportunity_counts()
-            for group in groups
-        }
+        return runtime_feeding.empty_grouped_animal_resource_opportunity_counts(groups)
 
     @staticmethod
     def _empty_reproduction_blocked_counts() -> dict[str, int]:
@@ -1045,10 +963,7 @@ class SimulationWorld:
         food_source: str,
         gained_energy: float,
     ) -> None:
-        if food_source not in {"plant", "fresh_kill", "carcass"}:
-            raise ValueError(f"Unsupported food source: {food_source}")
-        totals[f"{food_source}_events"] += 1
-        totals[f"{food_source}_energy"] += gained_energy
+        runtime_feeding.accumulate_diet_totals(totals, food_source, gained_energy)
 
     def _emit(
         self,
@@ -1076,15 +991,11 @@ class SimulationWorld:
 
     @staticmethod
     def _prune_fresh_kill_deposits(tile: Tile) -> None:
-        tile.fresh_kill_deposits = [
-            deposit for deposit in tile.fresh_kill_deposits if deposit.energy_remaining > 1e-9
-        ]
+        runtime_resources.prune_fresh_kill_deposits(tile)
 
     @staticmethod
     def _prune_carcass_deposits(tile: Tile) -> None:
-        tile.carcass_deposits = [
-            deposit for deposit in tile.carcass_deposits if deposit.energy_remaining > 1e-9
-        ]
+        runtime_resources.prune_carcass_deposits(tile)
 
     def _invalidate_biotic_state(self) -> None:
         self._record_runtime_cost("biotic_state_invalidations")
@@ -1098,292 +1009,64 @@ class SimulationWorld:
 
     @staticmethod
     def _merge_fresh_kill_deposit_group(deposits: list[FreshKillDeposit]) -> FreshKillDeposit:
-        if len(deposits) == 1:
-            return deposits[0]
-        total_energy = sum(deposit.energy_remaining for deposit in deposits)
-        if total_energy <= 0:
-            return deposits[0]
-        source_species = deposits[0].source_species
-        if any(deposit.source_species != source_species for deposit in deposits[1:]):
-            source_species = None
-        source_agent_id = deposits[0].source_agent_id
-        if any(deposit.source_agent_id != source_agent_id for deposit in deposits[1:]):
-            source_agent_id = None
-        killer_id = deposits[0].killer_id
-        if any(deposit.killer_id != killer_id for deposit in deposits[1:]):
-            killer_id = None
-        return FreshKillDeposit(
-            energy_remaining=total_energy,
-            source_species=source_species,
-            source_agent_id=source_agent_id,
-            death_tick=min(deposit.death_tick for deposit in deposits),
-            killer_id=killer_id,
-        )
+        return runtime_resources.merge_fresh_kill_deposit_group(deposits)
 
     def _carcass_freshness_bucket(self, freshness: float) -> int:
-        bucket_size = max(self.config.carcasses.freshness_merge_bucket, 1e-6)
-        return int(self._clamp01(freshness) / bucket_size)
+        return runtime_resources.carcass_freshness_bucket(
+            freshness,
+            freshness_merge_bucket=self.config.carcasses.freshness_merge_bucket,
+        )
 
     @staticmethod
     def _merge_carcass_deposit_group(deposits: list[CarcassDeposit]) -> CarcassDeposit:
-        if len(deposits) == 1:
-            return deposits[0]
-        total_energy = sum(deposit.energy_remaining for deposit in deposits)
-        if total_energy <= 0:
-            return deposits[0]
-        source_species = deposits[0].source_species
-        if any(deposit.source_species != source_species for deposit in deposits[1:]):
-            source_species = None
-        source_agent_id = deposits[0].source_agent_id
-        if any(deposit.source_agent_id != source_agent_id for deposit in deposits[1:]):
-            source_agent_id = None
-        cause = deposits[0].cause
-        if any(deposit.cause != cause for deposit in deposits[1:]):
-            cause = "mixed"
-        killer_id = deposits[0].killer_id
-        if any(deposit.killer_id != killer_id for deposit in deposits[1:]):
-            killer_id = None
-        return CarcassDeposit(
-            energy_remaining=total_energy,
-            freshness=sum(
-                deposit.energy_remaining * deposit.freshness for deposit in deposits
-            )
-            / total_energy,
-            source_species=source_species,
-            source_agent_id=source_agent_id,
-            death_tick=min(deposit.death_tick for deposit in deposits),
-            cause=cause,
-            killer_id=killer_id,
-        )
+        return runtime_resources.merge_carcass_deposit_group(deposits)
 
     def _compact_carcass_deposits(self, tile: Tile) -> None:
-        self._prune_carcass_deposits(tile)
-        limit = max(1, self.config.carcasses.max_tile_deposits)
-        if len(tile.carcass_deposits) <= limit:
-            return
-
-        grouped: dict[tuple[int | None, int, str, int | None], list[CarcassDeposit]] = defaultdict(list)
-        for deposit in tile.carcass_deposits:
-            key = (
-                deposit.source_species,
-                self._carcass_freshness_bucket(deposit.freshness),
-                deposit.cause,
-                deposit.killer_id,
-            )
-            grouped[key].append(deposit)
-
-        compacted = [
-            self._merge_carcass_deposit_group(group)
-            for group in grouped.values()
-        ]
-        compacted.sort(
-            key=lambda deposit: (
-                deposit.source_species is None,
-                int(deposit.source_species or 0),
-                -deposit.freshness,
-                deposit.death_tick,
-            )
+        runtime_resources.compact_carcass_deposits(
+            tile,
+            max_tile_deposits=self.config.carcasses.max_tile_deposits,
+            freshness_merge_bucket=self.config.carcasses.freshness_merge_bucket,
         )
-
-        while len(compacted) > limit:
-            merge_index: int | None = None
-            merge_delta = float("inf")
-            for index in range(len(compacted) - 1):
-                current = compacted[index]
-                following = compacted[index + 1]
-                if current.source_species != following.source_species:
-                    continue
-                delta = abs(current.freshness - following.freshness)
-                if delta < merge_delta:
-                    merge_delta = delta
-                    merge_index = index
-            if merge_index is None:
-                break
-            merged = self._merge_carcass_deposit_group(
-                compacted[merge_index : merge_index + 2]
-            )
-            compacted[merge_index : merge_index + 2] = [merged]
-
-        tile.carcass_deposits = compacted
 
     def _compact_fresh_kill_deposits(self, tile: Tile) -> None:
-        self._prune_fresh_kill_deposits(tile)
-        limit = max(1, self.config.carcasses.max_tile_deposits)
-        if len(tile.fresh_kill_deposits) <= limit:
-            return
-
-        grouped: dict[tuple[int | None, int | None], list[FreshKillDeposit]] = defaultdict(list)
-        for deposit in tile.fresh_kill_deposits:
-            grouped[(deposit.source_species, deposit.killer_id)].append(deposit)
-
-        compacted = [
-            self._merge_fresh_kill_deposit_group(group)
-            for group in grouped.values()
-        ]
-        compacted.sort(
-            key=lambda deposit: (
-                deposit.source_species is None,
-                int(deposit.source_species or 0),
-                -deposit.death_tick,
-            )
+        runtime_resources.compact_fresh_kill_deposits(
+            tile,
+            max_tile_deposits=self.config.carcasses.max_tile_deposits,
         )
-        if len(compacted) > limit:
-            overflow = compacted[limit - 1 :]
-            compacted = compacted[: limit - 1] + [self._merge_fresh_kill_deposit_group(overflow)]
-        tile.fresh_kill_deposits = compacted
 
     def _carcass_source_breakdown(
         self,
         deposits: list[CarcassDeposit],
     ) -> list[dict[str, object]]:
-        source_energy: dict[tuple[int | None, int | None, int | None], float] = defaultdict(float)
-        for deposit in deposits:
-            if deposit.energy_remaining <= 0:
-                continue
-            source_energy[
-                (
-                    deposit.source_agent_id,
-                    deposit.death_tick,
-                    deposit.source_species,
-                )
-            ] += deposit.energy_remaining
-        breakdown = [
-            {
-                "source_agent_id": source_agent_id,
-                "death_tick": death_tick,
-                "source_species": source_species,
-                "energy": round(energy, 4),
-            }
-            for (source_agent_id, death_tick, source_species), energy in source_energy.items()
-            if energy > 0
-        ]
-        breakdown.sort(
-            key=lambda item: (
-                -float(item["energy"]),
-                item["source_species"] is None,
-                item["source_agent_id"] is None,
-                int(item["source_species"] or 0),
-                int(item["source_agent_id"] or 0),
-                int(item["death_tick"]) if item["death_tick"] is not None else -1,
-            )
-        )
-        return breakdown
+        return runtime_resources.carcass_source_breakdown(deposits)
 
     def _fresh_kill_source_breakdown(
         self,
         deposits: list[FreshKillDeposit],
     ) -> list[dict[str, object]]:
-        source_energy: dict[tuple[int | None, int | None, int | None, int | None], float] = (
-            defaultdict(float)
-        )
-        for deposit in deposits:
-            if deposit.energy_remaining <= 0:
-                continue
-            source_energy[
-                (
-                    deposit.source_agent_id,
-                    deposit.death_tick,
-                    deposit.source_species,
-                    deposit.killer_id,
-                )
-            ] += deposit.energy_remaining
-        breakdown = [
-            {
-                "source_agent_id": source_agent_id,
-                "death_tick": death_tick,
-                "source_species": source_species,
-                "killer_id": killer_id,
-                "energy": round(energy, 4),
-            }
-            for (
-                source_agent_id,
-                death_tick,
-                source_species,
-                killer_id,
-            ), energy in source_energy.items()
-            if energy > 0
-        ]
-        breakdown.sort(
-            key=lambda item: (
-                -float(item["energy"]),
-                item["source_species"] is None,
-                item["source_agent_id"] is None,
-                int(item["source_species"] or 0),
-                int(item["source_agent_id"] or 0),
-                int(item["death_tick"]) if item["death_tick"] is not None else -1,
-            )
-        )
-        return breakdown
+        return runtime_resources.fresh_kill_source_breakdown(deposits)
 
     @staticmethod
     def _resolved_source_species(source_breakdown: list[dict[str, object]]) -> int | None:
-        if not source_breakdown:
-            return None
-        source_species = {entry.get("source_species") for entry in source_breakdown}
-        if None in source_species:
-            return None
-        if len(source_species) == 1:
-            return next(iter(source_species))
-        return None
+        return runtime_resources.resolved_source_species(source_breakdown)
 
     def _carcass_tile_state(self, tile: Tile) -> dict[str, object]:
-        total_energy = tile.carcass_energy
-        source_breakdown = self._carcass_source_breakdown(tile.carcass_deposits)
-        dominant_source_species = self._resolved_source_species(source_breakdown)
-        return {
-            "deposit_count": len(tile.carcass_deposits),
-            "total_energy": round(total_energy, 4),
-            "avg_freshness": round(tile.carcass_decay, 4),
-            "dominant_source_species": dominant_source_species,
-            "mixed_sources": len(source_breakdown) > 1,
-            "source_breakdown": source_breakdown,
-        }
+        return runtime_resources.carcass_tile_state(self, tile)
 
     def _fresh_kill_tile_state(self, tile: Tile) -> dict[str, object]:
-        total_energy = tile.fresh_kill_energy
-        source_breakdown = self._fresh_kill_source_breakdown(tile.fresh_kill_deposits)
-        dominant_source_species = self._resolved_source_species(source_breakdown)
-        return {
-            "deposit_count": len(tile.fresh_kill_deposits),
-            "total_energy": round(total_energy, 4),
-            "dominant_source_species": dominant_source_species,
-            "mixed_sources": len(source_breakdown) > 1,
-            "source_breakdown": source_breakdown,
-        }
+        return runtime_resources.fresh_kill_tile_state(self, tile)
 
     def _carcass_tile_summary_for_position(self, x: int, y: int) -> dict[str, object]:
-        summary = self._carcass_tile_state(self.grid[y][x])
-        return {
-            "x": x,
-            "y": y,
-            **summary,
-        }
+        return runtime_resources.carcass_tile_summary_for_position(self, x, y)
 
     def _fresh_kill_tile_summary_for_position(self, x: int, y: int) -> dict[str, object]:
-        summary = self._fresh_kill_tile_state(self.grid[y][x])
-        return {
-            "x": x,
-            "y": y,
-            **summary,
-        }
+        return runtime_resources.fresh_kill_tile_summary_for_position(self, x, y)
 
     def _carcass_patch_summaries(self) -> list[dict[str, object]]:
-        patches: list[dict[str, object]] = []
-        for y, row in enumerate(self.grid):
-            for x, tile in enumerate(row):
-                if tile.terrain == "water" or tile.carcass_energy <= 0:
-                    continue
-                patches.append(self._carcass_tile_summary_for_position(x, y))
-        return patches
+        return runtime_resources.carcass_patch_summaries(self)
 
     def _fresh_kill_patch_summaries(self) -> list[dict[str, object]]:
-        patches: list[dict[str, object]] = []
-        for y, row in enumerate(self.grid):
-            for x, tile in enumerate(row):
-                if tile.terrain == "water" or tile.fresh_kill_energy <= 0:
-                    continue
-                patches.append(self._fresh_kill_tile_summary_for_position(x, y))
-        return patches
+        return runtime_resources.fresh_kill_patch_summaries(self)
 
     def _deposit_fresh_kill(
         self,
@@ -1396,50 +1079,16 @@ class SimulationWorld:
         source_agent_id: int | None,
         killer_id: int | None,
     ) -> dict[str, object]:
-        if energy <= 0:
-            return self._fresh_kill_tile_summary_for_position(x, y)
-        tile.fresh_kill_deposits.append(
-            FreshKillDeposit(
-                energy_remaining=energy,
-                source_species=source_species,
-                source_agent_id=source_agent_id,
-                death_tick=self.tick,
-                killer_id=killer_id,
-            )
+        return runtime_resources.deposit_fresh_kill(
+            self,
+            tile,
+            x=x,
+            y=y,
+            energy=energy,
+            source_species=source_species,
+            source_agent_id=source_agent_id,
+            killer_id=killer_id,
         )
-        self._compact_fresh_kill_deposits(tile)
-        self.run_fresh_kill_totals["deposition_events"] += 1
-        self.run_fresh_kill_totals["energy_deposited"] += energy
-        self.tick_fresh_kill_deposited_energy += energy
-        patch_state = self._fresh_kill_tile_summary_for_position(x, y)
-        if self.record_tick_details:
-            source_breakdown = self._fresh_kill_source_breakdown(
-                [
-                    FreshKillDeposit(
-                        energy_remaining=energy,
-                        source_species=source_species,
-                        source_agent_id=source_agent_id,
-                        death_tick=self.tick,
-                        killer_id=killer_id,
-                    )
-                ]
-            )
-            self.tick_fresh_kill_deposit_events.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "source_species": self._resolved_source_species(source_breakdown),
-                    "deposited_energy": round(energy, 4),
-                    "killer_id": killer_id,
-                    "x": x,
-                    "y": y,
-                    "deposit_count": patch_state["deposit_count"],
-                    "tile_fresh_kill_energy": patch_state["total_energy"],
-                    "dominant_source_species": patch_state["dominant_source_species"],
-                    "mixed_sources": patch_state["mixed_sources"],
-                    "source_breakdown": source_breakdown,
-                }
-            )
-        return patch_state
 
     def _convert_fresh_kill_to_carcass(
         self,
@@ -1449,58 +1098,13 @@ class SimulationWorld:
         y: int,
         conversion_rate: float,
     ) -> float:
-        if conversion_rate <= 0 or not tile.fresh_kill_deposits:
-            return 0.0
-        converted_deposits: list[CarcassDeposit] = []
-        converted_energy = 0.0
-        for deposit in tile.fresh_kill_deposits:
-            amount = min(deposit.energy_remaining, deposit.energy_remaining * conversion_rate)
-            if amount <= 0:
-                continue
-            deposit.energy_remaining -= amount
-            converted_energy += amount
-            converted_deposits.append(
-                CarcassDeposit(
-                    energy_remaining=amount,
-                    freshness=1.0,
-                    source_species=deposit.source_species,
-                    source_agent_id=deposit.source_agent_id,
-                    death_tick=deposit.death_tick,
-                    cause="fresh_kill_decay",
-                    killer_id=deposit.killer_id,
-                )
-            )
-        self._compact_fresh_kill_deposits(tile)
-        if not converted_deposits:
-            return 0.0
-        tile.carcass_deposits.extend(converted_deposits)
-        self._compact_carcass_deposits(tile)
-        self.run_fresh_kill_totals["energy_converted_to_carcass"] += converted_energy
-        self.tick_fresh_kill_to_carcass_energy += converted_energy
-        self.run_carcass_totals["deposition_events"] += len(converted_deposits)
-        self.run_carcass_totals["energy_deposited"] += converted_energy
-        self.tick_carcass_deposited_energy += converted_energy
-        if self.record_tick_details:
-            patch_state = self._carcass_tile_summary_for_position(x, y)
-            source_breakdown = self._carcass_source_breakdown(converted_deposits)
-            dominant_source_species = self._resolved_source_species(source_breakdown)
-            self.tick_carcass_deposit_events.append(
-                {
-                    "source_agent_id": None,
-                    "source_species": dominant_source_species,
-                    "deposited_energy": round(converted_energy, 4),
-                    "x": x,
-                    "y": y,
-                    "deposit_count": patch_state["deposit_count"],
-                    "tile_carcass_energy": patch_state["total_energy"],
-                    "tile_avg_freshness": patch_state["avg_freshness"],
-                    "dominant_source_species": patch_state["dominant_source_species"],
-                    "mixed_sources": patch_state["mixed_sources"],
-                    "converted_from_fresh_kill": True,
-                    "source_breakdown": source_breakdown,
-                }
-            )
-        return converted_energy
+        return runtime_resources.convert_fresh_kill_to_carcass(
+            self,
+            tile,
+            x=x,
+            y=y,
+            conversion_rate=conversion_rate,
+        )
 
     def _deposit_carcass(
         self,
@@ -1514,206 +1118,44 @@ class SimulationWorld:
         cause: str,
         killer_id: int | None,
     ) -> dict[str, object]:
-        if energy <= 0:
-            return self._carcass_tile_summary_for_position(x, y)
-        tile.carcass_deposits.append(
-            CarcassDeposit(
-                energy_remaining=energy,
-                freshness=1.0,
-                source_species=source_species,
-                source_agent_id=source_agent_id,
-                death_tick=self.tick,
-                cause=cause,
-                killer_id=killer_id,
-            )
+        return runtime_resources.deposit_carcass(
+            self,
+            tile,
+            x=x,
+            y=y,
+            energy=energy,
+            source_species=source_species,
+            source_agent_id=source_agent_id,
+            cause=cause,
+            killer_id=killer_id,
         )
-        self._compact_carcass_deposits(tile)
-        self.run_carcass_totals["deposition_events"] += 1
-        self.run_carcass_totals["energy_deposited"] += energy
-        self.tick_carcass_deposited_energy += energy
-        patch_state = self._carcass_tile_summary_for_position(x, y)
-        if self.record_tick_details or self.record_events:
-            source_breakdown = self._carcass_source_breakdown(
-                [
-                    CarcassDeposit(
-                        energy_remaining=energy,
-                        freshness=1.0,
-                        source_species=source_species,
-                        source_agent_id=source_agent_id,
-                        death_tick=self.tick,
-                        cause=cause,
-                        killer_id=killer_id,
-                    )
-                ]
-            )
-            resolved_source_species = self._resolved_source_species(source_breakdown)
-        else:
-            source_breakdown = []
-            resolved_source_species = None
-        if self.record_tick_details:
-            self.tick_carcass_deposit_events.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "source_species": resolved_source_species,
-                    "deposited_energy": round(energy, 4),
-                    "x": x,
-                    "y": y,
-                    "deposit_count": patch_state["deposit_count"],
-                    "tile_carcass_energy": patch_state["total_energy"],
-                    "tile_avg_freshness": patch_state["avg_freshness"],
-                    "dominant_source_species": patch_state["dominant_source_species"],
-                    "mixed_sources": patch_state["mixed_sources"],
-                    "source_breakdown": source_breakdown,
-                }
-            )
-        if self.record_events:
-            self._emit(
-                EventType.CARCASS_DEPOSITED,
-                agent_id=source_agent_id,
-                data={
-                    "source_agent_id": source_agent_id,
-                    "source_species": resolved_source_species,
-                    "deposited_energy": round(energy, 4),
-                    "cause": cause,
-                    "killer_id": killer_id,
-                    "x": x,
-                    "y": y,
-                    "tile_carcass_energy_after": patch_state["total_energy"],
-                    "tile_avg_freshness_after": patch_state["avg_freshness"],
-                    "tile_deposit_count_after": patch_state["deposit_count"],
-                    "tile_mixed_sources_after": patch_state["mixed_sources"],
-                    "tile_dominant_source_species_after": patch_state["dominant_source_species"],
-                    "tile_source_breakdown_after": patch_state["source_breakdown"],
-                },
-            )
-        return patch_state
 
     def _decay_carcass_tile(self, tile: Tile, *, decay: float) -> float:
-        if decay <= 0 or not tile.carcass_deposits:
-            return 0.0
-        energy_decayed = 0.0
-        for deposit in tile.carcass_deposits:
-            before_energy = deposit.energy_remaining
-            deposit.freshness = max(0.0, deposit.freshness - decay)
-            deposit.energy_remaining = max(
-                0.0,
-                deposit.energy_remaining - decay * (0.42 + deposit.energy_remaining * 0.56),
-            )
-            energy_decayed += before_energy - deposit.energy_remaining
-        self._compact_carcass_deposits(tile)
-        return energy_decayed
+        return runtime_resources.decay_carcass_tile(
+            tile,
+            decay=decay,
+            max_tile_deposits=self.config.carcasses.max_tile_deposits,
+            freshness_merge_bucket=self.config.carcasses.freshness_merge_bucket,
+        )
 
     def _consume_carcass_from_tile(self, tile: Tile, requested_amount: float) -> dict[str, object]:
-        remaining = max(0.0, requested_amount)
-        if remaining <= 0 or not tile.carcass_deposits:
-            return {
-                "consumed": 0.0,
-                "avg_freshness": 0.0,
-                "deposit_breakdown": [],
-                "source_breakdown": [],
-            }
-        consumed = 0.0
-        freshness_weighted = 0.0
-        deposit_breakdown: list[dict[str, object]] = []
-        deposits = sorted(
-            tile.carcass_deposits,
-            key=lambda deposit: (-deposit.freshness, -deposit.death_tick, -(deposit.source_agent_id or 0)),
+        return runtime_resources.consume_carcass_from_tile(
+            tile,
+            requested_amount,
+            max_tile_deposits=self.config.carcasses.max_tile_deposits,
+            freshness_merge_bucket=self.config.carcasses.freshness_merge_bucket,
         )
-        for deposit in deposits:
-            if remaining <= 0:
-                break
-            amount = min(deposit.energy_remaining, remaining)
-            if amount <= 0:
-                continue
-            freshness = 0.7 + deposit.freshness * 0.3
-            deposit.energy_remaining -= amount
-            deposit.freshness = max(0.0, deposit.freshness - amount * 0.18)
-            remaining -= amount
-            consumed += amount
-            freshness_weighted += amount * freshness
-            deposit_breakdown.append(
-                {
-                    "source_agent_id": deposit.source_agent_id,
-                    "source_species": deposit.source_species,
-                    "consumed": round(amount, 4),
-                    "freshness": round(freshness, 4),
-                    "death_tick": deposit.death_tick,
-                    "cause": deposit.cause,
-                }
-            )
-        self._compact_carcass_deposits(tile)
-        return {
-            "consumed": consumed,
-            "avg_freshness": freshness_weighted / consumed if consumed > 0 else 0.0,
-            "deposit_breakdown": deposit_breakdown,
-            "source_breakdown": self._carcass_source_breakdown(
-                [
-                    CarcassDeposit(
-                        energy_remaining=float(entry["consumed"]),
-                        freshness=0.0,
-                        source_species=entry["source_species"],
-                        source_agent_id=entry["source_agent_id"],
-                        death_tick=int(entry["death_tick"]),
-                        cause=str(entry["cause"]),
-                    )
-                    for entry in deposit_breakdown
-                ]
-            ),
-        }
 
     def _consume_fresh_kill_from_tile(
         self,
         tile: Tile,
         requested_amount: float,
     ) -> dict[str, object]:
-        remaining = max(0.0, requested_amount)
-        if remaining <= 0 or not tile.fresh_kill_deposits:
-            return {
-                "consumed": 0.0,
-                "deposit_breakdown": [],
-                "source_breakdown": [],
-            }
-        consumed = 0.0
-        deposit_breakdown: list[dict[str, object]] = []
-        deposits = sorted(
-            tile.fresh_kill_deposits,
-            key=lambda deposit: (-deposit.death_tick, -(deposit.source_agent_id or 0)),
+        return runtime_resources.consume_fresh_kill_from_tile(
+            tile,
+            requested_amount,
+            max_tile_deposits=self.config.carcasses.max_tile_deposits,
         )
-        for deposit in deposits:
-            if remaining <= 0:
-                break
-            amount = min(deposit.energy_remaining, remaining)
-            if amount <= 0:
-                continue
-            deposit.energy_remaining -= amount
-            remaining -= amount
-            consumed += amount
-            deposit_breakdown.append(
-                {
-                    "source_agent_id": deposit.source_agent_id,
-                    "source_species": deposit.source_species,
-                    "consumed": round(amount, 4),
-                    "death_tick": deposit.death_tick,
-                    "killer_id": deposit.killer_id,
-                }
-            )
-        self._compact_fresh_kill_deposits(tile)
-        return {
-            "consumed": consumed,
-            "deposit_breakdown": deposit_breakdown,
-            "source_breakdown": self._fresh_kill_source_breakdown(
-                [
-                    FreshKillDeposit(
-                        energy_remaining=float(entry["consumed"]),
-                        source_species=entry["source_species"],
-                        source_agent_id=entry["source_agent_id"],
-                        death_tick=int(entry["death_tick"]),
-                        killer_id=entry["killer_id"],
-                    )
-                    for entry in deposit_breakdown
-                ]
-            ),
-        }
 
     def _season_state(self) -> dict[str, object]:
         season_index = (self.tick // self.config.climate.season_length) % 2
@@ -2082,81 +1524,10 @@ class SimulationWorld:
         )
 
     def _carcass_snapshot(self) -> tuple[list[list[int]], list[list[int]], dict[str, float]]:
-        energy_codes: list[list[int]] = []
-        freshness_codes: list[list[int]] = []
-        count = 0
-        total_energy = 0.0
-        total_freshness_energy = 0.0
-        total_deposits = 0
-        mixed_source_tiles = 0
-        for row in self.grid:
-            energy_row: list[int] = []
-            freshness_row: list[int] = []
-            for tile in row:
-                if tile.terrain == "water":
-                    energy_row.append(NON_LAND_ECOLOGY_CODE)
-                    freshness_row.append(NON_LAND_ECOLOGY_CODE)
-                    continue
-                if tile.carcass_energy <= 0:
-                    energy_row.append(0)
-                    freshness_row.append(0)
-                    continue
-                count += 1
-                total_energy += tile.carcass_energy
-                total_freshness_energy += tile.carcass_energy * tile.carcass_decay
-                total_deposits += len(tile.carcass_deposits)
-                if len(self._carcass_source_breakdown(tile.carcass_deposits)) > 1:
-                    mixed_source_tiles += 1
-                energy_row.append(round(self._clamp01(tile.carcass_energy) * 100))
-                freshness_row.append(round(self._clamp01(tile.carcass_decay) * 100))
-            energy_codes.append(energy_row)
-            freshness_codes.append(freshness_row)
-        return (
-            energy_codes,
-            freshness_codes,
-            {
-                "carcass_tiles": count,
-                "total_carcass_energy": round(total_energy, 4),
-                "avg_carcass_freshness": round(
-                    total_freshness_energy / total_energy if total_energy > 0 else 0.0,
-                    4,
-                ),
-                "deposit_count": total_deposits,
-                "mixed_source_tiles": mixed_source_tiles,
-            },
-        )
+        return runtime_resources.carcass_snapshot(self)
 
     def _fresh_kill_snapshot(self) -> tuple[list[list[int]], dict[str, float]]:
-        energy_codes: list[list[int]] = []
-        count = 0
-        total_energy = 0.0
-        total_deposits = 0
-        mixed_source_tiles = 0
-        for row in self.grid:
-            energy_row: list[int] = []
-            for tile in row:
-                if tile.terrain == "water":
-                    energy_row.append(NON_LAND_ECOLOGY_CODE)
-                    continue
-                if tile.fresh_kill_energy <= 0:
-                    energy_row.append(0)
-                    continue
-                count += 1
-                total_energy += tile.fresh_kill_energy
-                total_deposits += len(tile.fresh_kill_deposits)
-                if len(self._fresh_kill_source_breakdown(tile.fresh_kill_deposits)) > 1:
-                    mixed_source_tiles += 1
-                energy_row.append(round(self._clamp01(tile.fresh_kill_energy) * 100))
-            energy_codes.append(energy_row)
-        return (
-            energy_codes,
-            {
-                "fresh_kill_tiles": count,
-                "total_fresh_kill_energy": round(total_energy, 4),
-                "deposit_count": total_deposits,
-                "mixed_source_tiles": mixed_source_tiles,
-            },
-        )
+        return runtime_resources.fresh_kill_snapshot(self)
 
     def _biotic_field_snapshot(
         self,
@@ -2307,14 +1678,7 @@ class SimulationWorld:
 
     @staticmethod
     def _record_recent_diet(agent: Agent, food_source: str, gained_energy: float) -> None:
-        if gained_energy <= 0:
-            return
-        if food_source == "plant":
-            agent.recent_plant_energy += gained_energy
-        elif food_source == "fresh_kill":
-            agent.recent_fresh_kill_energy += gained_energy
-        elif food_source == "carcass":
-            agent.recent_carcass_energy += gained_energy
+        runtime_feeding.record_recent_diet(agent, food_source, gained_energy)
 
     def _compute_trophic_profile_for_genome(self, genome: Genome) -> TrophicProfile:
         attack_cost_efficiency = 1.0 - self._normalized_gene(
@@ -2682,39 +2046,16 @@ class SimulationWorld:
         energy_after: float,
         potential_energy: float | None = None,
     ) -> None:
-        self._record_recent_diet(agent, food_source, gained_energy)
-        if self.record_tick_details:
-            self.tick_feeding_events.append(
-                {
-                    "agent_id": agent.agent_id,
-                    "species_id": self.current_species_map.get(
-                        agent.agent_id,
-                        self.agent_last_species_map.get(agent.agent_id),
-                    ),
-                    "food_source": food_source,
-                    "consumed": round(consumed, 4),
-                    "gained_energy": round(gained_energy, 4),
-                    "energy_before": round(energy_before, 4),
-                    "energy_after": round(energy_after, 4),
-                    "potential_energy": round(
-                        potential_energy if potential_energy is not None else gained_energy,
-                        4,
-                    ),
-                    "trophic_role": profile.role,
-                    "meat_mode": profile.meat_mode,
-                    "matched_diet_ratio": round(self._matched_diet_ratio(agent, profile), 4),
-                }
-            )
-        self._accumulate_diet_totals(self.run_diet_totals, food_source, gained_energy)
-        self._accumulate_diet_totals(
-            self.run_diet_by_trophic_role[profile.role],
+        runtime_feeding.record_feeding_event(
+            self,
+            agent,
             food_source,
+            consumed,
             gained_energy,
-        )
-        self._accumulate_diet_totals(
-            self.run_diet_by_meat_mode[profile.meat_mode],
-            food_source,
-            gained_energy,
+            profile,
+            energy_before=energy_before,
+            energy_after=energy_after,
+            potential_energy=potential_energy,
         )
 
     def _record_animal_resource_consumption(
@@ -2724,70 +2065,27 @@ class SimulationWorld:
         consumed: float,
         gained_energy: float,
     ) -> None:
-        if food_source not in {"fresh_kill", "carcass"}:
-            return
-        counts = self.tick_animal_resource_consumption_by_meat_mode[meat_mode]
-        counts[f"{food_source}_consumption_events"] += 1
-        counts[f"{food_source}_energy_consumed"] += consumed
-        counts[f"{food_source}_gained_energy"] += gained_energy
-        counts["animal_resource_consumption_events"] += 1
-        counts["animal_resource_energy_consumed"] += consumed
-        counts["animal_resource_gained_energy"] += gained_energy
+        runtime_feeding.record_animal_resource_consumption(
+            self,
+            meat_mode,
+            food_source,
+            consumed,
+            gained_energy,
+        )
 
     def _animal_resource_presence_this_tick(self) -> dict[str, bool]:
-        fresh_kill_consumed = any(
-            counts["fresh_kill_consumption_events"] > 0
-            for counts in self.tick_animal_resource_consumption_by_meat_mode.values()
-        )
-        carcass_consumed = any(
-            counts["carcass_consumption_events"] > 0
-            for counts in self.tick_animal_resource_consumption_by_meat_mode.values()
-        )
-        fresh_kill_present = (
-            self.tick_fresh_kill_deposited_energy > 0
-            or fresh_kill_consumed
-            or any(
-                tile.fresh_kill_energy > 1e-9
-                for row in self.grid
-                for tile in row
-                if tile.terrain != "water"
-            )
-        )
-        carcass_present = (
-            self.tick_carcass_deposited_energy > 0
-            or carcass_consumed
-            or any(
-                tile.carcass_energy > 1e-9
-                for row in self.grid
-                for tile in row
-                if tile.terrain != "water"
-            )
-        )
-        return {
-            "fresh_kill": fresh_kill_present,
-            "carcass": carcass_present,
-            "animal_resource": fresh_kill_present or carcass_present,
-        }
+        return runtime_feeding.animal_resource_presence_this_tick(self)
 
     @staticmethod
     def _empty_animal_resource_reachability_tick_counts() -> dict[str, int]:
-        counts = {
-            "animal_resource_reachable_agents": 0,
-            "fresh_kill_reachable_agents": 0,
-            "carcass_reachable_agents": 0,
-        }
-        for resource in ("animal_resource", *ANIMAL_RESOURCE_KINDS):
-            counts[f"{resource}_policy_actionable_agents"] = 0
-            counts[f"{resource}_reachable_policy_blocked_agents"] = 0
-            for blocker in ANIMAL_RESOURCE_POLICY_BLOCKERS:
-                counts[f"{resource}_policy_blocked_by_{blocker}_agents"] = 0
-        return counts
+        return runtime_feeding.empty_animal_resource_reachability_tick_counts()
 
     def _agent_reachable_animal_resources(
         self,
         agent: Agent,
         *,
         radius: int,
+        action_mask: dict[str, bool] | None = None,
     ) -> dict[str, object]:
         can_consume_fresh_kill = self._can_consume_fresh_kill(agent)
         can_consume_carcass = self._can_consume_carcass(agent)
@@ -2835,18 +2133,22 @@ class SimulationWorld:
                 visited.add((nx, ny))
                 frontier.append((nx, ny, distance + 1))
 
-        action_mask = runtime_action_space.build_action_mask(self, agent)
+        policy_action_mask = (
+            action_mask
+            if action_mask is not None
+            else runtime_action_space.build_action_mask(self, agent)
+        )
         fresh_kill_actionable, fresh_kill_blockers = self._policy_actionable_resource(
             agent,
             "fresh_kill",
             targets["fresh_kill"],
-            action_mask,
+            policy_action_mask,
         )
         carcass_actionable, carcass_blockers = self._policy_actionable_resource(
             agent,
             "carcass",
             targets["carcass"],
-            action_mask,
+            policy_action_mask,
         )
         animal_blockers = set(fresh_kill_blockers) | set(carcass_blockers)
         return {
@@ -2994,199 +2296,29 @@ class SimulationWorld:
     def _animal_resource_reachability_by_meat_mode(
         self,
         agents: list[Agent],
+        *,
+        action_masks_by_agent: dict[int, dict[str, bool]] | None = None,
+        resource_presence: dict[str, bool] | None = None,
     ) -> dict[str, dict[str, int]]:
-        reachability = {
-            mode: self._empty_animal_resource_reachability_tick_counts()
-            for mode in MEAT_MODE_CODES
-        }
-        radius = runtime_observations.NAVIGATION_RADIUS
-        for agent in agents:
-            profile = self._trophic_profile(agent)
-            mode_counts = reachability[profile.meat_mode]
-            reachable = self._agent_reachable_animal_resources(agent, radius=radius)
-            for resource in ANIMAL_RESOURCE_KINDS:
-                if bool(reachable[resource]):
-                    mode_counts[f"{resource}_reachable_agents"] += 1
-                    if bool(reachable[f"{resource}_policy_actionable"]):
-                        mode_counts[f"{resource}_policy_actionable_agents"] += 1
-                    else:
-                        mode_counts[f"{resource}_reachable_policy_blocked_agents"] += 1
-                        blockers = reachable[f"{resource}_policy_blockers"]
-                        if isinstance(blockers, set):
-                            for blocker in blockers:
-                                mode_counts[
-                                    f"{resource}_policy_blocked_by_{blocker}_agents"
-                                ] += 1
-            if bool(reachable["animal_resource"]):
-                mode_counts["animal_resource_reachable_agents"] += 1
-                if bool(reachable["animal_resource_policy_actionable"]):
-                    mode_counts["animal_resource_policy_actionable_agents"] += 1
-                else:
-                    mode_counts["animal_resource_reachable_policy_blocked_agents"] += 1
-                    blockers = reachable["animal_resource_policy_blockers"]
-                    if isinstance(blockers, set):
-                        for blocker in blockers:
-                            mode_counts[
-                                f"animal_resource_policy_blocked_by_{blocker}_agents"
-                            ] += 1
-        return reachability
+        return runtime_feeding.animal_resource_reachability_by_meat_mode(
+            self,
+            agents,
+            meat_mode_codes=MEAT_MODE_CODES,
+            radius=runtime_observations.NAVIGATION_RADIUS,
+            action_masks_by_agent=action_masks_by_agent,
+            resource_presence=resource_presence,
+        )
 
     def _record_animal_resource_opportunity_tick(
         self,
         meat_mode_counts: dict[str, int],
         reachability_by_meat_mode: dict[str, dict[str, int]],
     ) -> None:
-        presence = self._animal_resource_presence_this_tick()
-        for mode, agent_count in meat_mode_counts.items():
-            if agent_count <= 0:
-                continue
-            counts = self.run_animal_resource_opportunity_by_meat_mode[mode]
-            tick_consumption = self.tick_animal_resource_consumption_by_meat_mode[mode]
-            reachable_counts = reachability_by_meat_mode.get(
-                mode,
-                self._empty_animal_resource_reachability_tick_counts(),
-            )
-            counts["alive_ticks"] += 1
-            counts["alive_agent_ticks"] += agent_count
-            for key, value in tick_consumption.items():
-                counts[key] += value
-
-            animal_consumed = tick_consumption["animal_resource_consumption_events"] > 0
-            fresh_kill_consumed = tick_consumption["fresh_kill_consumption_events"] > 0
-            carcass_consumed = tick_consumption["carcass_consumption_events"] > 0
-            animal_reachable_agents = int(
-                reachable_counts.get("animal_resource_reachable_agents", 0)
-            )
-            animal_actionable_agents = int(
-                reachable_counts.get("animal_resource_policy_actionable_agents", 0)
-            )
-            animal_blocked_agents = int(
-                reachable_counts.get(
-                    "animal_resource_reachable_policy_blocked_agents",
-                    0,
-                )
-            )
-            fresh_kill_reachable_agents = int(
-                reachable_counts.get("fresh_kill_reachable_agents", 0)
-            )
-            fresh_kill_actionable_agents = int(
-                reachable_counts.get("fresh_kill_policy_actionable_agents", 0)
-            )
-            fresh_kill_blocked_agents = int(
-                reachable_counts.get(
-                    "fresh_kill_reachable_policy_blocked_agents",
-                    0,
-                )
-            )
-            carcass_reachable_agents = int(
-                reachable_counts.get("carcass_reachable_agents", 0)
-            )
-            carcass_actionable_agents = int(
-                reachable_counts.get("carcass_policy_actionable_agents", 0)
-            )
-            carcass_blocked_agents = int(
-                reachable_counts.get("carcass_reachable_policy_blocked_agents", 0)
-            )
-
-            def record_policy_actionability(resource: str, actionable_agents: int, blocked_agents: int) -> None:
-                if actionable_agents > 0:
-                    counts[f"{resource}_policy_actionable_ticks"] += 1
-                    counts[f"{resource}_policy_actionable_agent_ticks"] += actionable_agents
-                if blocked_agents > 0:
-                    counts[f"{resource}_reachable_policy_blocked_ticks"] += 1
-                    counts[
-                        f"{resource}_reachable_policy_blocked_agent_ticks"
-                    ] += blocked_agents
-                for blocker in ANIMAL_RESOURCE_POLICY_BLOCKERS:
-                    blocker_agents = int(
-                        reachable_counts.get(
-                            f"{resource}_policy_blocked_by_{blocker}_agents",
-                            0,
-                        )
-                    )
-                    if blocker_agents > 0:
-                        counts[f"{resource}_policy_blocked_by_{blocker}_ticks"] += 1
-                        counts[
-                            f"{resource}_policy_blocked_by_{blocker}_agent_ticks"
-                        ] += blocker_agents
-
-            if presence["animal_resource"]:
-                counts["animal_resource_present_ticks"] += 1
-                counts["animal_resource_present_agent_ticks"] += agent_count
-                if animal_consumed:
-                    counts["animal_resource_consumed_ticks"] += 1
-                else:
-                    counts["animal_resource_present_unconsumed_ticks"] += 1
-                    counts["animal_resource_present_unconsumed_agent_ticks"] += agent_count
-                if animal_reachable_agents > 0:
-                    counts["animal_resource_reachable_ticks"] += 1
-                    counts["animal_resource_reachable_agent_ticks"] += animal_reachable_agents
-                    if not animal_consumed:
-                        counts["animal_resource_reachable_unconsumed_ticks"] += 1
-                        counts[
-                            "animal_resource_reachable_unconsumed_agent_ticks"
-                        ] += animal_reachable_agents
-                    record_policy_actionability(
-                        "animal_resource",
-                        animal_actionable_agents,
-                        animal_blocked_agents,
-                    )
-                else:
-                    counts["animal_resource_present_unreachable_ticks"] += 1
-                    counts["animal_resource_present_unreachable_agent_ticks"] += agent_count
-            else:
-                counts["animal_resource_absent_ticks"] += 1
-                counts["animal_resource_absent_agent_ticks"] += agent_count
-
-            if presence["fresh_kill"]:
-                counts["fresh_kill_present_ticks"] += 1
-                counts["fresh_kill_present_agent_ticks"] += agent_count
-                if fresh_kill_consumed:
-                    counts["fresh_kill_consumed_ticks"] += 1
-                else:
-                    counts["fresh_kill_present_unconsumed_ticks"] += 1
-                    counts["fresh_kill_present_unconsumed_agent_ticks"] += agent_count
-                if fresh_kill_reachable_agents > 0:
-                    counts["fresh_kill_reachable_ticks"] += 1
-                    counts["fresh_kill_reachable_agent_ticks"] += fresh_kill_reachable_agents
-                    if not fresh_kill_consumed:
-                        counts["fresh_kill_reachable_unconsumed_ticks"] += 1
-                        counts[
-                            "fresh_kill_reachable_unconsumed_agent_ticks"
-                        ] += fresh_kill_reachable_agents
-                    record_policy_actionability(
-                        "fresh_kill",
-                        fresh_kill_actionable_agents,
-                        fresh_kill_blocked_agents,
-                    )
-                else:
-                    counts["fresh_kill_present_unreachable_ticks"] += 1
-                    counts["fresh_kill_present_unreachable_agent_ticks"] += agent_count
-
-            if presence["carcass"]:
-                counts["carcass_present_ticks"] += 1
-                counts["carcass_present_agent_ticks"] += agent_count
-                if carcass_consumed:
-                    counts["carcass_consumed_ticks"] += 1
-                else:
-                    counts["carcass_present_unconsumed_ticks"] += 1
-                    counts["carcass_present_unconsumed_agent_ticks"] += agent_count
-                if carcass_reachable_agents > 0:
-                    counts["carcass_reachable_ticks"] += 1
-                    counts["carcass_reachable_agent_ticks"] += carcass_reachable_agents
-                    if not carcass_consumed:
-                        counts["carcass_reachable_unconsumed_ticks"] += 1
-                        counts[
-                            "carcass_reachable_unconsumed_agent_ticks"
-                        ] += carcass_reachable_agents
-                    record_policy_actionability(
-                        "carcass",
-                        carcass_actionable_agents,
-                        carcass_blocked_agents,
-                    )
-                else:
-                    counts["carcass_present_unreachable_ticks"] += 1
-                    counts["carcass_present_unreachable_agent_ticks"] += agent_count
+        runtime_feeding.record_animal_resource_opportunity_tick(
+            self,
+            meat_mode_counts,
+            reachability_by_meat_mode,
+        )
 
     def _agent_biomass(self, agent: Agent) -> float:
         return (
@@ -3535,9 +2667,321 @@ class SimulationWorld:
         self._policy_id = decision.policy_id
         self._policy_version = decision.policy_version
         return decision.requested_action
+    def _action_scoring_context(
+        self,
+        agent: Agent,
+    ) -> runtime_actions.ActionScoringContext:
+        season = str(self._season_state()["name"])
+
+        def set_policy_action_source(source: str) -> None:
+            self._policy_action_source = source
+
+        return runtime_actions.ActionScoringContext(
+            width=self.config.width,
+            height=self.config.height,
+            default_vision_radius=self.config.default_vision_radius,
+            animal_channel_threshold=self.config.trophic.animal_channel_threshold,
+            hunter_vulnerability_weight=(
+                self.config.biotic_fields.hunter_vulnerability_weight
+            ),
+            season=season,
+            grid=self.grid,
+            agents=self.agents,
+            movement_actions=tuple(self._movement_actions()),
+            tile_memo=DerivedTileMemo(
+                world=self,
+                season=season,
+                climate_state=self._climate_state(),
+            ),
+            random_choice=self.rng.choice,
+            set_policy_action_source=set_policy_action_source,
+            profile_for=self._trophic_profile,
+            trophic_role=self._trophic_role,
+            energy_ratio=self._energy_ratio,
+            hydration_ratio=self._hydration_ratio,
+            health_ratio=self._health_ratio,
+            plant_intake_useful=self._plant_intake_useful,
+            plant_food_value=self._plant_food_value,
+            can_consume_fresh_kill=self._can_consume_fresh_kill,
+            fresh_kill_intake_useful=self._fresh_kill_intake_useful,
+            fresh_kill_food_value=self._fresh_kill_food_value,
+            can_consume_carcass=self._can_consume_carcass,
+            carcass_intake_useful=self._carcass_intake_useful,
+            carcass_food_value=self._carcass_food_value,
+            has_water_access=self._has_water_access,
+            can_attack=self._can_attack,
+            attack_value=self._attack_value,
+            prey_vulnerability=self._prey_vulnerability,
+            biotic_field_score=self._biotic_field_score,
+            can_move_to=self._can_move_to,
+            in_bounds=self._in_bounds,
+            water_access_reason=self._water_access_reason,
+            refuge_score=self._refuge_score,
+            hazard_at=self._hazard_at,
+            soft_refuge_reason=self._soft_refuge_reason,
+            terrain_preference_score=self._terrain_preference_score,
+            field_preference_score=self._field_preference_score,
+        )
+    def _action_mask_context(self, agent: Agent) -> runtime_action_space.ActionMaskContext:
+        profile = self._trophic_profile(agent)
+        tile = self.grid[agent.y][agent.x]
+
+        plant_intake_useful = self._plant_intake_useful(agent)
+        plant_food_value = (
+            self._plant_food_value(agent, tile, profile)
+            if plant_intake_useful
+            else 0.0
+        )
+        can_consume_fresh_kill = self._can_consume_fresh_kill(agent)
+        fresh_kill_intake_useful = (
+            self._fresh_kill_intake_useful(agent)
+            if can_consume_fresh_kill
+            else False
+        )
+        fresh_kill_food_value = (
+            self._fresh_kill_food_value(agent, tile, profile)
+            if can_consume_fresh_kill and fresh_kill_intake_useful
+            else 0.0
+        )
+        can_consume_carcass = self._can_consume_carcass(agent)
+        carcass_intake_useful = (
+            self._carcass_intake_useful(agent)
+            if can_consume_carcass
+            else False
+        )
+        carcass_food_value = (
+            self._carcass_food_value(agent, tile, profile)
+            if can_consume_carcass and carcass_intake_useful
+            else 0.0
+        )
+        adjacent_carcass_available = (
+            self._adjacent_scavenger_carcass_target(agent, profile) is not None
+            if can_consume_carcass and carcass_intake_useful
+            else False
+        )
+        can_attack = self._can_attack(agent)
+        movement_options: list[runtime_action_space.MovementActionAvailability] = []
+        for action, dx, dy in self._movement_actions():
+            x = agent.x + dx
+            y = agent.y + dy
+            target_id = self.grid[y][x].occupant_id if self._in_bounds(x, y) else None
+            target = self.agents.get(target_id) if target_id is not None else None
+            movement_options.append(
+                runtime_action_space.MovementActionAvailability(
+                    action=action,
+                    dx=dx,
+                    dy=dy,
+                    can_move=self._can_move_to(x, y),
+                    can_attack=(
+                        can_attack
+                        and target_id is not None
+                        and target_id != agent.agent_id
+                        and target is not None
+                        and target.alive
+                    ),
+                )
+            )
+        action_names = runtime_action_space.action_names_for_config(self)
+        return runtime_action_space.ActionMaskContext(
+            action_names=action_names,
+            can_eat=runtime_action_space.can_eat_from_values(
+                plant_intake_useful=plant_intake_useful,
+                plant_food_value=plant_food_value,
+                can_consume_fresh_kill=can_consume_fresh_kill,
+                fresh_kill_intake_useful=fresh_kill_intake_useful,
+                fresh_kill_food_value=fresh_kill_food_value,
+                can_consume_carcass=can_consume_carcass,
+                carcass_intake_useful=carcass_intake_useful,
+                carcass_food_value=carcass_food_value,
+                adjacent_carcass_available=adjacent_carcass_available,
+            ),
+            can_drink=self._has_water_access(agent),
+            movement=tuple(movement_options),
+            communication_action_available={
+                action: runtime_signals.communication_signal_action_available(
+                    self,
+                    agent,
+                    action,
+                )
+                for action in action_names
+                if action.startswith("signal_")
+            },
+        )
+    def _action_resolution_context(
+        self,
+        agent: Agent,
+    ) -> runtime_actions.ActionResolutionContext:
+        def eat_action_outcome() -> dict[str, object] | None:
+            return self._eat_action_outcome(agent)
+
+        def drink_action_outcome() -> dict[str, object] | None:
+            return self._drink_action_outcome(agent)
+
+        def signal_action_outcome(action: str) -> dict[str, object]:
+            return runtime_signals.emit_communication_signal_action(self, agent, action)
+
+        def attack_action_outcome(
+            action: str,
+            dx: int,
+            dy: int,
+        ) -> tuple[dict[str, object], dict[str, object] | None]:
+            return self._attack_action_outcome(agent, agent.x + dx, agent.y + dy)
+
+        def move_action(
+            action: str,
+            dx: int,
+            dy: int,
+        ) -> tuple[bool, dict[str, object] | None]:
+            nx = agent.x + dx
+            ny = agent.y + dy
+            if not self._can_move_to(nx, ny):
+                return False, None
+            from_x = agent.x
+            from_y = agent.y
+            self.grid[agent.y][agent.x].occupant_id = None
+            agent.x = nx
+            agent.y = ny
+            self.grid[agent.y][agent.x].occupant_id = agent.agent_id
+            movement = {
+                "moved": True,
+                "from_x": from_x,
+                "from_y": from_y,
+                "to_x": agent.x,
+                "to_y": agent.y,
+            }
+            self._emit(
+                EventType.AGENT_MOVED,
+                agent_id=agent.agent_id,
+                data={"x": agent.x, "y": agent.y, "action": action},
+            )
+            return True, movement
+
+        return runtime_actions.ActionResolutionContext(
+            movement_actions=tuple(self._movement_actions()),
+            eat_action_outcome=eat_action_outcome,
+            drink_action_outcome=drink_action_outcome,
+            signal_action_outcome=signal_action_outcome,
+            attack_action_outcome=attack_action_outcome,
+            move_action=move_action,
+        )
     def _action_mask(self, agent: Agent) -> dict[str, bool]:
         self._record_runtime_cost("action_mask_builds")
         return runtime_action_space.build_action_mask(self, agent)
+    def _observation_context(
+        self,
+        agent: Agent,
+    ) -> runtime_observations.ObservationContext:
+        width = self.config.width
+        height = self.config.height
+        water_reasons: dict[tuple[int, int], str] = {}
+        hydrology_support_codes: dict[tuple[int, int], int] = {}
+        refuge_scores: dict[tuple[int, int], float] = {}
+        hazards: dict[tuple[int, int], tuple[str, float]] = {}
+        ecology_states: dict[tuple[int, int], str] = {}
+        profile_for = self._trophic_profile
+        water_access_reason_for = self._water_access_reason
+        hydrology_support_code_for = self._hydrology_support_code
+        refuge_score_for = self._refuge_score
+        hazard_at_for = self._hazard_at
+        ecology_state_at_for = self._ecology_state_at
+        profile = self._trophic_profile(agent)
+        reproduction_ready = self._is_reproduction_ready(agent)
+        matched_diet_ratio = self._matched_diet_ratio(agent, profile)
+        self._record_runtime_cost("action_mask_builds")
+
+        def in_bounds(x: int, y: int) -> bool:
+            return 0 <= x < width and 0 <= y < height
+
+        def energy_ratio(candidate: Agent) -> float:
+            return candidate.energy / max(candidate.genome.max_energy, 1e-9)
+
+        def hydration_ratio(candidate: Agent) -> float:
+            return candidate.hydration / max(candidate.genome.max_hydration, 1e-9)
+
+        def health_ratio(candidate: Agent) -> float:
+            return candidate.health / max(candidate.max_health, 1e-9)
+
+        def prey_vulnerability(candidate: Agent) -> float:
+            return (
+                1.0
+                + candidate.injury_load * 0.9
+                + (1.0 - energy_ratio(candidate)) * 0.55
+                + (1.0 - hydration_ratio(candidate)) * 0.45
+                + (1.0 - health_ratio(candidate)) * 0.7
+            )
+
+        def water_access_reason(x: int, y: int) -> str:
+            if not in_bounds(x, y):
+                return "none"
+            key = (x, y)
+            if key not in water_reasons:
+                water_reasons[key] = water_access_reason_for(x, y)
+            return water_reasons[key]
+
+        def hydrology_support_code(x: int, y: int) -> int:
+            if not in_bounds(x, y):
+                return -1
+            key = (x, y)
+            if key not in hydrology_support_codes:
+                hydrology_support_codes[key] = hydrology_support_code_for(x, y)
+            return hydrology_support_codes[key]
+
+        def refuge_score(x: int, y: int) -> float:
+            if not in_bounds(x, y):
+                return 0.0
+            key = (x, y)
+            if key not in refuge_scores:
+                refuge_scores[key] = refuge_score_for(x, y)
+            return refuge_scores[key]
+
+        def hazard_at(x: int, y: int) -> tuple[str, float]:
+            if not in_bounds(x, y):
+                return ("none", 0.0)
+            key = (x, y)
+            if key not in hazards:
+                hazards[key] = hazard_at_for(x, y)
+            return hazards[key]
+
+        def ecology_state_at(x: int, y: int) -> str:
+            if not in_bounds(x, y):
+                return "none"
+            key = (x, y)
+            if key not in ecology_states:
+                tile = self.grid[y][x]
+                ecology_states[key] = (
+                    ecology_state_at_for(x, y) if tile.terrain != "water" else "none"
+                )
+            return ecology_states[key]
+
+        return runtime_observations.ObservationContext(
+            width=width,
+            height=height,
+            max_age=self.config.max_age,
+            grid=self.grid,
+            agents=self.agents,
+            climate_state=self._climate_state(),
+            biotic_state=self._current_biotic_state(),
+            signal_state=self._current_signal_state(),
+            action_mask=runtime_action_space.build_action_mask(self, agent),
+            movement_actions=tuple(self._movement_actions()),
+            profile_for=profile_for,
+            energy_ratio=energy_ratio,
+            hydration_ratio=hydration_ratio,
+            health_ratio=health_ratio,
+            is_reproduction_ready=lambda candidate: (
+                reproduction_ready if candidate.agent_id == agent.agent_id else False
+            ),
+            matched_diet_ratio=lambda candidate, candidate_profile: (
+                matched_diet_ratio if candidate.agent_id == agent.agent_id else 0.0
+            ),
+            water_access_reason=water_access_reason,
+            hydrology_support_code=hydrology_support_code,
+            refuge_score=refuge_score,
+            hazard_at=hazard_at,
+            ecology_state_at=ecology_state_at,
+            in_bounds=in_bounds,
+            prey_vulnerability=prey_vulnerability,
+        )
     def _observe_agent(self, agent: Agent) -> dict[str, object]:
         self._record_runtime_cost("observation_builds")
         return runtime_observations.build_observation(self, agent)
@@ -3795,42 +3239,7 @@ class SimulationWorld:
         )
     def _resolve_action(self, agent: Agent, action: str) -> bool:
         """Apply an action request and return whether it moved the agent."""
-        moved, _ = self._resolve_action_with_outcome(agent, action)
-        return moved
-
-    def _invalid_action_reason(
-        self,
-        action: str,
-        observation_action_mask: dict[str, bool],
-        resolution_action_mask: dict[str, bool],
-    ) -> str | None:
-        observation_valid = bool(observation_action_mask.get(action, False))
-        resolution_valid = bool(resolution_action_mask.get(action, False))
-        if resolution_valid:
-            return None
-        if not observation_valid:
-            return "not_in_observation_or_resolution_mask"
-        return "not_in_resolution_action_mask"
-
-    def _base_action_outcome(
-        self,
-        *,
-        requested_action: str,
-        resolved_action: str,
-        observation_action_mask: dict[str, bool],
-        resolution_action_mask: dict[str, bool],
-    ) -> dict[str, object]:
-        return runtime_trajectory.empty_action_outcome(
-            requested_action=requested_action,
-            resolved_action=resolved_action,
-            observation_action_valid=bool(observation_action_mask.get(requested_action, False)),
-            resolution_action_valid=bool(resolution_action_mask.get(requested_action, False)),
-            invalid_reason=self._invalid_action_reason(
-                requested_action,
-                observation_action_mask,
-                resolution_action_mask,
-            ),
-        )
+        return runtime_actions.resolve_action(self, agent, action)
 
     def _resolve_action_with_outcome(
         self,
@@ -3841,73 +3250,13 @@ class SimulationWorld:
         resolution_action_mask: dict[str, bool] | None = None,
     ) -> tuple[bool, dict[str, object]]:
         """Apply an action request and return movement plus the causal outcome."""
-        resolution_mask = resolution_action_mask or self._action_mask(agent)
-        observation_mask = observation_action_mask or resolution_mask
-        resolved_action = action if resolution_mask.get(action, False) else "stay"
-        outcome = self._base_action_outcome(
-            requested_action=action,
-            resolved_action=resolved_action,
-            observation_action_mask=observation_mask,
-            resolution_action_mask=resolution_mask,
+        return runtime_actions.resolve_action_with_outcome(
+            self,
+            agent,
+            action,
+            observation_action_mask=observation_action_mask,
+            resolution_action_mask=resolution_action_mask,
         )
-        if resolved_action == "stay":
-            return False, outcome
-        if action == "eat":
-            feeding = self._eat_action_outcome(agent)
-            if feeding is not None:
-                outcome["feeding"] = feeding
-            return False, outcome
-        if action == "drink":
-            drinking = self._drink_action_outcome(agent)
-            if drinking is not None:
-                outcome["drinking"] = drinking
-            return False, outcome
-        if action == "stay":
-            return False, outcome
-        if action.startswith("signal_"):
-            outcome["signal"] = runtime_signals.emit_communication_signal_action(
-                self, agent, action
-            )
-            return False, outcome
-        if action.startswith("attack_"):
-            for candidate, dx, dy in self._movement_actions():
-                if action != candidate.replace("move_", "attack_"):
-                    continue
-                attack, feeding = self._attack_action_outcome(agent, agent.x + dx, agent.y + dy)
-                outcome["attack"] = attack
-                if feeding is not None:
-                    outcome["feeding"] = feeding
-                return False, outcome
-            return False, outcome
-
-        for candidate, dx, dy in self._movement_actions():
-            if candidate != action:
-                continue
-            nx = agent.x + dx
-            ny = agent.y + dy
-            if not self._can_move_to(nx, ny):
-                return False, outcome
-            from_x = agent.x
-            from_y = agent.y
-            self.grid[agent.y][agent.x].occupant_id = None
-            agent.x = nx
-            agent.y = ny
-            self.grid[agent.y][agent.x].occupant_id = agent.agent_id
-            outcome["movement"] = {
-                "moved": True,
-                "from_x": from_x,
-                "from_y": from_y,
-                "to_x": agent.x,
-                "to_y": agent.y,
-            }
-            self._emit(
-                EventType.AGENT_MOVED,
-                agent_id=agent.agent_id,
-                data={"x": agent.x, "y": agent.y, "action": action},
-            )
-            return True, outcome
-
-        return False, outcome
 
     def _eat(self, agent: Agent) -> bool:
         self._eat_action_outcome(agent)
@@ -4057,6 +3406,7 @@ class SimulationWorld:
         )
         energy_before = agent.energy
         tile.food -= consumed
+        runtime_resources.record_plant_removed(self, consumed)
         tile.vegetation = self._clamp01(
             tile.vegetation
             - consumed
@@ -4086,46 +3436,16 @@ class SimulationWorld:
             - max(0.0, 0.36 - tile.vegetation) * 0.02
         )
         agent.energy = min(agent.genome.max_energy, agent.energy + potential_gain)
-        gained = agent.energy - energy_before
-        self._record_feeding_event(
+        return runtime_feeding.record_plant_intake(
+            self,
             agent,
-            "plant",
-            consumed,
-            gained,
             profile,
+            consumed=consumed,
             energy_before=energy_before,
             energy_after=agent.energy,
-            potential_energy=potential_gain,
+            potential_gain=potential_gain,
+            tile=tile,
         )
-        self._emit(
-            EventType.AGENT_ATE,
-            agent_id=agent.agent_id,
-            data={
-                "food_source": "plant",
-                "consumed": round(consumed, 4),
-                "energy_before": round(energy_before, 4),
-                "energy": round(agent.energy, 4),
-                "gained_energy": round(gained, 4),
-                "potential_gained_energy": round(potential_gain, 4),
-                "trophic_role": profile.role,
-                "meat_mode": profile.meat_mode,
-                "matched_diet_ratio": round(self._matched_diet_ratio(agent, profile), 4),
-                "vegetation": round(tile.vegetation, 4),
-                "recovery_debt": round(tile.recovery_debt, 4),
-                "shelter": round(tile.shelter, 4),
-            },
-        )
-        return {
-            "ate": True,
-            "food_source": "plant",
-            "x": agent.x,
-            "y": agent.y,
-            "consumed": round(consumed, 4),
-            "gained_energy": round(gained, 4),
-            "potential_gained_energy": round(potential_gain, 4),
-            "immediate_kill_feed": False,
-            "source_breakdown": [],
-        }
 
     def _consume_fresh_kill(
         self,
@@ -4247,165 +3567,20 @@ class SimulationWorld:
         immediate_kill_feed: bool,
         freshness: float | None,
     ) -> dict[str, object]:
-        energy_before = agent.energy
-        agent.energy = min(agent.genome.max_energy, agent.energy + potential_nutrition)
-        nutrition = agent.energy - energy_before
-        healing_multiplier = 1.0
-        if food_source == "carcass" and profile.meat_mode == "scavenger":
-            healing_multiplier = self.config.carcasses.scavenger_healing_multiplier
-        elif food_source == "fresh_kill" and profile.meat_mode in {"hunter", "mixed"}:
-            healing_multiplier = self.config.carcasses.fresh_kill_hunter_healing_multiplier
-        healed = (
-            consumed
-            * self.config.carcasses.healing_fraction
-            * healing_multiplier
-            * agent.genome.healing_efficiency
-        )
-        if food_source == "carcass" and profile.meat_mode == "scavenger":
-            agent.hydration = min(
-                agent.genome.max_hydration,
-                agent.hydration
-                + (
-                    consumed
-                    * self._scavenger_carcass_hydration_fraction(agent)
-                    * agent.genome.water_efficiency
-                ),
-            )
-        elif (
-            food_source == "carcass"
-            and profile.meat_mode == "hunter"
-            and self._hydration_ratio(agent)
-            < self.config.carcasses.hunter_carcass_hydration_max_ratio
-        ):
-            agent.hydration = min(
-                agent.genome.max_hydration,
-                agent.hydration
-                + (
-                    consumed
-                    * self.config.carcasses.hunter_carcass_hydration_fraction
-                    * agent.genome.water_efficiency
-                ),
-            )
-        elif food_source == "carcass" and profile.meat_mode == "mixed":
-            agent.hydration = min(
-                agent.genome.max_hydration,
-                agent.hydration
-                + (
-                    consumed
-                    * self.config.carcasses.mixed_carcass_hydration_fraction
-                    * agent.genome.water_efficiency
-                ),
-            )
-        if food_source == "fresh_kill" and profile.meat_mode in {"hunter", "mixed"}:
-            agent.hydration = min(
-                agent.genome.max_hydration,
-                agent.hydration
-                + (
-                    consumed
-                    * self.config.carcasses.fresh_kill_hydration_fraction
-                    * agent.genome.water_efficiency
-                ),
-            )
-        if healed > 0:
-            previous_health = agent.health
-            agent.health = min(agent.max_health, agent.health + healed)
-            if agent.health > previous_health:
-                agent.injury_load = self._clamp01(
-                    max(
-                        0.0,
-                        agent.injury_load - (agent.health - previous_health) / max(agent.max_health, 1e-9),
-                    )
-                )
-        event_bucket = (
-            self.tick_fresh_kill_events if food_source == "fresh_kill" else self.tick_carcass_events
-        )
-        if self.record_tick_details:
-            event_bucket.append(
-                {
-                    "agent_id": agent.agent_id,
-                    "species_id": self._species_id_for_agent(agent.agent_id),
-                    "consumed": round(consumed, 4),
-                    "energy": round(consumed, 4),
-                    "gained_energy": round(nutrition, 4),
-                    "potential_gained_energy": round(potential_nutrition, 4),
-                    "meat_mode": profile.meat_mode,
-                    "x": x,
-                    "y": y,
-                    "source_breakdown": source_breakdown,
-                    "immediate_kill_feed": immediate_kill_feed,
-                }
-            )
-        if food_source == "fresh_kill":
-            self.run_fresh_kill_totals["consumption_events"] += 1
-            self.run_fresh_kill_totals["energy_consumed"] += consumed
-            self.run_fresh_kill_totals["gained_energy"] += nutrition
-        else:
-            self.run_carcass_totals["consumption_events"] += 1
-            self.run_carcass_totals["energy_consumed"] += consumed
-            self.run_carcass_totals["gained_energy"] += nutrition
-        self._record_animal_resource_consumption(
-            profile.meat_mode,
-            food_source,
-            consumed,
-            nutrition,
-        )
-        self._record_feeding_event(
+        return runtime_feeding.apply_meat_intake(
+            self,
             agent,
             food_source,
             consumed,
-            nutrition,
+            potential_nutrition,
             profile,
-            energy_before=energy_before,
-            energy_after=agent.energy,
-            potential_energy=potential_nutrition,
+            x,
+            y,
+            source_breakdown,
+            deposit_breakdown,
+            immediate_kill_feed,
+            freshness,
         )
-        if self.record_events:
-            tile_state = (
-                self._fresh_kill_tile_summary_for_position(x, y)
-                if food_source == "fresh_kill"
-                else self._carcass_tile_summary_for_position(x, y)
-            )
-            self._emit(
-                EventType.AGENT_ATE,
-                agent_id=agent.agent_id,
-                data={
-                    "food_source": food_source,
-                    "consumed": round(consumed, 4),
-                    "energy_before": round(energy_before, 4),
-                    "energy": round(agent.energy, 4),
-                    "gained_energy": round(nutrition, 4),
-                    "potential_gained_energy": round(potential_nutrition, 4),
-                    "trophic_role": profile.role,
-                    "meat_mode": profile.meat_mode,
-                    "immediate_kill_feed": immediate_kill_feed,
-                    "health": round(agent.health, 4),
-                    "matched_diet_ratio": round(self._matched_diet_ratio(agent, profile), 4),
-                    "x": x,
-                    "y": y,
-                    "source_breakdown": source_breakdown,
-                    "deposit_breakdown": deposit_breakdown,
-                    "tile_mixed_sources_after": tile_state["mixed_sources"],
-                    "tile_dominant_source_species_after": tile_state["dominant_source_species"],
-                    "tile_source_breakdown_after": tile_state["source_breakdown"],
-                },
-            )
-            if freshness is not None:
-                self.events[-1].data["freshness"] = round(freshness, 4)
-                self.events[-1].data["tile_carcass_energy_after"] = tile_state["total_energy"]
-                self.events[-1].data["tile_avg_freshness_after"] = tile_state["avg_freshness"]
-            else:
-                self.events[-1].data["tile_fresh_kill_energy_after"] = tile_state["total_energy"]
-        return {
-            "ate": True,
-            "food_source": food_source,
-            "x": x,
-            "y": y,
-            "consumed": round(consumed, 4),
-            "gained_energy": round(nutrition, 4),
-            "potential_gained_energy": round(potential_nutrition, 4),
-            "immediate_kill_feed": immediate_kill_feed,
-            "source_breakdown": source_breakdown,
-        }
 
     def _drink(self, agent: Agent) -> bool:
         self._drink_action_outcome(agent)
@@ -4477,14 +3652,19 @@ class SimulationWorld:
 
         profile = self._trophic_profile(attacker)
         attack_cost_multiplier = attacker.genome.attack_cost_multiplier
-        attacker.energy -= self.config.combat.attack_energy_cost * attack_cost_multiplier
+        attack_energy_cost = (
+            self.config.combat.attack_energy_cost * attack_cost_multiplier
+        )
+        attacker.energy -= attack_energy_cost
         attacker.hydration -= self.config.combat.attack_hydration_cost * attack_cost_multiplier
+        runtime_resources.record_energy_spent(self, "attack", attack_energy_cost)
 
         damage = self._attack_damage(attacker, target, profile)
         success = damage >= 0.025
         kill = False
         if success:
-            self._apply_damage(
+            runtime_lifecycle.apply_damage(
+                self,
                 target,
                 damage,
                 source="attack",
@@ -4580,140 +3760,7 @@ class SimulationWorld:
         return max(0.0, attack_strength - defense_strength * 0.48)
 
     def _apply_metabolism(self, agent: Agent, moved: bool) -> None:
-        season = self._season_state()["name"]
-        move_cost = (
-            agent.genome.move_cost * (1.0 + agent.injury_load * 0.42) if moved else 0.0
-        )
-        profile = self._trophic_profile(agent)
-        energy_modifier = self._agent_energy_drain_modifier(agent, season)
-        hydration_modifier = self._agent_hydration_drain_modifier(agent, season)
-        energy_modifier *= 1.0 + agent.injury_load * 0.14
-        hydration_modifier *= 1.0 + agent.injury_load * 0.08
-        energy_modifier *= 1.0 + profile.breadth * self.config.trophic.breadth_metabolism_penalty
-        hydration_modifier *= 1.0 + profile.breadth * self.config.trophic.breadth_hydration_penalty
-        if (
-            not moved
-            and profile.meat_mode in {"hunter", "scavenger", "mixed"}
-            and self._energy_ratio(agent) < 0.58
-        ):
-            energy_modifier *= 0.35
-            hydration_modifier *= 0.65
-
-        base_energy_cost = self.config.base_energy_drain + move_cost
-        agent.energy -= base_energy_cost * energy_modifier
-        agent.hydration -= (
-            self.config.base_hydration_drain
-            * hydration_modifier
-            + (0.004 if moved else 0.0)
-        )
-
-    def _apply_health_and_hazards(self, agent: Agent, moved: bool) -> None:
-        if not agent.alive:
-            return
-
-        hazard_type, hazard_level = self._hazard_at(agent.x, agent.y)
-        if hazard_type != "none" and hazard_level > 0:
-            tile = self.grid[agent.y][agent.x]
-            if hazard_type == "exposure":
-                resistance = (
-                    agent.genome.heat_tolerance * 0.16
-                    + tile.shelter * 0.18
-                    + self._refuge_score(agent.x, agent.y) * 0.12
-                )
-                damage = self.config.hazards.exposure_damage_rate * hazard_level * max(
-                    0.42, 1.0 - resistance
-                )
-            else:
-                resistance = agent.genome.defense_rating * 0.14 + tile.shelter * 0.06
-                if tile.terrain == "rocky":
-                    resistance += agent.genome.rocky_affinity * 0.08
-                damage = self.config.hazards.instability_damage_rate * hazard_level * max(
-                    0.46, 1.0 - resistance
-                )
-                if moved:
-                    damage *= 1.08
-            if damage > 0:
-                if self.record_tick_details:
-                    self.tick_hazard_exposure_agents.add(agent.agent_id)
-                self._apply_damage(
-                    agent,
-                    damage,
-                    source=f"hazard_{hazard_type}",
-                    hazard_type=hazard_type,
-                )
-                if agent.health <= 0 and agent.alive:
-                    self._kill_agent(agent, cause=f"hazard_{hazard_type}")
-                    return
-
-        if agent.health >= agent.max_health:
-            agent.injury_load = self._clamp01(max(0.0, agent.injury_load - 0.004))
-            return
-
-        hazards = self.config.hazards
-        if (
-            self._energy_ratio(agent) >= hazards.min_energy_ratio_for_healing
-            and self._hydration_ratio(agent) >= hazards.min_hydration_ratio_for_healing
-            and hazard_level < hazards.healing_hazard_threshold
-        ):
-            heal_amount = (
-                hazards.healing_base_rate
-                * agent.genome.healing_efficiency
-                * (0.44 + self._energy_ratio(agent) * 0.28 + self._hydration_ratio(agent) * 0.28)
-                * (1.0 - hazard_level * 0.6)
-            )
-            previous = agent.health
-            agent.health = min(agent.max_health, agent.health + heal_amount)
-            if agent.health > previous:
-                healed = agent.health - previous
-                agent.injury_load = self._clamp01(
-                    max(0.0, agent.injury_load - healed / max(agent.max_health, 1e-9) * 0.84)
-                )
-                self._emit(
-                    EventType.AGENT_HEALED,
-                    agent_id=agent.agent_id,
-                    data={
-                        "amount": round(healed, 4),
-                        "health": round(agent.health, 4),
-                    },
-                )
-
-    def _apply_damage(
-        self,
-        agent: Agent,
-        amount: float,
-        source: str,
-        hazard_type: str | None = None,
-        attacker_id: int | None = None,
-    ) -> None:
-        if amount <= 0 or not agent.alive:
-            return
-        agent.health -= amount
-        agent.injury_load = self._clamp01(agent.injury_load + amount / max(agent.max_health, 1e-9))
-        agent.last_damage_source = source
-        if self.record_tick_details:
-            self.tick_damage_events.append(
-                {
-                    "agent_id": agent.agent_id,
-                    "amount": round(amount, 4),
-                    "source": source,
-                    "hazard_type": hazard_type,
-                    "attacker_id": attacker_id,
-                }
-            )
-        self.run_combat_totals["damage_taken"] += amount
-        if source.startswith("hazard_"):
-            self.run_combat_totals["hazard_damage_taken"] += amount
-        self._emit(
-            EventType.AGENT_DAMAGED,
-            agent_id=agent.agent_id,
-            data={
-                "amount": round(amount, 4),
-                "health": round(agent.health, 4),
-                "source": source,
-                "hazard_type": hazard_type,
-                "attacker_id": attacker_id,
-            },
-        )
+        runtime_lifecycle.apply_metabolism(self, agent, moved)
 
     def _agent_energy_drain_modifier(self, agent: Agent, season: str | None = None) -> float:
         terrain = self.grid[agent.y][agent.x].terrain
@@ -4789,17 +3836,6 @@ class SimulationWorld:
             meat_mode_counts[self._meat_mode(agent)] += 1
         return trophic_role_counts, meat_mode_counts
 
-    def _record_death_cause(self, agent: Agent, death_cause: str) -> None:
-        role = self._trophic_role(agent)
-        mode = self._meat_mode(agent)
-        self.run_death_cause_counts[death_cause] = (
-            self.run_death_cause_counts.get(death_cause, 0) + 1
-        )
-        role_counts = self.run_death_causes_by_trophic_role[role]
-        role_counts[death_cause] = role_counts.get(death_cause, 0) + 1
-        mode_counts = self.run_death_causes_by_meat_mode[mode]
-        mode_counts[death_cause] = mode_counts.get(death_cause, 0) + 1
-
     def _trophic_lifecycle_summary(self, *, ticks_executed: int) -> dict[str, object]:
         return runtime_lifecycle_summary.build_trophic_lifecycle_summary(
             self,
@@ -4848,19 +3884,27 @@ class SimulationWorld:
             parent_profile,
         )
 
-    def _reproductive_state_for_child(
-        self,
-        parent: Agent,
-        child_genome: Genome,
-    ) -> runtime_reproduction.ReproductiveState:
-        return runtime_reproduction.reproductive_state_for_child(
-            self,
-            parent,
-            child_genome,
-        )
-
     def _sexual_partner_ready(self, agent: Agent) -> bool:
         return runtime_reproduction.sexual_partner_ready(self, agent)
+
+    def _reproduction_placement_context(
+        self,
+    ) -> runtime_reproduction.ReproductionPlacementContext:
+        def sibling_destination_candidates(x: int, y: int) -> list[tuple[int, int]]:
+            neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+            self.rng.shuffle(neighbors)
+            return neighbors
+
+        return runtime_reproduction.ReproductionPlacementContext(
+            max_agents=self.config.max_agents,
+            current_alive_count=lambda: len(self.alive_agents()),
+            has_empty_neighbor=self._has_empty_neighbor,
+            find_empty_neighbor=self._find_empty_neighbor,
+            sibling_destination_candidates=sibling_destination_candidates,
+            can_place_at=self._can_move_to,
+            place_agent=self._place_agent,
+            invalidate_spatial_state=self._invalidate_biotic_state,
+        )
 
     def _reproduce(self, parent: Agent) -> bool:
         return runtime_reproduction.reproduce(self, parent)
@@ -4893,64 +3937,30 @@ class SimulationWorld:
             parent_profile,
         )
 
-    def _should_die(self, agent: Agent) -> bool:
-        return (
-            agent.energy <= 0
-            or agent.hydration <= 0
-            or agent.health <= 0
-            or agent.age >= self.config.max_age
-        )
-
-    def _death_cause(self, agent: Agent) -> str:
-        if agent.health <= 0:
-            return agent.last_damage_source or "health_depletion"
-        if agent.energy <= 0:
-            return "energy_depletion"
-        if agent.hydration <= 0:
-            return "hydration_depletion"
-        if agent.age >= self.config.max_age:
-            return "old_age"
-        return "unknown"
-
     def _kill_agent(
         self,
         agent: Agent,
         cause: str | None = None,
         killer_id: int | None = None,
     ) -> None:
-        death_cause = cause or self._death_cause(agent)
-        self._record_death_cause(agent, death_cause)
+        death_cause = cause or runtime_lifecycle.death_cause(self, agent)
+        runtime_lifecycle.record_death_cause(self, agent, death_cause)
         agent.alive = False
         agent.death_tick = self.tick
         self.grid[agent.y][agent.x].occupant_id = None
-        carcass_energy = 0.0
         tile = self.grid[agent.y][agent.x]
         source_species = self._species_id_for_agent(agent.agent_id)
-        tile_state = self._carcass_tile_summary_for_position(agent.x, agent.y)
-        fresh_kill_state = self._fresh_kill_tile_summary_for_position(agent.x, agent.y)
-        if tile.terrain != "water":
-            carcass_energy = self._project_carcass_yield(agent)
-            if death_cause == "attack" and killer_id is not None:
-                fresh_kill_state = self._deposit_fresh_kill(
-                    tile,
-                    x=agent.x,
-                    y=agent.y,
-                    energy=carcass_energy,
-                    source_species=source_species,
-                    source_agent_id=agent.agent_id,
-                    killer_id=killer_id,
-                )
-            else:
-                tile_state = self._deposit_carcass(
-                    tile,
-                    x=agent.x,
-                    y=agent.y,
-                    energy=carcass_energy,
-                    source_species=source_species,
-                    source_agent_id=agent.agent_id,
-                    cause=death_cause,
-                    killer_id=killer_id,
-                )
+        projected_carcass_energy = (
+            self._project_carcass_yield(agent) if tile.terrain != "water" else 0.0
+        )
+        resource_emission = runtime_resources.emit_death_resources(
+            self,
+            agent,
+            death_cause=death_cause,
+            killer_id=killer_id,
+            source_species=source_species,
+            projected_carcass_energy=projected_carcass_energy,
+        )
         self.deaths += 1
         if self.record_tick_details:
             self.tick_death_agent_ids.append(agent.agent_id)
@@ -4977,15 +3987,7 @@ class SimulationWorld:
                 "x": agent.x,
                 "y": agent.y,
                 "source_species": source_species,
-                "carcass_energy": round(carcass_energy, 4),
-                "fresh_kill_energy": round(fresh_kill_state["total_energy"], 4),
-                "tile_carcass_energy_after": tile_state["total_energy"],
-                "tile_avg_freshness_after": tile_state["avg_freshness"],
-                "tile_deposit_count_after": tile_state["deposit_count"],
-                "tile_mixed_sources_after": tile_state["mixed_sources"],
-                "tile_dominant_source_species_after": tile_state["dominant_source_species"],
-                "tile_source_breakdown_after": tile_state["source_breakdown"],
-                "tile_fresh_kill_energy_after": fresh_kill_state["total_energy"],
+                **runtime_resources.death_resource_event_fields(resource_emission),
             },
         )
 
@@ -5200,17 +4202,51 @@ class SimulationWorld:
         self.current_ecotype_records = ecotype_records
         return alive, species_map, species_records, ecotype_map, ecotype_records
 
-    def _materialize_frame_surfaces(self) -> dict[str, object]:
-        return runtime_surfaces.materialize_frame_surfaces(self)
+    def _frame_surface_context(self) -> runtime_surfaces.FrameSurfaceContext:
+        return runtime_surfaces.FrameSurfaceContext(
+            climate_state=self._climate_state(),
+            habitat_snapshot=self._habitat_state_grid(),
+            hydrology_snapshot=self._hydrology_snapshot(),
+            refuge_snapshot=self._refuge_snapshot(),
+            ecology_snapshot=self._ecology_snapshot(),
+            hazard_snapshot=self._hazard_snapshot(),
+            biotic_field_snapshot=self._biotic_field_snapshot(),
+            signal_field_snapshot=self._signal_field_snapshot(),
+            fresh_kill_snapshot=self._fresh_kill_snapshot(),
+            carcass_snapshot=self._carcass_snapshot(),
+            energy_ratio=self._energy_ratio,
+            hydration_ratio=self._hydration_ratio,
+            health_ratio=self._health_ratio,
+            agent_energy_drain_modifier=self._agent_energy_drain_modifier,
+            agent_hydration_drain_modifier=self._agent_hydration_drain_modifier,
+            is_reproduction_ready=self._is_reproduction_ready,
+            trophic_role=self._trophic_role,
+            meat_mode=self._meat_mode,
+            refuge_score=self._refuge_score,
+            matched_diet_ratio=self._matched_diet_ratio,
+        )
+    def _materialize_frame_surfaces(
+        self,
+        surface_context: runtime_surfaces.FrameSurfaceContext | None = None,
+    ) -> dict[str, object]:
+        return runtime_surfaces.materialize_frame_surfaces(
+            self,
+            surface_context=surface_context,
+        )
     def _build_agent_frame_telemetry(
         self,
         alive: list[Agent],
         *,
         season: str,
         surfaces: dict[str, object],
+        surface_context: runtime_surfaces.FrameSurfaceContext | None = None,
     ) -> dict[int, dict[str, object]]:
         return runtime_surfaces.build_agent_frame_telemetry(
-            self, alive, season=season, surfaces=surfaces
+            self,
+            alive,
+            season=season,
+            surfaces=surfaces,
+            surface_context=surface_context,
         )
     def _capture_frame(self, births_this_tick: int, deaths_this_tick: int) -> None:
         runtime_frames.capture_frame(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import evolution_sim.env.runtime.lifecycle as runtime_lifecycle
+
 TICK_BANDS = ("early", "mid", "late", "terminal")
 
 
@@ -131,7 +133,7 @@ def build_trophic_lifecycle_summary(
             continue
         band = _tick_band_name(agent.death_tick, ticks_executed)
         mode = world._meat_mode(agent)
-        cause = world._death_cause(agent)
+        cause = runtime_lifecycle.death_cause(world, agent)
         deaths_by_band[band][mode] += 1
         mode_causes = death_causes_by_band[band][mode]
         mode_causes[cause] = mode_causes.get(cause, 0) + 1

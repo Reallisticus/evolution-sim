@@ -7,8 +7,8 @@
       "ticks": 20,
       "requires_speciation": false,
       "fixture": "seed7_ticks20.json.gz",
-      "sha256": "4f07f16365f38e31cd1a66eac749991eb2dd5a808f59e08cf0e36ae7a8b9c91e",
-      "bytes": 4493685
+      "sha256": "6917d01bd706a8bc9b6b479babe46455c1bbc43e94cbfc75dfb0ae8d0ed77401",
+      "bytes": 4498109
     },
     {
       "name": "seed7_ticks100",
@@ -16,8 +16,8 @@
       "ticks": 100,
       "requires_speciation": false,
       "fixture": "seed7_ticks100.json.gz",
-      "sha256": "f7d53db75334fc1e20983bc98aef0ef80aa2850d5c602005ebf7837fb6ffb008",
-      "bytes": 22010662
+      "sha256": "77fd92b5c034c1f85ad2f066e9b13cfcb3f8507ffe93e90635e1a96c1eb47c86",
+      "bytes": 22019989
     },
     {
       "name": "speciation_seed_ticks320",
@@ -25,8 +25,8 @@
       "ticks": 320,
       "requires_speciation": true,
       "fixture": "speciation_seed_ticks320.json.gz",
-      "sha256": "d5990e7f5d3a12e27d4ae03b2e5b8227fd2c8e5bca313429703d199a843f044f",
-      "bytes": 224182153
+      "sha256": "7547de06d9f1b6fcf93870ff2a8e1a3d19e9491a608a4e2746a150c828717e38",
+      "bytes": 224254046
     },
     {
       "name": "seed5_ticks120_provenance",
@@ -34,8 +34,8 @@
       "ticks": 120,
       "requires_speciation": false,
       "fixture": "seed5_ticks120_provenance.json.gz",
-      "sha256": "f35fcf709ec389fe2ad34f742d8b0e8a73427e3490b3775cad76ce32c65743bf",
-      "bytes": 34617113
+      "sha256": "f0fdc58d99482e61444338b7f825d8e57c030872141d3ecac6b6a674acb4688e",
+      "bytes": 34622277
     }
   ]
 }

@@ -1,7 +1,7 @@
 # Pre-Mind Reproductive And Signal Readiness Plan
 
 Date: 2026-04-30
-Status: architecture plan with initial Foundation scaffold slices implemented
+Status: architecture plan with active Foundation scaffold and hardening slices implemented
 
 This document defines the Foundation cleanup needed before Mind v1 around
 reproduction, signals, communication, and future learned-controller contracts.
@@ -662,8 +662,27 @@ X/Y/Z and hybridization slices:
    where both parents qualify. The runtime clamps the litter size by pair
    fecundity, parent energy, population capacity, and local empty birth
    destinations, and surfaces clamp reasons in reproduction event metadata.
-11. Late hybridization/introgression.
-12. Mind v1 sequence/world-model work only after Foundation gates stabilize.
+11. Runtime architecture hardening before deeper reproductive roles. In
+   progress: tick orchestration, trajectory finalization, summary assembly,
+   summary finalizers, and child-birth planning now live behind dedicated
+   runtime module boundaries. The 2026-05-02 Foundation boundary slice also
+   moved feeding accounting, animal-resource opportunity accounting, death
+   resource emission, lifecycle/metabolism accounting, and action outcome
+   assembly behind runtime boundaries. These are behavior-preserving
+   extractions, not semantic rewrites. Remaining debt is to keep converting
+   private `world._*` dependencies into explicit runtime arguments, with
+   action/action-space, observation/surface, reproduction placement, reporting,
+   and feeding helper leaks still ranked as the highest-risk boundaries.
+12. Benchmark and release-profile operability. In progress: benchmark reports
+   now distinguish complete reports from partial timeout/failure reports with
+   explicit error metadata, CLI protocol values are validated, and summary-only
+   action-mask work is covered by runtime-cost regression tests. The 2026-05-02
+   release profile passed with no blockers or warnings in `881.0835s`; the
+   previously blocking seed `17` completed in `235.198s` under the `600s`
+   scenario timeout. Continue release-profile verification after each Foundation
+   behavior slice.
+13. Late hybridization/introgression.
+14. Mind v1 sequence/world-model work only after Foundation gates stabilize.
 
 The user direction is to put this on the default Foundation path, not behind a
 separate experimental profile. That means each behavior slice must update gates

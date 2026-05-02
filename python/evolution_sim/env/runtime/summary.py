@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import evolution_sim.env.runtime.capacity as runtime_capacity
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
+import evolution_sim.env.runtime.resources as runtime_resources
 import evolution_sim.env.runtime.signals as runtime_signals
 import evolution_sim.env.runtime.trajectory as runtime_trajectory
 from evolution_sim.env.runtime.reporting import (
     build_run_top_species,
     build_species_metric_leaderboards,
+    finalize_carcass_run_totals,
     finalize_diet_totals,
+    finalize_fresh_kill_run_totals,
     finalize_grouped_animal_resource_opportunity_counts,
     finalize_grouped_diet_totals,
     summary_end_surface_state,
@@ -43,6 +47,70 @@ def _average_gene(source_genomes: list[Genome], field: str) -> float:
     )
 
 
+def _quantile(sorted_values: list[float], fraction: float) -> float | None:
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return round(sorted_values[0], 4)
+    position = (len(sorted_values) - 1) * fraction
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, len(sorted_values) - 1)
+    weight = position - lower_index
+    value = (
+        sorted_values[lower_index] * (1.0 - weight)
+        + sorted_values[upper_index] * weight
+    )
+    return round(value, 4)
+
+
+def _trait_distribution(source_genomes: list[Genome], field: str) -> dict[str, object]:
+    values = sorted(float(getattr(genome, field)) for genome in source_genomes)
+    if not values:
+        return {
+            "count": 0,
+            "min": None,
+            "p10": None,
+            "median": None,
+            "mean": None,
+            "p90": None,
+            "max": None,
+        }
+    return {
+        "count": len(values),
+        "min": round(values[0], 4),
+        "p10": _quantile(values, 0.1),
+        "median": _quantile(values, 0.5),
+        "mean": round(sum(values) / len(values), 4),
+        "p90": _quantile(values, 0.9),
+        "max": round(values[-1], 4),
+    }
+
+
+def _trait_distributions(source_genomes: list[Genome]) -> dict[str, dict[str, object]]:
+    return {
+        field: _trait_distribution(source_genomes, field)
+        for field in GENE_SUMMARY_FIELDS
+    }
+
+
+def _mean_delta(
+    terminal_distribution: dict[str, dict[str, object]],
+    initial_distribution: dict[str, dict[str, object]],
+) -> dict[str, float | None]:
+    deltas: dict[str, float | None] = {}
+    for field in GENE_SUMMARY_FIELDS:
+        terminal_mean = terminal_distribution[field]["mean"]
+        initial_mean = initial_distribution[field]["mean"]
+        if isinstance(terminal_mean, (int, float)) and isinstance(
+            initial_mean,
+            (int, float),
+        ):
+            deltas[field] = round(float(terminal_mean) - float(initial_mean), 4)
+        else:
+            deltas[field] = None
+    return deltas
+
+
 def _gene_averages(world: Any, alive: list[Any]) -> dict[str, float]:
     genomes = [agent.genome for agent in world.agents.values()]
     alive_genomes = [agent.genome for agent in alive]
@@ -65,6 +133,25 @@ def _gene_averages(world: Any, alive: list[Any]) -> dict[str, float]:
         **historical_gene_averages,
         **explicit_historical_gene_averages,
         **alive_gene_averages,
+    }
+
+
+def _selection_heredity_summary(world: Any, alive: list[Any]) -> dict[str, object]:
+    initial_genomes = [
+        agent.genome
+        for agent in world.agents.values()
+        if agent.parent_id is None and agent.birth_tick == 0
+    ]
+    terminal_genomes = [agent.genome for agent in alive]
+    initial_distribution = _trait_distributions(initial_genomes)
+    terminal_distribution = _trait_distributions(terminal_genomes)
+    return {
+        "initial_trait_distributions": initial_distribution,
+        "terminal_alive_trait_distributions": terminal_distribution,
+        "terminal_minus_initial_mean": _mean_delta(
+            terminal_distribution,
+            initial_distribution,
+        ),
     }
 
 
@@ -114,16 +201,14 @@ def build_summary(world: Any, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, 
     trophic_lifecycle = world._trophic_lifecycle_summary(
         ticks_executed=ticks_executed
     )
-    fresh_kill_totals = {
-        **world.run_fresh_kill_totals,
-        "fresh_kill_tiles": fresh_kill_stats["fresh_kill_tiles"],
-        "total_fresh_kill_energy": fresh_kill_stats["total_fresh_kill_energy"],
-    }
-    carcass_totals = {
-        **world.run_carcass_totals,
-        "carcass_tiles": carcass_stats["carcass_tiles"],
-        "total_carcass_energy": carcass_stats["total_carcass_energy"],
-    }
+    fresh_kill_totals = finalize_fresh_kill_run_totals(
+        world.run_fresh_kill_totals,
+        fresh_kill_stats,
+    )
+    carcass_totals = finalize_carcass_run_totals(
+        world.run_carcass_totals,
+        carcass_stats,
+    )
     fresh_kill_conservation_error = (
         fresh_kill_totals["energy_deposited"]
         - fresh_kill_totals["energy_converted_to_carcass"]
@@ -148,6 +233,10 @@ def build_summary(world: Any, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, 
         "max_agent_saturation_at_end": reproduction_end["saturation_at_end"],
         "peak_max_agent_saturation": reproduction_end["peak_saturation"],
         "peak_alive_agents": world.peak_alive_agents,
+        "carrying_capacity": runtime_capacity.build_carrying_capacity_summary(
+            world,
+            ticks_executed=ticks_executed,
+        ),
         "extinct": len(alive) == 0,
         "total_agents_seen": len(world.agents),
         "season_at_end": world._season_state()["name"],
@@ -226,6 +315,8 @@ def build_summary(world: Any, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, 
                 world.run_animal_resource_opportunity_by_meat_mode
             )
         ),
+        "resource_pressure": runtime_resources.finalize_resource_pressure(world),
+        "selection_heredity": _selection_heredity_summary(world, alive),
         "ecology_state_counts_at_end": ecology_counts,
         "ecology_stats_at_end": ecology_stats,
         **_gene_averages(world, alive),

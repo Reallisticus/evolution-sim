@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping, Sequence
 from collections import deque
+from dataclasses import dataclass
 import hashlib
 import json
 from math import isfinite
 import struct
-from typing import Any
+from typing import Any, Callable
 import zlib
 
 from evolution_sim.env.runtime.action_contract import action_contract, action_names
-from evolution_sim.env.runtime.action_space import build_action_mask
 from evolution_sim.env.runtime.mating import (
     ASEXUAL_REPRODUCTION_MODE,
     PROTO_X_EXPRESSION,
@@ -26,7 +27,12 @@ from evolution_sim.env.runtime.signals import (
     REPRODUCTIVE_SIGNAL_FIELD,
     signal_contract,
 )
-from evolution_sim.env.runtime.state import MIND_INHERITANCE_PLACEHOLDER_VERSION, Agent
+from evolution_sim.env.runtime.state import (
+    MIND_INHERITANCE_PLACEHOLDER_VERSION,
+    Agent,
+    Tile,
+    TrophicProfile,
+)
 
 OBSERVATION_SCHEMA_VERSION = "mind_observation_v3"
 OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2"
@@ -206,6 +212,33 @@ OBSERVATION_INPUT_VECTOR_SIZE = len(SELF_INPUT_FIELDS) + (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ObservationContext:
+    width: int
+    height: int
+    max_age: int
+    grid: Sequence[Sequence[Tile]]
+    agents: Mapping[int, Agent]
+    climate_state: dict[str, object]
+    biotic_state: Any
+    signal_state: Any
+    action_mask: dict[str, bool]
+    movement_actions: tuple[tuple[str, int, int], ...]
+    profile_for: Callable[[Agent], TrophicProfile]
+    energy_ratio: Callable[[Agent], float]
+    hydration_ratio: Callable[[Agent], float]
+    health_ratio: Callable[[Agent], float]
+    is_reproduction_ready: Callable[[Agent], bool]
+    matched_diet_ratio: Callable[[Agent, TrophicProfile], float]
+    water_access_reason: Callable[[int, int], str]
+    hydrology_support_code: Callable[[int, int], int]
+    refuge_score: Callable[[int, int], float]
+    hazard_at: Callable[[int, int], tuple[str, float]]
+    ecology_state_at: Callable[[int, int], str]
+    in_bounds: Callable[[int, int], bool]
+    prey_vulnerability: Callable[[Agent], float]
+
+
 def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
@@ -248,34 +281,54 @@ def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
     }
 
 
-def build_observation(world: Any, agent: Agent) -> dict[str, object]:
-    climate_state = world._climate_state()
-    profile = world._trophic_profile(agent)
-    tile = world.grid[agent.y][agent.x]
-    hazard_type, hazard_level = world._hazard_at(agent.x, agent.y)
-    biotic_state = world._current_biotic_state()
-    signal_state = world._current_signal_state()
-    _record_runtime_cost(world, "action_mask_builds")
-    action_mask = build_action_mask(world, agent)
+def _resolve_observation_context(
+    world: Any,
+    agent: Agent,
+    *,
+    observation_context: ObservationContext | None = None,
+) -> ObservationContext:
+    if observation_context is not None:
+        return observation_context
+    return world._observation_context(agent)
+
+
+def build_observation(
+    world: Any,
+    agent: Agent,
+    *,
+    observation_context: ObservationContext | None = None,
+) -> dict[str, object]:
+    context = _resolve_observation_context(
+        world,
+        agent,
+        observation_context=observation_context,
+    )
+    climate_state = context.climate_state
+    profile = context.profile_for(agent)
+    tile = context.grid[agent.y][agent.x]
+    hazard_type, hazard_level = context.hazard_at(agent.x, agent.y)
+    signal_state = context.signal_state
     return {
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "metadata": {
             "agent_id": agent.agent_id,
         },
         "self": {
-            "energy_ratio": _round(world._energy_ratio(agent)),
-            "hydration_ratio": _round(world._hydration_ratio(agent)),
-            "health_ratio": _round(world._health_ratio(agent)),
+            "energy_ratio": _round(context.energy_ratio(agent)),
+            "hydration_ratio": _round(context.hydration_ratio(agent)),
+            "health_ratio": _round(context.health_ratio(agent)),
             "injury_load": _round(agent.injury_load),
-            "age_norm": _round(agent.age / max(world.config.max_age, 1)),
-            "reproduction_ready": bool(world._is_reproduction_ready(agent)),
-            "matched_diet_ratio": _round(world._matched_diet_ratio(agent, profile)),
+            "age_norm": _round(agent.age / max(context.max_age, 1)),
+            "reproduction_ready": bool(context.is_reproduction_ready(agent)),
+            "matched_diet_ratio": _round(
+                context.matched_diet_ratio(agent, profile)
+            ),
             "trophic_role": profile.role,
             "meat_mode": profile.meat_mode,
             "season": str(climate_state["season"]),
-            "water_access_reason": world._water_access_reason(agent.x, agent.y),
-            "hydrology_support_code": world._hydrology_support_code(agent.x, agent.y),
-            "refuge_score": _round(world._refuge_score(agent.x, agent.y)),
+            "water_access_reason": context.water_access_reason(agent.x, agent.y),
+            "hydrology_support_code": context.hydrology_support_code(agent.x, agent.y),
+            "refuge_score": _round(context.refuge_score(agent.x, agent.y)),
             "hazard_type": hazard_type,
             "hazard_level": _round(hazard_level),
             "tile_vegetation": _round(tile.vegetation),
@@ -294,19 +347,13 @@ def build_observation(world: Any, agent: Agent) -> dict[str, object]:
             ),
         },
         "local_patch": [
-            _patch_cell(world, agent, dx, dy, biotic_state, signal_state)
+            _patch_cell(context, agent, dx, dy)
             for dy in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
             for dx in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
         ],
-        "navigation": _navigation_targets(world, agent, biotic_state),
-        "action_mask": action_mask,
+        "navigation": _navigation_targets(context, agent),
+        "action_mask": dict(context.action_mask),
     }
-
-
-def _record_runtime_cost(world: Any, name: str) -> None:
-    recorder = getattr(world, "_record_runtime_cost", None)
-    if callable(recorder):
-        recorder(name)
 
 
 def observation_digest(observation: dict[str, object]) -> str:
@@ -374,16 +421,14 @@ def validate_observation_input_payload(payload: dict[str, object]) -> list[str]:
 
 
 def _patch_cell(
-    world: Any,
+    context: ObservationContext,
     agent: Agent,
     dx: int,
     dy: int,
-    biotic_state: Any,
-    signal_state: Any,
 ) -> dict[str, object]:
     x = agent.x + dx
     y = agent.y + dy
-    if not world._in_bounds(x, y):
+    if not context.in_bounds(x, y):
         return {
             "dx": dx,
             "dy": dy,
@@ -407,15 +452,17 @@ def _patch_cell(
             COMMUNICATION_SIGNAL_FIELD: 0.0,
         }
 
-    tile = world.grid[y][x]
+    tile = context.grid[y][x]
     occupant = "none"
     same_lineage = False
     if tile.occupant_id is not None:
-        occupant_agent = world.agents.get(tile.occupant_id)
+        occupant_agent = context.agents.get(tile.occupant_id)
         if occupant_agent is not None and occupant_agent.alive:
             same_lineage = occupant_agent.lineage_id == agent.lineage_id
             occupant = "self" if occupant_agent.agent_id == agent.agent_id else "agent"
-    hazard_type, hazard_level = world._hazard_at(x, y)
+    hazard_type, hazard_level = context.hazard_at(x, y)
+    biotic_state = context.biotic_state
+    signal_state = context.signal_state
     return {
         "dx": dx,
         "dy": dy,
@@ -423,7 +470,7 @@ def _patch_cell(
         "terrain": tile.terrain,
         "occupant": occupant,
         "same_lineage": same_lineage,
-        "water_access_reason": world._water_access_reason(x, y),
+        "water_access_reason": context.water_access_reason(x, y),
         "food": _round(tile.food),
         "vegetation": _round(tile.vegetation),
         "recovery_debt": _round(tile.recovery_debt),
@@ -431,7 +478,9 @@ def _patch_cell(
         "carcass_energy": _round(tile.carcass_energy),
         "hazard_type": hazard_type,
         "hazard_level": _round(hazard_level),
-        "ecology_state": world._ecology_state_at(x, y) if tile.terrain != "water" else "none",
+        "ecology_state": (
+            context.ecology_state_at(x, y) if tile.terrain != "water" else "none"
+        ),
         "prey_biomass": _round(biotic_state.prey_biomass[y][x]),
         "carrion_signal": _round(biotic_state.carrion[y][x]),
         "predator_risk": _round(biotic_state.predator_risk[y][x]),
@@ -441,27 +490,29 @@ def _patch_cell(
 
 
 def _navigation_targets(
-    world: Any,
+    context: ObservationContext,
     agent: Agent,
-    biotic_state: Any,
 ) -> dict[str, dict[str, object]]:
     best: dict[str, tuple[float, int, int, int, float]] = {}
     carrion_signal_best: dict[str, tuple[float, int, int, int, float]] = {}
     prey_signal_best: dict[str, tuple[float, int, int, int, float]] = {}
+    biotic_state = context.biotic_state
     for dy in range(-NAVIGATION_RADIUS, NAVIGATION_RADIUS + 1):
         span = NAVIGATION_RADIUS - abs(dy)
         for dx in range(-span, span + 1):
             distance = abs(dx) + abs(dy)
             x = agent.x + dx
             y = agent.y + dy
-            if not world._in_bounds(x, y):
+            if not context.in_bounds(x, y):
                 continue
-            tile = world.grid[y][x]
+            tile = context.grid[y][x]
             if tile.terrain == "water":
                 continue
             occupant = tile.occupant_id
             occupied_by_other = occupant is not None and occupant != agent.agent_id
-            water_strength = 1.0 if world._water_access_reason(x, y) != "none" else 0.0
+            water_strength = (
+                1.0 if context.water_access_reason(x, y) != "none" else 0.0
+            )
             plant_strength = max(0.0, float(tile.food))
             carrion_resource_strength = max(0.0, float(tile.fresh_kill_energy)) + max(
                 0.0,
@@ -469,7 +520,7 @@ def _navigation_targets(
             )
             carrion_signal_strength = max(0.0, float(biotic_state.carrion[y][x]))
             prey_strength = max(0.0, float(biotic_state.prey_biomass[y][x]))
-            prey_resource_strength = _prey_resource_strength(world, agent, occupant)
+            prey_resource_strength = _prey_resource_strength(context, agent, occupant)
             if water_strength > 0:
                 _consider_navigation_target(
                     best,
@@ -483,7 +534,7 @@ def _navigation_targets(
                 _consider_navigation_target(best, "plant", dx, dy, distance, plant_strength)
             if carrion_resource_strength > 0:
                 path_target = _navigation_first_step_to_tile(
-                    world,
+                    context,
                     agent,
                     target_x=x,
                     target_y=y,
@@ -537,14 +588,18 @@ def _navigation_targets(
     }
 
 
-def _prey_resource_strength(world: Any, agent: Agent, occupant_id: int | None) -> float:
+def _prey_resource_strength(
+    context: ObservationContext,
+    agent: Agent,
+    occupant_id: int | None,
+) -> float:
     if occupant_id is None or occupant_id == agent.agent_id:
         return 0.0
-    target = world.agents.get(occupant_id)
+    target = context.agents.get(occupant_id)
     if target is None or not target.alive:
         return 0.0
-    target_profile = world._trophic_profile(target)
-    vulnerability = world._prey_vulnerability(target)
+    target_profile = context.profile_for(target)
+    vulnerability = context.prey_vulnerability(target)
     if target_profile.role == "herbivore":
         return 1.0 + vulnerability * 0.45
     if target_profile.role == "omnivore":
@@ -553,7 +608,7 @@ def _prey_resource_strength(world: Any, agent: Agent, occupant_id: int | None) -
 
 
 def _navigation_first_step_to_tile(
-    world: Any,
+    context: ObservationContext,
     agent: Agent,
     *,
     target_x: int,
@@ -569,12 +624,18 @@ def _navigation_first_step_to_tile(
         x, y, distance, first_dx, first_dy = frontier.popleft()
         if distance >= max_distance:
             continue
-        for _, dx, dy in _ordered_movement_actions_toward(world, x, y, target_x, target_y):
+        for _, dx, dy in _ordered_movement_actions_toward(
+            context,
+            x,
+            y,
+            target_x,
+            target_y,
+        ):
             nx = x + dx
             ny = y + dy
             if (nx, ny) in visited:
                 continue
-            if not _navigation_path_tile_open(world, agent, nx, ny):
+            if not _navigation_path_tile_open(context, agent, nx, ny):
                 continue
             step_dx = first_dx if distance > 0 else dx
             step_dy = first_dy if distance > 0 else dy
@@ -587,13 +648,13 @@ def _navigation_first_step_to_tile(
 
 
 def _ordered_movement_actions_toward(
-    world: Any,
+    context: ObservationContext,
     x: int,
     y: int,
     target_x: int,
     target_y: int,
 ) -> list[tuple[str, int, int]]:
-    actions = list(world._movement_actions())
+    actions = list(context.movement_actions)
     return sorted(
         actions,
         key=lambda action: (
@@ -603,10 +664,15 @@ def _ordered_movement_actions_toward(
     )
 
 
-def _navigation_path_tile_open(world: Any, agent: Agent, x: int, y: int) -> bool:
-    if not world._in_bounds(x, y):
+def _navigation_path_tile_open(
+    context: ObservationContext,
+    agent: Agent,
+    x: int,
+    y: int,
+) -> bool:
+    if not context.in_bounds(x, y):
         return False
-    tile = world.grid[y][x]
+    tile = context.grid[y][x]
     if tile.terrain == "water":
         return False
     return tile.occupant_id is None or tile.occupant_id == agent.agent_id

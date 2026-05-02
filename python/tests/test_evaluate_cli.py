@@ -27,6 +27,25 @@ class EvaluateCliTests(unittest.TestCase):
         self.assertEqual(len(report["runs"]), 2)
         self.assertEqual(report["aggregate"]["run_count"], 2)
         self.assertIn("hazard_counts_at_end", report["aggregate"])
+        self.assertIn("carrying_capacity", report["runs"][0])
+        self.assertIn("at_cap_tick_share", report["runs"][0]["carrying_capacity"])
+        self.assertIn("carrying_capacity", report["aggregate"])
+        self.assertIn("at_cap_tick_share", report["aggregate"]["carrying_capacity"])
+        self.assertIn("resource_pressure", report["runs"][0])
+        self.assertIn("plant_budget", report["runs"][0]["resource_pressure"])
+        self.assertIn("energy_spend", report["runs"][0]["resource_pressure"])
+        self.assertIn("resource_pressure", report["aggregate"])
+        self.assertIn("plant_budget", report["aggregate"]["resource_pressure"])
+        self.assertIn("selection_heredity", report["runs"][0])
+        self.assertIn(
+            "terminal_minus_initial_mean",
+            report["runs"][0]["selection_heredity"],
+        )
+        self.assertIn("selection_heredity", report["aggregate"])
+        self.assertIn(
+            "terminal_minus_initial_mean",
+            report["aggregate"]["selection_heredity"],
+        )
         self.assertIn("trophic_role_counts_at_end", report["aggregate"])
         self.assertIn("trophic_lifecycle", report["runs"][0])
         lifecycle = report["runs"][0]["trophic_lifecycle"]

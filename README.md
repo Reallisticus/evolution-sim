@@ -8,6 +8,9 @@ Minimal standalone workspace for the artificial-life simulator.
 - `python/evolution_sim/`: headless simulator package
 - `python/tests/`: deterministic and replay tests
 
+For a senior-developer codebase walkthrough, start with
+[`docs/senior-developer-onboarding.md`](docs/senior-developer-onboarding.md).
+
 ## Run
 
 ```bash
@@ -93,18 +96,25 @@ in `mind_observation_v3` and stable per-action signal outcome metadata in
 `mind_action_outcome_v2`. Rare multi-offspring birth expansion is config-gated,
 sexual-only, requires both parents to qualify, is bounded by parent
 energy/population capacity/local destinations, emits clamp-reason metadata for
-qualified attempts, and is disabled by default. The
-`mate` action remains reserved and masked; Stage 1 is
-biology-gated, not policy-driven. Communication signal slots remain opaque and
-disabled by default, with an opt-in trait-gated emission path covered by tests;
-the default heuristic still never emits communication tokens.
+qualified attempts, and is disabled by default. The latest runtime hardening
+also moved tick, trajectory, summary, and summary-finalizer work behind
+dedicated runtime module boundaries, introduced a child-birth planning boundary
+for reproduction, and made benchmark reports explicitly distinguish complete
+runs from partial failure reports. The `mate` action remains reserved and
+masked; Stage 1 is biology-gated, not policy-driven. Communication signal slots
+remain opaque and disabled by default, with an opt-in trait-gated emission path
+covered by tests; the default heuristic still never emits communication tokens.
 
 ## Test
 
 ```bash
 cd /Users/njm/Projects/evolution-sim
-PYTHONPATH=python python3 -m unittest discover -s python/tests -p 'test_*.py'
+npm run sim:test
 ```
+
+Prefer npm entrypoints because they set `PYTHONHASHSEED=0` and
+`PYTHONPATH=python` consistently. Use raw `python3 -m unittest ...` only for
+focused local probes, and include both environment variables when doing so.
 
 ## Viewer
 

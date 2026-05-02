@@ -36,6 +36,64 @@ from evolution_sim.genome.species import genome_vector
 
 
 class FoundationGateCliTests(unittest.TestCase):
+    def assertGateReportSchema(self, report: dict[str, object]) -> None:
+        self.assertIsInstance(report["complete"], bool)
+        self.assertIsInstance(report["summary_gate_flags"], list)
+        self.assertGateReadinessSchema(report["readiness"])
+        self.assertGateTimingsSchema(report["timings"])
+        for flag in report["summary_gate_flags"]:
+            self.assertGateFlagSchema(flag)
+
+    def assertGateReadinessSchema(self, readiness: object) -> None:
+        self.assertIsInstance(readiness, dict)
+        assert isinstance(readiness, dict)
+        self.assertIn(readiness["status"], {"running", "pass", "review", "fail"})
+        self.assertIsInstance(readiness["blockers"], list)
+        self.assertIsInstance(readiness["warnings"], list)
+        self.assertIsInstance(readiness["recommendation"], str)
+        for blocker in readiness["blockers"]:
+            self.assertGateFlagSchema(blocker, expected_severity="error")
+        for warning in readiness["warnings"]:
+            self.assertGateFlagSchema(warning, expected_severity="warning")
+
+    def assertGateFlagSchema(
+        self,
+        flag: object,
+        *,
+        expected_severity: str | None = None,
+    ) -> None:
+        self.assertIsInstance(flag, dict)
+        assert isinstance(flag, dict)
+        self.assertIn(flag["severity"], {"error", "warning"})
+        if expected_severity is not None:
+            self.assertEqual(flag["severity"], expected_severity)
+        for key in ("scope", "field", "message"):
+            self.assertIsInstance(flag[key], str)
+
+    def assertGateTimingsSchema(self, timings: object) -> None:
+        self.assertIsInstance(timings, dict)
+        assert isinstance(timings, dict)
+        self.assertIn("scenario_timeout_seconds", timings)
+        timeout = timings["scenario_timeout_seconds"]
+        self.assertTrue(timeout is None or isinstance(timeout, (int, float)))
+        self.assertIsInstance(timings["summary_seed_wall_seconds"], list)
+        for entry in timings["summary_seed_wall_seconds"]:
+            self.assertIsInstance(entry, dict)
+            assert isinstance(entry, dict)
+            self.assertIsInstance(entry["seed"], int)
+            self.assertIsInstance(entry["wall_seconds"], (int, float))
+            self.assertGreaterEqual(float(entry["wall_seconds"]), 0.0)
+        self.assertIn("summary_sweep_wall_seconds", timings)
+        self.assertIn("full_replay_probe_wall_seconds", timings)
+        self.assertIsInstance(timings["full_replay_probe_wall_seconds"], list)
+        for entry in timings["full_replay_probe_wall_seconds"]:
+            self.assertIsInstance(entry, dict)
+            assert isinstance(entry, dict)
+            self.assertIsInstance(entry["name"], str)
+            self.assertIsInstance(entry["wall_seconds"], (int, float))
+            self.assertGreaterEqual(float(entry["wall_seconds"]), 0.0)
+        self.assertIn("total_wall_seconds", timings)
+
     def _role_fixture_world(self) -> SimulationWorld:
         return SimulationWorld(
             WorldConfig(
@@ -148,6 +206,8 @@ class FoundationGateCliTests(unittest.TestCase):
         release = PROFILES["release"]
 
         self.assertEqual(release.dominance_warning_share, 0.85)
+        self.assertEqual(release.max_at_cap_tick_share_warning, 0.35)
+        self.assertEqual(release.max_at_cap_tick_share_error, 0.6)
         self.assertEqual(
             release.required_terminal_meat_mode_alternatives_by_seed,
             {3: ("hunter", "mixed"), 11: ("hunter", "mixed")},
@@ -197,6 +257,17 @@ class FoundationGateCliTests(unittest.TestCase):
         self.assertEqual(report["protocol"]["profile"], "unit")
         self.assertEqual(report["summary_evaluation"]["protocol"]["mode"], "summary_only")
         self.assertEqual(len(report["full_replay_probes"]), 1)
+        self.assertIn(
+            "max_at_cap_tick_share_warning",
+            report["protocol"]["criteria"],
+        )
+        self.assertIn("carrying_capacity", report["summary_evaluation"]["runs"][0])
+        self.assertIn("carrying_capacity", report["summary_evaluation"]["aggregate"])
+        self.assertIn("resource_pressure", report["summary_evaluation"]["runs"][0])
+        self.assertIn("resource_pressure", report["summary_evaluation"]["aggregate"])
+        self.assertIn("selection_heredity", report["summary_evaluation"]["runs"][0])
+        self.assertIn("selection_heredity", report["summary_evaluation"]["aggregate"])
+        self.assertIn("carrying_capacity", report["full_replay_probes"][0])
         self.assertIn("ecology_failure_rollup", report)
         self.assertIn("terminal_role_presence_runs", report["ecology_failure_rollup"])
         self.assertIn("diet_by_meat_mode_at_end", report["ecology_failure_rollup"])
@@ -232,7 +303,84 @@ class FoundationGateCliTests(unittest.TestCase):
         self.assertIn(report["readiness"]["status"], {"pass", "review", "fail"})
         self.assertTrue(report["complete"])
         self.assertIn("timings", report)
+        self.assertGateReportSchema(report)
         json.dumps(report)
+
+    def test_summary_gate_flags_sustained_max_agent_saturation(self) -> None:
+        profile = replace(
+            QUICK_PROFILE,
+            name="capacity-unit",
+            min_trophic_roles=1,
+            min_meat_modes=1,
+            min_last_birth_tick=0,
+            min_hazardous_tiles=0,
+            min_ecology_pressure_tiles=0,
+            full_replay_probes=(),
+            max_at_cap_tick_share_warning=0.4,
+            max_at_cap_tick_share_error=0.8,
+        )
+        evaluation = {
+            "flags": [],
+            "runs": [
+                {
+                    "seed": 7,
+                    "last_birth_tick": 1,
+                    "carrying_capacity": {
+                        "near_cap_saturation_threshold": 0.9,
+                        "near_cap_ticks": 6,
+                        "at_cap_ticks": 5,
+                        "near_cap_tick_share": 0.6,
+                        "at_cap_tick_share": 0.5,
+                        "saturation_births": 3,
+                        "saturation_deaths": 1,
+                    },
+                    "trophic": {
+                        "role_counts": {"herbivore": 8, "omnivore": 0, "carnivore": 0},
+                        "meat_mode_counts": {
+                            "none": 8,
+                            "scavenger": 0,
+                            "hunter": 1,
+                            "mixed": 0,
+                        },
+                        "diet": {"animal_energy_share": 0.1},
+                    },
+                    "carrion": {"energy_deposited": 1.0, "energy_consumed": 1.0},
+                }
+            ],
+            "aggregate": {
+                "hazardous_tiles": {"min": 0},
+                "trophic_role_counts_at_end": {
+                    "total": {"herbivore": 8, "omnivore": 0, "carnivore": 0}
+                },
+                "meat_mode_counts_at_end": {
+                    "total": {"none": 8, "scavenger": 0, "hunter": 1, "mixed": 0}
+                },
+                "ecology_state_counts_at_end": {
+                    "total": {"stable": 1, "lush": 0, "recovering": 0, "depleted": 0}
+                },
+                "carrion_energy_consumed": {"max": 1.0},
+                "fresh_kill_energy_consumed": {"max": 0.0},
+            },
+        }
+
+        flags = _summary_gate_flags(evaluation, profile)
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "warning"
+                and flag["field"] == "carrying_capacity.at_cap_tick_share"
+                for flag in flags
+            )
+        )
+        evaluation["runs"][0]["carrying_capacity"]["at_cap_tick_share"] = 0.9
+        flags = _summary_gate_flags(evaluation, profile)
+        self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"] == "carrying_capacity.at_cap_tick_share"
+                for flag in flags
+            )
+        )
 
     def test_ecology_rollup_splits_absent_from_present_unconsumed_resources(self) -> None:
         evaluation = {
@@ -349,6 +497,8 @@ class FoundationGateCliTests(unittest.TestCase):
 
         self.assertTrue(report["complete"])
         self.assertTrue(written["complete"])
+        self.assertGateReportSchema(report)
+        self.assertGateReportSchema(written)
         self.assertTrue(report["timings"]["summary_seed_wall_seconds"])
         self.assertIsNotNone(report["timings"]["summary_sweep_wall_seconds"])
         self.assertIsNotNone(report["timings"]["total_wall_seconds"])
@@ -1462,6 +1612,8 @@ class FoundationGateCliTests(unittest.TestCase):
         warning_fields = {
             flag["field"] for flag in flags if flag["severity"] == "warning"
         }
+        for flag in flags:
+            self.assertGateFlagSchema(flag, expected_severity="warning")
 
         self.assertIn("reproduction.reproductive_expression_counts", warning_fields)
         self.assertIn(

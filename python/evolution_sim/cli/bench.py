@@ -334,6 +334,19 @@ def _benchmark_protocol(*, warmup_runs: int, measured_runs: int) -> dict[str, ob
     }
 
 
+def _validate_cli_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.warmup < 0:
+        parser.error("--warmup must be greater than or equal to 0")
+    if args.runs <= 0:
+        parser.error("--runs must be greater than 0")
+    for option_name, value in (
+        ("--multiprocess-timeout-seconds", args.multiprocess_timeout_seconds),
+        ("--scenario-timeout-seconds", args.scenario_timeout_seconds),
+    ):
+        if not math.isfinite(value) or value <= 0:
+            parser.error(f"{option_name} must be a finite positive number")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark simulator modes with a fixed protocol.")
     parser.add_argument("--warmup", type=int, default=1)
@@ -362,6 +375,7 @@ def main() -> None:
         help="Timeout for each isolated benchmark scenario repetition.",
     )
     args = parser.parse_args()
+    _validate_cli_args(args, parser)
 
     scenarios = (
         tuple(scenario for scenario in SCENARIOS if scenario.name in set(args.scenario))

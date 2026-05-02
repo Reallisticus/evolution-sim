@@ -4,6 +4,7 @@ import copy
 import gzip
 import json
 import unittest
+from contextlib import ExitStack
 from dataclasses import replace
 from inspect import signature
 from pathlib import Path
@@ -32,6 +33,7 @@ from evolution_sim.env.contracts import (
     VIEWER_MAP_KEYS,
 )
 from evolution_sim.env.runtime.biotic import diffuse_biotic_field, diffuse_sparse_biotic_field
+import evolution_sim.env.runtime.resources as runtime_resources
 from evolution_sim.env.runtime.action_contract import (
     ACTION_CONTRACT_VERSION,
     ACTIVE_ACTION_NAMES,
@@ -40,14 +42,22 @@ from evolution_sim.env.runtime.action_contract import (
     action_contract,
     action_names,
 )
-from evolution_sim.env.runtime.action_space import build_action_mask
+from evolution_sim.env.runtime.action_space import (
+    ActionMaskContext,
+    MovementActionAvailability,
+    build_action_mask,
+    build_action_mask_from_context,
+)
+import evolution_sim.env.runtime.feeding as runtime_feeding
 from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
 import evolution_sim.env.runtime.signals as runtime_signals
+import evolution_sim.env.runtime.surfaces as runtime_surfaces
 import evolution_sim.env.runtime.mating as runtime_mating
 from evolution_sim.env.runtime.state import (
     MIND_INHERITANCE_PLACEHOLDER_VERSION,
     Agent,
     CarcassDeposit,
+    FreshKillDeposit,
     SimulationWorldResult,
     TrophicProfile,
 )
@@ -1929,6 +1939,16 @@ class RuntimeContractTests(unittest.TestCase):
             result.summary["avg_alive_attack_power_gene"],
             avg_gene(alive_genomes, "attack_power"),
         )
+        selection = result.summary["selection_heredity"]
+        initial_energy = selection["initial_trait_distributions"]["max_energy"]
+        terminal_energy = selection["terminal_alive_trait_distributions"]["max_energy"]
+        self.assertEqual(initial_energy["count"], result.config["initial_agents"])
+        self.assertEqual(terminal_energy["count"], result.summary["alive_agents"])
+        self.assertIn("median", initial_energy)
+        self.assertIn(
+            "max_energy",
+            selection["terminal_minus_initial_mean"],
+        )
 
     def test_reproduction_blocked_by_max_population_is_reported(self) -> None:
         world = SimulationWorld(
@@ -1946,11 +1966,97 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(result.summary["births"], 0)
         self.assertEqual(result.summary["max_agents"], 1)
         self.assertEqual(result.summary["max_agent_saturation_at_end"], 1.0)
+        self.assertEqual(result.summary["carrying_capacity"]["at_cap_ticks"], 1)
+        self.assertEqual(
+            result.summary["carrying_capacity"]["at_cap_tick_share"],
+            1.0,
+        )
         self.assertEqual(
             result.summary["reproduction_end"]["blocked_run_counts"]["max_population"],
             1,
         )
         self.assertEqual(blocked_events[0]["data"]["reason"], "max_population")
+
+    def test_carrying_capacity_counts_saturation_births(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=5, height=5, max_agents=3)
+        )
+        self._place_ready_agent(world, x=1, y=1, lineage_id=1)
+        self._place_ready_agent(world, x=3, y=3, lineage_id=2)
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+        capacity = result.summary["carrying_capacity"]
+
+        self.assertEqual(result.summary["births"], 1)
+        self.assertEqual(capacity["at_cap_ticks"], 1)
+        self.assertEqual(capacity["saturation_births"], 1)
+        self.assertEqual(capacity["saturation_deaths"], 0)
+
+    def test_carrying_capacity_counts_saturation_deaths(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=4, height=4, max_agents=1)
+        )
+        agent = self._place_ready_agent(world, x=1, y=1)
+        agent.age = world.config.max_age
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+        capacity = result.summary["carrying_capacity"]
+
+        self.assertEqual(result.summary["deaths"], 1)
+        self.assertEqual(capacity["at_cap_ticks"], 1)
+        self.assertEqual(capacity["saturation_deaths"], 1)
+
+    def test_resource_pressure_budget_tracks_plant_removal_and_energy_spend(self) -> None:
+        class FixedPolicy:
+            policy_id = "fixed_policy"
+            policy_version = "fixed_policy_v1"
+
+            def decide(
+                self,
+                observation: dict[str, object],
+                action_mask: dict[str, bool],
+            ) -> ActionDecision:
+                return ActionDecision(
+                    requested_action="eat",
+                    source=self.policy_id,
+                    policy_id=self.policy_id,
+                    policy_version=self.policy_version,
+                )
+
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=4,
+                height=4,
+                max_age=2_000,
+                base_energy_drain=0.1,
+                reproduction=ReproductionConfig(
+                    min_age=1_000,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.0,
+                ),
+            ),
+            policy=FixedPolicy(),
+        )
+        agent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._mixed_genome(),
+        )
+        agent.energy = agent.genome.max_energy * 0.4
+        world.grid[agent.y][agent.x].food = 0.5
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+        pressure = result.summary["resource_pressure"]
+        plant_budget = pressure["plant_budget"]
+        energy_spend = pressure["energy_spend"]
+
+        self.assertGreater(plant_budget["energy_removed"], 0.0)
+        self.assertGreaterEqual(plant_budget["energy_created"], 0.0)
+        self.assertGreater(energy_spend["metabolism"], 0.0)
+        self.assertEqual(energy_spend["movement"], 0.0)
+        self.assertGreater(energy_spend["total"], 0.0)
 
     def test_reproduction_phase_counts_births_against_max_population(self) -> None:
         world = SimulationWorld(
@@ -2013,6 +2119,59 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertTrue(
             all(event["data"]["reason"] == "local_crowding" for event in blocked_events)
         )
+
+    def test_reproduction_placement_context_controls_max_population_boundary(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=4, height=4, max_agents=20)
+        )
+        parent = self._place_ready_agent(world, x=1, y=1)
+        placement = replace(
+            world._reproduction_placement_context(),
+            max_agents=1,
+            current_alive_count=lambda: 1,
+            has_empty_neighbor=lambda x, y: (_ for _ in ()).throw(
+                AssertionError("local crowding should not be checked after saturation")
+            ),
+        )
+
+        availability = runtime_reproduction.reproduction_availability(
+            world,
+            placement_context=placement,
+        )
+        reason = runtime_reproduction.reproduction_block_reason(
+            world,
+            parent,
+            availability,
+            placement_context=placement,
+        )
+
+        self.assertTrue(availability.population_saturated)
+        self.assertEqual(reason, "max_population")
+
+    def test_reproduction_placement_context_controls_local_crowding_boundary(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(width=4, height=4, max_agents=20)
+        )
+        parent = self._place_ready_agent(world, x=1, y=1)
+        placement = replace(
+            world._reproduction_placement_context(),
+            max_agents=20,
+            current_alive_count=lambda: 1,
+            has_empty_neighbor=lambda x, y: False,
+        )
+
+        with patch.object(
+            world,
+            "_has_empty_neighbor",
+            side_effect=AssertionError("placement context was bypassed"),
+        ):
+            reason = runtime_reproduction.reproduction_block_reason(
+                world,
+                parent,
+                placement_context=placement,
+            )
+
+        self.assertEqual(reason, "local_crowding")
 
     def test_reproduction_biological_blockers_are_grouped_by_role_and_mode(self) -> None:
         world = SimulationWorld(
@@ -2112,6 +2271,17 @@ class RuntimeContractTests(unittest.TestCase):
         second_bytes = json.dumps(second.summary, separators=(",", ":")).encode("utf-8")
         self.assertEqual(first_bytes, second_bytes)
 
+    def test_summary_only_reuses_resolution_action_masks(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=17, max_ticks=80))
+
+        world.run(mode=RunMode.SUMMARY_ONLY)
+
+        observation_builds = world.runtime_cost_counters["observation_builds"]
+        action_mask_builds = world.runtime_cost_counters["action_mask_builds"]
+        self.assertGreater(observation_builds, 0)
+        self.assertGreater(action_mask_builds, observation_builds)
+        self.assertLessEqual(action_mask_builds, observation_builds * 2)
+
     def test_full_replay_capture_delegates_to_runtime_frame_boundary(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
 
@@ -2125,6 +2295,255 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(kwargs["deaths_this_tick"], 1)
         self.assertIs(kwargs["trophic_role_codes"], TROPHIC_ROLE_CODES)
         self.assertIs(kwargs["meat_mode_codes"], MEAT_MODE_CODES)
+
+    def test_surface_materialization_uses_explicit_frame_context(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        context = world._frame_surface_context()
+        expected = world._materialize_frame_surfaces(surface_context=context)
+
+        private_reads = (
+            "_habitat_state_grid",
+            "_hydrology_snapshot",
+            "_refuge_snapshot",
+            "_ecology_snapshot",
+            "_hazard_snapshot",
+            "_biotic_field_snapshot",
+            "_signal_field_snapshot",
+            "_fresh_kill_snapshot",
+            "_carcass_snapshot",
+            "_climate_state",
+        )
+        with ExitStack() as stack:
+            for name in private_reads:
+                stack.enter_context(
+                    patch.object(world, name, side_effect=AssertionError(name))
+                )
+            actual = runtime_surfaces.materialize_frame_surfaces(
+                world,
+                surface_context=context,
+            )
+
+        self.assertEqual(actual, expected)
+
+    def test_agent_frame_telemetry_uses_explicit_surface_context(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        alive = world.alive_agents()
+        base_context = world._frame_surface_context()
+        context = replace(
+            base_context,
+            energy_ratio=lambda agent: 0.11,
+            hydration_ratio=lambda agent: 0.22,
+            health_ratio=lambda agent: 0.33,
+            agent_energy_drain_modifier=lambda agent, season: 0.44,
+            agent_hydration_drain_modifier=lambda agent, season: 0.55,
+            is_reproduction_ready=lambda agent: True,
+            trophic_role=lambda agent: "carnivore",
+            meat_mode=lambda agent: "hunter",
+            refuge_score=lambda x, y: 0.66,
+            matched_diet_ratio=lambda agent: 0.77,
+        )
+        surfaces = world._materialize_frame_surfaces(surface_context=context)
+        season = str(context.climate_state["season"])
+        actual = runtime_surfaces.build_agent_frame_telemetry(
+            world,
+            alive,
+            season=season,
+            surfaces=surfaces,
+            surface_context=context,
+        )
+
+        self.assertTrue(actual)
+        for telemetry in actual.values():
+            self.assertEqual(telemetry["energy_ratio"], 0.11)
+            self.assertEqual(telemetry["hydration_ratio"], 0.22)
+            self.assertEqual(telemetry["health_ratio"], 0.33)
+            self.assertEqual(telemetry["energy_modifier"], 0.44)
+            self.assertEqual(telemetry["hydration_modifier"], 0.55)
+            self.assertTrue(telemetry["reproduction_ready"])
+            self.assertEqual(telemetry["trophic_role"], "carnivore")
+            self.assertEqual(telemetry["meat_mode"], "hunter")
+            self.assertEqual(telemetry["refuge_score"], 0.66)
+            self.assertEqual(telemetry["matched_diet_ratio"], 0.77)
+
+    def test_full_replay_frame_capture_uses_surface_context_boundary(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=2))
+
+        with (
+            patch(
+                "evolution_sim.env.runtime.surfaces.materialize_frame_surfaces",
+                wraps=runtime_surfaces.materialize_frame_surfaces,
+            ) as materialize_surfaces,
+            patch(
+                "evolution_sim.env.runtime.surfaces.build_agent_frame_telemetry",
+                wraps=runtime_surfaces.build_agent_frame_telemetry,
+            ) as build_telemetry,
+        ):
+            result = world.run(mode=RunMode.FULL_REPLAY)
+
+        self.assertIsNotNone(result.viewer)
+        self.assertGreater(len(result.viewer["frames"]), 0)
+        self.assertGreater(materialize_surfaces.call_count, 0)
+        self.assertGreater(build_telemetry.call_count, 0)
+        for call in materialize_surfaces.call_args_list:
+            self.assertIsInstance(
+                call.kwargs["surface_context"],
+                runtime_surfaces.FrameSurfaceContext,
+            )
+        for call in build_telemetry.call_args_list:
+            self.assertIsInstance(
+                call.kwargs["surface_context"],
+                runtime_surfaces.FrameSurfaceContext,
+            )
+
+    def test_frame_capture_does_not_write_resource_run_final_totals(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+
+        world._capture_frame(births_this_tick=0, deaths_this_tick=0)
+
+        self.assertIn("fresh_kill_stats", world.viewer_frames[-1])
+        self.assertIn("carcass_stats", world.viewer_frames[-1])
+        self.assertNotIn("fresh_kill_tiles", world.run_fresh_kill_totals)
+        self.assertNotIn("total_fresh_kill_energy", world.run_fresh_kill_totals)
+        self.assertNotIn("carcass_tiles", world.run_carcass_totals)
+        self.assertNotIn("total_carcass_energy", world.run_carcass_totals)
+
+    def test_resource_runtime_boundary_preserves_consumption_provenance(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        tile = world.grid[agent.y][agent.x]
+        tile.carcass_deposits = [
+            CarcassDeposit(
+                energy_remaining=0.4,
+                freshness=0.25,
+                source_species=1,
+                source_agent_id=101,
+                death_tick=2,
+                cause="old",
+            ),
+            CarcassDeposit(
+                energy_remaining=0.3,
+                freshness=0.95,
+                source_species=2,
+                source_agent_id=202,
+                death_tick=3,
+                cause="new",
+            ),
+        ]
+        tile.fresh_kill_deposits = [
+            FreshKillDeposit(
+                energy_remaining=0.2,
+                source_species=3,
+                source_agent_id=303,
+                death_tick=4,
+                killer_id=900,
+            ),
+            FreshKillDeposit(
+                energy_remaining=0.25,
+                source_species=4,
+                source_agent_id=404,
+                death_tick=8,
+                killer_id=901,
+            ),
+        ]
+
+        carcass_info = runtime_resources.consume_carcass_from_tile(
+            tile,
+            0.2,
+            max_tile_deposits=world.config.carcasses.max_tile_deposits,
+            freshness_merge_bucket=world.config.carcasses.freshness_merge_bucket,
+        )
+        fresh_kill_info = runtime_resources.consume_fresh_kill_from_tile(
+            tile,
+            0.15,
+            max_tile_deposits=world.config.carcasses.max_tile_deposits,
+        )
+
+        self.assertEqual(carcass_info["deposit_breakdown"][0]["source_agent_id"], 202)
+        self.assertEqual(carcass_info["source_breakdown"][0]["source_species"], 2)
+        self.assertEqual(fresh_kill_info["deposit_breakdown"][0]["source_agent_id"], 404)
+        self.assertEqual(fresh_kill_info["source_breakdown"][0]["killer_id"], 901)
+
+    def test_feeding_telemetry_uses_runtime_accounting_for_all_food_sources(self) -> None:
+        observed_sources: list[str] = []
+        original_record_feeding_event = runtime_feeding.record_feeding_event
+
+        def record_spy(*args: object, **kwargs: object) -> None:
+            observed_sources.append(str(args[2]))
+            original_record_feeding_event(*args, **kwargs)
+
+        with patch(
+            "evolution_sim.env.runtime.feeding.record_feeding_event",
+            side_effect=record_spy,
+        ):
+            plant_world = SimulationWorld(self._ready_reproduction_config())
+            plant_agent = self._place_ready_agent(
+                plant_world,
+                x=1,
+                y=1,
+                genome=self._mixed_genome(),
+            )
+            plant_agent.energy = plant_agent.genome.max_energy * 0.4
+            plant_tile = plant_world.grid[plant_agent.y][plant_agent.x]
+            plant_tile.food = 0.5
+            plant_outcome = plant_world._consume_plant_outcome(plant_agent)
+
+            fresh_world = SimulationWorld(self._ready_reproduction_config())
+            fresh_agent = self._place_ready_agent(
+                fresh_world,
+                x=1,
+                y=1,
+                genome=self._hunter_genome(),
+            )
+            fresh_agent.energy = fresh_agent.genome.max_energy * 0.4
+            fresh_tile = fresh_world.grid[fresh_agent.y][fresh_agent.x]
+            fresh_world._deposit_fresh_kill(
+                fresh_tile,
+                x=fresh_agent.x,
+                y=fresh_agent.y,
+                energy=0.4,
+                source_species=None,
+                source_agent_id=None,
+                killer_id=None,
+            )
+            fresh_outcome = fresh_world._consume_fresh_kill_outcome(fresh_agent)
+
+            carcass_world = SimulationWorld(self._ready_reproduction_config())
+            carcass_agent = self._place_ready_agent(
+                carcass_world,
+                x=1,
+                y=1,
+                genome=self._scavenger_genome(),
+            )
+            carcass_agent.energy = carcass_agent.genome.max_energy * 0.4
+            carcass_tile = carcass_world.grid[carcass_agent.y][carcass_agent.x]
+            carcass_world._deposit_carcass(
+                carcass_tile,
+                x=carcass_agent.x,
+                y=carcass_agent.y,
+                energy=0.4,
+                source_species=None,
+                source_agent_id=None,
+                cause="test",
+                killer_id=None,
+            )
+            carcass_outcome = carcass_world._consume_carcass_outcome(carcass_agent)
+
+        self.assertIsNotNone(plant_outcome)
+        self.assertIsNotNone(fresh_outcome)
+        self.assertIsNotNone(carcass_outcome)
+        self.assertEqual(observed_sources, ["plant", "fresh_kill", "carcass"])
+        for world, food_source in (
+            (plant_world, "plant"),
+            (fresh_world, "fresh_kill"),
+            (carcass_world, "carcass"),
+        ):
+            self.assertEqual(world.tick_feeding_events[-1]["food_source"], food_source)
+            self.assertEqual(world.run_diet_totals[f"{food_source}_events"], 1.0)
+            self.assertGreater(world.run_diet_totals[f"{food_source}_energy"], 0.0)
+        self.assertGreater(
+            plant_world.run_resource_pressure_totals["plant_energy_removed"],
+            0.0,
+        )
 
     def test_summary_only_never_invokes_full_replay_paths(self) -> None:
         with patch(
@@ -2144,9 +2563,52 @@ class RuntimeContractTests(unittest.TestCase):
         ):
             result = SimulationWorld(WorldConfig(seed=7, max_ticks=20)).run(
                 mode=RunMode.SUMMARY_ONLY
-            )
+        )
         self.assertIsNone(result.viewer)
         self.assertIsNone(result.events)
+
+    def test_summary_only_opportunity_counters_do_not_build_replay_payloads(self) -> None:
+        with patch(
+            "evolution_sim.env.runtime.collectors.apply_replay_taxonomy",
+            side_effect=AssertionError("taxonomy should not run for opportunity counters"),
+        ), patch.object(
+            SimulationWorld,
+            "_capture_frame",
+            side_effect=AssertionError("opportunity counters should not capture frames"),
+        ), patch(
+            "evolution_sim.env.runtime.frames.capture_frame",
+            side_effect=AssertionError("opportunity counters should not build frames"),
+        ), patch.object(
+            SimulationWorld,
+            "_build_viewer_payload",
+            side_effect=AssertionError("opportunity counters should not build viewer payloads"),
+        ):
+            world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+            agent = world.alive_agents()[0]
+            world._deposit_carcass(
+                world.grid[agent.y][agent.x],
+                x=agent.x,
+                y=agent.y,
+                energy=0.4,
+                source_species=None,
+                source_agent_id=None,
+                cause="test",
+                killer_id=None,
+            )
+
+            result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        opportunity = result.summary["animal_resource_opportunity_by_meat_mode_end"]
+        self.assertIsNone(result.viewer)
+        self.assertIsNone(result.events)
+        self.assertEqual(world.viewer_frames, [])
+        self.assertGreater(
+            sum(
+                counts["animal_resource_present_ticks"]
+                for counts in opportunity.values()
+            ),
+            0,
+        )
 
     def test_summary_only_does_not_retain_replay_bookkeeping(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=20))
@@ -2190,6 +2652,57 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertFalse(moved)
         self.assertEqual(agent.energy, energy_before)
         self.assertFalse(any(event.type.value == "agent_ate" for event in world.events))
+
+    def test_action_mask_builder_uses_explicit_context(self) -> None:
+        mask = build_action_mask_from_context(
+            ActionMaskContext(
+                action_names=(
+                    "stay",
+                    "move_north",
+                    "move_south",
+                    "move_east",
+                    "move_west",
+                    "eat",
+                    "drink",
+                    "attack_north",
+                    "attack_south",
+                    "attack_east",
+                    "attack_west",
+                    "mate",
+                    "signal_0_profile_0",
+                ),
+                can_eat=True,
+                can_drink=False,
+                movement=(
+                    MovementActionAvailability(
+                        action="move_north",
+                        dx=0,
+                        dy=-1,
+                        can_move=True,
+                        can_attack=False,
+                    ),
+                    MovementActionAvailability(
+                        action="move_east",
+                        dx=1,
+                        dy=0,
+                        can_move=False,
+                        can_attack=True,
+                    ),
+                ),
+                communication_action_available={"signal_0_profile_0": True},
+            )
+        )
+
+        self.assertTrue(mask["stay"])
+        self.assertTrue(mask["eat"])
+        self.assertFalse(mask["drink"])
+        self.assertTrue(mask["move_north"])
+        self.assertFalse(mask["attack_north"])
+        self.assertFalse(mask["move_east"])
+        self.assertTrue(mask["attack_east"])
+        self.assertTrue(mask["signal_0_profile_0"])
+        self.assertFalse(mask["move_south"])
+        self.assertFalse(mask["mate"])
 
     def test_observation_contract_is_serializable_and_unprivileged(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
@@ -2248,6 +2761,66 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
         json.dumps(observation)
         json.dumps(encoded)
+
+    def test_observation_builder_uses_explicit_context_for_policy_inputs(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        context = world._observation_context(agent)
+        expected = build_observation(world, agent, observation_context=context)
+
+        private_reads = (
+            "_trophic_profile",
+            "_hazard_at",
+            "_current_biotic_state",
+            "_current_signal_state",
+            "_energy_ratio",
+            "_hydration_ratio",
+            "_health_ratio",
+            "_is_reproduction_ready",
+            "_matched_diet_ratio",
+            "_water_access_reason",
+            "_hydrology_support_code",
+            "_refuge_score",
+            "_ecology_state_at",
+            "_in_bounds",
+            "_movement_actions",
+            "_prey_vulnerability",
+        )
+        with ExitStack() as stack:
+            for name in private_reads:
+                stack.enter_context(
+                    patch.object(world, name, side_effect=AssertionError(name))
+                )
+            actual = build_observation(world, agent, observation_context=context)
+
+        self.assertEqual(observation_digest(actual), observation_digest(expected))
+        self.assertEqual(
+            decode_observation_input(encode_observation_input(actual)),
+            decode_observation_input(encode_observation_input(expected)),
+        )
+
+    def test_observation_input_encoder_excludes_privileged_payloads(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(world, agent)
+        baseline = encode_observation_input(observation)
+
+        mutated = copy.deepcopy(observation)
+        mutated["metadata"] = {"agent_id": agent.agent_id + 10_000}
+        mutated["action_mask"] = {
+            str(action): not bool(enabled)
+            for action, enabled in dict(observation["action_mask"]).items()
+        }
+        mutated["world"] = {"width": world.config.width, "height": world.config.height}
+        mutated["grid"] = [["privileged"]]
+        mutated["agents"] = [agent.agent_id]
+        mutated["privileged_world_state"] = True
+
+        self.assertEqual(encode_observation_input(mutated), baseline)
+        self.assertEqual(
+            decode_observation_input(encode_observation_input(mutated)),
+            decode_observation_input(baseline),
+        )
 
     def test_action_contract_reserves_future_slots_without_enabling_them(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
@@ -4027,6 +4600,128 @@ class RuntimeContractTests(unittest.TestCase):
                 {"agent_id": partner.agent_id, "energy_cost": round(partner_cost * 3, 4)},
             )
 
+    def test_reproduction_placement_context_controls_sibling_destinations(self) -> None:
+        reproduction = ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=0,
+            min_hydration_fraction=0.0,
+            energy_cost=0.0,
+            sexual_partner_radius=1,
+            multi_offspring_enabled=True,
+            multi_offspring_threshold=0.8,
+            multi_offspring_max_count=3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=7,
+                max_agents=20,
+                reproduction=reproduction,
+            )
+        )
+        sexualized = self._sexualized_genome(self._mixed_genome())
+        fecund_genome = replace(
+            sexualized,
+            reproductive=replace(
+                sexualized.reproductive,
+                fecundity_potential=1.0,
+            ),
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=3,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        self._place_ready_agent(
+            world,
+            x=3,
+            y=4,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=fecund_genome,
+        )
+        original_place_agent = world._place_agent
+        original_invalidate = world._invalidate_biotic_state
+        placements: list[tuple[int, int]] = []
+        invalidations = 0
+
+        def place_child(child: Agent) -> None:
+            placements.append((child.x, child.y))
+            original_place_agent(child)
+
+        def invalidate_spatial_state() -> None:
+            nonlocal invalidations
+            invalidations += 1
+            original_invalidate()
+
+        placement = replace(
+            world._reproduction_placement_context(),
+            max_agents=20,
+            current_alive_count=lambda: 2,
+            find_empty_neighbor=lambda x, y: (4, 3),
+            sibling_destination_candidates=lambda x, y: [
+                (4, 3),
+                (2, 3),
+                (3, 2),
+                (3, 4),
+            ],
+            can_place_at=lambda x, y: (x, y) in {(4, 3), (2, 3), (3, 2)},
+            place_agent=place_child,
+            invalidate_spatial_state=invalidate_spatial_state,
+        )
+
+        with (
+            patch.object(
+                world,
+                "_find_empty_neighbor",
+                side_effect=AssertionError("placement context was bypassed"),
+            ),
+            patch.object(
+                world,
+                "_can_move_to",
+                side_effect=AssertionError("placement context was bypassed"),
+            ),
+            patch.object(
+                world,
+                "_place_agent",
+                side_effect=AssertionError("placement context was bypassed"),
+            ),
+            patch.object(
+                world,
+                "_invalidate_biotic_state",
+                side_effect=AssertionError("placement context was bypassed"),
+            ),
+        ):
+            birth_count = runtime_reproduction.reproduce_birth_count(
+                world,
+                parent,
+                alive_count=2,
+                placement_context=placement,
+            )
+
+        events = [
+            event.to_dict()
+            for event in world.events
+            if event.type == EventType.AGENT_REPRODUCED
+        ]
+        self.assertEqual(birth_count, 3)
+        self.assertEqual(placements, [(4, 3), (2, 3), (3, 2)])
+        self.assertEqual(invalidations, 1)
+        self.assertEqual(len(events), 3)
+        self.assertTrue(
+            all(
+                event["data"]["multi_offspring_limit_reasons"] == []
+                for event in events
+            )
+        )
+
     def test_multi_offspring_respects_population_capacity(self) -> None:
         reproduction = ReproductionConfig(
             min_age=1,
@@ -4205,6 +4900,93 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertGreaterEqual(forward.meat_efficiency, child_genome.meat_efficiency)
         self.assertLessEqual(forward.plant_bias, child_genome.plant_bias)
         self.assertGreaterEqual(forward.live_prey_bias, child_genome.live_prey_bias)
+
+    def test_sexual_child_reproductive_state_resolves_symmetrically(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.0,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        config = world.config.reproduction
+        primary_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=-0.8,
+        )
+        secondary_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=0.8,
+        )
+        child_genome = self._role_genome(
+            self._mixed_genome(),
+            role_drive=0.55,
+            expression_bias=0.8,
+        )
+        primary = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=10,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                primary_genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                primary_genome,
+                config,
+            ),
+            genome=primary_genome,
+        )
+        secondary = self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=2,
+            reproductive_group_id=10,
+            reproductive_stage=runtime_mating.reproductive_stage_for_genome(
+                secondary_genome,
+                config,
+            ),
+            reproductive_expression=runtime_mating.reproductive_expression_for_genome(
+                secondary_genome,
+                config,
+            ),
+            genome=secondary_genome,
+        )
+
+        forward = runtime_reproduction.sexual_reproductive_state_for_child(
+            world,
+            primary,
+            secondary,
+            child_genome,
+        )
+        reverse = runtime_reproduction.sexual_reproductive_state_for_child(
+            world,
+            secondary,
+            primary,
+            child_genome,
+        )
+
+        self.assertEqual(forward, reverse)
+        self.assertEqual(forward.group_id, 10)
+        self.assertEqual(
+            forward.stage,
+            runtime_mating.reproductive_stage_for_genome(child_genome, config),
+        )
+        self.assertEqual(
+            forward.expression,
+            runtime_mating.reproductive_expression_for_genome(child_genome, config),
+        )
 
     def test_stage1_cross_lineage_same_group_sexual_child_gets_new_lineage(self) -> None:
         world = SimulationWorld(
@@ -4430,6 +5212,20 @@ class RuntimeContractTests(unittest.TestCase):
             result.summary["mind_contracts"]["action_outcome_schema_version"],
             ACTION_OUTCOME_SCHEMA_VERSION,
         )
+        self.assertIn("invalid_observation_action_count", trajectory)
+        self.assertIn("invalid_resolution_action_count", trajectory)
+        self.assertEqual(
+            trajectory["invalid_action_count"],
+            trajectory["invalid_observation_action_count"],
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["invalid_observation_action_count"],
+            trajectory["invalid_observation_action_count"],
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["invalid_resolution_action_count"],
+            trajectory["invalid_resolution_action_count"],
+        )
         self.assertIn(first_record["requested_action"], first_record["action_mask"])
         self.assertIn(first_record["requested_action"], first_record["resolution_action_mask"])
         self.assertFalse(first_record["action_mask"][MATE_ACTION])
@@ -4653,6 +5449,88 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(first_record["policy_id"], policy.policy_id)
         self.assertEqual(first_record["policy_version"], policy.policy_version)
 
+    def test_run_trajectory_exposes_metabolism_after_state(self) -> None:
+        class FixedPolicy:
+            policy_id = "fixed_policy"
+            policy_version = "fixed_policy_v1"
+
+            def __init__(self, action: str) -> None:
+                self.action = action
+
+            def decide(
+                self,
+                observation: dict[str, object],
+                action_mask: dict[str, bool],
+            ) -> ActionDecision:
+                return ActionDecision(
+                    requested_action=self.action,
+                    source=self.policy_id,
+                    policy_id=self.policy_id,
+                    policy_version=self.policy_version,
+                )
+
+        def run_one(action: str) -> dict[str, object]:
+            world = SimulationWorld(
+                WorldConfig(
+                    seed=7,
+                    max_ticks=1,
+                    width=3,
+                    height=3,
+                    initial_agents=0,
+                    max_agents=4,
+                    water_tile_ratio=0.0,
+                    forest_tile_ratio=0.0,
+                    wetland_tile_ratio=0.0,
+                    rocky_tile_ratio=0.0,
+                    base_energy_drain=0.02,
+                    base_hydration_drain=0.02,
+                    hazards=HazardConfig(
+                        exposure_damage_rate=0.0,
+                        instability_damage_rate=0.0,
+                    ),
+                    reproduction=ReproductionConfig(min_age=720),
+                ),
+                policy=FixedPolicy(action),
+            )
+            agent = self._place_ready_agent(
+                world,
+                x=1,
+                y=1,
+                genome=self._hunter_genome(),
+            )
+            agent.energy = agent.genome.max_energy * 0.8
+            agent.hydration = agent.genome.max_hydration * 0.8
+            world.current_species_map = {agent.agent_id: agent.lineage_id}
+            world.agent_last_species_map = world.current_species_map.copy()
+
+            result = world.run(mode=RunMode.FULL_REPLAY, record_trajectory=True)
+            return result.viewer["trajectory"]["records"][0]
+
+        stationary = run_one("stay")
+        moved = run_one("move_east")
+        stationary_energy_loss = (
+            float(stationary["before"]["energy"]) - float(stationary["after"]["energy"])
+        )
+        stationary_hydration_loss = (
+            float(stationary["before"]["hydration"])
+            - float(stationary["after"]["hydration"])
+        )
+        moved_energy_loss = (
+            float(moved["before"]["energy"]) - float(moved["after"]["energy"])
+        )
+        moved_hydration_loss = (
+            float(moved["before"]["hydration"]) - float(moved["after"]["hydration"])
+        )
+
+        self.assertFalse(stationary["moved"])
+        self.assertTrue(moved["moved"])
+        self.assertGreater(stationary_energy_loss, 0.0)
+        self.assertGreater(stationary_hydration_loss, 0.0)
+        self.assertGreater(moved_energy_loss, stationary_energy_loss)
+        self.assertGreater(moved_hydration_loss, stationary_hydration_loss)
+        self.assertEqual(stationary["after"]["age"], stationary["before"]["age"] + 1)
+        self.assertEqual(moved["after"]["age"], moved["before"]["age"] + 1)
+
     def test_default_policy_does_not_call_legacy_world_reading_heuristic(self) -> None:
         with patch(
             "evolution_sim.env.runtime.actions.choose_action",
@@ -4802,6 +5680,37 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertFalse(outcome["resolution_action_valid"])
         self.assertEqual(outcome["invalid_reason"], "not_in_resolution_action_mask")
 
+    def test_action_outcome_records_resolution_mask_conflicts_by_action_family(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        base_mask = world._action_mask(agent)
+
+        for action in ("move_east", "eat", "attack_north", MATE_ACTION):
+            with self.subTest(action=action):
+                observation_mask = dict(base_mask)
+                resolution_mask = dict(base_mask)
+                observation_mask[action] = True
+                resolution_mask[action] = False
+
+                moved, outcome = world._resolve_action_with_outcome(
+                    agent,
+                    action,
+                    observation_action_mask=observation_mask,
+                    resolution_action_mask=resolution_mask,
+                )
+
+                self.assertFalse(moved)
+                self.assertEqual(outcome["resolved_action"], "stay")
+                self.assertTrue(outcome["observation_action_valid"])
+                self.assertFalse(outcome["resolution_action_valid"])
+                self.assertEqual(
+                    outcome["invalid_reason"],
+                    "not_in_resolution_action_mask",
+                )
+                self.assertEqual(outcome["movement"], {"moved": False})
+                self.assertEqual(outcome["feeding"], {"ate": False})
+                self.assertEqual(outcome["attack"], {"attempted": False})
+
     def test_trajectory_records_real_tick_resolution_conflict(self) -> None:
         world = SimulationWorld(
             WorldConfig(
@@ -4859,6 +5768,19 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(
             second_record["outcome"]["invalid_reason"],
             "not_in_resolution_action_mask",
+        )
+        self.assertEqual(result.viewer["trajectory"]["invalid_action_count"], 0)
+        self.assertEqual(
+            result.viewer["trajectory"]["invalid_observation_action_count"],
+            0,
+        )
+        self.assertEqual(
+            result.viewer["trajectory"]["invalid_resolution_action_count"],
+            1,
+        )
+        self.assertEqual(
+            result.summary["mind_contracts"]["invalid_resolution_action_count"],
+            1,
         )
 
     def test_summary_only_does_not_retain_trajectory_bookkeeping(self) -> None:
@@ -4939,8 +5861,23 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(world.trajectory_records, [])
         self.assertGreater(writer.record_count, 0)
         self.assertEqual(writer.record_count, len(records))
+        self.assertEqual(
+            set(header),
+            {
+                "type",
+                "format",
+                "compression",
+                "run_id",
+                "config",
+                "trajectory_contract",
+            },
+        )
         self.assertEqual(header["type"], "header")
         self.assertEqual(header["format"], "evolution_sim_trajectory_jsonl_v1")
+        self.assertEqual(header["compression"], "gzip")
+        self.assertIsInstance(header["config"], dict)
+        self.assertNotIn("viewer", header)
+        self.assertNotIn("events", header)
         self.assertEqual(
             header["trajectory_contract"]["schema_version"],
             TRAJECTORY_SCHEMA_VERSION,
@@ -4985,7 +5922,17 @@ class RuntimeContractTests(unittest.TestCase):
             ),
             6,
         )
+        self.assertEqual(
+            set(footer),
+            {"type", "summary", "trajectory_summary"},
+        )
         self.assertEqual(footer["type"], "footer")
+        self.assertNotIn("viewer", footer)
+        self.assertNotIn("events", footer)
+        self.assertEqual(
+            footer["trajectory_summary"]["schema_version"],
+            TRAJECTORY_SCHEMA_VERSION,
+        )
         self.assertEqual(
             footer["trajectory_summary"]["policy_interface_version"],
             POLICY_INTERFACE_VERSION,
@@ -5002,7 +5949,19 @@ class RuntimeContractTests(unittest.TestCase):
             footer["trajectory_summary"]["genome_recombination_contract_version"],
             GENOME_RECOMBINATION_CONTRACT_VERSION,
         )
+        self.assertEqual(
+            footer["trajectory_summary"]["action_outcome_schema_version"],
+            ACTION_OUTCOME_SCHEMA_VERSION,
+        )
         self.assertEqual(footer["trajectory_summary"]["record_count"], len(records))
+        self.assertIn(
+            "invalid_observation_action_count",
+            footer["trajectory_summary"],
+        )
+        self.assertIn(
+            "invalid_resolution_action_count",
+            footer["trajectory_summary"],
+        )
         self.assertEqual(footer["summary"]["run_id"], result.summary["run_id"])
         self.assertIn("observation_input", records[0])
         self.assertEqual(

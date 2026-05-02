@@ -10,6 +10,20 @@ npm run sim:bench -- --warmup 0 --runs 1 --scenario summary_seed7_ticks20 --skip
 npm run sim:golden:quick
 ```
 
+## CLI Argument Constraints
+
+The benchmark CLI validates protocol arguments before running any scenario:
+
+- `--warmup` must be an integer greater than or equal to `0`.
+- `--runs` must be an integer greater than `0`.
+- `--scenario-timeout-seconds` must be a finite positive number.
+- `--multiprocess-timeout-seconds` must be a finite positive number.
+- `--scenario` may be repeated, but each value must be one of the named
+  protocol scenarios exposed by `python/evolution_sim/cli/bench.py`.
+
+Invalid protocol values exit with argparse status `2`, write no JSON report to
+stdout, and put the validation message on stderr.
+
 ## Fixed Protocol
 
 - Warmup runs: `1`
@@ -25,6 +39,45 @@ Each measured scenario repetition runs in a fresh worker process. Wall time is
 measured inside that worker so process startup overhead is excluded, while peak
 RSS is isolated to that repetition instead of inherited from earlier scenarios.
 RSS is normalized to KiB across platforms.
+
+## Report Contract
+
+Benchmark reports are JSON documents with a top-level completion flag:
+
+- `complete: true` means every selected scenario and the optional multi-process
+  rollout completed.
+- `complete: false` means the command caught a timeout or runtime failure and
+  wrote a partial report.
+
+Every report contains:
+
+- `protocol`: warmup count, measured run count, machine profile, RSS units, and
+  scenario repetition isolation mode.
+- `complete`: boolean completion flag.
+- `scenarios`: completed scenario metric objects. This list is empty if the
+  first selected scenario times out before a measured result is available.
+- `multi_process_summary_rollout`: rollout metrics or `null` when skipped or
+  not reached.
+
+Each completed scenario records its scenario identity plus median/p95 wall time,
+median/p95 peak RSS, replay size when applicable, trajectory record/output
+counts, and median runtime cost counters.
+
+Partial reports keep any completed `scenarios` plus the selected machine
+profile and include an `error` object with:
+
+- `phase`: scenario/run phase or multi-process rollout phase that failed;
+- `type`: exception class name;
+- `message`: human-readable failure reason;
+- `completed_scenarios`: number of scenarios with completed measurements;
+- `requested_scenarios`: total selected scenario count.
+
+For multi-process rollout timeouts, the `message` includes completed worker
+count and pending seeds.
+
+Timeouts should therefore be treated as usable diagnostic reports, not as
+silent benchmark stalls. Automation should fail the build or gate when
+`complete` is false, but still archive the partial JSON for analysis.
 
 ## Required Machine Profile
 
@@ -68,10 +121,21 @@ Before/after comparisons are valid only when collected on the same machine profi
 - A `pass` report means the selected profile passed. A `review` report means no
   hard blocker was found, but Foundation warnings must be judged before moving
   toward `Mind v1`. A `fail` report blocks Mind work.
+- Release reports consume shared summary analytics for carrying-capacity
+  pressure, resource-pressure budgets, and initial-to-terminal trait
+  distributions. Sustained max-agent saturation is warning/fail gated through
+  `carrying_capacity.at_cap_tick_share`; resource and heredity metrics are
+  exported for review and benchmark correlation before they become hard
+  ecological thresholds.
 
 ## Scaling Targets
 
 - Prefer semantic-preserving code-path reductions before hardware scaling.
+- Treat summary-only action-mask builds as a benchmarked cost surface. The
+  current expected shape is roughly two mask builds per observation: one mask in
+  observation/action selection and one live resolution mask. A third per-agent
+  mask phase should be treated as a regression unless a new contract explicitly
+  requires it.
 - Precompute static terrain/topology lookups once per world.
 - Cache tick-scoped derived environment fields; they are climate-derived and
   must be reset by `reset_derived_caches()`.

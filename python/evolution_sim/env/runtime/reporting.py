@@ -149,6 +149,28 @@ def empty_fresh_kill_totals() -> dict[str, float]:
     }
 
 
+def finalize_fresh_kill_run_totals(
+    run_totals: dict[str, float],
+    fresh_kill_stats: dict[str, float],
+) -> dict[str, float]:
+    return {
+        **run_totals,
+        "fresh_kill_tiles": fresh_kill_stats["fresh_kill_tiles"],
+        "total_fresh_kill_energy": fresh_kill_stats["total_fresh_kill_energy"],
+    }
+
+
+def finalize_carcass_run_totals(
+    run_totals: dict[str, float],
+    carcass_stats: dict[str, float],
+) -> dict[str, float]:
+    return {
+        **run_totals,
+        "carcass_tiles": carcass_stats["carcass_tiles"],
+        "total_carcass_energy": carcass_stats["total_carcass_energy"],
+    }
+
+
 def empty_diet_totals() -> dict[str, float]:
     return {
         "plant_events": 0.0,

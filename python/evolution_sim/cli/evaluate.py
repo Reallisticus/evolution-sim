@@ -387,6 +387,98 @@ def _aggregate_trophic_lifecycle(runs: Sequence[dict[str, object]]) -> dict[str,
     }
 
 
+def _distribution_mean(
+    selection: dict[str, object],
+    distribution_key: str,
+    field: str,
+) -> float | None:
+    distributions = selection.get(distribution_key)
+    if not isinstance(distributions, dict):
+        return None
+    trait_distribution = distributions.get(field)
+    if not isinstance(trait_distribution, dict):
+        return None
+    mean = trait_distribution.get("mean")
+    if isinstance(mean, bool) or not isinstance(mean, (int, float)):
+        return None
+    return float(mean)
+
+
+def _distribution_mean_values(
+    selection_runs: Sequence[dict[str, object]],
+    distribution_key: str,
+    field: str,
+) -> list[float]:
+    values: list[float] = []
+    for selection in selection_runs:
+        value = _distribution_mean(selection, distribution_key, field)
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _aggregate_selection_heredity(
+    runs: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    selection_runs = [
+        run["selection_heredity"]
+        for run in runs
+        if isinstance(run.get("selection_heredity"), dict)
+    ]
+    fields = sorted(
+        {
+            field
+            for selection in selection_runs
+            for field in (
+                selection.get("terminal_minus_initial_mean", {}).keys()
+                if isinstance(selection.get("terminal_minus_initial_mean"), dict)
+                else ()
+            )
+        }
+    )
+    return {
+        "initial_trait_mean": {
+            field: _series_stats(
+                _distribution_mean_values(
+                    selection_runs,
+                    "initial_trait_distributions",
+                    field,
+                )
+            )
+            for field in fields
+        },
+        "terminal_alive_trait_mean": {
+            field: _series_stats(
+                _distribution_mean_values(
+                    selection_runs,
+                    "terminal_alive_trait_distributions",
+                    field,
+                )
+            )
+            for field in fields
+        },
+        "terminal_minus_initial_mean": {
+            field: _series_stats(
+                [
+                    float(delta)
+                    for selection in selection_runs
+                    if isinstance(
+                        selection.get("terminal_minus_initial_mean"),
+                        dict,
+                    )
+                    and (
+                        delta := selection["terminal_minus_initial_mean"].get(field)
+                    )
+                    is not None
+                    and isinstance(delta, (int, float))
+                    and not isinstance(delta, bool)
+                ]
+            )
+            for field in fields
+        },
+    }
+
+
 def _dominant_lineage(summary: dict[str, object]) -> dict[str, object] | None:
     top_lineages = summary.get("top_lineages")
     if not isinstance(top_lineages, list) or not top_lineages:
@@ -428,6 +520,7 @@ def run_evaluation(seed: int, ticks: int, mode: RunMode) -> dict[str, object]:
         "max_agents": summary["max_agents"],
         "max_agent_saturation_at_end": summary["max_agent_saturation_at_end"],
         "peak_max_agent_saturation": summary["peak_max_agent_saturation"],
+        "carrying_capacity": summary["carrying_capacity"],
         "total_agents_seen": summary["total_agents_seen"],
         "last_birth_tick": summary["last_birth_tick"],
         "dominant_lineage": _dominant_lineage(summary),
@@ -451,6 +544,8 @@ def run_evaluation(seed: int, ticks: int, mode: RunMode) -> dict[str, object]:
         "reproduction": summary["reproduction_end"],
         "fresh_kill": summary["fresh_kill_end"],
         "carrion": summary["carcass_end"],
+        "resource_pressure": summary["resource_pressure"],
+        "selection_heredity": summary["selection_heredity"],
         "ecology": {
             "counts": summary["ecology_state_counts_at_end"],
             "avg_vegetation": summary["ecology_stats_at_end"]["avg_vegetation"],
@@ -491,6 +586,38 @@ def _aggregate_report(runs: Sequence[dict[str, object]]) -> dict[str, object]:
         "peak_max_agent_saturation": _series_stats(
             [float(run["peak_max_agent_saturation"]) for run in runs]
         ),
+        "carrying_capacity": {
+            "near_cap_ticks": _series_stats(
+                [int(run["carrying_capacity"]["near_cap_ticks"]) for run in runs]
+            ),
+            "at_cap_ticks": _series_stats(
+                [int(run["carrying_capacity"]["at_cap_ticks"]) for run in runs]
+            ),
+            "near_cap_tick_share": _series_stats(
+                [
+                    float(run["carrying_capacity"]["near_cap_tick_share"])
+                    for run in runs
+                ]
+            ),
+            "at_cap_tick_share": _series_stats(
+                [
+                    float(run["carrying_capacity"]["at_cap_tick_share"])
+                    for run in runs
+                ]
+            ),
+            "saturation_births": _series_stats(
+                [
+                    int(run["carrying_capacity"]["saturation_births"])
+                    for run in runs
+                ]
+            ),
+            "saturation_deaths": _series_stats(
+                [
+                    int(run["carrying_capacity"]["saturation_deaths"])
+                    for run in runs
+                ]
+            ),
+        },
         "total_agents_seen": _series_stats([int(run["total_agents_seen"]) for run in runs]),
         "last_birth_tick": _series_stats(
             [
@@ -643,6 +770,21 @@ def _aggregate_report(runs: Sequence[dict[str, object]]) -> dict[str, object]:
         "animal_resource_opportunity_run_counts_by_meat_mode": (
             _animal_resource_opportunity_run_counts(runs)
         ),
+        "resource_pressure": {
+            "plant_budget": _numeric_totals(
+                [
+                    run["resource_pressure"]["plant_budget"]
+                    for run in runs
+                ]
+            ),
+            "energy_spend": _numeric_totals(
+                [
+                    run["resource_pressure"]["energy_spend"]
+                    for run in runs
+                ]
+            ),
+        },
+        "selection_heredity": _aggregate_selection_heredity(runs),
         "ecology_state_counts_at_end": _count_totals(
             [run["ecology"]["counts"] for run in runs]
         ),

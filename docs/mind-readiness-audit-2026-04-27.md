@@ -1,7 +1,7 @@
 # Mind Readiness Audit
 
 Date: 2026-04-27
-Latest update: 2026-05-01
+Latest update: 2026-05-02
 Scope: `python/evolution_sim/`, `python/tests/`, `viewer/`, `docs/`, CI, and npm entrypoints in the current working tree.
 
 This audit cross-checks the 2026-04-25 pre-Mind report against the current code. Several findings from that report are already fixed on this branch. The important remaining conclusion is narrower now: Foundation is not yet ready for Mind v1 because quick-profile ecology, the 120-tick ecology seed bank, release-horizon validation, and baseline Mind data contracts are in place, but the new reproduction and signal substrate still needs additional staged semantics, release-scale pressure, and contract hardening before learned-controller work starts.
@@ -30,6 +30,54 @@ reproduction and signal slices are now implemented; the remaining work is to
 keep adding staged semantics, measuring release-scale behavior, and representing
 each exposed surface in observation/action/reward/replay contracts before Mind
 v1.
+
+## 2026-05-02 Update: Summary Extraction, Benchmark Partial Reports, And Remaining Coupling
+
+The latest committed Foundation hardening slice was
+`5df677c` (`Extract summary flow and harden benchmark reports`).
+
+Implemented in that slice:
+
+- `world.py` now delegates summary assembly to
+  `python/evolution_sim/env/runtime/summary.py`.
+- Summary diet/resource finalizers moved into
+  `python/evolution_sim/env/runtime/reporting.py`.
+- Frame capture derives role/mode counts and surface summaries from frame
+  telemetry instead of duplicating more world-local summary logic.
+- Reproduction gained an explicit `ChildBirthPlan` boundary so child genome,
+  lineage, start state, destination, and event mutation are less entangled.
+- Benchmark reports now set `complete: true` on success and emit
+  `complete: false` with partial scenario data plus an `error` payload on
+  timeout or runtime failure.
+
+Validation completed before this audit update:
+
+- focused compile/runtime checks for the touched summary, frame, reproduction,
+  and benchmark paths passed;
+- `npm run sim:test` passed with 223 tests;
+- quick and full replay goldens passed with unchanged hashes after the final
+  extraction slice;
+- quick and release Foundation gates passed without blockers or warnings;
+- quick benchmark, compact non-skip multiprocess benchmark, seed-7 replay smoke,
+  and `git diff --check` passed.
+
+Manual no-test audit after the push found the current remaining risks:
+
+- sexual child reproductive state is still derived from the acting parent even
+  though the sexual child genome/start fractions include both parents;
+- full-replay frame capture still mutates final fresh-kill/carcass run totals,
+  which keeps summary accounting partly coupled to frame assembly;
+- benchmark CLI partial reports are robust, but invalid numeric arguments should
+  be rejected at parse time;
+- the new runtime modules are useful boundaries, but many still depend on
+  private `SimulationWorld` methods. `world.py` remains the central
+  architectural risk before Stage 2/3 and Mind work.
+
+Documentation status after this update: README, benchmark protocol, the
+pre-Mind plan, and senior-developer onboarding now describe the latest module
+boundaries and benchmark output semantics. This audit remains the durable
+historical log; the onboarding guide is the preferred entry point for a new
+engineer.
 
 ## 2026-05-01 Follow-Up: Reproductive Readiness Hardening
 
@@ -236,6 +284,8 @@ These updates track work begun from this audit in the current working tree:
 - 2026-05-01: Implemented the live rare multi-offspring behavior behind the existing disabled gate. The runtime now expands explicitly enabled sexual births into multiple sibling child births only when both parents' pair fecundity qualifies, both parents can pay scaled cost, population slots remain available, and adjacent empty destinations exist. Replay keeps one `agent_reproduced` event per child for existing accounting, with desired/actual count metadata, clamp reasons, `offspring_count`, `offspring_index`, `sibling_child_ids`, and total parent-cost metadata on multi-offspring events; viewer and Foundation gate validators reject incomplete sibling event groups.
 - 2026-05-01 live multi-offspring validation: focused compileall and 11 targeted reproduction/gate regressions passed, `npm run viewer:validate` passed with 28 malformed cases, `npm run sim:test` passed with 214 tests in 124.838s, `npm run sim:golden` verified all replay goldens without hash drift, `npm run sim:gate:quick` passed with no blockers or warnings in 4.0203s, `npm run sim:bench:quick` passed (`summary_seed7_ticks20` median wall `0.619s`, median RSS `93264 KiB`), browser-level `npm run viewer:smoke:malformed` passed with 25 malformed cases, seed-7 300-tick replay generation plus `viewer:smoke` passed, `git diff --check` was clean, and `npm run sim:gate:release -- --output output/evaluations/foundation-release-current.json` passed with no blockers or warnings in 855.577s. Verified golden hashes remained `seed7_ticks20=4f07f16365f38e31cd1a66eac749991eb2dd5a808f59e08cf0e36ae7a8b9c91e`, `seed7_ticks100=f7d53db75334fc1e20983bc98aef0ef80aa2850d5c602005ebf7837fb6ffb008`, `speciation_seed_ticks320=d5990e7f5d3a12e27d4ae03b2e5b8227fd2c8e5bca313429703d199a843f044f`, and `seed5_ticks120_provenance=f35fcf709ec389fe2ad34f742d8b0e8a73427e3490b3775cad76ce32c65743bf`.
 - 2026-05-01 multi-offspring clamp observability validation: focused compileall, 5 targeted reproduction/gate regressions, and `npm run viewer:validate` passed with 30 malformed cases. `npm run sim:test` passed with 215 tests in 127.468s, quick goldens verified `seed7_ticks20=4f07f16365f38e31cd1a66eac749991eb2dd5a808f59e08cf0e36ae7a8b9c91e` and `seed7_ticks100=f7d53db75334fc1e20983bc98aef0ef80aa2850d5c602005ebf7837fb6ffb008`, `npm run sim:gate:quick` passed with no blockers or warnings in 4.098s, browser-level `npm run viewer:smoke:malformed` passed with 26 malformed cases, `npm run sim:bench:quick` passed (`summary_seed7_ticks20` median wall `0.5886s`, median RSS `92784 KiB`), seed-7 replay `viewer:smoke` passed, and `git diff --check` was clean.
+- 2026-05-02 Foundation boundary hardening and release-timeout repair: moved diet accounting, feeding event assembly, animal-resource opportunity accounting, death resource emission, lifecycle/metabolism accounting, and action outcome assembly behind runtime boundaries while preserving full replay as the compatibility contract. Death export now carries fresh-kill provenance fields and replay taxonomy rewrites them alongside carcass provenance. A summary-only release run initially exposed a real performance blocker: seed `17` exceeded the 600s per-scenario watchdog by a small margin (`600.0097s`). The follow-up repair reused tick-start observation masks for animal-resource opportunity reachability and passed the precomputed live resolution mask into summary-only action resolution, reducing summary-only action-mask builds from roughly three per observation to roughly two per observation.
+- 2026-05-02 Foundation boundary validation: focused opportunity/mask tests passed, direct seed-17 800-tick summary probe completed in `232.1908s`, `npm run sim:test` passed with 233 tests in 133.150s, `npm run sim:test:full` passed with 242 tests in 1502.848s, `npm run sim:golden` verified `seed7_ticks20=46e8f32e80064baf2e0435c627259d156926fa7a8f3eedeadedb2e73bb0e1c84`, `seed7_ticks100=21c3e48975411a377842cc64a93966bdc558c5c194acdb607738574fb3d1222e`, `speciation_seed_ticks320=b7099b6b4b3486b4d30232a9d9b9fd7761acb22c43e91e97b25950a18186de6d`, and `seed5_ticks120_provenance=937d048639f38624438396b1b8fffce96a38815dc58fb3481409becec9ac9c65`, `npm run sim:bench` completed with seven scenarios and summary-only mask counters at `767/384` for seed-7 20 ticks and `4067/2039` for seed-7 100 ticks, seed-7 300-tick replay generation plus `viewer:smoke` passed, and `git diff --check` was clean. After the final action-mask and action-resolution context extraction, `npm run sim:golden` still verified all hashes and `npm run sim:gate:release -- --output output/evaluations/foundation-release-current.json` passed with no blockers or warnings in `881.0835s`; summary seeds completed at seed 3 `195.2412s`, seed 7 `56.1795s`, seed 11 `178.052s`, seed 17 `235.198s`, and seed 29 `139.1612s`.
 
 Earlier targeted probes from the deeper Foundation pass, retained as audit evidence. Several are now addressed by the implementation progress above, while release-horizon ecology, animal-specialist reproductive strength, and release-scale performance remain open:
 

@@ -813,6 +813,12 @@ class ReplayTaxonomyPass:
                 dominant_key="tile_dominant_source_species_after",
                 mixed_key="tile_mixed_sources_after",
             )
+            self._rewrite_provenance_payload(
+                data,
+                breakdown_key="tile_fresh_kill_source_breakdown_after",
+                dominant_key="tile_fresh_kill_dominant_source_species_after",
+                mixed_key="tile_fresh_kill_mixed_sources_after",
+            )
             return
         if event_type == "carcass_deposited":
             rewritten = self._rewrite_provenance_payload(

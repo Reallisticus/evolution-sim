@@ -97,6 +97,8 @@ class GateProfile:
     use_late_window_population_floor: bool = False
     min_aggregate_meat_modes: int | None = None
     dominance_warning_share: float = 0.75
+    max_at_cap_tick_share_warning: float | None = None
+    max_at_cap_tick_share_error: float | None = None
     required_terminal_meat_mode_alternatives_by_seed: Mapping[
         int,
         tuple[str, ...],
@@ -177,6 +179,8 @@ RELEASE_PROFILE = GateProfile(
         ),
     ),
     dominance_warning_share=0.85,
+    max_at_cap_tick_share_warning=0.35,
+    max_at_cap_tick_share_error=0.6,
     required_terminal_meat_mode_alternatives_by_seed={
         3: ("hunter", "mixed"),
         11: ("hunter", "mixed"),
@@ -716,6 +720,13 @@ def _summary_gate_flags(
                 reproduction=run.get("reproduction"),
             )
         )
+        flags.extend(
+            _carrying_capacity_saturation_flags(
+                scope=f"summary_seed_{seed}",
+                carrying_capacity=run.get("carrying_capacity"),
+                profile=profile,
+            )
+        )
         if run["last_birth_tick"] is None or int(run["last_birth_tick"]) < profile.min_last_birth_tick:
             flags.append(
                 _flag(
@@ -1002,6 +1013,56 @@ def _summary_gate_flags(
                         )
                     )
     return flags
+
+
+def _carrying_capacity_saturation_flags(
+    *,
+    scope: str,
+    carrying_capacity: object,
+    profile: GateProfile,
+) -> list[dict[str, object]]:
+    if not isinstance(carrying_capacity, Mapping):
+        return []
+    at_cap_share_raw = carrying_capacity.get("at_cap_tick_share")
+    if isinstance(at_cap_share_raw, bool) or not isinstance(
+        at_cap_share_raw,
+        (int, float),
+    ):
+        return []
+    at_cap_share = float(at_cap_share_raw)
+    if (
+        profile.max_at_cap_tick_share_error is not None
+        and at_cap_share > profile.max_at_cap_tick_share_error
+    ):
+        return [
+            _flag(
+                "error",
+                scope,
+                "carrying_capacity.at_cap_tick_share",
+                (
+                    "Run spent too much of the scenario at max-agent saturation "
+                    f"({at_cap_share:.4f} > "
+                    f"{profile.max_at_cap_tick_share_error:.4f})."
+                ),
+            )
+        ]
+    if (
+        profile.max_at_cap_tick_share_warning is not None
+        and at_cap_share > profile.max_at_cap_tick_share_warning
+    ):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "carrying_capacity.at_cap_tick_share",
+                (
+                    "Run spent a sustained share of the scenario at max-agent "
+                    f"saturation ({at_cap_share:.4f} > "
+                    f"{profile.max_at_cap_tick_share_warning:.4f})."
+                ),
+            )
+        ]
+    return []
 
 
 def _replay_size_bytes(result_payload: dict[str, object]) -> int:
@@ -2976,6 +3037,7 @@ def _run_full_replay_probe(probe: FullReplayProbe) -> dict[str, object]:
         "max_agents": summary["max_agents"],
         "max_agent_saturation_at_end": summary["max_agent_saturation_at_end"],
         "peak_max_agent_saturation": summary["peak_max_agent_saturation"],
+        "carrying_capacity": summary["carrying_capacity"],
         "births": summary["births"],
         "deaths": summary["deaths"],
         "reproduction": summary["reproduction_end"],
@@ -3067,6 +3129,7 @@ def _full_replay_probe_error_report(
         "max_agents": None,
         "max_agent_saturation_at_end": None,
         "peak_max_agent_saturation": None,
+        "carrying_capacity": None,
         "births": None,
         "deaths": None,
         "reproduction": None,
@@ -3201,6 +3264,8 @@ def build_foundation_gate_report(
                 ),
                 "use_late_window_population_floor": profile.use_late_window_population_floor,
                 "dominance_warning_share": profile.dominance_warning_share,
+                "max_at_cap_tick_share_warning": profile.max_at_cap_tick_share_warning,
+                "max_at_cap_tick_share_error": profile.max_at_cap_tick_share_error,
                 "required_terminal_meat_mode_alternatives_by_seed": {
                     str(seed): list(modes)
                     for seed, modes in (

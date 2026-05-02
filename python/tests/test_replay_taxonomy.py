@@ -285,6 +285,15 @@ class ReplayTaxonomyTests(unittest.TestCase):
                 "energy": 0.08,
             }
         ]
+        fresh_kill_after_death = [
+            {
+                "source_agent_id": 2,
+                "death_tick": 4,
+                "source_species": 1,
+                "killer_id": 1,
+                "energy": 0.12,
+            }
+        ]
         frames = [
             make_frame(0, [encode_row(agent_id=1, x=0, y=0, age=0, trophic_role="herbivore", meat_mode="scavenger", ecotype_id=1, refuge_score=0.2, tile_vegetation=0.3, tile_recovery_debt=0.4)]),
             make_frame(1, [
@@ -368,6 +377,10 @@ class ReplayTaxonomyTests(unittest.TestCase):
                     "tile_dominant_source_species_after": 1,
                     "tile_source_breakdown_after": carcass_after_death,
                     "tile_fresh_kill_energy_after": 0.12,
+                    "tile_fresh_kill_deposit_count_after": 1,
+                    "tile_fresh_kill_mixed_sources_after": False,
+                    "tile_fresh_kill_dominant_source_species_after": 1,
+                    "tile_fresh_kill_source_breakdown_after": fresh_kill_after_death,
                 },
             },
             {
@@ -815,6 +828,33 @@ class ReplayTaxonomyTests(unittest.TestCase):
         self.assertEqual(
             final_fresh_kill_patch["source_breakdown"][0]["source_species"],
             daughter_id,
+        )
+
+    def test_replay_rewrites_death_resource_exports_to_replay_species(self) -> None:
+        _summary, _updated_viewer, events, _continuation_id, daughter_id = (
+            self._provenance_rewrite_fixture()
+        )
+
+        death_event = next(event for event in events if event["type"] == "agent_died")
+        data = death_event["data"]
+
+        self.assertEqual(data["source_species"], daughter_id)
+        self.assertEqual(data["tile_dominant_source_species_after"], daughter_id)
+        self.assertEqual(
+            data["tile_source_breakdown_after"][0]["source_species"],
+            daughter_id,
+        )
+        self.assertEqual(
+            data["tile_fresh_kill_dominant_source_species_after"],
+            daughter_id,
+        )
+        self.assertEqual(
+            data["tile_fresh_kill_source_breakdown_after"][0]["source_species"],
+            daughter_id,
+        )
+        self.assertEqual(
+            data["tile_fresh_kill_source_breakdown_after"][0]["killer_id"],
+            1,
         )
 
     def test_split_source_species_does_not_emit_false_extinction(self) -> None:

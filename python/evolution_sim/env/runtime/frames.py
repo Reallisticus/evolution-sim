@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import evolution_sim.env.runtime.feeding as runtime_feeding
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.runtime.reporting import (
@@ -111,57 +112,29 @@ def _carcass_flow(world: Any) -> dict[str, object]:
     }
 
 
-def _empty_diet_totals() -> dict[str, float]:
-    return {
-        "plant_events": 0,
-        "plant_energy": 0.0,
-        "fresh_kill_events": 0,
-        "fresh_kill_energy": 0.0,
-        "carcass_events": 0,
-        "carcass_energy": 0.0,
-    }
-
-
-def _empty_grouped_diet_totals(
-    groups: list[str] | dict[str, int],
-) -> dict[str, dict[str, float]]:
-    return {group: _empty_diet_totals() for group in groups}
-
-
-def _accumulate_diet_totals(
-    totals: dict[str, float],
-    food_source: str,
-    gained_energy: float,
-) -> None:
-    if food_source not in {"plant", "fresh_kill", "carcass"}:
-        raise ValueError(f"Unsupported food source: {food_source}")
-    totals[f"{food_source}_events"] += 1
-    totals[f"{food_source}_energy"] += gained_energy
-
-
 def _diet_stats(
     world: Any,
     *,
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    diet_totals = _empty_diet_totals()
-    diet_by_trophic_role = _empty_grouped_diet_totals(
+    diet_totals = runtime_feeding.empty_diet_totals()
+    diet_by_trophic_role = runtime_feeding.empty_grouped_diet_totals(
         [role for role in trophic_role_codes if role != "none"]
     )
-    diet_by_meat_mode = _empty_grouped_diet_totals(meat_mode_codes)
+    diet_by_meat_mode = runtime_feeding.empty_grouped_diet_totals(meat_mode_codes)
     for event in world.tick_feeding_events:
         food_source = str(event["food_source"])
         gained_energy = float(event["gained_energy"])
         trophic_role = str(event["trophic_role"])
         meat_mode = str(event["meat_mode"])
-        _accumulate_diet_totals(diet_totals, food_source, gained_energy)
-        _accumulate_diet_totals(
+        runtime_feeding.accumulate_diet_totals(diet_totals, food_source, gained_energy)
+        runtime_feeding.accumulate_diet_totals(
             diet_by_trophic_role[trophic_role],
             food_source,
             gained_energy,
         )
-        _accumulate_diet_totals(
+        runtime_feeding.accumulate_diet_totals(
             diet_by_meat_mode[meat_mode],
             food_source,
             gained_energy,
@@ -352,12 +325,14 @@ def capture_frame(
         ecotype_records,
     ) = world._refresh_population_snapshots()
     trait_means = world._trait_means(alive)
-    surfaces = world._materialize_frame_surfaces()
-    season = world._season_state()["name"]
+    surface_context = world._frame_surface_context()
+    surfaces = world._materialize_frame_surfaces(surface_context=surface_context)
+    season = str(surface_context.climate_state["season"])
     agent_telemetry = world._build_agent_frame_telemetry(
         alive,
         season=season,
         surfaces=surfaces,
+        surface_context=surface_context,
     )
     species_metrics = world._build_species_metrics(
         alive,
@@ -393,16 +368,6 @@ def capture_frame(
         trophic_role_codes=trophic_role_codes,
         meat_mode_codes=meat_mode_codes,
     )
-    world.run_fresh_kill_totals["fresh_kill_tiles"] = surfaces["fresh_kill_stats"][
-        "fresh_kill_tiles"
-    ]
-    world.run_fresh_kill_totals["total_fresh_kill_energy"] = surfaces[
-        "fresh_kill_stats"
-    ]["total_fresh_kill_energy"]
-    world.run_carcass_totals["carcass_tiles"] = surfaces["carcass_stats"]["carcass_tiles"]
-    world.run_carcass_totals["total_carcass_energy"] = surfaces["carcass_stats"][
-        "total_carcass_energy"
-    ]
     frame = build_frame_payload(
         tick=world.tick,
         season=season,

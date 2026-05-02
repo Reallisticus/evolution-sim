@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import evolution_sim.env.runtime.actions as runtime_actions
+import evolution_sim.env.runtime.capacity as runtime_capacity
+import evolution_sim.env.runtime.feeding as runtime_feeding
+import evolution_sim.env.runtime.lifecycle as runtime_lifecycle
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
@@ -32,12 +36,20 @@ def run_tick(
     _, opportunity_meat_mode_counts = world._population_trophic_counts(
         tick_start_alive
     )
-    opportunity_reachability_by_meat_mode = (
-        world._animal_resource_reachability_by_meat_mode(tick_start_alive)
-    )
     observation_snapshots = {
         agent.agent_id: world._observe_agent(agent) for agent in tick_start_alive
     }
+    observation_action_masks = {
+        agent_id: dict(observation["action_mask"])
+        for agent_id, observation in observation_snapshots.items()
+    }
+    opportunity_reachability_by_meat_mode = (
+        world._animal_resource_reachability_by_meat_mode(
+            tick_start_alive,
+            action_masks_by_agent=observation_action_masks,
+            resource_presence=world._animal_resource_presence_this_tick(),
+        )
+    )
     trajectory_contexts = build_trajectory_contexts(
         world,
         tick_start_alive,
@@ -59,7 +71,8 @@ def run_tick(
         action = world._choose_action(agent, observation_snapshots.get(agent_id))
         live_action_mask = world._action_mask(agent)
         if trajectory_context is not None:
-            moved, action_outcome = world._resolve_action_with_outcome(
+            moved, action_outcome = runtime_actions.resolve_action_with_outcome(
+                world,
                 agent,
                 action,
                 observation_action_mask=trajectory_context["action_mask"],
@@ -67,11 +80,16 @@ def run_tick(
             )
             resolved_action = str(action_outcome["resolved_action"])
         else:
-            moved = world._resolve_action(agent, action)
+            moved = runtime_actions.resolve_action(
+                world,
+                agent,
+                action,
+                resolution_action_mask=live_action_mask,
+            )
             resolved_action = action if live_action_mask.get(action, False) else "stay"
             action_outcome = None
-        world._apply_metabolism(agent, moved=moved)
-        world._apply_health_and_hazards(agent, moved=moved)
+        runtime_lifecycle.apply_metabolism(world, agent, moved=moved)
+        runtime_lifecycle.apply_health_and_hazards(world, agent, moved=moved)
         agent.age += 1
         if trajectory_context is not None:
             trajectory_context.update(
@@ -91,11 +109,12 @@ def run_tick(
         world._invalidate_biotic_state()
 
     births_this_tick = runtime_reproduction.run_reproduction_phase(world)
+    post_reproduction_alive = len(world.alive_agents())
 
     for agent_id in sorted(world.agents):
         agent = world.agents[agent_id]
-        if agent.alive and world._should_die(agent):
-            world._kill_agent(agent, cause=world._death_cause(agent))
+        if agent.alive and runtime_lifecycle.should_die(world, agent):
+            world._kill_agent(agent, cause=runtime_lifecycle.death_cause(world, agent))
 
     if world.record_trajectory:
         append_passive_trajectory_contexts(
@@ -109,6 +128,13 @@ def run_tick(
     deaths_this_tick = world.deaths - deaths_before_tick
     alive_count = len(world.alive_agents())
     world.peak_alive_agents = max(world.peak_alive_agents, alive_count)
+    runtime_capacity.record_carrying_capacity_tick(
+        world,
+        post_reproduction_alive=post_reproduction_alive,
+        final_alive=alive_count,
+        births=births_this_tick,
+        deaths=deaths_this_tick,
+    )
     world._record_animal_resource_opportunity_tick(
         opportunity_meat_mode_counts,
         opportunity_reachability_by_meat_mode,
@@ -155,7 +181,9 @@ def reset_tick_state(
         runtime_reproduction.empty_reproduction_mate_search_counts()
     )
     world.tick_animal_resource_consumption_by_meat_mode = (
-        world._empty_grouped_animal_resource_consumption_counts(meat_mode_codes)
+        runtime_feeding.empty_grouped_animal_resource_consumption_counts(
+            meat_mode_codes
+        )
     )
     world.tick_hazard_exposure_agents = set()
 
@@ -190,7 +218,7 @@ def append_passive_trajectory_contexts(
             continue
         action_mask = dict(trajectory_context["action_mask"])
         action_mask["stay"] = True
-        passive_outcome = world._base_action_outcome(
+        passive_outcome = runtime_actions.base_action_outcome(
             requested_action="stay",
             resolved_action="stay",
             observation_action_mask=action_mask,
