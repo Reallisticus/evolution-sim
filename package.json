@@ -22,6 +22,8 @@
     "sim:gate:release": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.foundation_gate --profile release",
     "sim:bench": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench",
     "sim:bench:quick": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.bench --warmup 0 --runs 1 --scenario summary_seed7_ticks20 --skip-multiprocess",
+    "sim:mind:split": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_split",
+    "sim:mind:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_policy_eval",
     "viewer:serve": "python3 -m http.server 4173",
     "viewer:validate": "node viewer/validator_smoke.mjs",
     "viewer:smoke:malformed": "node viewer/malformed_smoke.mjs",

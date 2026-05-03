@@ -79,9 +79,22 @@ without an explicit contract update.
 ## Summary Contract
 
 - Full mode returns both shared and taxonomy-dependent summary fields.
+- Shared summaries include `summary_schema_version`. The current value is
+  `foundation_summary_v1`; any shared-summary key or schema change must update
+  tests and documentation intentionally.
 - Summary-only returns only the shared summary fields and must not be treated as
   a replay payload.
 - Summary-only sets `events=None` and `viewer=None`.
 - Replay taxonomy must not run in summary-only mode.
 - Summary-only may skip internal replay event and tick-detail bookkeeping when
   those details are not needed for shared summary fields.
+- Shared summary analytics currently include:
+  - `carrying_capacity`: near-cap ticks, at-cap ticks, tick shares, and
+    saturation births/deaths.
+  - `resource_pressure`: plant created/removed/lost budget and energy spend by
+    metabolism, movement, attack, reproduction, and signal.
+  - `selection_heredity`: initial trait distributions, terminal alive trait
+    distributions, and terminal-minus-initial mean deltas.
+- These analytics are summary contracts, not viewer contracts. Summary-only
+  runs must compute them without frame capture, viewer surface builders, replay
+  taxonomy rewriting, or full replay event payloads.

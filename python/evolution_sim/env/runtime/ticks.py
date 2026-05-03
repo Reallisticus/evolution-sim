@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import evolution_sim.env.runtime.actions as runtime_actions
@@ -11,65 +13,95 @@ import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
 
 
+@dataclass(frozen=True, slots=True)
+class TickPhaseContext:
+    invalidate_biotic_state: Callable[[], None]
+    decay_signal_emissions: Callable[[], None]
+    climate_state: Callable[[], dict[str, object]]
+    season_state: Callable[[], dict[str, object]]
+    emit: Callable[[EventType, int | None, dict[str, object] | None], None]
+    regrow_resources: Callable[[], None]
+    population_trophic_counts: Callable[[list[Any]], tuple[dict[str, int], dict[str, int]]]
+    observe_agent: Callable[[Any], dict[str, object]]
+    animal_resource_reachability_by_meat_mode: Callable[..., dict[str, dict[str, int]]]
+    animal_resource_presence_this_tick: Callable[[], dict[str, bool]]
+    decay_recent_diet: Callable[[Any], None]
+    choose_action: Callable[[Any, dict[str, object] | None], str]
+    action_mask: Callable[[Any], dict[str, bool]]
+    lifecycle_context: runtime_lifecycle.LifecycleContext
+    kill_agent: Callable[..., None]
+    finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
+    record_animal_resource_opportunity_tick: Callable[
+        [dict[str, int], dict[str, dict[str, int]]],
+        None,
+    ]
+    begin_trajectory_decision: Callable[[Any, dict[str, object]], dict[str, object]]
+    policy_metadata: Callable[[], dict[str, object]]
+
+
 def run_tick(
     world: Any,
     *,
     meat_mode_codes: dict[str, int],
+    tick_context: TickPhaseContext,
 ) -> tuple[int, int]:
     births_this_tick = 0
     deaths_before_tick = world.deaths
     reset_tick_state(world, meat_mode_codes=meat_mode_codes)
-    world._invalidate_biotic_state()
-    world._decay_signal_emissions()
-    climate_state = world._climate_state()
-    world._emit(
+    tick_context.invalidate_biotic_state()
+    tick_context.decay_signal_emissions()
+    climate_state = tick_context.climate_state()
+    tick_context.emit(
         EventType.TICK_STARTED,
+        agent_id=None,
         data={
             "alive_agents": len(world.alive_agents()),
-            "season": world._season_state()["name"],
+            "season": tick_context.season_state()["name"],
             "disturbance_type": climate_state["disturbance_type"],
             "disturbance_strength": climate_state["disturbance_strength"],
         },
     )
-    world._regrow_resources()
+    tick_context.regrow_resources()
     tick_start_alive = world.alive_agents()
-    _, opportunity_meat_mode_counts = world._population_trophic_counts(
+    _, opportunity_meat_mode_counts = tick_context.population_trophic_counts(
         tick_start_alive
     )
     observation_snapshots = {
-        agent.agent_id: world._observe_agent(agent) for agent in tick_start_alive
+        agent.agent_id: tick_context.observe_agent(agent) for agent in tick_start_alive
     }
     observation_action_masks = {
         agent_id: dict(observation["action_mask"])
         for agent_id, observation in observation_snapshots.items()
     }
     opportunity_reachability_by_meat_mode = (
-        world._animal_resource_reachability_by_meat_mode(
+        tick_context.animal_resource_reachability_by_meat_mode(
             tick_start_alive,
             action_masks_by_agent=observation_action_masks,
-            resource_presence=world._animal_resource_presence_this_tick(),
+            resource_presence=tick_context.animal_resource_presence_this_tick(),
         )
     )
     trajectory_contexts = build_trajectory_contexts(
         world,
         tick_start_alive,
         observation_snapshots,
+        tick_context=tick_context,
     )
     pending_trajectory_records: list[dict[str, object]] = []
     acted_trajectory_agent_ids: set[int] = set()
+    lifecycle_context = tick_context.lifecycle_context
 
     for agent_id in sorted(world.agents):
         agent = world.agents[agent_id]
         if not agent.alive:
             continue
-        world._decay_recent_diet(agent)
+        tick_context.decay_recent_diet(agent)
         trajectory_context = (
             trajectory_contexts[agent_id]
             if world.record_trajectory and agent_id in trajectory_contexts
             else None
         )
-        action = world._choose_action(agent, observation_snapshots.get(agent_id))
-        live_action_mask = world._action_mask(agent)
+        action = tick_context.choose_action(agent, observation_snapshots.get(agent_id))
+        live_action_mask = tick_context.action_mask(agent)
         if trajectory_context is not None:
             moved, action_outcome = runtime_actions.resolve_action_with_outcome(
                 world,
@@ -88,16 +120,27 @@ def run_tick(
             )
             resolved_action = action if live_action_mask.get(action, False) else "stay"
             action_outcome = None
-        runtime_lifecycle.apply_metabolism(world, agent, moved=moved)
-        runtime_lifecycle.apply_health_and_hazards(world, agent, moved=moved)
+        runtime_lifecycle.apply_metabolism(
+            world,
+            agent,
+            moved=moved,
+            lifecycle_context=lifecycle_context,
+        )
+        runtime_lifecycle.apply_health_and_hazards(
+            world,
+            agent,
+            moved=moved,
+            lifecycle_context=lifecycle_context,
+        )
         agent.age += 1
         if trajectory_context is not None:
+            policy_metadata = tick_context.policy_metadata()
             trajectory_context.update(
                 {
                     "requested_action": action,
-                    "action_source": world._policy_action_source,
-                    "policy_id": world._policy_id,
-                    "policy_version": world._policy_version,
+                    "action_source": policy_metadata["action_source"],
+                    "policy_id": policy_metadata["policy_id"],
+                    "policy_version": policy_metadata["policy_version"],
                     "resolution_action_mask": live_action_mask,
                     "resolved_action": resolved_action,
                     "moved": moved,
@@ -106,7 +149,7 @@ def run_tick(
             )
             pending_trajectory_records.append(trajectory_context)
             acted_trajectory_agent_ids.add(agent_id)
-        world._invalidate_biotic_state()
+        tick_context.invalidate_biotic_state()
 
     births_this_tick = runtime_reproduction.run_reproduction_phase(world)
     post_reproduction_alive = len(world.alive_agents())
@@ -114,7 +157,10 @@ def run_tick(
     for agent_id in sorted(world.agents):
         agent = world.agents[agent_id]
         if agent.alive and runtime_lifecycle.should_die(world, agent):
-            world._kill_agent(agent, cause=runtime_lifecycle.death_cause(world, agent))
+            tick_context.kill_agent(
+                agent,
+                cause=runtime_lifecycle.death_cause(world, agent),
+            )
 
     if world.record_trajectory:
         append_passive_trajectory_contexts(
@@ -123,7 +169,7 @@ def run_tick(
             acted_trajectory_agent_ids,
             pending_trajectory_records,
         )
-        world._finalize_trajectory_decisions(pending_trajectory_records)
+        tick_context.finalize_trajectory_decisions(pending_trajectory_records)
 
     deaths_this_tick = world.deaths - deaths_before_tick
     alive_count = len(world.alive_agents())
@@ -135,17 +181,18 @@ def run_tick(
         births=births_this_tick,
         deaths=deaths_this_tick,
     )
-    world._record_animal_resource_opportunity_tick(
+    tick_context.record_animal_resource_opportunity_tick(
         opportunity_meat_mode_counts,
         opportunity_reachability_by_meat_mode,
     )
-    world._emit(
+    tick_context.emit(
         EventType.TICK_COMPLETED,
+        agent_id=None,
         data={
             "alive_agents": alive_count,
             "births": births_this_tick,
             "deaths": deaths_this_tick,
-            "season": world._season_state()["name"],
+            "season": tick_context.season_state()["name"],
             "disturbance_type": climate_state["disturbance_type"],
             "disturbance_strength": climate_state["disturbance_strength"],
         },
@@ -190,13 +237,15 @@ def reset_tick_state(
 
 def build_trajectory_contexts(
     world: Any,
-    tick_start_alive: list[Any],
+    tick_start_alive: Sequence[Any],
     observation_snapshots: dict[int, object],
+    *,
+    tick_context: TickPhaseContext,
 ) -> dict[int, dict[str, object]]:
     if not world.record_trajectory:
         return {}
     return {
-        agent.agent_id: world._begin_trajectory_decision(
+        agent.agent_id: tick_context.begin_trajectory_decision(
             agent,
             observation_snapshots[agent.agent_id],
         )

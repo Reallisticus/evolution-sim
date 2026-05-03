@@ -65,6 +65,10 @@ the runtime modules that now own specific behavior.
   materialization.
 - `python/evolution_sim/env/runtime/trajectory.py`: trajectory finalization and
   action-outcome data contract.
+- `python/evolution_sim/mind/`: disabled-by-default Mind v1 data tooling,
+  strict trajectory JSONL loading, deterministic seed splits, behavior-cloning
+  baseline artifacts, learned-policy adapter, and summary-only policy
+  evaluation gates.
 
 ## Output And Gate Map
 
@@ -93,21 +97,26 @@ others.
 - Summary-only mode is lightweight. It may compute summary metrics and optional
   streamed trajectory records, but it must not call frame capture, viewer
   builders, or replay taxonomy rewriting. Shared summary exports include
-  carrying-capacity pressure, resource-pressure budgets, and selection/heredity
-  trait distributions; these metrics must remain available without replay
-  payloads.
+  `summary_schema_version=foundation_summary_v1`, carrying-capacity pressure,
+  resource-pressure budgets, and selection/heredity trait distributions; these
+  metrics must remain available without replay payloads.
 - Trajectory JSONL is independent of replay. Its header carries the trajectory,
   observation, action, reward, reproductive-group, recombination, and signal
-  contracts. Its footer carries a trajectory summary plus the run summary.
+  contracts. Its footer carries a trajectory summary plus the run summary. The
+  Mind v1 loader validates the header, every record, and the footer before a
+  dataset can be used for offline experiments.
 - Foundation gate JSON reports always include `complete`, `readiness`,
   `summary_gate_flags`, and `timings`. `readiness.blockers` contains error
   flags, `readiness.warnings` contains warning flags, and partial/incremental
   reports use `status: running`. The release profile also reviews sustained
-  max-agent saturation through `carrying_capacity.at_cap_tick_share`.
+  max-agent saturation through `carrying_capacity.at_cap_tick_share`,
+  pathological plant-budget collapse through resource-pressure budgets, and
+  missing terminal selection signal through selection/heredity deltas.
 - Benchmark JSON reports always include `protocol`, `complete`, `scenarios`,
   and `multi_process_summary_rollout`. Timeout or runtime failures set
   `complete: false` and include an `error` object while preserving completed
-  scenario results.
+  scenario results. Summary-only benchmark regressions also watch action-mask
+  build ratio and `resource_pressure_accounting_updates`.
 
 ## Normal Validation Ladder
 
@@ -155,34 +164,28 @@ extracting, preserve behavior first, then make the boundary explicit.
 
 Highest-priority remaining leaks after the current Foundation hardening slice:
 
-- `runtime/actions.py` still reads many private biology, nutrition, terrain,
-  and movement helpers from `world.py`. The 2026-05-02 action-mask context
-  extraction reduced `runtime/action_space.py` to one compatibility adapter call
-  (`world._action_mask_context(agent)`), with the runtime builder itself now
-  consuming explicit capability inputs. The same pass moved effectful action
-  resolution calls behind `world._action_resolution_context(agent)`; the
-  remaining `runtime/actions.py` private reads are primarily heuristic scoring
-  and navigation dependencies.
-- `runtime/observations.py` and `runtime/surfaces.py` still assemble policy and
-  viewer-facing state through private world helpers.
-- `runtime/reproduction.py` still owns birth placement through private world
-  mutation helpers.
+- `runtime/reproduction.py` still owns birth placement through several private
+  world mutation helpers and remains the largest runtime boundary leak.
+- `runtime/actions.py` has been reduced to three compatibility fallback reads;
+  keep future action scoring/resolution work on explicit contexts.
+- `runtime/observations.py`, `runtime/surfaces.py`, and `runtime/action_space.py`
+  each have a single compatibility adapter read left.
 - `runtime/reporting.py` still gathers frame/summary snapshots through private
   world wrappers.
 - `runtime/feeding.py` still reaches into private source-species, matched-diet,
   and tile-summary helpers.
 
-Latest mechanical private-call audit after the action context extraction:
+Latest mechanical private-call audit after the resource/lifecycle/tick context
+extractions:
 
-- `runtime/actions.py`: 66 private world reads, 32 unique helpers.
-- `runtime/reproduction.py`: 27 private world reads, 13 unique helpers.
-- `runtime/observations.py`: 23 private world reads, 17 unique helpers.
-- `runtime/resources.py`: 23 private world reads, 7 unique helpers.
-- `runtime/ticks.py`: 23 private world reads, 20 unique helpers.
-- `runtime/lifecycle.py`: 22 private world reads, 15 unique helpers.
-- `runtime/surfaces.py`: 20 private world reads, 20 unique helpers.
-- `runtime/action_space.py`: 1 private world adapter call after context
-  extraction.
+- `runtime/reproduction.py`: 21 private world reads, 10 unique helpers.
+- `runtime/actions.py`: 3 private world reads, 3 unique helpers.
+- `runtime/observations.py`: 1 private world read, 1 unique helper.
+- `runtime/surfaces.py`: 1 private world read, 1 unique helper.
+- `runtime/action_space.py`: 1 private world read, 1 unique helper.
+- `runtime/resources.py`: 0 private world reads.
+- `runtime/ticks.py`: 0 private world reads.
+- `runtime/lifecycle.py`: 0 private world reads.
 
 Do not paper over these with new world wrappers. Convert the next boundary leak
 by passing explicit runtime arguments or moving the authority into the runtime
@@ -198,4 +201,6 @@ module that owns the behavior.
 - Keep every new world mechanic paired with metrics, replay/summary output,
   validation, and tests.
 - Prefer narrow, behavior-preserving extractions before semantic changes.
-- Do not add learned-controller code until the Foundation contracts stop moving.
+- Learned-policy runtime remains disabled by default. Use `sim:mind:split` and
+  `sim:mind:evaluate -- --enable-mind` only after Foundation export contracts
+  are stable for the scenario being evaluated.

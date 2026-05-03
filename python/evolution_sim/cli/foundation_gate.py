@@ -15,6 +15,7 @@ from typing import Callable
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 from evolution_sim.io import build_replay_payload, replay_payload_size_bytes
 from evolution_sim.env.world import (
     ANIMAL_RESOURCE_KINDS,
@@ -99,6 +100,8 @@ class GateProfile:
     dominance_warning_share: float = 0.75
     max_at_cap_tick_share_warning: float | None = None
     max_at_cap_tick_share_error: float | None = None
+    min_plant_energy_available_per_land_tile_warning: float | None = None
+    min_terminal_selection_abs_mean_delta_warning: float | None = None
     required_terminal_meat_mode_alternatives_by_seed: Mapping[
         int,
         tuple[str, ...],
@@ -181,6 +184,8 @@ RELEASE_PROFILE = GateProfile(
     dominance_warning_share=0.85,
     max_at_cap_tick_share_warning=0.35,
     max_at_cap_tick_share_error=0.6,
+    min_plant_energy_available_per_land_tile_warning=0.05,
+    min_terminal_selection_abs_mean_delta_warning=0.001,
     required_terminal_meat_mode_alternatives_by_seed={
         3: ("hunter", "mixed"),
         11: ("hunter", "mixed"),
@@ -727,6 +732,20 @@ def _summary_gate_flags(
                 profile=profile,
             )
         )
+        flags.extend(
+            _resource_pressure_budget_flags(
+                scope=f"summary_seed_{seed}",
+                run=run,
+                profile=profile,
+            )
+        )
+        flags.extend(
+            _terminal_selection_signal_flags(
+                scope=f"summary_seed_{seed}",
+                selection=run.get("selection_heredity"),
+                profile=profile,
+            )
+        )
         if run["last_birth_tick"] is None or int(run["last_birth_tick"]) < profile.min_last_birth_tick:
             flags.append(
                 _flag(
@@ -1063,6 +1082,127 @@ def _carrying_capacity_saturation_flags(
             )
         ]
     return []
+
+
+def _resource_pressure_budget_flags(
+    *,
+    scope: str,
+    run: Mapping[str, object],
+    profile: GateProfile,
+) -> list[dict[str, object]]:
+    threshold = profile.min_plant_energy_available_per_land_tile_warning
+    if threshold is None:
+        return []
+    resource_pressure = run.get("resource_pressure")
+    if not isinstance(resource_pressure, Mapping):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "resource_pressure",
+                "Run is missing resource-pressure analytics for plant-budget review.",
+            )
+        ]
+    plant_budget = resource_pressure.get("plant_budget")
+    if not isinstance(plant_budget, Mapping):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "resource_pressure.plant_budget",
+                "Run is missing plant-budget analytics for resource-pressure review.",
+            )
+        ]
+    available_raw = plant_budget.get("energy_available_at_end")
+    land_tiles_raw = run.get("land_tile_count")
+    if (
+        isinstance(available_raw, bool)
+        or not isinstance(available_raw, (int, float))
+        or isinstance(land_tiles_raw, bool)
+        or not isinstance(land_tiles_raw, int)
+        or land_tiles_raw <= 0
+    ):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "resource_pressure.plant_budget.energy_available_at_end",
+                "Run has incomplete plant-budget analytics for resource-pressure review.",
+            )
+        ]
+    available_per_land_tile = float(available_raw) / land_tiles_raw
+    if available_per_land_tile >= threshold:
+        return []
+    return [
+        _flag(
+            "warning",
+            scope,
+            "resource_pressure.plant_budget.energy_available_per_land_tile",
+            (
+                "Ending plant budget is below the release review floor "
+                f"({available_per_land_tile:.4f} < {threshold:.4f})."
+            ),
+        )
+    ]
+
+
+def _terminal_selection_signal_flags(
+    *,
+    scope: str,
+    selection: object,
+    profile: GateProfile,
+) -> list[dict[str, object]]:
+    threshold = profile.min_terminal_selection_abs_mean_delta_warning
+    if threshold is None:
+        return []
+    if not isinstance(selection, Mapping):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "selection_heredity",
+                "Run is missing terminal selection/heredity analytics.",
+            )
+        ]
+    deltas = selection.get("terminal_minus_initial_mean")
+    if not isinstance(deltas, Mapping):
+        return [
+            _flag(
+                "warning",
+                scope,
+                "selection_heredity.terminal_minus_initial_mean",
+                "Run is missing terminal-minus-initial trait deltas.",
+            )
+        ]
+    numeric_deltas = [
+        abs(float(value))
+        for value in deltas.values()
+        if not isinstance(value, bool) and isinstance(value, (int, float))
+    ]
+    if not numeric_deltas:
+        return [
+            _flag(
+                "warning",
+                scope,
+                "selection_heredity.terminal_minus_initial_mean",
+                "Run did not produce a numeric terminal selection signal.",
+            )
+        ]
+    max_abs_delta = max(numeric_deltas)
+    if max_abs_delta >= threshold:
+        return []
+    return [
+        _flag(
+            "warning",
+            scope,
+            "selection_heredity.terminal_minus_initial_mean",
+            (
+                "Terminal trait distribution is effectively unchanged from the "
+                f"initial population (max_abs_delta={max_abs_delta:.4f} < "
+                f"{threshold:.4f})."
+            ),
+        )
+    ]
 
 
 def _replay_size_bytes(result_payload: dict[str, object]) -> int:
@@ -3238,6 +3378,7 @@ def build_foundation_gate_report(
     protocol = {
         "protocol": {
             "profile": profile.name,
+            "summary_schema_version": SUMMARY_SCHEMA_VERSION,
             "summary_sweep": {
                 "seeds": list(seeds),
                 "ticks": ticks,
@@ -3266,6 +3407,12 @@ def build_foundation_gate_report(
                 "dominance_warning_share": profile.dominance_warning_share,
                 "max_at_cap_tick_share_warning": profile.max_at_cap_tick_share_warning,
                 "max_at_cap_tick_share_error": profile.max_at_cap_tick_share_error,
+                "min_plant_energy_available_per_land_tile_warning": (
+                    profile.min_plant_energy_available_per_land_tile_warning
+                ),
+                "min_terminal_selection_abs_mean_delta_warning": (
+                    profile.min_terminal_selection_abs_mean_delta_warning
+                ),
                 "required_terminal_meat_mode_alternatives_by_seed": {
                     str(seed): list(modes)
                     for seed, modes in (

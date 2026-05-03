@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 import evolution_sim.env.runtime.capacity as runtime_capacity
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.resources as runtime_resources
@@ -224,6 +225,7 @@ def build_summary(world: Any, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, 
 
     summary = {
         "run_id": world.run_id,
+        "summary_schema_version": SUMMARY_SCHEMA_VERSION,
         "seed": world.config.seed,
         "ticks_executed": ticks_executed,
         "births": world.births,

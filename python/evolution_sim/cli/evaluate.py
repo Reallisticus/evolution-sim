@@ -9,6 +9,7 @@ from typing import Callable, Iterable, Sequence
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 
 
 DEFAULT_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
@@ -511,6 +512,7 @@ def run_evaluation(seed: int, ticks: int, mode: RunMode) -> dict[str, object]:
     record: dict[str, object] = {
         "seed": seed,
         "run_id": summary["run_id"],
+        "summary_schema_version": summary["summary_schema_version"],
         "ticks_executed": summary["ticks_executed"],
         "extinct": summary["extinct"],
         "alive_agents": summary["alive_agents"],
@@ -518,6 +520,7 @@ def run_evaluation(seed: int, ticks: int, mode: RunMode) -> dict[str, object]:
         "deaths": summary["deaths"],
         "peak_alive_agents": summary["peak_alive_agents"],
         "max_agents": summary["max_agents"],
+        "land_tile_count": summary["land_tile_count"],
         "max_agent_saturation_at_end": summary["max_agent_saturation_at_end"],
         "peak_max_agent_saturation": summary["peak_max_agent_saturation"],
         "carrying_capacity": summary["carrying_capacity"],
@@ -574,6 +577,13 @@ _run_evaluation = run_evaluation
 def _aggregate_report(runs: Sequence[dict[str, object]]) -> dict[str, object]:
     aggregate: dict[str, object] = {
         "run_count": len(runs),
+        "summary_schema_versions": sorted(
+            {
+                str(run["summary_schema_version"])
+                for run in runs
+                if "summary_schema_version" in run
+            }
+        ),
         "viable_runs": sum(1 for run in runs if not bool(run["extinct"])),
         "extinctions": sum(1 for run in runs if bool(run["extinct"])),
         "alive_agents": _series_stats([int(run["alive_agents"]) for run in runs]),
@@ -619,6 +629,7 @@ def _aggregate_report(runs: Sequence[dict[str, object]]) -> dict[str, object]:
             ),
         },
         "total_agents_seen": _series_stats([int(run["total_agents_seen"]) for run in runs]),
+        "land_tile_count": _series_stats([int(run["land_tile_count"]) for run in runs]),
         "last_birth_tick": _series_stats(
             [
                 int(run["last_birth_tick"])
@@ -922,6 +933,7 @@ def build_evaluation_report_from_runs(
 ) -> dict[str, object]:
     return {
         "protocol": {
+            "summary_schema_version": SUMMARY_SCHEMA_VERSION,
             "seeds": list(seeds),
             "ticks": ticks,
             "mode": mode.value,

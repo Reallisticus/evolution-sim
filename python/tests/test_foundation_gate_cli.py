@@ -28,6 +28,7 @@ from evolution_sim.config import (
     WorldConfig,
 )
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 import evolution_sim.env.runtime.mating as runtime_mating
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 from evolution_sim.env.runtime.state import Agent
@@ -43,6 +44,41 @@ class FoundationGateCliTests(unittest.TestCase):
         self.assertGateTimingsSchema(report["timings"])
         for flag in report["summary_gate_flags"]:
             self.assertGateFlagSchema(flag)
+
+    def assertCarryingCapacitySchema(self, payload: object) -> None:
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        for key in ("near_cap_ticks", "at_cap_ticks", "saturation_births", "saturation_deaths"):
+            self.assertIsInstance(payload[key], int)
+        for key in ("near_cap_saturation_threshold", "near_cap_tick_share", "at_cap_tick_share"):
+            self.assertIsInstance(payload[key], (int, float))
+
+    def assertResourcePressureSchema(self, payload: object) -> None:
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        self.assertIsInstance(payload["plant_budget"], dict)
+        self.assertIsInstance(payload["energy_spend"], dict)
+        for key in (
+            "energy_created",
+            "energy_removed",
+            "energy_lost",
+            "net_created_minus_removed_lost",
+            "energy_available_at_end",
+        ):
+            self.assertIsInstance(payload["plant_budget"][key], (int, float))
+        for key in ("metabolism", "movement", "attack", "reproduction", "signal", "total"):
+            self.assertIsInstance(payload["energy_spend"][key], (int, float))
+
+    def assertSelectionHereditySchema(self, payload: object) -> None:
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        for key in (
+            "initial_trait_distributions",
+            "terminal_alive_trait_distributions",
+            "terminal_minus_initial_mean",
+        ):
+            self.assertIsInstance(payload[key], dict)
+        self.assertIn("max_energy", payload["terminal_minus_initial_mean"])
 
     def assertGateReadinessSchema(self, readiness: object) -> None:
         self.assertIsInstance(readiness, dict)
@@ -209,6 +245,14 @@ class FoundationGateCliTests(unittest.TestCase):
         self.assertEqual(release.max_at_cap_tick_share_warning, 0.35)
         self.assertEqual(release.max_at_cap_tick_share_error, 0.6)
         self.assertEqual(
+            release.min_plant_energy_available_per_land_tile_warning,
+            0.05,
+        )
+        self.assertEqual(
+            release.min_terminal_selection_abs_mean_delta_warning,
+            0.001,
+        )
+        self.assertEqual(
             release.required_terminal_meat_mode_alternatives_by_seed,
             {3: ("hunter", "mixed"), 11: ("hunter", "mixed")},
         )
@@ -255,18 +299,33 @@ class FoundationGateCliTests(unittest.TestCase):
         report = build_foundation_gate_report(profile)
 
         self.assertEqual(report["protocol"]["profile"], "unit")
+        self.assertEqual(
+            report["protocol"]["summary_schema_version"],
+            SUMMARY_SCHEMA_VERSION,
+        )
         self.assertEqual(report["summary_evaluation"]["protocol"]["mode"], "summary_only")
+        self.assertEqual(
+            report["summary_evaluation"]["protocol"]["summary_schema_version"],
+            SUMMARY_SCHEMA_VERSION,
+        )
         self.assertEqual(len(report["full_replay_probes"]), 1)
         self.assertIn(
             "max_at_cap_tick_share_warning",
             report["protocol"]["criteria"],
         )
-        self.assertIn("carrying_capacity", report["summary_evaluation"]["runs"][0])
-        self.assertIn("carrying_capacity", report["summary_evaluation"]["aggregate"])
-        self.assertIn("resource_pressure", report["summary_evaluation"]["runs"][0])
-        self.assertIn("resource_pressure", report["summary_evaluation"]["aggregate"])
-        self.assertIn("selection_heredity", report["summary_evaluation"]["runs"][0])
-        self.assertIn("selection_heredity", report["summary_evaluation"]["aggregate"])
+        self.assertCarryingCapacitySchema(
+            report["summary_evaluation"]["runs"][0]["carrying_capacity"]
+        )
+        self.assertResourcePressureSchema(
+            report["summary_evaluation"]["runs"][0]["resource_pressure"]
+        )
+        self.assertSelectionHereditySchema(
+            report["summary_evaluation"]["runs"][0]["selection_heredity"]
+        )
+        self.assertEqual(
+            report["summary_evaluation"]["aggregate"]["summary_schema_versions"],
+            [SUMMARY_SCHEMA_VERSION],
+        )
         self.assertIn("carrying_capacity", report["full_replay_probes"][0])
         self.assertIn("ecology_failure_rollup", report)
         self.assertIn("terminal_role_presence_runs", report["ecology_failure_rollup"])
@@ -378,6 +437,89 @@ class FoundationGateCliTests(unittest.TestCase):
             any(
                 flag["severity"] == "error"
                 and flag["field"] == "carrying_capacity.at_cap_tick_share"
+                for flag in flags
+            )
+        )
+
+    def test_summary_gate_flags_review_pathological_resource_and_selection_signals(self) -> None:
+        profile = replace(
+            QUICK_PROFILE,
+            name="analytics-unit",
+            min_trophic_roles=1,
+            min_meat_modes=1,
+            min_last_birth_tick=0,
+            min_hazardous_tiles=0,
+            min_ecology_pressure_tiles=0,
+            full_replay_probes=(),
+            min_plant_energy_available_per_land_tile_warning=0.2,
+            min_terminal_selection_abs_mean_delta_warning=0.01,
+        )
+        evaluation = {
+            "flags": [],
+            "runs": [
+                {
+                    "seed": 7,
+                    "last_birth_tick": 1,
+                    "land_tile_count": 10,
+                    "carrying_capacity": {
+                        "near_cap_saturation_threshold": 0.9,
+                        "near_cap_ticks": 0,
+                        "at_cap_ticks": 0,
+                        "near_cap_tick_share": 0.0,
+                        "at_cap_tick_share": 0.0,
+                        "saturation_births": 0,
+                        "saturation_deaths": 0,
+                    },
+                    "resource_pressure": {
+                        "plant_budget": {
+                            "energy_created": 0.0,
+                            "energy_removed": 0.0,
+                            "energy_lost": 0.0,
+                            "net_created_minus_removed_lost": 0.0,
+                            "energy_available_at_end": 1.0,
+                        },
+                        "energy_spend": {},
+                    },
+                    "selection_heredity": {
+                        "terminal_minus_initial_mean": {
+                            "max_energy": 0.0,
+                            "max_health": 0.0,
+                        }
+                    },
+                    "trophic": {
+                        "role_counts": {"herbivore": 8},
+                        "meat_mode_counts": {"none": 8, "hunter": 1},
+                        "diet": {"animal_energy_share": 0.1},
+                    },
+                    "carrion": {"energy_deposited": 1.0, "energy_consumed": 1.0},
+                }
+            ],
+            "aggregate": {
+                "hazardous_tiles": {"min": 0},
+                "trophic_role_counts_at_end": {"total": {"herbivore": 8}},
+                "meat_mode_counts_at_end": {"total": {"none": 8, "hunter": 1}},
+                "ecology_state_counts_at_end": {
+                    "total": {"stable": 1, "lush": 0, "recovering": 0, "depleted": 0}
+                },
+                "carrion_energy_consumed": {"max": 1.0},
+                "fresh_kill_energy_consumed": {"max": 0.0},
+            },
+        }
+
+        flags = _summary_gate_flags(evaluation, profile)
+
+        self.assertTrue(
+            any(
+                flag["severity"] == "warning"
+                and flag["field"]
+                == "resource_pressure.plant_budget.energy_available_per_land_tile"
+                for flag in flags
+            )
+        )
+        self.assertTrue(
+            any(
+                flag["severity"] == "warning"
+                and flag["field"] == "selection_heredity.terminal_minus_initial_mean"
                 for flag in flags
             )
         )

@@ -63,6 +63,14 @@ Each completed scenario records its scenario identity plus median/p95 wall time,
 median/p95 peak RSS, replay size when applicable, trajectory record/output
 counts, and median runtime cost counters.
 
+Runtime cost counters are part of the benchmark regression surface. Summary-only
+scenarios currently assert:
+
+- action-mask builds stay near two mask builds per observation;
+- `resource_pressure_accounting_updates` remains within the grid-plus-agent
+  tick budget, so plant-budget and energy-spend accounting cannot silently grow
+  into a replay-sized side path.
+
 Partial reports keep any completed `scenarios` plus the selected machine
 profile and include an `error` object with:
 
@@ -124,9 +132,10 @@ Before/after comparisons are valid only when collected on the same machine profi
 - Release reports consume shared summary analytics for carrying-capacity
   pressure, resource-pressure budgets, and initial-to-terminal trait
   distributions. Sustained max-agent saturation is warning/fail gated through
-  `carrying_capacity.at_cap_tick_share`; resource and heredity metrics are
-  exported for review and benchmark correlation before they become hard
-  ecological thresholds.
+  `carrying_capacity.at_cap_tick_share`. Pathological plant-budget collapse is
+  review-gated through ending plant energy per land tile, and missing terminal
+  selection signal is review-gated through
+  `selection_heredity.terminal_minus_initial_mean`.
 
 ## Scaling Targets
 
@@ -136,6 +145,9 @@ Before/after comparisons are valid only when collected on the same machine profi
   observation/action selection and one live resolution mask. A third per-agent
   mask phase should be treated as a regression unless a new contract explicitly
   requires it.
+- Treat resource-pressure accounting as a watched cost surface. Updating plant
+  and energy-spend totals is allowed; building replay/viewer payloads or
+  scanning extra replay surfaces to compute those totals is not.
 - Precompute static terrain/topology lookups once per world.
 - Cache tick-scoped derived environment fields; they are climate-derived and
   must be reset by `reset_derived_caches()`.

@@ -13,6 +13,7 @@ from evolution_sim.cli.bench import (
     _run_once_isolated,
     _scenario_stats,
 )
+from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode
 
 
@@ -81,6 +82,22 @@ class BenchCliTests(unittest.TestCase):
         self.assertGreater(action_mask_builds, observation_builds)
         self.assertLessEqual(action_mask_builds, observation_builds * 2)
 
+    def assertSummaryOnlyResourcePressureAccountingBudget(self, scenario: object) -> None:
+        self.assertIsInstance(scenario, dict)
+        assert isinstance(scenario, dict)
+        self.assertEqual(scenario["mode"], RunMode.SUMMARY_ONLY)
+        counters = scenario["median_runtime_cost_counters"]
+        self.assertIsInstance(counters, dict)
+        assert isinstance(counters, dict)
+        updates = int(counters["resource_pressure_accounting_updates"])
+        self.assertGreater(updates, 0)
+        default_config = WorldConfig()
+        grid_tick_budget = (
+            int(scenario["ticks"]) * default_config.width * default_config.height * 4
+        )
+        agent_tick_budget = int(scenario["ticks"]) * default_config.max_agents * 4
+        self.assertLessEqual(updates, grid_tick_budget + agent_tick_budget)
+
     def assertErrorSchema(self, error: object) -> None:
         self.assertIsInstance(error, dict)
         assert isinstance(error, dict)
@@ -110,6 +127,7 @@ class BenchCliTests(unittest.TestCase):
                         "observation_builds": 10,
                         "action_mask_builds": 19,
                         "biotic_state_builds": 2,
+                        "resource_pressure_accounting_updates": 55,
                     },
                 },
                 {
@@ -122,6 +140,7 @@ class BenchCliTests(unittest.TestCase):
                         "observation_builds": 20,
                         "action_mask_builds": 39,
                         "biotic_state_builds": 4,
+                        "resource_pressure_accounting_updates": 65,
                     },
                 },
             ],
@@ -143,7 +162,14 @@ class BenchCliTests(unittest.TestCase):
             stats["median_runtime_cost_counters"]["biotic_state_builds"],
             3,
         )
+        self.assertEqual(
+            stats["median_runtime_cost_counters"][
+                "resource_pressure_accounting_updates"
+            ],
+            60,
+        )
         self.assertSummaryOnlyMaskBuildBudget(stats)
+        self.assertSummaryOnlyResourcePressureAccountingBudget(stats)
         json.dumps(stats)
 
     def test_isolated_run_reports_plausible_summary_memory(self) -> None:
@@ -158,6 +184,10 @@ class BenchCliTests(unittest.TestCase):
         self.assertIsNone(result["replay_size_bytes"])
         self.assertIsInstance(result["runtime_cost_counters"], dict)
         self.assertGreater(result["runtime_cost_counters"]["observation_builds"], 0)
+        self.assertGreater(
+            result["runtime_cost_counters"]["resource_pressure_accounting_updates"],
+            0,
+        )
 
     def test_isolated_run_times_out_without_waiting_for_child_exit(self) -> None:
         with self.assertRaises(TimeoutError):
@@ -304,6 +334,7 @@ class BenchCliTests(unittest.TestCase):
         self.assertNotIn("error", payload)
         self.assertEqual(len(payload["scenarios"]), 1)
         self.assertSummaryOnlyMaskBuildBudget(payload["scenarios"][0])
+        self.assertSummaryOnlyResourcePressureAccountingBudget(payload["scenarios"][0])
 
     def test_cli_multiprocess_timeout_emits_partial_json_report(self) -> None:
         environment = {

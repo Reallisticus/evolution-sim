@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,17 @@ class DeathResourceEmission:
     deposited_resource: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ResourceContext:
+    effective_tile_fields: Callable[[int, int], tuple[float, float, float]]
+    habitat_state_at: Callable[[int, int], str]
+    habitat_state_grid: Callable[[], tuple[list[list[str]], dict[str, int]]]
+    terrain_neighbor_ratio: Callable[..., float]
+    season_state: Callable[[], dict[str, object]]
+    clamp01: Callable[[float], float]
+    emit: Callable[[EventType, int | None, dict[str, object] | None], None]
+
+
 def empty_resource_pressure_totals() -> dict[str, float]:
     return {
         "plant_energy_created": 0.0,
@@ -49,19 +61,30 @@ def empty_resource_pressure_totals() -> dict[str, float]:
     }
 
 
+def _record_resource_pressure_accounting_update(world: Any) -> None:
+    counters = getattr(world, "runtime_cost_counters", None)
+    if isinstance(counters, dict):
+        counters["resource_pressure_accounting_updates"] = (
+            int(counters.get("resource_pressure_accounting_updates", 0)) + 1
+        )
+
+
 def record_plant_created(world: Any, amount: float) -> None:
     if amount > 0:
         world.run_resource_pressure_totals["plant_energy_created"] += amount
+        _record_resource_pressure_accounting_update(world)
 
 
 def record_plant_removed(world: Any, amount: float) -> None:
     if amount > 0:
         world.run_resource_pressure_totals["plant_energy_removed"] += amount
+        _record_resource_pressure_accounting_update(world)
 
 
 def record_plant_lost(world: Any, amount: float) -> None:
     if amount > 0:
         world.run_resource_pressure_totals["plant_energy_lost"] += amount
+        _record_resource_pressure_accounting_update(world)
 
 
 def record_energy_spent(world: Any, channel: str, amount: float) -> None:
@@ -71,6 +94,7 @@ def record_energy_spent(world: Any, channel: str, amount: float) -> None:
     if key not in world.run_resource_pressure_totals:
         raise ValueError(f"Unsupported energy-spend channel: {channel}")
     world.run_resource_pressure_totals[key] += amount
+    _record_resource_pressure_accounting_update(world)
 
 
 def finalize_resource_pressure(world: Any) -> dict[str, object]:
@@ -558,6 +582,7 @@ def emit_death_resources(
     world: Any,
     agent: Any,
     *,
+    resource_context: ResourceContext,
     death_cause: str,
     killer_id: int | None,
     source_species: int | None,
@@ -587,6 +612,7 @@ def emit_death_resources(
             carcass_tile_state = deposit_carcass(
                 world,
                 tile,
+                resource_context=resource_context,
                 x=agent.x,
                 y=agent.y,
                 energy=carcass_energy,
@@ -769,6 +795,7 @@ def deposit_carcass(
     world: Any,
     tile: Any,
     *,
+    resource_context: ResourceContext,
     x: int,
     y: int,
     energy: float,
@@ -834,7 +861,7 @@ def deposit_carcass(
             }
         )
     if world.record_events:
-        world._emit(
+        resource_context.emit(
             EventType.CARCASS_DEPOSITED,
             agent_id=source_agent_id,
             data={
@@ -1016,12 +1043,19 @@ def consume_fresh_kill_from_tile(
     }
 
 
-def vegetation_target(world: Any, x: int, y: int, season: str) -> float:
+def vegetation_target(
+    world: Any,
+    x: int,
+    y: int,
+    season: str,
+    *,
+    resource_context: ResourceContext,
+) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 1.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y)
-    habitat_state = world._habitat_state_at(x, y)
+    fertility, moisture, heat = resource_context.effective_tile_fields(x, y)
+    habitat_state = resource_context.habitat_state_at(x, y)
     target = (
         TERRAIN_VEGETATION_BASE.get(tile.terrain, 0.5)
         + fertility * 0.18
@@ -1034,16 +1068,28 @@ def vegetation_target(world: Any, x: int, y: int, season: str) -> float:
         target += 0.06 if tile.terrain == "wetland" else -0.04
     elif habitat_state == "parched":
         target -= 0.08 if tile.terrain == "rocky" else 0.14
-    return world._clamp01(target)
+    return resource_context.clamp01(target)
 
 
-def shelter_target(world: Any, x: int, y: int, season: str) -> float:
+def shelter_target(
+    world: Any,
+    x: int,
+    y: int,
+    season: str,
+    *,
+    resource_context: ResourceContext,
+) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 0.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y)
-    forest_density = world._terrain_neighbor_ratio(x, y, terrain_filter={"forest"}, radius=1)
-    habitat_state = world._habitat_state_at(x, y)
+    fertility, moisture, heat = resource_context.effective_tile_fields(x, y)
+    forest_density = resource_context.terrain_neighbor_ratio(
+        x,
+        y,
+        terrain_filter={"forest"},
+        radius=1,
+    )
+    habitat_state = resource_context.habitat_state_at(x, y)
     target = (
         TERRAIN_SHELTER_BASE.get(tile.terrain, 0.08)
         + tile.vegetation * 0.28
@@ -1061,14 +1107,21 @@ def shelter_target(world: Any, x: int, y: int, season: str) -> float:
         target -= 0.22
     if tile.terrain != "forest":
         target *= 0.22
-    return world._clamp01(target)
+    return resource_context.clamp01(target)
 
 
-def food_capacity(world: Any, x: int, y: int, season: str) -> float:
+def food_capacity(
+    world: Any,
+    x: int,
+    y: int,
+    season: str,
+    *,
+    resource_context: ResourceContext,
+) -> float:
     tile = world.grid[y][x]
     if tile.terrain == "water":
         return 0.0
-    fertility, moisture, heat = world._effective_tile_fields(x, y)
+    fertility, moisture, heat = resource_context.effective_tile_fields(x, y)
     capacity = (
         0.06
         + tile.vegetation * 0.7
@@ -1083,12 +1136,19 @@ def food_capacity(world: Any, x: int, y: int, season: str) -> float:
         capacity += 0.04
     elif tile.terrain == "rocky":
         capacity -= 0.04
-    return world._clamp01(capacity)
+    return resource_context.clamp01(capacity)
 
 
-def field_growth_multiplier(world: Any, x: int, y: int, season: str) -> float:
+def field_growth_multiplier(
+    world: Any,
+    x: int,
+    y: int,
+    season: str,
+    *,
+    resource_context: ResourceContext,
+) -> float:
     tile = world.grid[y][x]
-    fertility, moisture, heat = world._effective_tile_fields(x, y)
+    fertility, moisture, heat = resource_context.effective_tile_fields(x, y)
     growth = 0.42 + fertility * 0.72 + moisture * 0.44
     heat_penalty = max(0.0, heat - moisture) * 0.34
     vegetation_bonus = tile.vegetation * 0.34
@@ -1096,9 +1156,13 @@ def field_growth_multiplier(world: Any, x: int, y: int, season: str) -> float:
     return max(0.22, growth + vegetation_bonus - heat_penalty - recovery_penalty)
 
 
-def regrow_resources(world: Any) -> None:
-    season = world._season_state()["name"]
-    world._habitat_state_grid()
+def regrow_resources(
+    world: Any,
+    *,
+    resource_context: ResourceContext,
+) -> None:
+    season = resource_context.season_state()["name"]
+    resource_context.habitat_state_grid()
     resources = world.config.resources
     for y, row in enumerate(world.grid):
         for x, tile in enumerate(row):
@@ -1116,7 +1180,7 @@ def regrow_resources(world: Any) -> None:
                 )
 
             if tile.carcass_energy > 0:
-                _, moisture, heat = world._effective_tile_fields(x, y)
+                _, moisture, heat = resource_context.effective_tile_fields(x, y)
                 decay = (
                     world.config.carcasses.decay_base_rate
                     + heat * world.config.carcasses.decay_heat_factor
@@ -1131,12 +1195,35 @@ def regrow_resources(world: Any) -> None:
                 world.tick_carcass_energy_decayed += energy_decayed
                 world.run_carcass_totals["energy_decayed"] += energy_decayed
 
-            fertility, moisture, heat = world._effective_tile_fields(x, y)
-            habitat_state = world._habitat_state_at(x, y)
-            field_growth = field_growth_multiplier(world, x, y, season)
-            vegetation_goal = vegetation_target(world, x, y, season)
-            shelter_goal = shelter_target(world, x, y, season)
-            forest_density = world._terrain_neighbor_ratio(x, y, terrain_filter={"forest"}, radius=1)
+            fertility, moisture, heat = resource_context.effective_tile_fields(x, y)
+            habitat_state = resource_context.habitat_state_at(x, y)
+            field_growth = field_growth_multiplier(
+                world,
+                x,
+                y,
+                season,
+                resource_context=resource_context,
+            )
+            vegetation_goal = vegetation_target(
+                world,
+                x,
+                y,
+                season,
+                resource_context=resource_context,
+            )
+            shelter_goal = shelter_target(
+                world,
+                x,
+                y,
+                season,
+                resource_context=resource_context,
+            )
+            forest_density = resource_context.terrain_neighbor_ratio(
+                x,
+                y,
+                terrain_filter={"forest"},
+                radius=1,
+            )
             recovery_support = max(0.28, 1.0 - tile.recovery_debt * 0.72)
             vegetation_growth = (
                 resources.vegetation_regrowth_rate
@@ -1162,13 +1249,13 @@ def regrow_resources(world: Any) -> None:
                 )
 
             if tile.vegetation <= vegetation_goal:
-                tile.vegetation = world._clamp01(
+                tile.vegetation = resource_context.clamp01(
                     tile.vegetation
                     + (vegetation_goal - tile.vegetation) * vegetation_growth
                     - vegetation_stress * 0.18
                 )
             else:
-                tile.vegetation = world._clamp01(
+                tile.vegetation = resource_context.clamp01(
                     tile.vegetation - (tile.vegetation - vegetation_goal) * (0.18 + vegetation_stress)
                 )
 
@@ -1190,7 +1277,9 @@ def regrow_resources(world: Any) -> None:
             elif habitat_state == "parched":
                 degradation *= 1.34 if tile.terrain != "rocky" else 1.16
                 recovery *= 0.72
-            tile.recovery_debt = world._clamp01(tile.recovery_debt + degradation - recovery)
+            tile.recovery_debt = resource_context.clamp01(
+                tile.recovery_debt + degradation - recovery
+            )
 
             shelter_growth = (
                 resources.shelter_regrowth_rate
@@ -1212,13 +1301,13 @@ def regrow_resources(world: Any) -> None:
                 shelter_growth *= 0.72
 
             if tile.shelter <= shelter_goal:
-                tile.shelter = world._clamp01(
+                tile.shelter = resource_context.clamp01(
                     tile.shelter
                     + (shelter_goal - tile.shelter) * shelter_growth
                     - shelter_stress * 0.1
                 )
             else:
-                tile.shelter = world._clamp01(
+                tile.shelter = resource_context.clamp01(
                     tile.shelter - (tile.shelter - shelter_goal) * (0.14 + shelter_stress)
                 )
 
@@ -1240,13 +1329,27 @@ def regrow_resources(world: Any) -> None:
                 * field_growth
                 * (0.4 + tile.vegetation * 0.84)
                 * max(0.24, 1.0 - tile.recovery_debt * 0.72)
-                * habitat_regrowth_modifier(world, x, y)
+                * habitat_regrowth_modifier(
+                    world,
+                    x,
+                    y,
+                    resource_context=resource_context,
+                )
             )
             food_before_regrowth = tile.food
             tile.food = min(1.0, tile.food + food_regrowth)
             tile.food = min(
                 tile.food,
-                max(0.04, food_capacity(world, x, y, season)),
+                max(
+                    0.04,
+                    food_capacity(
+                        world,
+                        x,
+                        y,
+                        season,
+                        resource_context=resource_context,
+                    ),
+                ),
             )
             food_delta = tile.food - food_before_regrowth
             if food_delta > 0:
@@ -1255,8 +1358,14 @@ def regrow_resources(world: Any) -> None:
                 record_plant_lost(world, -food_delta)
 
 
-def habitat_regrowth_modifier(world: Any, x: int, y: int) -> float:
-    habitat_state = world._habitat_state_at(x, y)
+def habitat_regrowth_modifier(
+    world: Any,
+    x: int,
+    y: int,
+    *,
+    resource_context: ResourceContext,
+) -> float:
+    habitat_state = resource_context.habitat_state_at(x, y)
     terrain = world.grid[y][x].terrain
     if habitat_state == "bloom":
         return 1.028

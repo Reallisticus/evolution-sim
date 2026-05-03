@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+SUMMARY_SCHEMA_VERSION = "foundation_summary_v1"
+
 REPLAY_TOP_LEVEL_KEYS: tuple[str, ...] = (
     "run_id",
     "config",
@@ -73,6 +75,7 @@ FULL_ONLY_SUMMARY_FIELDS: tuple[str, ...] = (
 
 SHARED_SUMMARY_FIELDS: tuple[str, ...] = (
     "run_id",
+    "summary_schema_version",
     "seed",
     "ticks_executed",
     "births",

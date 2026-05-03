@@ -29,6 +29,7 @@ from evolution_sim.env.contracts import (
     FULL_ONLY_SUMMARY_FIELDS,
     REPLAY_TOP_LEVEL_KEYS,
     SHARED_SUMMARY_FIELDS,
+    SUMMARY_SCHEMA_VERSION,
     VIEWER_AGENT_ENCODING,
     VIEWER_MAP_KEYS,
 )
@@ -1896,11 +1897,33 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary_only.mode, RunMode.SUMMARY_ONLY)
         self.assertIsNone(summary_only.events)
         self.assertIsNone(summary_only.viewer)
+        self.assertEqual(
+            summary_only.summary["summary_schema_version"],
+            SUMMARY_SCHEMA_VERSION,
+        )
         self.assertEqual(tuple(summary_only.summary), SHARED_SUMMARY_FIELDS)
         for field in SHARED_SUMMARY_FIELDS:
             self.assertEqual(summary_only.summary[field], full.summary[field], msg=field)
         for field in FULL_ONLY_SUMMARY_FIELDS:
             self.assertNotIn(field, summary_only.summary)
+
+    def test_summary_only_resource_and_selection_analytics_do_not_build_replay_surfaces(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=12))
+
+        with (
+            patch("evolution_sim.env.runtime.frames.capture_frame") as capture_frame,
+            patch(
+                "evolution_sim.env.runtime.surfaces.materialize_frame_surfaces"
+            ) as materialize_frame_surfaces,
+        ):
+            result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertIn("resource_pressure", result.summary)
+        self.assertIn("selection_heredity", result.summary)
+        self.assertIsNone(result.viewer)
+        self.assertIsNone(result.events)
+        capture_frame.assert_not_called()
+        materialize_frame_surfaces.assert_not_called()
 
     def test_summary_gene_averages_distinguish_historical_and_alive_agents(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=40)).run()

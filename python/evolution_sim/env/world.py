@@ -288,6 +288,7 @@ class SimulationWorld:
             "signal_diffusion_target_cache_hits": 0,
             "signal_diffusion_target_cache_misses": 0,
             "signal_emissions": 0,
+            "resource_pressure_accounting_updates": 0,
         }
 
     def _record_runtime_cost(self, name: str, amount: int = 1) -> None:
@@ -378,7 +379,42 @@ class SimulationWorld:
             self.trajectory_sink = previous_trajectory_sink
 
     def _run_tick(self) -> tuple[int, int]:
-        return runtime_ticks.run_tick(self, meat_mode_codes=MEAT_MODE_CODES)
+        return runtime_ticks.run_tick(
+            self,
+            meat_mode_codes=MEAT_MODE_CODES,
+            tick_context=self._tick_phase_context(),
+        )
+
+    def _tick_phase_context(self) -> runtime_ticks.TickPhaseContext:
+        return runtime_ticks.TickPhaseContext(
+            invalidate_biotic_state=self._invalidate_biotic_state,
+            decay_signal_emissions=self._decay_signal_emissions,
+            climate_state=self._climate_state,
+            season_state=self._season_state,
+            emit=self._emit,
+            regrow_resources=self._regrow_resources,
+            population_trophic_counts=self._population_trophic_counts,
+            observe_agent=self._observe_agent,
+            animal_resource_reachability_by_meat_mode=(
+                self._animal_resource_reachability_by_meat_mode
+            ),
+            animal_resource_presence_this_tick=self._animal_resource_presence_this_tick,
+            decay_recent_diet=self._decay_recent_diet,
+            choose_action=self._choose_action,
+            action_mask=self._action_mask,
+            lifecycle_context=self._lifecycle_context(),
+            kill_agent=self._kill_agent,
+            finalize_trajectory_decisions=self._finalize_trajectory_decisions,
+            record_animal_resource_opportunity_tick=(
+                self._record_animal_resource_opportunity_tick
+            ),
+            begin_trajectory_decision=self._begin_trajectory_decision,
+            policy_metadata=lambda: {
+                "action_source": self._policy_action_source,
+                "policy_id": self._policy_id,
+                "policy_version": self._policy_version,
+            },
+        )
 
     def _build_grid(self) -> list[list[Tile]]:
         grid: list[list[Tile]] = []
@@ -1068,6 +1104,17 @@ class SimulationWorld:
     def _fresh_kill_patch_summaries(self) -> list[dict[str, object]]:
         return runtime_resources.fresh_kill_patch_summaries(self)
 
+    def _resource_context(self) -> runtime_resources.ResourceContext:
+        return runtime_resources.ResourceContext(
+            effective_tile_fields=self._effective_tile_fields,
+            habitat_state_at=self._habitat_state_at,
+            habitat_state_grid=self._habitat_state_grid,
+            terrain_neighbor_ratio=self._terrain_neighbor_ratio,
+            season_state=self._season_state,
+            clamp01=self._clamp01,
+            emit=self._emit,
+        )
+
     def _deposit_fresh_kill(
         self,
         tile: Tile,
@@ -1121,6 +1168,7 @@ class SimulationWorld:
         return runtime_resources.deposit_carcass(
             self,
             tile,
+            resource_context=self._resource_context(),
             x=x,
             y=y,
             energy=energy,
@@ -1791,11 +1839,36 @@ class SimulationWorld:
             meat_mode=meat_mode,
         )
 
+    def _lifecycle_context(self) -> runtime_lifecycle.LifecycleContext:
+        return runtime_lifecycle.LifecycleContext(
+            trophic_profile_cache=self._trophic_profile_cache,
+            compute_trophic_profile_for_genome=self._compute_trophic_profile_for_genome,
+            season_state=self._season_state,
+            trophic_profile=self._trophic_profile,
+            trophic_role=self._trophic_role,
+            meat_mode=self._meat_mode,
+            agent_energy_drain_modifier=self._agent_energy_drain_modifier,
+            agent_hydration_drain_modifier=self._agent_hydration_drain_modifier,
+            energy_ratio=self._energy_ratio,
+            hydration_ratio=self._hydration_ratio,
+            hazard_at=self._hazard_at,
+            refuge_score=self._refuge_score,
+            clamp01=self._clamp01,
+            emit=self._emit,
+            kill_agent=self._kill_agent,
+        )
+
     def _trophic_profile_for_genome(self, genome: Genome) -> TrophicProfile:
-        return cached_trophic_profile(self, genome)
+        return cached_trophic_profile(
+            genome,
+            lifecycle_context=self._lifecycle_context(),
+        )
 
     def _trophic_profile(self, agent: Agent) -> TrophicProfile:
-        return cached_trophic_profile(self, agent.genome)
+        return cached_trophic_profile(
+            agent.genome,
+            lifecycle_context=self._lifecycle_context(),
+        )
 
     def _trophic_role_for_genome(self, genome: Genome) -> str:
         return self._trophic_profile_for_genome(genome).role
@@ -2525,13 +2598,37 @@ class SimulationWorld:
         return fertility, moisture, heat
 
     def _vegetation_target(self, x: int, y: int, season: str) -> float:
-        return runtime_resources.vegetation_target(self, x, y, season)
+        return runtime_resources.vegetation_target(
+            self,
+            x,
+            y,
+            season,
+            resource_context=self._resource_context(),
+        )
     def _shelter_target(self, x: int, y: int, season: str) -> float:
-        return runtime_resources.shelter_target(self, x, y, season)
+        return runtime_resources.shelter_target(
+            self,
+            x,
+            y,
+            season,
+            resource_context=self._resource_context(),
+        )
     def _food_capacity(self, x: int, y: int, season: str) -> float:
-        return runtime_resources.food_capacity(self, x, y, season)
+        return runtime_resources.food_capacity(
+            self,
+            x,
+            y,
+            season,
+            resource_context=self._resource_context(),
+        )
     def _field_growth_multiplier(self, x: int, y: int, season: str) -> float:
-        return runtime_resources.field_growth_multiplier(self, x, y, season)
+        return runtime_resources.field_growth_multiplier(
+            self,
+            x,
+            y,
+            season,
+            resource_context=self._resource_context(),
+        )
     def _field_preference_score(
         self,
         agent: Agent,
@@ -2647,9 +2744,14 @@ class SimulationWorld:
         return max(0.62, modifier)
 
     def _regrow_resources(self) -> None:
-        runtime_resources.regrow_resources(self)
+        runtime_resources.regrow_resources(self, resource_context=self._resource_context())
     def _habitat_regrowth_modifier(self, x: int, y: int) -> float:
-        return runtime_resources.habitat_regrowth_modifier(self, x, y)
+        return runtime_resources.habitat_regrowth_modifier(
+            self,
+            x,
+            y,
+            resource_context=self._resource_context(),
+        )
     def _terrain_regrowth_rate(self, terrain: str) -> float:
         return runtime_resources.terrain_regrowth_rate(self, terrain)
     def _terrain_growth_modifier(self, terrain: str, season: str) -> float:
@@ -3668,6 +3770,7 @@ class SimulationWorld:
                 target,
                 damage,
                 source="attack",
+                lifecycle_context=self._lifecycle_context(),
                 attacker_id=attacker.agent_id,
             )
             kill = target.health <= 0 and target.alive
@@ -3760,7 +3863,12 @@ class SimulationWorld:
         return max(0.0, attack_strength - defense_strength * 0.48)
 
     def _apply_metabolism(self, agent: Agent, moved: bool) -> None:
-        runtime_lifecycle.apply_metabolism(self, agent, moved)
+        runtime_lifecycle.apply_metabolism(
+            self,
+            agent,
+            moved,
+            lifecycle_context=self._lifecycle_context(),
+        )
 
     def _agent_energy_drain_modifier(self, agent: Agent, season: str | None = None) -> float:
         terrain = self.grid[agent.y][agent.x].terrain
@@ -3944,7 +4052,12 @@ class SimulationWorld:
         killer_id: int | None = None,
     ) -> None:
         death_cause = cause or runtime_lifecycle.death_cause(self, agent)
-        runtime_lifecycle.record_death_cause(self, agent, death_cause)
+        runtime_lifecycle.record_death_cause(
+            self,
+            agent,
+            death_cause,
+            lifecycle_context=self._lifecycle_context(),
+        )
         agent.alive = False
         agent.death_tick = self.tick
         self.grid[agent.y][agent.x].occupant_id = None
@@ -3956,6 +4069,7 @@ class SimulationWorld:
         resource_emission = runtime_resources.emit_death_resources(
             self,
             agent,
+            resource_context=self._resource_context(),
             death_cause=death_cause,
             killer_id=killer_id,
             source_species=source_species,

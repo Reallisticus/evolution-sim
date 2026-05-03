@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable, MutableMapping
+from dataclasses import dataclass
 from typing import Any
 
 from evolution_sim.env.events import EventType
 import evolution_sim.env.runtime.resources as runtime_resources
-from evolution_sim.env.runtime.state import Agent
+from evolution_sim.env.runtime.state import Agent, TrophicProfile
 from evolution_sim.genome import Genome
 
 
@@ -33,32 +35,58 @@ GENOME_PROFILE_FIELDS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class LifecycleContext:
+    trophic_profile_cache: MutableMapping[tuple[float, ...], TrophicProfile]
+    compute_trophic_profile_for_genome: Callable[[Genome], TrophicProfile]
+    season_state: Callable[[], dict[str, object]]
+    trophic_profile: Callable[[Agent], TrophicProfile]
+    trophic_role: Callable[[Agent], str]
+    meat_mode: Callable[[Agent], str]
+    agent_energy_drain_modifier: Callable[[Agent, str], float]
+    agent_hydration_drain_modifier: Callable[[Agent, str], float]
+    energy_ratio: Callable[[Agent], float]
+    hydration_ratio: Callable[[Agent], float]
+    hazard_at: Callable[[int, int], tuple[str, float]]
+    refuge_score: Callable[[int, int], float]
+    clamp01: Callable[[float], float]
+    emit: Callable[[EventType, int | None, dict[str, object] | None], None]
+    kill_agent: Callable[..., None]
+
+
 def genome_profile_key(genome: Genome) -> tuple[float, ...]:
     return tuple(float(getattr(genome, field)) for field in GENOME_PROFILE_FIELDS)
 
 
 def cached_trophic_profile(
-    world: Any,
     genome: Genome,
-):
+    *,
+    lifecycle_context: LifecycleContext,
+) -> TrophicProfile:
     key = genome_profile_key(genome)
-    profile = world._trophic_profile_cache.get(key)
+    profile = lifecycle_context.trophic_profile_cache.get(key)
     if profile is None:
-        profile = world._compute_trophic_profile_for_genome(genome)
-        world._trophic_profile_cache[key] = profile
+        profile = lifecycle_context.compute_trophic_profile_for_genome(genome)
+        lifecycle_context.trophic_profile_cache[key] = profile
     return profile
 
 
-def apply_metabolism(world: Any, agent: Agent, moved: bool) -> None:
-    season = world._season_state()["name"]
+def apply_metabolism(
+    world: Any,
+    agent: Agent,
+    moved: bool,
+    *,
+    lifecycle_context: LifecycleContext,
+) -> None:
+    season = lifecycle_context.season_state()["name"]
     move_cost = (
         agent.genome.move_cost * (1.0 + agent.injury_load * 0.42)
         if moved
         else 0.0
     )
-    profile = world._trophic_profile(agent)
-    energy_modifier = world._agent_energy_drain_modifier(agent, season)
-    hydration_modifier = world._agent_hydration_drain_modifier(agent, season)
+    profile = lifecycle_context.trophic_profile(agent)
+    energy_modifier = lifecycle_context.agent_energy_drain_modifier(agent, season)
+    hydration_modifier = lifecycle_context.agent_hydration_drain_modifier(agent, season)
     energy_modifier *= 1.0 + agent.injury_load * 0.14
     hydration_modifier *= 1.0 + agent.injury_load * 0.08
     energy_modifier *= (
@@ -70,7 +98,7 @@ def apply_metabolism(world: Any, agent: Agent, moved: bool) -> None:
     if (
         not moved
         and profile.meat_mode in {"hunter", "scavenger", "mixed"}
-        and world._energy_ratio(agent) < 0.58
+        and lifecycle_context.energy_ratio(agent) < 0.58
     ):
         energy_modifier *= 0.35
         hydration_modifier *= 0.65
@@ -86,18 +114,24 @@ def apply_metabolism(world: Any, agent: Agent, moved: bool) -> None:
     )
 
 
-def apply_health_and_hazards(world: Any, agent: Agent, moved: bool) -> None:
+def apply_health_and_hazards(
+    world: Any,
+    agent: Agent,
+    moved: bool,
+    *,
+    lifecycle_context: LifecycleContext,
+) -> None:
     if not agent.alive:
         return
 
-    hazard_type, hazard_level = world._hazard_at(agent.x, agent.y)
+    hazard_type, hazard_level = lifecycle_context.hazard_at(agent.x, agent.y)
     if hazard_type != "none" and hazard_level > 0:
         tile = world.grid[agent.y][agent.x]
         if hazard_type == "exposure":
             resistance = (
                 agent.genome.heat_tolerance * 0.16
                 + tile.shelter * 0.18
-                + world._refuge_score(agent.x, agent.y) * 0.12
+                + lifecycle_context.refuge_score(agent.x, agent.y) * 0.12
             )
             damage = (
                 world.config.hazards.exposure_damage_rate
@@ -124,19 +158,23 @@ def apply_health_and_hazards(world: Any, agent: Agent, moved: bool) -> None:
                 damage,
                 source=f"hazard_{hazard_type}",
                 hazard_type=hazard_type,
+                lifecycle_context=lifecycle_context,
             )
             if agent.health <= 0 and agent.alive:
-                world._kill_agent(agent, cause=f"hazard_{hazard_type}")
+                lifecycle_context.kill_agent(agent, cause=f"hazard_{hazard_type}")
                 return
 
     if agent.health >= agent.max_health:
-        agent.injury_load = world._clamp01(max(0.0, agent.injury_load - 0.004))
+        agent.injury_load = lifecycle_context.clamp01(
+            max(0.0, agent.injury_load - 0.004)
+        )
         return
 
     hazards = world.config.hazards
     if (
-        world._energy_ratio(agent) >= hazards.min_energy_ratio_for_healing
-        and world._hydration_ratio(agent) >= hazards.min_hydration_ratio_for_healing
+        lifecycle_context.energy_ratio(agent) >= hazards.min_energy_ratio_for_healing
+        and lifecycle_context.hydration_ratio(agent)
+        >= hazards.min_hydration_ratio_for_healing
         and hazard_level < hazards.healing_hazard_threshold
     ):
         heal_amount = (
@@ -144,8 +182,8 @@ def apply_health_and_hazards(world: Any, agent: Agent, moved: bool) -> None:
             * agent.genome.healing_efficiency
             * (
                 0.44
-                + world._energy_ratio(agent) * 0.28
-                + world._hydration_ratio(agent) * 0.28
+                + lifecycle_context.energy_ratio(agent) * 0.28
+                + lifecycle_context.hydration_ratio(agent) * 0.28
             )
             * (1.0 - hazard_level * 0.6)
         )
@@ -153,10 +191,10 @@ def apply_health_and_hazards(world: Any, agent: Agent, moved: bool) -> None:
         agent.health = min(agent.max_health, agent.health + heal_amount)
         if agent.health > previous:
             healed = agent.health - previous
-            agent.injury_load = world._clamp01(
+            agent.injury_load = lifecycle_context.clamp01(
                 max(0.0, agent.injury_load - healed / max(agent.max_health, 1e-9) * 0.84)
             )
-            world._emit(
+            lifecycle_context.emit(
                 EventType.AGENT_HEALED,
                 agent_id=agent.agent_id,
                 data={
@@ -171,13 +209,15 @@ def apply_damage(
     agent: Agent,
     amount: float,
     source: str,
+    *,
+    lifecycle_context: LifecycleContext,
     hazard_type: str | None = None,
     attacker_id: int | None = None,
 ) -> None:
     if amount <= 0 or not agent.alive:
         return
     agent.health -= amount
-    agent.injury_load = world._clamp01(
+    agent.injury_load = lifecycle_context.clamp01(
         agent.injury_load + amount / max(agent.max_health, 1e-9)
     )
     agent.last_damage_source = source
@@ -194,7 +234,7 @@ def apply_damage(
     world.run_combat_totals["damage_taken"] += amount
     if source.startswith("hazard_"):
         world.run_combat_totals["hazard_damage_taken"] += amount
-    world._emit(
+    lifecycle_context.emit(
         EventType.AGENT_DAMAGED,
         agent_id=agent.agent_id,
         data={
@@ -207,9 +247,15 @@ def apply_damage(
     )
 
 
-def record_death_cause(world: Any, agent: Agent, death_cause: str) -> None:
-    role = world._trophic_role(agent)
-    mode = world._meat_mode(agent)
+def record_death_cause(
+    world: Any,
+    agent: Agent,
+    death_cause: str,
+    *,
+    lifecycle_context: LifecycleContext,
+) -> None:
+    role = lifecycle_context.trophic_role(agent)
+    mode = lifecycle_context.meat_mode(agent)
     world.run_death_cause_counts[death_cause] = (
         world.run_death_cause_counts.get(death_cause, 0) + 1
     )
