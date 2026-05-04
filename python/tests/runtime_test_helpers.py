@@ -53,6 +53,7 @@ from evolution_sim.env.runtime.action_space import (
 import evolution_sim.env.runtime.feeding as runtime_feeding
 import evolution_sim.env.runtime.feeding_opportunity as runtime_feeding_opportunity
 import evolution_sim.env.runtime.actions as runtime_actions
+import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
 from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
 import evolution_sim.env.runtime.signals as runtime_signals
 import evolution_sim.env.runtime.surface_snapshots as runtime_surface_snapshots

@@ -4,6 +4,131 @@ from python.tests.runtime_test_helpers import *
 
 
 class RuntimeSummaryContractTests(RuntimeContractTestHelpers):
+    def test_trophic_lifecycle_summary_uses_explicit_context(self) -> None:
+        genome = self._hunter_genome()
+
+        def agent(
+            *,
+            agent_id: int,
+            parent_id: int | None,
+            birth_tick: int,
+            death_tick: int | None,
+            alive: bool,
+        ) -> Agent:
+            return Agent(
+                agent_id=agent_id,
+                parent_id=parent_id,
+                lineage_id=agent_id,
+                birth_tick=birth_tick,
+                death_tick=death_tick,
+                x=agent_id,
+                y=0,
+                energy=1.0,
+                hydration=1.0,
+                health=1.0,
+                max_health=1.0,
+                injury_load=0.0,
+                age=0,
+                alive=alive,
+                last_reproduction_tick=-10_000,
+                last_damage_source="none",
+                recent_plant_energy=0.0,
+                recent_fresh_kill_energy=0.0,
+                recent_carcass_energy=0.0,
+                genome_vector=genome_vector(genome),
+                genome=genome,
+            )
+
+        agents = {
+            1: agent(
+                agent_id=1,
+                parent_id=None,
+                birth_tick=0,
+                death_tick=5,
+                alive=False,
+            ),
+            2: agent(
+                agent_id=2,
+                parent_id=None,
+                birth_tick=0,
+                death_tick=None,
+                alive=True,
+            ),
+            3: agent(
+                agent_id=3,
+                parent_id=2,
+                birth_tick=22,
+                death_tick=28,
+                alive=False,
+            ),
+        }
+        roles = {1: "carnivore", 2: "carnivore", 3: "omnivore"}
+        meat_modes = {1: "hunter", 2: "scavenger", 3: "mixed"}
+        death_causes = {1: "starvation", 3: "predation"}
+        context = runtime_lifecycle_summary.TrophicLifecycleSummaryContext(
+            agents=agents,
+            run_death_cause_counts={"starvation": 1, "predation": 1},
+            run_death_causes_by_trophic_role={
+                "carnivore": {"starvation": 1},
+                "omnivore": {"predation": 1},
+            },
+            run_death_causes_by_meat_mode={
+                "hunter": {"starvation": 1},
+                "mixed": {"predation": 1},
+            },
+            trophic_role=lambda candidate: roles[candidate.agent_id],
+            meat_mode=lambda candidate: meat_modes[candidate.agent_id],
+            death_cause=lambda candidate: death_causes[candidate.agent_id],
+        )
+
+        summary = runtime_lifecycle_summary.build_trophic_lifecycle_summary(
+            context=context,
+            ticks_executed=40,
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
+        )
+
+        self.assertEqual(summary["initial_trophic_role_counts"]["carnivore"], 2)
+        self.assertEqual(summary["initial_meat_mode_counts"]["hunter"], 1)
+        self.assertEqual(summary["initial_meat_mode_counts"]["scavenger"], 1)
+        self.assertEqual(summary["births_by_parent_meat_mode"]["scavenger"], 1)
+        self.assertEqual(summary["births_by_child_trophic_role"]["omnivore"], 1)
+        self.assertEqual(summary["births_by_child_meat_mode"]["mixed"], 1)
+        self.assertEqual(summary["deaths_by_meat_mode"]["hunter"], 1)
+        self.assertEqual(summary["deaths_by_meat_mode"]["mixed"], 1)
+        self.assertEqual(
+            summary["death_causes"],
+            {"predation": 1, "starvation": 1},
+        )
+        self.assertEqual(
+            summary["death_causes_by_meat_mode"]["mixed"],
+            {"predation": 1},
+        )
+
+        persistence = summary["meat_mode_persistence"]
+        self.assertEqual(
+            persistence["last_alive_tick_by_meat_mode"],
+            {"none": None, "scavenger": 39, "hunter": 4, "mixed": 27},
+        )
+        self.assertEqual(
+            persistence["births_by_parent_meat_mode_by_tick_band"]["late"][
+                "scavenger"
+            ],
+            1,
+        )
+        self.assertEqual(
+            persistence["deaths_by_meat_mode_by_tick_band"]["early"]["hunter"],
+            1,
+        )
+        self.assertEqual(
+            persistence["death_causes_by_meat_mode_by_tick_band"]["late"]["mixed"],
+            {"predation": 1},
+        )
+
+        late_window = summary["late_window"]
+        self.assertEqual(late_window["sample_ticks"], [30, 34, 39])
+        self.assertEqual(late_window["presence_ticks_by_meat_mode"]["scavenger"], 3)
+
     def test_scavenger_reproduction_health_floor_uses_carrion_match(self) -> None:
         world = SimulationWorld(self._ready_reproduction_config())
         agent = self._place_ready_agent(

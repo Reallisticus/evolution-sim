@@ -4109,9 +4109,22 @@ class SimulationWorld:
             meat_mode_counts[self._meat_mode(agent)] += 1
         return trophic_role_counts, meat_mode_counts
 
+    def _trophic_lifecycle_summary_context(
+        self,
+    ) -> runtime_lifecycle_summary.TrophicLifecycleSummaryContext:
+        return runtime_lifecycle_summary.TrophicLifecycleSummaryContext(
+            agents=self.agents,
+            run_death_cause_counts=self.run_death_cause_counts,
+            run_death_causes_by_trophic_role=self.run_death_causes_by_trophic_role,
+            run_death_causes_by_meat_mode=self.run_death_causes_by_meat_mode,
+            trophic_role=self._trophic_role,
+            meat_mode=self._meat_mode,
+            death_cause=lambda agent: runtime_lifecycle.death_cause(self, agent),
+        )
+
     def _trophic_lifecycle_summary(self, *, ticks_executed: int) -> dict[str, object]:
         return runtime_lifecycle_summary.build_trophic_lifecycle_summary(
-            self,
+            context=self._trophic_lifecycle_summary_context(),
             ticks_executed=ticks_executed,
             trophic_role_codes=TROPHIC_ROLE_CODES,
             meat_mode_codes=MEAT_MODE_CODES,
