@@ -6,6 +6,9 @@ from collections.abc import Mapping, Sequence
 def build_mind_v1_gate_report(
     policy_report: Mapping[str, object],
     *,
+    baseline_report: Mapping[str, object] | None = None,
+    max_alive_agents_mean_regression: float = 0.0,
+    max_births_mean_regression: float = 0.0,
     max_invalid_action_rate: float = 0.02,
     min_viable_run_share: float = 1.0,
     min_births_per_run_mean: float = 0.0,
@@ -67,6 +70,46 @@ def build_mind_v1_gate_report(
             )
         )
 
+    if baseline_report is not None:
+        baseline_aggregate = baseline_report.get("aggregate")
+        if isinstance(baseline_aggregate, Mapping):
+            alive_delta = _aggregate_mean_delta(
+                aggregate,
+                baseline_aggregate,
+                "alive_agents",
+            )
+            if (
+                alive_delta is not None
+                and alive_delta < -max_alive_agents_mean_regression
+            ):
+                flags.append(
+                    _flag(
+                        "error",
+                        "policy_vs_heuristic",
+                        "alive_agents.mean_delta",
+                        (
+                            "Policy regressed terminal alive agents versus the "
+                            f"heuristic baseline ({alive_delta:.4f})."
+                        ),
+                    )
+                )
+            births_delta = _aggregate_mean_delta(aggregate, baseline_aggregate, "births")
+            if (
+                births_delta is not None
+                and births_delta < -max_births_mean_regression
+            ):
+                flags.append(
+                    _flag(
+                        "warning",
+                        "policy_vs_heuristic",
+                        "births.mean_delta",
+                        (
+                            "Policy regressed births versus the heuristic baseline "
+                            f"({births_delta:.4f})."
+                        ),
+                    )
+                )
+
     min_plant_available = _min_plant_available_per_land_tile(runs)
     if min_plant_available is None:
         flags.append(
@@ -111,6 +154,18 @@ def _aggregate_stat_mean(
     if isinstance(mean, bool) or not isinstance(mean, (int, float)):
         return None
     return float(mean)
+
+
+def _aggregate_mean_delta(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+    field: str,
+) -> float | None:
+    left_mean = _aggregate_stat_mean(left, field)
+    right_mean = _aggregate_stat_mean(right, field)
+    if left_mean is None or right_mean is None:
+        return None
+    return round(left_mean - right_mean, 4)
 
 
 def _min_plant_available_per_land_tile(

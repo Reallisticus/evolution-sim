@@ -143,14 +143,17 @@ REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke
 
 Latest validated Foundation boundary state:
 
-- 2026-05-02 full boundary pass: `npm run sim:test:full` passed with 242
-  tests, `npm run sim:golden` verified all current replay hashes, `npm run
-  sim:bench` completed with seven scenarios, seed-7 300-tick replay plus
-  `viewer:smoke` passed, and `git diff --check` was clean.
-- `npm run sim:gate:release -- --output
-  output/evaluations/foundation-release-current.json` passed with no blockers
-  or warnings in `881.0835s`. The previous seed-17 timeout blocker is fixed;
-  seed 17 completed in `235.198s` under the `600s` scenario timeout.
+- 2026-05-04 Foundation-to-Mind hardening validation:
+  `npm run sim:test:full` passed with 281 tests in 1857 seconds,
+  `npm run sim:golden` verified all current replay hashes,
+  `npm run sim:gate:release` passed with no blockers or warnings in 1082
+  seconds, `npm run sim:bench` passed, seed-7 300-tick replay plus
+  `viewer:smoke`, `viewer:smoke:visual`, and `viewer:smoke:session` passed,
+  `viewer:contracts:check` passed, and `git diff --check` was clean.
+- Production-readiness follow-up: keep the heavy release checks intact, but make
+  their wall time easier to schedule and inspect. The full suite and release
+  gate are now functionally green yet operationally expensive enough to deserve
+  explicit CI/runtime-budget treatment.
 - Summary-only action-mask work is now a watched runtime-cost invariant:
   benchmark reports should stay near two action-mask builds per observation
   unless a later contract intentionally adds another mask phase.
@@ -164,21 +167,26 @@ extracting, preserve behavior first, then make the boundary explicit.
 
 Highest-priority remaining leaks after the current Foundation hardening slice:
 
-- `runtime/reproduction.py` still owns birth placement through several private
-  world mutation helpers and remains the largest runtime boundary leak.
+- `runtime/reproduction.py` now routes private world authority through the
+  `ReproductionContext` adapter. Keep future birth planning and biological
+  readiness work context-only.
 - `runtime/actions.py` has been reduced to three compatibility fallback reads;
   keep future action scoring/resolution work on explicit contexts.
 - `runtime/observations.py`, `runtime/surfaces.py`, and `runtime/action_space.py`
   each have a single compatibility adapter read left.
-- `runtime/reporting.py` still gathers frame/summary snapshots through private
-  world wrappers.
-- `runtime/feeding.py` still reaches into private source-species, matched-diet,
-  and tile-summary helpers.
+- `runtime/surface_snapshots.py` gathers frame/summary snapshots through a
+  single snapshot adapter; reporting should stay on the extracted authority
+  modules.
+- `runtime/feeding.py` now routes private world authority through the
+  `FeedingContext` adapter. Keep telemetry and opportunity accounting split.
 
 Latest mechanical private-call audit after the resource/lifecycle/tick context
 extractions:
 
-- `runtime/reproduction.py`: 21 private world reads, 10 unique helpers.
+- `runtime/reproduction.py`: 9 private world reads, all in context adapters.
+- `runtime/feeding.py`: 10 private world reads, all in the context adapter.
+- `runtime/surface_snapshots.py`: 9 private world reads, all in the snapshot
+  adapter.
 - `runtime/actions.py`: 3 private world reads, 3 unique helpers.
 - `runtime/observations.py`: 1 private world read, 1 unique helper.
 - `runtime/surfaces.py`: 1 private world read, 1 unique helper.

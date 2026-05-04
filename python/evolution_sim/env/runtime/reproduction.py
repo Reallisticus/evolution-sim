@@ -68,6 +68,31 @@ class ChildBirthPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class BirthPlan:
+    """Resolved birth output and metadata before applying world mutation."""
+
+    children: tuple[Agent, ...]
+    parents: tuple[Agent, ...]
+    parent_energy_costs: tuple[float, ...]
+    reproduction_mode: str
+    mate_candidate: runtime_mating.MateCandidate | None = None
+    multi_offspring_desired_count: int = 1
+    multi_offspring_limit_reasons: tuple[str, ...] = ()
+
+    @property
+    def offspring_count(self) -> int:
+        return len(self.children)
+
+    @property
+    def sibling_child_ids(self) -> list[int]:
+        return [child.agent_id for child in self.children]
+
+    @property
+    def destinations(self) -> tuple[tuple[int, int], ...]:
+        return tuple((child.x, child.y) for child in self.children)
+
+
+@dataclass(frozen=True, slots=True)
 class ReproductionPlacementContext:
     """World-owned placement and spatial mutation boundary for births."""
 
@@ -79,6 +104,25 @@ class ReproductionPlacementContext:
     can_place_at: Callable[[int, int], bool]
     place_agent: Callable[[Agent], None]
     invalidate_spatial_state: Callable[[], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ReproductionContext:
+    """Explicit runtime authority used by reproduction helpers."""
+
+    config: Any
+    rng: Any
+    tick: int
+    next_agent_id: int | Callable[[], int]
+    placement: ReproductionPlacementContext
+    trophic_profile: Callable[[Agent], TrophicProfile]
+    trophic_profile_for_genome: Callable[[Genome], TrophicProfile]
+    trophic_role: Callable[[Agent], str]
+    meat_mode: Callable[[Agent], str]
+    matched_diet_ratio: Callable[[Agent, TrophicProfile], float]
+    matched_diet_threshold: Callable[[TrophicProfile], float]
+    health_ratio: Callable[[Agent], float]
+    emit: Callable[..., None]
 
 
 @dataclass(slots=True)
@@ -605,80 +649,157 @@ def _resolve_placement_context(
     return world._reproduction_placement_context()
 
 
+def build_reproduction_context(
+    world: Any,
+    *,
+    placement_context: ReproductionPlacementContext | None = None,
+) -> ReproductionContext:
+    placement = _resolve_placement_context(world, placement_context)
+    return ReproductionContext(
+        config=world.config,
+        rng=world.rng,
+        tick=world.tick,
+        next_agent_id=lambda: world.next_agent_id,
+        placement=placement,
+        trophic_profile=world._trophic_profile,
+        trophic_profile_for_genome=world._trophic_profile_for_genome,
+        trophic_role=world._trophic_role,
+        meat_mode=world._meat_mode,
+        matched_diet_ratio=world._matched_diet_ratio,
+        matched_diet_threshold=world._matched_diet_threshold,
+        health_ratio=world._health_ratio,
+        emit=world._emit,
+    )
+
+
+def _resolve_reproduction_context(
+    world: Any | None,
+    context: ReproductionContext | None = None,
+    *,
+    placement_context: ReproductionPlacementContext | None = None,
+) -> ReproductionContext:
+    if context is not None:
+        return context
+    if world is None:
+        raise ValueError("world is required when reproduction context is omitted")
+    return build_reproduction_context(world, placement_context=placement_context)
+
+
+def _next_agent_id(context: ReproductionContext) -> int:
+    source = context.next_agent_id
+    if callable(source):
+        return int(source())
+    return int(source)
+
+
 def can_reproduce(
     world: Any,
     agent: Agent,
     *,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> bool:
     return (
         reproduction_block_reason(
             world,
             agent,
             placement_context=placement_context,
+            context=context,
         )
         is None
     )
 
 
 def reproduction_energy_requirement(
-    world: Any,
+    world: Any | None,
     agent: Agent,
     profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
 ) -> float:
+    reproduction_context = _resolve_reproduction_context(world, context)
     requirement = agent.reproduction_threshold() * (
         1.0
-        + profile.breadth * world.config.trophic.breadth_reproduction_penalty
+        + profile.breadth
+        * reproduction_context.config.trophic.breadth_reproduction_penalty
     )
     if profile.meat_mode != "none":
-        requirement *= world.config.reproduction.animal_mode_energy_requirement_multiplier
+        requirement *= (
+            reproduction_context.config.reproduction.animal_mode_energy_requirement_multiplier
+        )
     return requirement
 
 
 def biological_reproduction_block_reasons(
-    world: Any,
+    world: Any | None,
     agent: Agent,
     profile: TrophicProfile | None = None,
+    *,
+    context: ReproductionContext | None = None,
 ) -> list[str]:
-    profile = profile or world._trophic_profile(agent)
-    matched_diet_ratio = world._matched_diet_ratio(agent, profile)
+    reproduction_context = _resolve_reproduction_context(world, context)
+    profile = profile or reproduction_context.trophic_profile(agent)
+    matched_diet_ratio = reproduction_context.matched_diet_ratio(agent, profile)
     reasons: list[str] = []
-    if agent.age < world.config.reproduction.min_age:
+    if agent.age < reproduction_context.config.reproduction.min_age:
         reasons.append("age")
-    if world.tick - agent.last_reproduction_tick < world.config.reproduction.cooldown_ticks:
+    if (
+        reproduction_context.tick - agent.last_reproduction_tick
+        < reproduction_context.config.reproduction.cooldown_ticks
+    ):
         reasons.append("cooldown")
-    if agent.energy < reproduction_energy_requirement(world, agent, profile):
+    if agent.energy < reproduction_energy_requirement(
+        world,
+        agent,
+        profile,
+        context=reproduction_context,
+    ):
         reasons.append("energy")
     if (
         agent.hydration
         < agent.genome.max_hydration
-        * world.config.reproduction.min_hydration_fraction
+        * reproduction_context.config.reproduction.min_hydration_fraction
     ):
         reasons.append("hydration")
-    health_requirement = world.config.combat.min_reproduction_health_ratio
+    health_requirement = reproduction_context.config.combat.min_reproduction_health_ratio
     if profile.meat_mode == "scavenger":
         health_requirement = min(
             health_requirement,
-            world.config.reproduction.scavenger_min_health_fraction,
+            reproduction_context.config.reproduction.scavenger_min_health_fraction,
         )
-    if world._health_ratio(agent) < health_requirement:
+    if reproduction_context.health_ratio(agent) < health_requirement:
         reasons.append("health")
-    if matched_diet_ratio < world._matched_diet_threshold(profile):
+    if matched_diet_ratio < reproduction_context.matched_diet_threshold(profile):
         reasons.append("matched_diet")
     return reasons
 
 
-def is_biologically_reproduction_ready(world: Any, agent: Agent) -> bool:
-    return not biological_reproduction_block_reasons(world, agent)
+def is_biologically_reproduction_ready(
+    world: Any | None,
+    agent: Agent,
+    *,
+    context: ReproductionContext | None = None,
+) -> bool:
+    return not biological_reproduction_block_reasons(
+        world,
+        agent,
+        context=context,
+    )
 
 
 def reproduction_availability(
-    world: Any,
+    world: Any | None,
     *,
     alive_agents: int | None = None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> ReproductionAvailability:
-    placement = _resolve_placement_context(world, placement_context)
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    placement = reproduction_context.placement
     current_alive_agents = (
         placement.current_alive_count() if alive_agents is None else alive_agents
     )
@@ -689,36 +810,47 @@ def reproduction_availability(
 
 
 def reproduction_block_reason(
-    world: Any,
+    world: Any | None,
     agent: Agent,
     availability: ReproductionAvailability | None = None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> str | None:
-    if not is_biologically_reproduction_ready(world, agent):
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    if not is_biologically_reproduction_ready(
+        world,
+        agent,
+        context=reproduction_context,
+    ):
         return "biological"
-    placement = _resolve_placement_context(world, placement_context)
     availability = availability or reproduction_availability(
         world,
-        placement_context=placement,
+        context=reproduction_context,
     )
     if availability.population_saturated:
         return "max_population"
-    if not placement.has_empty_neighbor(agent.x, agent.y):
+    if not reproduction_context.placement.has_empty_neighbor(agent.x, agent.y):
         return "local_crowding"
     return None
 
 
 def is_reproduction_ready(
-    world: Any,
+    world: Any | None,
     agent: Agent,
     *,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> bool:
     return (
         reproduction_block_reason(
             world,
             agent,
             placement_context=placement_context,
+            context=context,
         )
         is None
     )
@@ -728,7 +860,8 @@ def run_reproduction_phase(world: Any) -> int:
     """Run reproductive signaling and births for one tick."""
 
     alive_agents = world.alive_agents()
-    placement = _resolve_placement_context(world)
+    reproduction_context = build_reproduction_context(world)
+    placement = reproduction_context.placement
     runtime_signals.emit_reproductive_readiness_signals(
         world,
         alive_agents,
@@ -742,20 +875,20 @@ def run_reproduction_phase(world: Any) -> int:
         availability = reproduction_availability(
             world,
             alive_agents=alive_count,
-            placement_context=placement,
+            context=reproduction_context,
         )
         block_reason = reproduction_block_reason(
             world,
             agent,
             availability,
-            placement_context=placement,
+            context=reproduction_context,
         )
         if block_reason is None:
             birth_count = reproduce_birth_count(
                 world,
                 agent,
                 alive_count=alive_count,
-                placement_context=placement,
+                context=reproduction_context,
             )
             if birth_count > 0:
                 births_this_tick += birth_count
@@ -766,6 +899,7 @@ def run_reproduction_phase(world: Any) -> int:
                 agent,
                 block_reason,
                 alive_count=alive_count,
+                context=reproduction_context,
             )
     return births_this_tick
 
@@ -776,16 +910,18 @@ def record_reproduction_blocked(
     reason: str,
     *,
     alive_count: int | None = None,
+    context: ReproductionContext | None = None,
 ) -> None:
+    reproduction_context = _resolve_reproduction_context(world, context)
     if reason not in world.run_reproduction_blocked_counts:
         raise ValueError(f"Unsupported reproduction block reason: {reason}")
     world.run_reproduction_blocked_counts[reason] += 1
-    world.run_reproduction_blocked_counts_by_trophic_role[world._trophic_role(agent)][
-        reason
-    ] += 1
-    world.run_reproduction_blocked_counts_by_meat_mode[world._meat_mode(agent)][
-        reason
-    ] += 1
+    world.run_reproduction_blocked_counts_by_trophic_role[
+        reproduction_context.trophic_role(agent)
+    ][reason] += 1
+    world.run_reproduction_blocked_counts_by_meat_mode[
+        reproduction_context.meat_mode(agent)
+    ][reason] += 1
     event = {
         "agent_id": agent.agent_id,
         "reason": reason,
@@ -798,7 +934,7 @@ def record_reproduction_blocked(
     }
     if world.record_tick_details:
         world.tick_reproduction_blocked_events.append(event)
-    world._emit(
+    reproduction_context.emit(
         EventType.AGENT_REPRODUCTION_BLOCKED,
         agent_id=agent.agent_id,
         data={
@@ -812,13 +948,15 @@ def record_reproduction_blocked(
 
 
 def reproduction_readiness_counts(
-    world: Any,
+    world: Any | None,
     alive: list[Agent],
     *,
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
+    context: ReproductionContext | None = None,
 ) -> dict[str, object]:
-    population_saturated = len(alive) >= world.config.max_agents
+    reproduction_context = _resolve_reproduction_context(world, context)
+    population_saturated = len(alive) >= reproduction_context.config.max_agents
     readiness_by_role = {
         role: empty_reproduction_readiness_counts()
         for role in trophic_role_codes
@@ -869,23 +1007,32 @@ def reproduction_readiness_counts(
     ready = 0
 
     def increment_readiness(agent: Agent, field: str) -> None:
-        readiness_by_role[world._trophic_role(agent)][field] += 1
-        readiness_by_mode[world._meat_mode(agent)][field] += 1
+        readiness_by_role[reproduction_context.trophic_role(agent)][field] += 1
+        readiness_by_mode[reproduction_context.meat_mode(agent)][field] += 1
 
     def increment_blocker(agent: Agent, reason: str) -> None:
         biological_blockers[reason] += 1
-        biological_blockers_by_role[world._trophic_role(agent)][reason] += 1
-        biological_blockers_by_mode[world._meat_mode(agent)][reason] += 1
+        biological_blockers_by_role[reproduction_context.trophic_role(agent)][
+            reason
+        ] += 1
+        biological_blockers_by_mode[reproduction_context.meat_mode(agent)][
+            reason
+        ] += 1
 
     def increment_energy_readiness(
         agent: Agent,
         profile: TrophicProfile,
     ) -> None:
-        energy_required = reproduction_energy_requirement(world, agent, profile)
+        energy_required = reproduction_energy_requirement(
+            world,
+            agent,
+            profile,
+            context=reproduction_context,
+        )
         energy_gap = max(0.0, energy_required - agent.energy)
         for counts in (
-            energy_readiness_by_role[world._trophic_role(agent)],
-            energy_readiness_by_mode[world._meat_mode(agent)],
+            energy_readiness_by_role[reproduction_context.trophic_role(agent)],
+            energy_readiness_by_mode[reproduction_context.meat_mode(agent)],
         ):
             counts["alive_agents"] = int(counts["alive_agents"]) + 1
             if energy_gap > 0:
@@ -903,15 +1050,20 @@ def reproduction_readiness_counts(
         expression_counts[agent.reproductive_expression] += 1
         capabilities = runtime_mating.reproductive_capabilities_for_genome(
             agent.genome,
-            world.config.reproduction,
+            reproduction_context.config.reproduction,
         )
         for capability, enabled in capabilities.items():
             if enabled:
                 capability_counts[capability] += 1
         increment_readiness(agent, "alive_agents")
-        profile = world._trophic_profile(agent)
+        profile = reproduction_context.trophic_profile(agent)
         increment_energy_readiness(agent, profile)
-        block_reasons = biological_reproduction_block_reasons(world, agent, profile)
+        block_reasons = biological_reproduction_block_reasons(
+            world,
+            agent,
+            profile,
+            context=reproduction_context,
+        )
         if block_reasons:
             for reason in block_reasons:
                 increment_blocker(agent, reason)
@@ -924,7 +1076,7 @@ def reproduction_readiness_counts(
         if population_saturated:
             blocked_by_max_population += 1
             increment_readiness(agent, "blocked_by_max_population_agents")
-        elif not world._has_empty_neighbor(agent.x, agent.y):
+        elif not reproduction_context.placement.has_empty_neighbor(agent.x, agent.y):
             blocked_by_local_crowding += 1
             increment_readiness(agent, "blocked_by_local_crowding_agents")
         else:
@@ -935,10 +1087,13 @@ def reproduction_readiness_counts(
             increment_readiness(agent, "ready_agents")
 
     return {
-        "max_agents": world.config.max_agents,
-        "saturation_at_end": round(len(alive) / max(world.config.max_agents, 1), 4),
+        "max_agents": reproduction_context.config.max_agents,
+        "saturation_at_end": round(
+            len(alive) / max(reproduction_context.config.max_agents, 1),
+            4,
+        ),
         "peak_saturation": round(
-            world.peak_alive_agents / max(world.config.max_agents, 1),
+            world.peak_alive_agents / max(reproduction_context.config.max_agents, 1),
             4,
         ),
         "biologically_ready_agents": biologically_ready,
@@ -1001,11 +1156,13 @@ def build_frame_reproduction_stats(
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
 ) -> dict[str, object]:
+    reproduction_context = build_reproduction_context(world)
     stats = reproduction_readiness_counts(
         world,
         alive,
         trophic_role_codes=trophic_role_codes,
         meat_mode_codes=meat_mode_codes,
+        context=reproduction_context,
     )
     blocked_this_tick = empty_reproduction_blocked_counts()
     for event in world.tick_reproduction_blocked_events:
@@ -1019,13 +1176,16 @@ def build_frame_reproduction_stats(
 
 
 def animal_mode_stabilized_child_genome(
-    world: Any,
+    world: Any | None,
     parent_genome: Genome,
     child_genome: Genome,
     parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
 ) -> Genome:
     if parent_profile.meat_mode == "none":
         return child_genome
+    reproduction_context = _resolve_reproduction_context(world, context)
 
     def stabilize(stability: float) -> Genome:
         meat_efficiency = max(
@@ -1113,10 +1273,12 @@ def animal_mode_stabilized_child_genome(
         )
 
     configured_stability = (
-        world.config.reproduction.animal_mode_offspring_trait_stability
+        reproduction_context.config.reproduction.animal_mode_offspring_trait_stability
     )
     stabilized = stabilize(configured_stability)
-    stabilized_mode = world._trophic_profile_for_genome(stabilized).meat_mode
+    stabilized_mode = reproduction_context.trophic_profile_for_genome(
+        stabilized
+    ).meat_mode
     if stabilized_mode == parent_profile.meat_mode or (
         parent_profile.meat_mode == "mixed" and stabilized_mode != "none"
     ):
@@ -1125,12 +1287,14 @@ def animal_mode_stabilized_child_genome(
 
 
 def sexual_child_stabilized_genome(
-    world: Any,
+    world: Any | None,
     primary_parent_genome: Genome,
     secondary_parent_genome: Genome,
     child_genome: Genome,
     primary_parent_profile: TrophicProfile,
     secondary_parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
 ) -> Genome:
     stabilization_profile = _sexual_child_stabilization_profile(
         primary_parent_profile,
@@ -1147,6 +1311,7 @@ def sexual_child_stabilized_genome(
         anchor_genome,
         child_genome,
         stabilization_profile,
+        context=context,
     )
 
 
@@ -1199,49 +1364,64 @@ def sexual_child_starting_fraction(
     return min(1.0, (primary_fraction + secondary_fraction) / 2.0)
 
 
-def reproduction_energy_cost(world: Any, parent_profile: TrophicProfile) -> float:
+def reproduction_energy_cost(
+    world: Any | None,
+    parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
+) -> float:
+    reproduction_context = _resolve_reproduction_context(world, context)
     if parent_profile.meat_mode == "none":
-        return world.config.reproduction.energy_cost
+        return reproduction_context.config.reproduction.energy_cost
     return (
-        world.config.reproduction.energy_cost
-        * world.config.reproduction.animal_mode_reproduction_cost_multiplier
+        reproduction_context.config.reproduction.energy_cost
+        * reproduction_context.config.reproduction.animal_mode_reproduction_cost_multiplier
     )
 
 
 def sexual_reproduction_energy_cost(
-    world: Any,
+    world: Any | None,
     parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
 ) -> float:
+    reproduction_context = _resolve_reproduction_context(world, context)
     return (
-        reproduction_energy_cost(world, parent_profile)
-        * world.config.reproduction.sexual_parent_cost_multiplier
+        reproduction_energy_cost(world, parent_profile, context=reproduction_context)
+        * reproduction_context.config.reproduction.sexual_parent_cost_multiplier
     )
 
 
 def reproductive_state_for_child(
-    world: Any,
+    world: Any | None,
     parent: Agent,
     child_genome: Genome,
+    *,
+    context: ReproductionContext | None = None,
 ) -> ReproductiveState:
+    reproduction_context = _resolve_reproduction_context(world, context)
     return child_reproductive_state(
         group_id=parent.reproductive_group_id or parent.lineage_id,
         stage=runtime_mating.reproductive_stage_for_genome(
             child_genome,
-            world.config.reproduction,
+            reproduction_context.config.reproduction,
         ),
         expression=runtime_mating.reproductive_expression_for_genome(
             child_genome,
-            world.config.reproduction,
+            reproduction_context.config.reproduction,
         ),
     )
 
 
 def sexual_reproductive_state_for_child(
-    world: Any,
+    world: Any | None,
     primary_parent: Agent,
     secondary_parent: Agent,
     child_genome: Genome,
+    *,
+    context: ReproductionContext | None = None,
 ) -> ReproductiveState:
+    reproduction_context = _resolve_reproduction_context(world, context)
     primary_group_id = primary_parent.reproductive_group_id or primary_parent.lineage_id
     secondary_group_id = (
         secondary_parent.reproductive_group_id or secondary_parent.lineage_id
@@ -1254,11 +1434,11 @@ def sexual_reproductive_state_for_child(
         group_id=primary_group_id,
         stage=runtime_mating.reproductive_stage_for_genome(
             child_genome,
-            world.config.reproduction,
+            reproduction_context.config.reproduction,
         ),
         expression=runtime_mating.reproductive_expression_for_genome(
             child_genome,
-            world.config.reproduction,
+            reproduction_context.config.reproduction,
         ),
     )
 
@@ -1274,12 +1454,23 @@ def sexual_child_lineage_id(
     return child_agent_id
 
 
-def sexual_partner_ready(world: Any, agent: Agent) -> bool:
-    if not is_biologically_reproduction_ready(world, agent):
+def sexual_partner_ready(
+    world: Any | None,
+    agent: Agent,
+    *,
+    context: ReproductionContext | None = None,
+) -> bool:
+    reproduction_context = _resolve_reproduction_context(world, context)
+    if not is_biologically_reproduction_ready(
+        world,
+        agent,
+        context=reproduction_context,
+    ):
         return False
     return agent.energy >= sexual_reproduction_energy_cost(
         world,
-        world._trophic_profile(agent),
+        reproduction_context.trophic_profile(agent),
+        context=reproduction_context,
     )
 
 
@@ -1448,6 +1639,7 @@ def reproduce(
     *,
     alive_count: int | None = None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> bool:
     return (
         reproduce_birth_count(
@@ -1455,6 +1647,7 @@ def reproduce(
             parent,
             alive_count=alive_count,
             placement_context=placement_context,
+            context=context,
         )
         > 0
     )
@@ -1466,8 +1659,14 @@ def reproduce_birth_count(
     *,
     alive_count: int | None = None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> int:
-    placement = _resolve_placement_context(world, placement_context)
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    placement = reproduction_context.placement
     destination = placement.find_empty_neighbor(parent.x, parent.y)
     if destination is None:
         record_reproduction_blocked(
@@ -1475,20 +1674,29 @@ def reproduce_birth_count(
             parent,
             "destination_unavailable",
             alive_count=alive_count,
+            context=reproduction_context,
         )
         return 0
 
-    parent_profile = world._trophic_profile(parent)
+    parent_profile = reproduction_context.trophic_profile(parent)
     if runtime_mating.sexual_reproduction_unlocked(
         parent.genome,
-        world.config.reproduction,
+        reproduction_context.config.reproduction,
     ):
-        if parent.energy >= sexual_reproduction_energy_cost(world, parent_profile):
+        if parent.energy >= sexual_reproduction_energy_cost(
+            world,
+            parent_profile,
+            context=reproduction_context,
+        ):
             mate_report = runtime_mating.same_group_mate_search_report(
                 parent,
                 world.agents.values(),
-                config=world.config.reproduction,
-                biologically_ready=lambda agent: sexual_partner_ready(world, agent),
+                config=reproduction_context.config.reproduction,
+                biologically_ready=lambda agent: sexual_partner_ready(
+                    world,
+                    agent,
+                    context=reproduction_context,
+                ),
             )
             record_mate_search_report(world, parent, mate_report)
             if mate_report.selected is not None:
@@ -1500,7 +1708,7 @@ def reproduce_birth_count(
                     destination,
                     parent_profile,
                     alive_count=alive_count,
-                    placement_context=placement,
+                    context=reproduction_context,
                 )
         else:
             record_sexual_parent_energy_fallback(world, parent)
@@ -1511,7 +1719,7 @@ def reproduce_birth_count(
             parent,
             destination,
             parent_profile,
-            placement_context=placement,
+            context=reproduction_context,
         )
         else 0
     )
@@ -1524,81 +1732,97 @@ def reproduce_asexual(
     parent_profile: TrophicProfile,
     *,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> bool:
-    placement = _resolve_placement_context(world, placement_context)
-    birth_plan = build_asexual_child_birth_plan(
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    birth_plan = build_asexual_birth_plan(
         world,
         parent,
         destination,
         parent_profile,
+        context=reproduction_context,
     )
-    child = birth_plan.children[0]
-    parent_cost = birth_plan.parent_energy_costs[0]
-    parent.energy -= parent_cost
-    runtime_resources.record_energy_spent(world, "reproduction", parent_cost)
-    parent.last_reproduction_tick = world.tick
-    placement.place_agent(child)
-    record_asexual_birth(
-        world.reproductive_groups,
-        parent,
-        child,
-        tick=world.tick,
-    )
-    world.next_agent_id += 1
-    world.births += 1
-    world.last_birth_tick = world.tick
-    if world.record_tick_details:
-        world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-    placement.invalidate_spatial_state()
-    emit_reproduction_event(
-        world,
-        actor=parent,
-        child=child,
-        parents=(parent,),
-        reproduction_mode=runtime_mating.ASEXUAL_REPRODUCTION_MODE,
-        parent_energy_costs=(parent_cost,),
-    )
-    return True
+    return apply_birth_plan(world, birth_plan, context=reproduction_context) > 0
 
 
-def build_asexual_child_birth_plan(
-    world: Any,
+def build_asexual_birth_plan(
+    world: Any | None,
     parent: Agent,
     destination: tuple[int, int],
     parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
+) -> BirthPlan:
+    child_plan = build_asexual_child_birth_plan(
+        world,
+        parent,
+        destination,
+        parent_profile,
+        context=context,
+    )
+    return BirthPlan(
+        children=child_plan.children,
+        parents=(parent,),
+        parent_energy_costs=child_plan.parent_energy_costs,
+        reproduction_mode=runtime_mating.ASEXUAL_REPRODUCTION_MODE,
+    )
+
+
+def build_asexual_child_birth_plan(
+    world: Any | None,
+    parent: Agent,
+    destination: tuple[int, int],
+    parent_profile: TrophicProfile,
+    *,
+    context: ReproductionContext | None = None,
 ) -> ChildBirthPlan:
+    reproduction_context = _resolve_reproduction_context(world, context)
     child_genome = animal_mode_stabilized_child_genome(
         world,
         parent.genome,
-        parent.genome.mutate(world.rng),
+        parent.genome.mutate(reproduction_context.rng),
         parent_profile,
+        context=reproduction_context,
     )
     child_energy_fraction = child_starting_fraction(
-        world.config.reproduction.child_energy_fraction,
-        world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+        reproduction_context.config.reproduction.child_energy_fraction,
+        reproduction_context.config.reproduction.animal_mode_child_energy_fraction_multiplier,
         parent_profile,
     )
     child_hydration_fraction = child_starting_fraction(
-        world.config.reproduction.child_hydration_fraction,
-        world.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
+        reproduction_context.config.reproduction.child_hydration_fraction,
+        reproduction_context.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
         parent_profile,
     )
-    reproductive_state = reproductive_state_for_child(world, parent, child_genome)
+    reproductive_state = reproductive_state_for_child(
+        world,
+        parent,
+        child_genome,
+        context=reproduction_context,
+    )
     child = build_child_agent(
-        agent_id=world.next_agent_id,
+        agent_id=_next_agent_id(reproduction_context),
         primary_parent=parent,
         secondary_parent=None,
         lineage_id=parent.lineage_id,
-        birth_tick=world.tick,
+        birth_tick=reproduction_context.tick,
         destination=destination,
         genome=child_genome,
         energy_fraction=child_energy_fraction,
         hydration_fraction=child_hydration_fraction,
-        health_fraction=world.config.reproduction.child_health_fraction,
+        health_fraction=reproduction_context.config.reproduction.child_health_fraction,
         reproductive_state=reproductive_state,
         mind_inheritance_metadata=empty_mind_inheritance_metadata(),
     )
-    parent_cost = reproduction_energy_cost(world, parent_profile)
+    parent_cost = reproduction_energy_cost(
+        world,
+        parent_profile,
+        context=reproduction_context,
+    )
     return ChildBirthPlan(
         children=(child,),
         parent_energy_costs=(parent_cost,),
@@ -1613,6 +1837,7 @@ def reproduce_sexual(
     parent_profile: TrophicProfile,
     *,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> bool:
     return (
         _reproduce_sexual_birth_count(
@@ -1622,6 +1847,7 @@ def reproduce_sexual(
             destination,
             parent_profile,
             placement_context=placement_context,
+            context=context,
         )
         > 0
     )
@@ -1636,12 +1862,26 @@ def _reproduce_sexual_birth_count(
     *,
     alive_count: int | None = None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> int:
-    placement = _resolve_placement_context(world, placement_context)
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    placement = reproduction_context.placement
     partner = mate_candidate.agent
-    partner_profile = world._trophic_profile(partner)
-    parent_cost = sexual_reproduction_energy_cost(world, parent_profile)
-    partner_cost = sexual_reproduction_energy_cost(world, partner_profile)
+    partner_profile = reproduction_context.trophic_profile(partner)
+    parent_cost = sexual_reproduction_energy_cost(
+        world,
+        parent_profile,
+        context=reproduction_context,
+    )
+    partner_cost = sexual_reproduction_energy_cost(
+        world,
+        partner_profile,
+        context=reproduction_context,
+    )
     offspring_plan = _sexual_offspring_plan(
         world,
         parent,
@@ -1649,7 +1889,7 @@ def _reproduce_sexual_birth_count(
         parent_cost=parent_cost,
         partner_cost=partner_cost,
         alive_count=alive_count,
-        placement_context=placement,
+        context=reproduction_context,
     )
     if offspring_plan.count <= 0:
         return 0
@@ -1666,12 +1906,13 @@ def _reproduce_sexual_birth_count(
             parent,
             "destination_unavailable",
             alive_count=alive_count,
+            context=reproduction_context,
         )
         return 0
     multi_offspring_limit_reasons = list(offspring_plan.limit_reasons)
     if offspring_count < offspring_plan.count:
         multi_offspring_limit_reasons.append("local_destination_capacity")
-    birth_plan = build_sexual_child_birth_plan(
+    birth_plan = build_sexual_birth_plan(
         world,
         parent,
         partner,
@@ -1681,53 +1922,15 @@ def _reproduce_sexual_birth_count(
         mate_candidate,
         parent_cost=parent_cost,
         partner_cost=partner_cost,
+        multi_offspring_desired_count=offspring_plan.desired_count,
+        multi_offspring_limit_reasons=tuple(multi_offspring_limit_reasons),
+        context=reproduction_context,
     )
-    children = list(birth_plan.children)
-
-    parent.energy -= parent_cost * offspring_count
-    partner.energy -= partner_cost * offspring_count
-    runtime_resources.record_energy_spent(
-        world,
-        "reproduction",
-        (parent_cost + partner_cost) * offspring_count,
-    )
-    parent.last_reproduction_tick = world.tick
-    partner.last_reproduction_tick = world.tick
-    child_ids = [child.agent_id for child in children]
-    for index, child in enumerate(children):
-        placement.place_agent(child)
-        record_sexual_birth(
-            world.reproductive_groups,
-            parent,
-            partner,
-            child,
-            tick=world.tick,
-        )
-        if world.record_tick_details:
-            world.tick_birth_pairs.append((parent.agent_id, child.agent_id))
-        emit_reproduction_event(
-            world,
-            actor=parent,
-            child=child,
-            parents=(parent, partner),
-            reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
-            parent_energy_costs=birth_plan.parent_energy_costs,
-            mate_candidate=mate_candidate,
-            offspring_count=offspring_count,
-            offspring_index=index + 1,
-            sibling_child_ids=child_ids,
-            multi_offspring_desired_count=offspring_plan.desired_count,
-            multi_offspring_limit_reasons=tuple(multi_offspring_limit_reasons),
-        )
-    world.next_agent_id += offspring_count
-    world.births += offspring_count
-    world.last_birth_tick = world.tick
-    placement.invalidate_spatial_state()
-    return offspring_count
+    return apply_birth_plan(world, birth_plan, context=reproduction_context)
 
 
-def build_sexual_child_birth_plan(
-    world: Any,
+def build_sexual_birth_plan(
+    world: Any | None,
     parent: Agent,
     partner: Agent,
     destinations: list[tuple[int, int]],
@@ -1737,36 +1940,154 @@ def build_sexual_child_birth_plan(
     *,
     parent_cost: float,
     partner_cost: float,
+    multi_offspring_desired_count: int,
+    multi_offspring_limit_reasons: tuple[str, ...],
+    context: ReproductionContext | None = None,
+) -> BirthPlan:
+    child_plan = build_sexual_child_birth_plan(
+        world,
+        parent,
+        partner,
+        destinations,
+        parent_profile,
+        partner_profile,
+        mate_candidate,
+        parent_cost=parent_cost,
+        partner_cost=partner_cost,
+        context=context,
+    )
+    return BirthPlan(
+        children=child_plan.children,
+        parents=(parent, partner),
+        parent_energy_costs=child_plan.parent_energy_costs,
+        reproduction_mode=runtime_mating.SEXUAL_REPRODUCTION_MODE,
+        mate_candidate=mate_candidate,
+        multi_offspring_desired_count=multi_offspring_desired_count,
+        multi_offspring_limit_reasons=multi_offspring_limit_reasons,
+    )
+
+
+def apply_birth_plan(
+    world: Any,
+    birth_plan: BirthPlan,
+    *,
+    context: ReproductionContext | None = None,
+) -> int:
+    reproduction_context = _resolve_reproduction_context(world, context)
+    offspring_count = birth_plan.offspring_count
+    if offspring_count <= 0:
+        return 0
+    total_energy_cost = 0.0
+    for index, parent in enumerate(birth_plan.parents):
+        parent_cost = birth_plan.parent_energy_costs[index]
+        parent.energy -= parent_cost * offspring_count
+        total_energy_cost += parent_cost * offspring_count
+        parent.last_reproduction_tick = reproduction_context.tick
+    runtime_resources.record_energy_spent(
+        world,
+        "reproduction",
+        total_energy_cost,
+    )
+
+    for index, child in enumerate(birth_plan.children):
+        reproduction_context.placement.place_agent(child)
+        if birth_plan.reproduction_mode == runtime_mating.ASEXUAL_REPRODUCTION_MODE:
+            record_asexual_birth(
+                world.reproductive_groups,
+                birth_plan.parents[0],
+                child,
+                tick=reproduction_context.tick,
+            )
+        elif birth_plan.reproduction_mode == runtime_mating.SEXUAL_REPRODUCTION_MODE:
+            record_sexual_birth(
+                world.reproductive_groups,
+                birth_plan.parents[0],
+                birth_plan.parents[1],
+                child,
+                tick=reproduction_context.tick,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported reproduction mode: {birth_plan.reproduction_mode}"
+            )
+        if world.record_tick_details:
+            world.tick_birth_pairs.append(
+                (birth_plan.parents[0].agent_id, child.agent_id)
+            )
+        emit_reproduction_event(
+            world,
+            actor=birth_plan.parents[0],
+            child=child,
+            parents=birth_plan.parents,
+            reproduction_mode=birth_plan.reproduction_mode,
+            parent_energy_costs=birth_plan.parent_energy_costs,
+            mate_candidate=birth_plan.mate_candidate,
+            offspring_count=offspring_count,
+            offspring_index=index + 1 if offspring_count > 1 else None,
+            sibling_child_ids=(
+                birth_plan.sibling_child_ids if offspring_count > 1 else None
+            ),
+            multi_offspring_desired_count=(
+                birth_plan.multi_offspring_desired_count
+            ),
+            multi_offspring_limit_reasons=(
+                birth_plan.multi_offspring_limit_reasons
+            ),
+            context=reproduction_context,
+        )
+    world.next_agent_id += offspring_count
+    world.births += offspring_count
+    world.last_birth_tick = reproduction_context.tick
+    reproduction_context.placement.invalidate_spatial_state()
+    return offspring_count
+
+
+def build_sexual_child_birth_plan(
+    world: Any | None,
+    parent: Agent,
+    partner: Agent,
+    destinations: list[tuple[int, int]],
+    parent_profile: TrophicProfile,
+    partner_profile: TrophicProfile,
+    mate_candidate: runtime_mating.MateCandidate,
+    *,
+    parent_cost: float,
+    partner_cost: float,
+    context: ReproductionContext | None = None,
 ) -> ChildBirthPlan:
+    reproduction_context = _resolve_reproduction_context(world, context)
     child_energy_fraction = sexual_child_starting_fraction(
-        world.config.reproduction.child_energy_fraction,
-        world.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+        reproduction_context.config.reproduction.child_energy_fraction,
+        reproduction_context.config.reproduction.animal_mode_child_energy_fraction_multiplier,
         parent_profile,
         partner_profile,
     )
     child_hydration_fraction = sexual_child_starting_fraction(
-        world.config.reproduction.child_hydration_fraction,
-        world.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
+        reproduction_context.config.reproduction.child_hydration_fraction,
+        reproduction_context.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
         parent_profile,
         partner_profile,
     )
     children: list[Agent] = []
-    next_agent_id = world.next_agent_id
+    next_agent_id = _next_agent_id(reproduction_context)
     for index, child_destination in enumerate(destinations):
         child_genome = sexual_child_stabilized_genome(
             world,
             parent.genome,
             partner.genome,
-            recombine_genomes(parent.genome, partner.genome, world.rng).mutate(
-                world.rng
-            ),
+            recombine_genomes(
+                parent.genome,
+                partner.genome,
+                reproduction_context.rng,
+            ).mutate(reproduction_context.rng),
             parent_profile,
             partner_profile,
+            context=reproduction_context,
         )
         child_genome = apply_inbreeding_penalty(
             child_genome,
             penalty=mate_candidate.inbreeding_penalty,
-            scale=world.config.reproduction.sexual_inbreeding_gene_penalty,
+            scale=reproduction_context.config.reproduction.sexual_inbreeding_gene_penalty,
         )
         child_agent_id = next_agent_id + index
         child_lineage_id = sexual_child_lineage_id(
@@ -1779,6 +2100,7 @@ def build_sexual_child_birth_plan(
             parent,
             partner,
             child_genome,
+            context=reproduction_context,
         )
         children.append(
             build_child_agent(
@@ -1786,12 +2108,14 @@ def build_sexual_child_birth_plan(
                 primary_parent=parent,
                 secondary_parent=partner,
                 lineage_id=child_lineage_id,
-                birth_tick=world.tick,
+                birth_tick=reproduction_context.tick,
                 destination=child_destination,
                 genome=child_genome,
                 energy_fraction=child_energy_fraction,
                 hydration_fraction=child_hydration_fraction,
-                health_fraction=world.config.reproduction.child_health_fraction,
+                health_fraction=(
+                    reproduction_context.config.reproduction.child_health_fraction
+                ),
                 reproductive_state=reproductive_state,
                 mind_inheritance_metadata=empty_mind_inheritance_metadata(),
             )
@@ -1804,7 +2128,7 @@ def build_sexual_child_birth_plan(
 
 
 def _sexual_offspring_plan(
-    world: Any,
+    world: Any | None,
     parent: Agent,
     partner: Agent,
     *,
@@ -1812,12 +2136,18 @@ def _sexual_offspring_plan(
     partner_cost: float,
     alive_count: int | None,
     placement_context: ReproductionPlacementContext | None = None,
+    context: ReproductionContext | None = None,
 ) -> SexualOffspringPlan:
-    placement = _resolve_placement_context(world, placement_context)
+    reproduction_context = _resolve_reproduction_context(
+        world,
+        context,
+        placement_context=placement_context,
+    )
+    placement = reproduction_context.placement
     desired_count = runtime_mating.multi_offspring_count_for_pair(
         parent,
         partner,
-        world.config.reproduction,
+        reproduction_context.config.reproduction,
     )
     current_alive = placement.current_alive_count() if alive_count is None else alive_count
     population_slots = max(0, int(placement.max_agents) - current_alive)
@@ -1896,7 +2226,7 @@ def _sexual_offspring_destinations(
 
 
 def emit_reproduction_event(
-    world: Any,
+    world: Any | None,
     *,
     actor: Agent,
     child: Agent,
@@ -1909,8 +2239,10 @@ def emit_reproduction_event(
     sibling_child_ids: list[int] | None = None,
     multi_offspring_desired_count: int = 1,
     multi_offspring_limit_reasons: tuple[str, ...] = (),
+    context: ReproductionContext | None = None,
 ) -> None:
-    world._emit(
+    reproduction_context = _resolve_reproduction_context(world, context)
+    reproduction_context.emit(
         EventType.AGENT_REPRODUCED,
         agent_id=actor.agent_id,
         data=build_reproduction_event_payload(

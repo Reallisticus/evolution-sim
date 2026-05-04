@@ -1,15 +1,63 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from evolution_sim.env.events import EventType
+from evolution_sim.env.runtime import feeding_opportunity
 from evolution_sim.env.runtime.state import Agent, TrophicProfile
 
 
 FOOD_SOURCES = frozenset({"plant", "fresh_kill", "carcass"})
 ANIMAL_FOOD_SOURCES = frozenset({"fresh_kill", "carcass"})
-ANIMAL_RESOURCE_KINDS = ("fresh_kill", "carcass")
-ANIMAL_RESOURCE_POLICY_BLOCKERS = ("occupant", "hazard", "water", "movement_mask")
+ANIMAL_RESOURCE_KINDS = feeding_opportunity.ANIMAL_RESOURCE_KINDS
+ANIMAL_RESOURCE_POLICY_BLOCKERS = feeding_opportunity.ANIMAL_RESOURCE_POLICY_BLOCKERS
+
+
+@dataclass(frozen=True, slots=True)
+class FeedingContext:
+    """Explicit runtime authority used by feeding helpers."""
+
+    config: Any
+    emit: Callable[..., None]
+    species_id_for_agent: Callable[[int], int | None]
+    trophic_profile: Callable[[Agent], TrophicProfile]
+    matched_diet_ratio: Callable[[Agent, TrophicProfile], float]
+    agent_reachable_animal_resources: Callable[..., dict[str, object]]
+    scavenger_carcass_hydration_fraction: Callable[[Agent], float]
+    hydration_ratio: Callable[[Agent], float]
+    clamp01: Callable[[float], float]
+    fresh_kill_tile_summary_for_position: Callable[[int, int], dict[str, object]]
+    carcass_tile_summary_for_position: Callable[[int, int], dict[str, object]]
+
+
+def build_feeding_context(world: Any) -> FeedingContext:
+    return FeedingContext(
+        config=world.config,
+        emit=world._emit,
+        species_id_for_agent=world._species_id_for_agent,
+        trophic_profile=world._trophic_profile,
+        matched_diet_ratio=world._matched_diet_ratio,
+        agent_reachable_animal_resources=world._agent_reachable_animal_resources,
+        scavenger_carcass_hydration_fraction=(
+            world._scavenger_carcass_hydration_fraction
+        ),
+        hydration_ratio=world._hydration_ratio,
+        clamp01=world._clamp01,
+        fresh_kill_tile_summary_for_position=(
+            world._fresh_kill_tile_summary_for_position
+        ),
+        carcass_tile_summary_for_position=world._carcass_tile_summary_for_position,
+    )
+
+
+def _resolve_feeding_context(
+    world: Any,
+    context: FeedingContext | None = None,
+) -> FeedingContext:
+    if context is not None:
+        return context
+    return build_feeding_context(world)
 
 
 def empty_diet_totals() -> dict[str, float]:
@@ -164,13 +212,15 @@ def record_feeding_event(
     energy_before: float,
     energy_after: float,
     potential_energy: float | None = None,
+    context: FeedingContext | None = None,
 ) -> None:
+    feeding_context = _resolve_feeding_context(world, context)
     record_recent_diet(agent, food_source, gained_energy)
     if world.record_tick_details:
         world.tick_feeding_events.append(
             {
                 "agent_id": agent.agent_id,
-                "species_id": world._species_id_for_agent(agent.agent_id),
+                "species_id": feeding_context.species_id_for_agent(agent.agent_id),
                 "food_source": food_source,
                 "consumed": round(consumed, 4),
                 "gained_energy": round(gained_energy, 4),
@@ -183,7 +233,7 @@ def record_feeding_event(
                 "trophic_role": profile.role,
                 "meat_mode": profile.meat_mode,
                 "matched_diet_ratio": round(
-                    world._matched_diet_ratio(agent, profile),
+                    feeding_context.matched_diet_ratio(agent, profile),
                     4,
                 ),
             }
@@ -263,7 +313,9 @@ def animal_resource_reachability_by_meat_mode(
     radius: int,
     action_masks_by_agent: dict[int, dict[str, bool]] | None = None,
     resource_presence: dict[str, bool] | None = None,
+    context: FeedingContext | None = None,
 ) -> dict[str, dict[str, int]]:
+    feeding_context = _resolve_feeding_context(world, context)
     reachability = {
         mode: empty_animal_resource_reachability_tick_counts()
         for mode in meat_mode_codes
@@ -272,9 +324,9 @@ def animal_resource_reachability_by_meat_mode(
     if not presence["fresh_kill"] and not presence["carcass"]:
         return reachability
     for agent in agents:
-        profile = world._trophic_profile(agent)
+        profile = feeding_context.trophic_profile(agent)
         mode_counts = reachability[profile.meat_mode]
-        reachable = world._agent_reachable_animal_resources(
+        reachable = feeding_context.agent_reachable_animal_resources(
             agent,
             radius=radius,
             action_mask=(
@@ -311,156 +363,20 @@ def animal_resource_reachability_by_meat_mode(
     return reachability
 
 
-def _record_policy_actionability(
-    counts: dict[str, int | float],
-    reachable_counts: dict[str, int],
-    *,
-    resource: str,
-    actionable_agents: int,
-    blocked_agents: int,
-) -> None:
-    if actionable_agents > 0:
-        counts[f"{resource}_policy_actionable_ticks"] += 1
-        counts[f"{resource}_policy_actionable_agent_ticks"] += actionable_agents
-    if blocked_agents > 0:
-        counts[f"{resource}_reachable_policy_blocked_ticks"] += 1
-        counts[f"{resource}_reachable_policy_blocked_agent_ticks"] += blocked_agents
-    for blocker in ANIMAL_RESOURCE_POLICY_BLOCKERS:
-        blocker_agents = int(
-            reachable_counts.get(
-                f"{resource}_policy_blocked_by_{blocker}_agents",
-                0,
-            )
-        )
-        if blocker_agents > 0:
-            counts[f"{resource}_policy_blocked_by_{blocker}_ticks"] += 1
-            counts[f"{resource}_policy_blocked_by_{blocker}_agent_ticks"] += (
-                blocker_agents
-            )
-
-
-def _record_resource_opportunity(
-    counts: dict[str, int | float],
-    *,
-    resource: str,
-    agent_count: int,
-    consumed: bool,
-    reachable_agents: int,
-    actionable_agents: int,
-    blocked_agents: int,
-    reachable_counts: dict[str, int],
-) -> None:
-    counts[f"{resource}_present_ticks"] += 1
-    counts[f"{resource}_present_agent_ticks"] += agent_count
-    if consumed:
-        counts[f"{resource}_consumed_ticks"] += 1
-    else:
-        counts[f"{resource}_present_unconsumed_ticks"] += 1
-        counts[f"{resource}_present_unconsumed_agent_ticks"] += agent_count
-    if reachable_agents > 0:
-        counts[f"{resource}_reachable_ticks"] += 1
-        counts[f"{resource}_reachable_agent_ticks"] += reachable_agents
-        if not consumed:
-            counts[f"{resource}_reachable_unconsumed_ticks"] += 1
-            counts[f"{resource}_reachable_unconsumed_agent_ticks"] += reachable_agents
-        _record_policy_actionability(
-            counts,
-            reachable_counts,
-            resource=resource,
-            actionable_agents=actionable_agents,
-            blocked_agents=blocked_agents,
-        )
-    else:
-        counts[f"{resource}_present_unreachable_ticks"] += 1
-        counts[f"{resource}_present_unreachable_agent_ticks"] += agent_count
-
-
 def record_animal_resource_opportunity_tick(
     world: Any,
     meat_mode_counts: dict[str, int],
     reachability_by_meat_mode: dict[str, dict[str, int]],
 ) -> None:
-    presence = animal_resource_presence_this_tick(world)
-    for mode, agent_count in meat_mode_counts.items():
-        if agent_count <= 0:
-            continue
-        counts = world.run_animal_resource_opportunity_by_meat_mode[mode]
-        tick_consumption = world.tick_animal_resource_consumption_by_meat_mode[mode]
-        reachable_counts = reachability_by_meat_mode.get(
-            mode,
-            empty_animal_resource_reachability_tick_counts(),
-        )
-        counts["alive_ticks"] += 1
-        counts["alive_agent_ticks"] += agent_count
-        for key, value in tick_consumption.items():
-            counts[key] += value
-
-        animal_consumed = tick_consumption["animal_resource_consumption_events"] > 0
-        fresh_kill_consumed = tick_consumption["fresh_kill_consumption_events"] > 0
-        carcass_consumed = tick_consumption["carcass_consumption_events"] > 0
-        if presence["animal_resource"]:
-            _record_resource_opportunity(
-                counts,
-                resource="animal_resource",
-                agent_count=agent_count,
-                consumed=animal_consumed,
-                reachable_agents=int(
-                    reachable_counts.get("animal_resource_reachable_agents", 0)
-                ),
-                actionable_agents=int(
-                    reachable_counts.get(
-                        "animal_resource_policy_actionable_agents",
-                        0,
-                    )
-                ),
-                blocked_agents=int(
-                    reachable_counts.get(
-                        "animal_resource_reachable_policy_blocked_agents",
-                        0,
-                    )
-                ),
-                reachable_counts=reachable_counts,
-            )
-        else:
-            counts["animal_resource_absent_ticks"] += 1
-            counts["animal_resource_absent_agent_ticks"] += agent_count
-
-        if presence["fresh_kill"]:
-            _record_resource_opportunity(
-                counts,
-                resource="fresh_kill",
-                agent_count=agent_count,
-                consumed=fresh_kill_consumed,
-                reachable_agents=int(
-                    reachable_counts.get("fresh_kill_reachable_agents", 0)
-                ),
-                actionable_agents=int(
-                    reachable_counts.get("fresh_kill_policy_actionable_agents", 0)
-                ),
-                blocked_agents=int(
-                    reachable_counts.get(
-                        "fresh_kill_reachable_policy_blocked_agents",
-                        0,
-                    )
-                ),
-                reachable_counts=reachable_counts,
-            )
-
-        if presence["carcass"]:
-            _record_resource_opportunity(
-                counts,
-                resource="carcass",
-                agent_count=agent_count,
-                consumed=carcass_consumed,
-                reachable_agents=int(reachable_counts.get("carcass_reachable_agents", 0)),
-                actionable_agents=int(
-                    reachable_counts.get("carcass_policy_actionable_agents", 0)
-                ),
-                blocked_agents=int(
-                    reachable_counts.get("carcass_reachable_policy_blocked_agents", 0)
-                ),
-                reachable_counts=reachable_counts,
-            )
+    feeding_opportunity.record_animal_resource_opportunity_tick_from_inputs(
+        world.run_animal_resource_opportunity_by_meat_mode,
+        meat_mode_counts=meat_mode_counts,
+        tick_consumption_by_meat_mode=(
+            world.tick_animal_resource_consumption_by_meat_mode
+        ),
+        reachability_by_meat_mode=reachability_by_meat_mode,
+        resource_presence=animal_resource_presence_this_tick(world),
+    )
 
 
 def record_plant_intake(
@@ -473,7 +389,9 @@ def record_plant_intake(
     energy_after: float,
     potential_gain: float,
     tile: Any,
+    context: FeedingContext | None = None,
 ) -> dict[str, object]:
+    feeding_context = _resolve_feeding_context(world, context)
     gained = energy_after - energy_before
     record_feeding_event(
         world,
@@ -485,8 +403,9 @@ def record_plant_intake(
         energy_before=energy_before,
         energy_after=energy_after,
         potential_energy=potential_gain,
+        context=feeding_context,
     )
-    world._emit(
+    feeding_context.emit(
         EventType.AGENT_ATE,
         agent_id=agent.agent_id,
         data={
@@ -498,7 +417,10 @@ def record_plant_intake(
             "potential_gained_energy": round(potential_gain, 4),
             "trophic_role": profile.role,
             "meat_mode": profile.meat_mode,
-            "matched_diet_ratio": round(world._matched_diet_ratio(agent, profile), 4),
+            "matched_diet_ratio": round(
+                feeding_context.matched_diet_ratio(agent, profile),
+                4,
+            ),
             "vegetation": round(tile.vegetation, 4),
             "recovery_debt": round(tile.recovery_debt, 4),
             "shelter": round(tile.shelter, 4),
@@ -523,29 +445,32 @@ def _apply_meat_hydration(
     food_source: str,
     consumed: float,
     profile: TrophicProfile,
+    *,
+    context: FeedingContext | None = None,
 ) -> None:
+    feeding_context = _resolve_feeding_context(world, context)
     if food_source == "carcass" and profile.meat_mode == "scavenger":
         agent.hydration = min(
             agent.genome.max_hydration,
             agent.hydration
             + (
                 consumed
-                * world._scavenger_carcass_hydration_fraction(agent)
+                * feeding_context.scavenger_carcass_hydration_fraction(agent)
                 * agent.genome.water_efficiency
             ),
         )
     elif (
         food_source == "carcass"
         and profile.meat_mode == "hunter"
-        and world._hydration_ratio(agent)
-        < world.config.carcasses.hunter_carcass_hydration_max_ratio
+        and feeding_context.hydration_ratio(agent)
+        < feeding_context.config.carcasses.hunter_carcass_hydration_max_ratio
     ):
         agent.hydration = min(
             agent.genome.max_hydration,
             agent.hydration
             + (
                 consumed
-                * world.config.carcasses.hunter_carcass_hydration_fraction
+                * feeding_context.config.carcasses.hunter_carcass_hydration_fraction
                 * agent.genome.water_efficiency
             ),
         )
@@ -555,7 +480,7 @@ def _apply_meat_hydration(
             agent.hydration
             + (
                 consumed
-                * world.config.carcasses.mixed_carcass_hydration_fraction
+                * feeding_context.config.carcasses.mixed_carcass_hydration_fraction
                 * agent.genome.water_efficiency
             ),
         )
@@ -565,7 +490,7 @@ def _apply_meat_hydration(
             agent.hydration
             + (
                 consumed
-                * world.config.carcasses.fresh_kill_hydration_fraction
+                * feeding_context.config.carcasses.fresh_kill_hydration_fraction
                 * agent.genome.water_efficiency
             ),
         )
@@ -577,17 +502,20 @@ def _apply_meat_healing(
     food_source: str,
     consumed: float,
     profile: TrophicProfile,
+    *,
+    context: FeedingContext | None = None,
 ) -> None:
+    feeding_context = _resolve_feeding_context(world, context)
     healing_multiplier = 1.0
     if food_source == "carcass" and profile.meat_mode == "scavenger":
-        healing_multiplier = world.config.carcasses.scavenger_healing_multiplier
+        healing_multiplier = feeding_context.config.carcasses.scavenger_healing_multiplier
     elif food_source == "fresh_kill" and profile.meat_mode in {"hunter", "mixed"}:
         healing_multiplier = (
-            world.config.carcasses.fresh_kill_hunter_healing_multiplier
+            feeding_context.config.carcasses.fresh_kill_hunter_healing_multiplier
         )
     healed = (
         consumed
-        * world.config.carcasses.healing_fraction
+        * feeding_context.config.carcasses.healing_fraction
         * healing_multiplier
         * agent.genome.healing_efficiency
     )
@@ -596,7 +524,7 @@ def _apply_meat_healing(
     previous_health = agent.health
     agent.health = min(agent.max_health, agent.health + healed)
     if agent.health > previous_health:
-        agent.injury_load = world._clamp01(
+        agent.injury_load = feeding_context.clamp01(
             max(
                 0.0,
                 agent.injury_load
@@ -618,12 +546,28 @@ def apply_meat_intake(
     deposit_breakdown: list[dict[str, object]],
     immediate_kill_feed: bool,
     freshness: float | None,
+    context: FeedingContext | None = None,
 ) -> dict[str, object]:
+    feeding_context = _resolve_feeding_context(world, context)
     energy_before = agent.energy
     agent.energy = min(agent.genome.max_energy, agent.energy + potential_nutrition)
     nutrition = agent.energy - energy_before
-    _apply_meat_hydration(world, agent, food_source, consumed, profile)
-    _apply_meat_healing(world, agent, food_source, consumed, profile)
+    _apply_meat_hydration(
+        world,
+        agent,
+        food_source,
+        consumed,
+        profile,
+        context=feeding_context,
+    )
+    _apply_meat_healing(
+        world,
+        agent,
+        food_source,
+        consumed,
+        profile,
+        context=feeding_context,
+    )
 
     event_bucket = (
         world.tick_fresh_kill_events
@@ -634,7 +578,7 @@ def apply_meat_intake(
         event_bucket.append(
             {
                 "agent_id": agent.agent_id,
-                "species_id": world._species_id_for_agent(agent.agent_id),
+                "species_id": feeding_context.species_id_for_agent(agent.agent_id),
                 "consumed": round(consumed, 4),
                 "energy": round(consumed, 4),
                 "gained_energy": round(nutrition, 4),
@@ -671,14 +615,15 @@ def apply_meat_intake(
         energy_before=energy_before,
         energy_after=agent.energy,
         potential_energy=potential_nutrition,
+        context=feeding_context,
     )
     if world.record_events:
         tile_state = (
-            world._fresh_kill_tile_summary_for_position(x, y)
+            feeding_context.fresh_kill_tile_summary_for_position(x, y)
             if food_source == "fresh_kill"
-            else world._carcass_tile_summary_for_position(x, y)
+            else feeding_context.carcass_tile_summary_for_position(x, y)
         )
-        world._emit(
+        feeding_context.emit(
             EventType.AGENT_ATE,
             agent_id=agent.agent_id,
             data={
@@ -692,7 +637,10 @@ def apply_meat_intake(
                 "meat_mode": profile.meat_mode,
                 "immediate_kill_feed": immediate_kill_feed,
                 "health": round(agent.health, 4),
-                "matched_diet_ratio": round(world._matched_diet_ratio(agent, profile), 4),
+                "matched_diet_ratio": round(
+                    feeding_context.matched_diet_ratio(agent, profile),
+                    4,
+                ),
                 "x": x,
                 "y": y,
                 "source_breakdown": source_breakdown,

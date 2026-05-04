@@ -21,6 +21,7 @@ from evolution_sim.env.runtime.trajectory import (
     update_trajectory_stats,
 )
 from evolution_sim.genome.recombination import GENOME_RECOMBINATION_CONTRACT_VERSION
+from evolution_sim.mind.provenance import validate_dataset_provenance
 
 TRAJECTORY_JSONL_FORMAT = "evolution_sim_trajectory_jsonl_v1"
 
@@ -50,7 +51,10 @@ def load_trajectory_jsonl(path: str | Path) -> TrajectoryJsonlDataset:
     footer = payloads[-1]
     records = payloads[1:-1]
     _validate_header(header)
-    parsed_records = [_validate_record_payload(payload, index) for index, payload in enumerate(records)]
+    parsed_records = [
+        _validate_record_payload(payload, index)
+        for index, payload in enumerate(records)
+    ]
     _validate_footer(footer, parsed_records)
     return TrajectoryJsonlDataset(
         path=resolved_path,
@@ -110,6 +114,12 @@ def _validate_header(header: dict[str, object]) -> None:
             )
     if contract.get("record_fields") != list(TRAJECTORY_RECORD_FIELDS):
         raise TrajectoryDatasetError("trajectory contract record fields are stale")
+    try:
+        validate_dataset_provenance(header.get("provenance"))
+    except ValueError as exc:
+        raise TrajectoryDatasetError(
+            f"trajectory header provenance is invalid: {exc}"
+        ) from exc
 
 
 def _validate_record_payload(
@@ -158,6 +168,12 @@ def _validate_footer(
     trajectory_summary = footer.get("trajectory_summary")
     if not isinstance(trajectory_summary, dict):
         raise TrajectoryDatasetError("trajectory footer is missing trajectory summary")
+    try:
+        footer_provenance = validate_dataset_provenance(footer.get("provenance"))
+    except ValueError as exc:
+        raise TrajectoryDatasetError(
+            f"trajectory footer provenance is invalid: {exc}"
+        ) from exc
     stats = empty_trajectory_stats()
     for record in records:
         update_trajectory_stats(stats, record)
@@ -165,5 +181,19 @@ def _validate_footer(
     for field, expected in expected_summary.items():
         if trajectory_summary.get(field) != expected:
             raise TrajectoryDatasetError(
-                f"trajectory footer {field} expected {expected}, found {trajectory_summary.get(field)!r}"
+                (
+                    f"trajectory footer {field} expected {expected}, "
+                    f"found {trajectory_summary.get(field)!r}"
+                )
             )
+    if footer_provenance.get("record_count") != expected_summary["record_count"]:
+        raise TrajectoryDatasetError(
+            "trajectory footer provenance record_count is stale"
+        )
+
+
+def dataset_provenance(dataset: TrajectoryJsonlDataset) -> dict[str, object]:
+    provenance = dict(dataset.footer["provenance"])
+    provenance["trajectory_paths"] = [str(dataset.path)]
+    provenance["record_count"] = dataset.record_count
+    return provenance

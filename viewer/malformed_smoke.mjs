@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
+import { REQUIRED_AGENT_FIELDS } from "./contracts.generated.mjs";
 import { ensureViewerServer, stopViewerServer } from "./smoke_server.mjs";
 
 const outputDir = "output/playwright/malformed-replays";
@@ -435,7 +436,7 @@ function observationPolicyInput() {
 function frame() {
   return {
     tick: 0,
-    agents: [[1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, "herbivore", "none", "none", 1]],
+    agents: [agentRow()],
     species_counts: [[1, 1]],
     species_metrics: {},
     field_state: {},
@@ -476,6 +477,38 @@ function frame() {
       },
     },
   };
+}
+
+function agentRow() {
+  const values = {
+    agent_id: 1,
+    x: 0,
+    y: 0,
+    energy: 1,
+    energy_ratio: 1,
+    hydration: 1,
+    hydration_ratio: 1,
+    health: 1,
+    health_ratio: 1,
+    injury_load: 0,
+    age: 0,
+    energy_modifier: 1,
+    hydration_modifier: 1,
+    tile_vegetation: 0.5,
+    tile_recovery_debt: 0,
+    reproduction_ready: false,
+    trophic_role: "herbivore",
+    meat_mode: "none",
+    last_damage_source: "none",
+    water_access_reason: "none",
+    soft_refuge_reason: "none",
+    hydrology_support_code: 0,
+    refuge_score: 0,
+    matched_diet_ratio: 1,
+    ecotype_id: null,
+    species_id: 1,
+  };
+  return agentEncoding().map((field) => values[field] ?? null);
 }
 
 function matrix(value) {
@@ -642,21 +675,5 @@ function reproductiveGroupCatalog() {
 }
 
 function agentEncoding() {
-  return [
-    "agent_id",
-    "x",
-    "y",
-    "energy",
-    "hydration",
-    "health",
-    "health_ratio",
-    "injury_load",
-    "age",
-    "energy_modifier",
-    "hydration_modifier",
-    "trophic_role",
-    "last_damage_source",
-    "water_access_reason",
-    "species_id",
-  ];
+  return [...REQUIRED_AGENT_FIELDS];
 }

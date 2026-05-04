@@ -12,17 +12,30 @@ from evolution_sim.env.runtime.trajectory import (
     empty_trajectory_stats,
     update_trajectory_stats,
 )
+from evolution_sim.mind.provenance import (
+    DEFAULT_SPLIT_ID,
+    build_dataset_provenance,
+)
 
 
 class JsonlTrajectoryWriter:
     """Stream trajectory records as JSON Lines without retaining replay payloads."""
 
-    def __init__(self, output_path: str | Path):
+    def __init__(
+        self,
+        output_path: str | Path,
+        *,
+        source_seeds: list[int] | None = None,
+        split_id: str = DEFAULT_SPLIT_ID,
+    ):
         self.output_path = Path(output_path)
+        self.source_seeds = tuple(source_seeds or ())
+        self.split_id = split_id
         self._temp_path: Path | None = None
         self._handle: TextIO | None = None
         self._stats = empty_trajectory_stats()
         self._contract: dict[str, object] | None = None
+        self._config: dict[str, object] | None = None
         self._finished = False
 
     @property
@@ -56,6 +69,7 @@ class JsonlTrajectoryWriter:
         else:
             self._handle = self._temp_path.open("w", encoding="utf-8")
         self._contract = contract
+        self._config = config
         self._write_line(
             {
                 "type": "header",
@@ -64,6 +78,7 @@ class JsonlTrajectoryWriter:
                 "run_id": run_id,
                 "config": config,
                 "trajectory_contract": contract,
+                "provenance": self._provenance_payload(record_count=None),
             }
         )
 
@@ -81,6 +96,9 @@ class JsonlTrajectoryWriter:
                 "type": "footer",
                 "summary": summary,
                 "trajectory_summary": self._summary_payload(),
+                "provenance": self._provenance_payload(
+                    record_count=self.record_count,
+                ),
             }
         )
         self._close_handle()
@@ -120,6 +138,16 @@ class JsonlTrajectoryWriter:
             "action_outcome_schema_version": contract.get("action_outcome_schema_version"),
             **build_trajectory_summary_from_stats(self._stats),
         }
+
+    def _provenance_payload(self, *, record_count: int | None) -> dict[str, object]:
+        return build_dataset_provenance(
+            config=self._config or {},
+            contract=self._contract or {},
+            trajectory_paths=[self.output_path],
+            source_seeds=self.source_seeds,
+            split_id=self.split_id,
+            record_count=record_count,
+        )
 
     def _write_line(self, payload: dict[str, object]) -> None:
         self._ensure_open()

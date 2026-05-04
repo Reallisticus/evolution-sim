@@ -12,6 +12,7 @@ from evolution_sim.mind.contracts import (
     MIND_MODEL_ARTIFACT_VERSION,
     MIND_RUNTIME_ENABLED_DEFAULT,
 )
+from evolution_sim.mind.provenance import validate_dataset_provenance
 
 
 class MindArtifactError(ValueError):
@@ -58,17 +59,29 @@ def validate_model_artifact_manifest(artifact: dict[str, object]) -> None:
     for field, expected in expected_versions.items():
         if manifest.get(field) != expected:
             raise MindArtifactError(
-                f"model artifact manifest {field} expected {expected}, found {manifest.get(field)!r}"
+                (
+                    f"model artifact manifest {field} expected {expected}, "
+                    f"found {manifest.get(field)!r}"
+                )
             )
     if not isinstance(artifact.get("model"), dict):
         raise MindArtifactError("model artifact is missing model payload")
     model_type = manifest.get("model_type")
     if not isinstance(model_type, str) or not model_type:
         raise MindArtifactError("model artifact manifest is missing model_type")
+    try:
+        validate_dataset_provenance(manifest.get("provenance"))
+    except ValueError as exc:
+        raise MindArtifactError(
+            f"model artifact manifest provenance is invalid: {exc}"
+        ) from exc
 
 
 def write_model_artifact(path: str | Path, artifact: dict[str, Any]) -> None:
     validate_model_artifact_manifest(artifact)
     artifact_path = Path(path)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    artifact_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Evolution Sim Replay Viewer</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?assetVersion=dashboard-v08" />
   </head>
   <body>
     <div class="app-shell">
@@ -219,16 +219,303 @@
       </aside>
 
       <main class="main-panel">
-        <div class="panel canvas-panel">
-          <div class="legend">
-            <div id="terrain-legend" class="terrain-legend"></div>
-            <span id="overlay-label" class="legend-note">Overlay: terrain</span>
-            <span class="legend-note">Agents are colored by species.</span>
-          </div>
-          <div id="canvas-host" class="canvas-host"></div>
+        <div id="view-tabs" class="view-tabs" role="tablist" aria-label="Replay view">
+          <button
+            id="story-tab"
+            class="view-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="story-panel"
+            data-view="story"
+          >
+            Story
+          </button>
+          <button
+            id="advanced-tab"
+            class="view-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="advanced-panel"
+            data-view="advanced"
+          >
+            Advanced
+          </button>
         </div>
 
-        <div class="analytics-grid">
+        <section id="story-panel" class="view-panel active" role="tabpanel" aria-labelledby="story-tab">
+          <div class="story-layout">
+            <div id="story-map-slot"></div>
+
+            <div class="story-column">
+              <div
+                id="story-detail-tabs"
+                class="detail-tabs"
+                role="tablist"
+                aria-label="Story detail views"
+              >
+                <button
+                  id="overview-detail-tab"
+                  type="button"
+                  class="detail-tab active"
+                  data-detail-view="overview"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="overview-detail-panel"
+                >
+                  Overview
+                </button>
+                <button
+                  id="agent-detail-tab"
+                  type="button"
+                  class="detail-tab"
+                  data-detail-view="agent"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="agent-dossier"
+                >
+                  Agent
+                </button>
+                <button
+                  id="species-detail-tab"
+                  type="button"
+                  class="detail-tab"
+                  data-detail-view="species"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="species-detail-panel"
+                >
+                  Species
+                </button>
+                <button
+                  id="events-detail-tab"
+                  type="button"
+                  class="detail-tab"
+                  data-detail-view="events"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="events-detail-panel"
+                >
+                  Events
+                </button>
+              </div>
+
+              <div
+                id="overview-detail-panel"
+                class="panel story-panel detail-panel"
+                data-detail-panel="overview"
+                role="tabpanel"
+                aria-labelledby="overview-detail-tab"
+              >
+                <h2>What Is Happening</h2>
+                <p id="scene-summary" class="scene-summary">
+                  Load a replay to see the current world state in plain language.
+                </p>
+                <div id="scene-stats" class="scene-stats"></div>
+              </div>
+
+              <div
+                id="agent-dossier"
+                class="panel story-panel agent-dossier detail-panel hidden"
+                data-detail-panel="agent"
+                role="tabpanel"
+                aria-labelledby="agent-detail-tab"
+              >
+                <div class="agent-dossier-header">
+                  <h2>Agent Dossier</h2>
+                  <button id="clear-agent-focus" type="button" aria-label="Clear selected agent">
+                    Clear
+                  </button>
+                </div>
+                <div id="agent-dossier-body"></div>
+              </div>
+
+              <div
+                id="species-detail-panel"
+                class="panel story-panel detail-panel hidden"
+                data-detail-panel="species"
+                role="tabpanel"
+                aria-labelledby="species-detail-tab"
+              >
+                <h2>Species Focus</h2>
+                <div id="focus-cards" class="focus-cards">
+                  <div class="muted">Select a species or agent to follow it through time.</div>
+                </div>
+                <div id="lineage-tree" class="lineage-tree"></div>
+              </div>
+
+              <div
+                id="events-detail-panel"
+                class="panel story-panel detail-panel hidden"
+                data-detail-panel="events"
+                role="tabpanel"
+                aria-labelledby="events-detail-tab"
+              >
+                <h2>Event Episodes</h2>
+                <div id="episode-inspector" class="episode-inspector">
+                  <div class="muted">Load a replay to inspect episode causality.</div>
+                </div>
+                <div class="event-bookmark-toolbar">
+                  <button id="bookmark-current-event" type="button">Bookmark Current Tick</button>
+                  <button id="export-storyboard" type="button">Export Storyboard</button>
+                </div>
+                <div id="storyboard-export-status" class="storyboard-export-status"></div>
+                <div id="bookmark-list" class="bookmark-list">
+                  <div class="muted">Bookmarked episodes will appear here.</div>
+                </div>
+                <div id="episode-list" class="episode-list">
+                  <div class="muted">Load a replay to inspect major event episodes.</div>
+                </div>
+                <h2>Replay Notes</h2>
+                <div id="story-feed" class="story-feed">
+                  <div class="story-bubble system">The replay narrator will update here.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="advanced-panel"
+          class="view-panel hidden"
+          role="tabpanel"
+          aria-labelledby="advanced-tab"
+        >
+          <div id="advanced-sidebar-grid" class="advanced-sidebar-grid"></div>
+        </section>
+
+        <div id="canvas-panel" class="panel canvas-panel glass-panel">
+          <div class="legend map-legend">
+            <div id="terrain-legend" class="terrain-legend"></div>
+            <div id="glyph-legend" class="glyph-legend" aria-label="Map glyph legend">
+              <div class="map-key-group">
+                <strong>Agent forms</strong>
+                <span class="glyph-legend-item">
+                  <i class="glyph-symbol herbivore"></i>
+                  Herbivore
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="glyph-symbol omnivore"></i>
+                  Omnivore
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="glyph-symbol carnivore"></i>
+                  Carnivore
+                </span>
+              </div>
+              <div class="map-key-group">
+                <strong>Vital rings</strong>
+                <span class="glyph-legend-item">
+                  <i class="ring-key energy"></i>
+                  Energy
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="ring-key hydration"></i>
+                  Water
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="ring-key health"></i>
+                  Health
+                </span>
+              </div>
+              <div class="map-key-group">
+                <strong>Activity cues</strong>
+                <span class="glyph-legend-item">
+                  <i class="ring-key ready"></i>
+                  Ready
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="dot-key diet"></i>
+                  Diet match
+                </span>
+                <span class="glyph-legend-item">
+                  <i class="stroke-key meat"></i>
+                  Meat stroke
+                </span>
+              </div>
+              <div class="map-key-group">
+                <strong>Event pulses</strong>
+                <span class="glyph-legend-item">
+                  <i class="pulse-key"></i>
+                  Event
+                </span>
+              </div>
+            </div>
+            <div id="map-control-strip" class="map-control-strip" aria-label="Map display controls">
+              <span id="overlay-label" class="legend-note">Overlay: terrain</span>
+              <label class="map-control" for="decision-overlay-mode">
+                <span>Decision Layer</span>
+                <select id="decision-overlay-mode">
+                  <option value="selected">Selected Action</option>
+                  <option value="recent">Recent Actions</option>
+                  <option value="reward">Reward Heat</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+              <label class="map-control" for="event-lens-mode">
+                <span>Event Lens</span>
+                <select id="event-lens-mode">
+                  <option value="current">Current Tick</option>
+                  <option value="causal">Causal Trail</option>
+                  <option value="births">Births</option>
+                  <option value="deaths">Deaths</option>
+                  <option value="combat">Combat</option>
+                  <option value="carcass">Carcass Flow</option>
+                  <option value="delta">Tick Delta</option>
+                </select>
+              </label>
+              <span id="event-lens-summary" class="legend-note event-lens-summary">
+                Lens: current tick
+              </span>
+              <label class="map-control" for="overlay-opacity">
+                <span>Overlay Opacity</span>
+                <input id="overlay-opacity" type="range" min="20" max="100" value="72" />
+              </label>
+              <label class="map-control toggle-control" for="blend-terrain-toggle">
+                <input id="blend-terrain-toggle" type="checkbox" checked />
+                <span>Blend Terrain</span>
+              </label>
+              <div id="map-navigation" class="map-navigation" aria-label="Map navigation controls">
+                <button id="map-zoom-out" type="button" aria-label="Zoom map out">-</button>
+                <span id="map-zoom-label">100%</span>
+                <button id="map-zoom-in" type="button" aria-label="Zoom map in">+</button>
+                <button id="map-reset-view" type="button">Reset View</button>
+                <button id="map-fit-focus" type="button">Fit Focus</button>
+              </div>
+            </div>
+          </div>
+          <div
+            id="canvas-host"
+            class="canvas-host"
+            tabindex="0"
+            aria-label="Replay map. Use arrow keys to move tile focus and Enter to select an agent on the focused tile."
+          >
+            <div id="tile-hover" class="tile-hover hidden"></div>
+            <div id="map-annotations" class="map-annotations"></div>
+            <div id="map-minimap" class="map-minimap" aria-hidden="true"></div>
+          </div>
+          <div id="tile-inspector" class="tile-inspector glass-panel">
+            <span>Tile</span>
+            <strong>Hover the map</strong>
+          </div>
+          <div id="tile-explainer" class="tile-explainer glass-panel">
+            <span>Tile Explanation</span>
+            <strong>Click a tile to explain what is happening there.</strong>
+          </div>
+          <div id="story-timeline" class="story-timeline glass-panel">
+            <div class="story-timeline-header">
+              <span id="event-summary" class="event-summary">No replay events loaded.</span>
+              <div class="event-jump-controls">
+                <button id="jump-prev-event" type="button" disabled>Prev Event</button>
+                <button id="jump-next-event" type="button" disabled>Next Event</button>
+              </div>
+            </div>
+            <div id="event-strip" class="event-strip" aria-label="Replay event timeline"></div>
+          </div>
+        </div>
+
+        <div id="analytics-grid" class="analytics-grid">
           <div class="panel">
             <h2>Alive Population</h2>
             <div id="population-chart" class="chart-host"></div>
@@ -305,6 +592,11 @@
       </main>
     </div>
 
-    <script type="module" src="./app.js"></script>
+    <script type="module">
+      const requestedAssetVersion =
+        new URLSearchParams(window.location.search).get("assetVersion") ?? "local";
+      const assetVersion = `${requestedAssetVersion}-dashboard-v08`;
+      await import(`./app.js?assetVersion=${encodeURIComponent(assetVersion)}`);
+    </script>
   </body>
 </html>

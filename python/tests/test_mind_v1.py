@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from evolution_sim.cli import mind_train
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.io import JsonlTrajectoryWriter
-from evolution_sim.mind.artifacts import MindArtifactError, write_model_artifact
+from evolution_sim.mind.artifacts import (
+    MindArtifactError,
+    validate_model_artifact_manifest,
+    write_model_artifact,
+)
 from evolution_sim.mind.baseline import train_behavior_cloning_baseline
 from evolution_sim.mind.contracts import (
     MIND_MODEL_ARTIFACT_VERSION,
@@ -17,7 +24,11 @@ from evolution_sim.mind.contracts import (
     MIND_V1_DATA_CONTRACT_VERSION,
     mind_v1_data_contract,
 )
-from evolution_sim.mind.dataset import TrajectoryDatasetError, load_trajectory_jsonl
+from evolution_sim.mind.dataset import (
+    TrajectoryDatasetError,
+    dataset_provenance,
+    load_trajectory_jsonl,
+)
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.learned_policy import LearnedPolicy, load_learned_policy
 from evolution_sim.mind.splits import deterministic_seed_split
@@ -25,7 +36,11 @@ from evolution_sim.mind.splits import deterministic_seed_split
 
 class MindV1Tests(unittest.TestCase):
     def _write_tiny_trajectory(self, path: Path) -> None:
-        writer = JsonlTrajectoryWriter(path)
+        writer = JsonlTrajectoryWriter(
+            path,
+            source_seeds=[7],
+            split_id="tiny_train",
+        )
         SimulationWorld(WorldConfig(seed=7, max_ticks=2)).run(
             mode=RunMode.SUMMARY_ONLY,
             trajectory_sink=writer,
@@ -49,10 +64,16 @@ class MindV1Tests(unittest.TestCase):
             dataset = load_trajectory_jsonl(path)
 
         self.assertEqual(dataset.header["type"], "header")
+        self.assertEqual(dataset.header["provenance"]["source_seeds"], [7])
+        self.assertEqual(dataset.header["provenance"]["split_id"], "tiny_train")
         self.assertGreater(dataset.record_count, 0)
         self.assertEqual(dataset.footer["type"], "footer")
         self.assertEqual(
             dataset.footer["trajectory_summary"]["record_count"],
+            dataset.record_count,
+        )
+        self.assertEqual(
+            dataset.footer["provenance"]["record_count"],
             dataset.record_count,
         )
 
@@ -93,7 +114,10 @@ class MindV1Tests(unittest.TestCase):
             artifact_path = Path(tmpdir) / "bc-artifact.json"
             self._write_tiny_trajectory(trajectory_path)
             dataset = load_trajectory_jsonl(trajectory_path)
-            baseline = train_behavior_cloning_baseline(dataset.records)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
             write_model_artifact(artifact_path, baseline.to_artifact())
 
             with self.assertRaises(MindArtifactError):
@@ -101,6 +125,49 @@ class MindV1Tests(unittest.TestCase):
             policy = load_learned_policy(artifact_path, enable_mind=True)
 
         self.assertEqual(policy.policy_id, "mind_v1_learned_policy")
+
+    def test_behavior_cloning_artifact_manifest_requires_provenance(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            artifact = baseline.to_artifact()
+            del artifact["manifest"]["provenance"]
+
+            with self.assertRaisesRegex(MindArtifactError, "provenance"):
+                validate_model_artifact_manifest(artifact)
+
+    def test_mind_train_cli_writes_valid_bc_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            artifact_path = Path(tmpdir) / "bc-artifact.json"
+            self._write_tiny_trajectory(trajectory_path)
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+            self.assertEqual(
+                artifact["manifest"]["provenance"]["record_count"],
+                artifact["manifest"]["trained_record_count"],
+            )
 
     def test_learned_policy_obeys_action_mask(self) -> None:
         policy = LearnedPolicy(action_scores={"eat": 1.0, "stay": 0.1})
@@ -124,6 +191,8 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("trajectory", report["learned"]["aggregate"])
         self.assertIn("mind_v1_gates", report)
         self.assertIn(report["mind_v1_gates"]["status"], {"pass", "review", "fail"})
+        self.assertIn("heuristic", report)
+        self.assertIn("learned", report)
         json.dumps(report)
 
 

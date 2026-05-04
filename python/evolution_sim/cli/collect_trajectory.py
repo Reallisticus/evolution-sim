@@ -21,13 +21,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("output/trajectories/latest-trajectory.jsonl.gz"),
         help="Trajectory JSONL destination. Use a .gz suffix for gzip compression.",
     )
+    parser.add_argument(
+        "--split-id",
+        default="unsplit",
+        help="Dataset split identifier to record in trajectory provenance.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     config = WorldConfig(seed=args.seed, max_ticks=args.ticks)
-    writer = JsonlTrajectoryWriter(args.output)
+    writer = JsonlTrajectoryWriter(
+        args.output,
+        source_seeds=[args.seed],
+        split_id=args.split_id,
+    )
     if args.output.exists():
         print(f"warning: overwriting existing trajectory {args.output}", file=sys.stderr)
     try:

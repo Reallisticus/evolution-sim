@@ -10,6 +10,7 @@ from evolution_sim.env.runtime.observations import OBSERVATION_SCHEMA_VERSION
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.trajectory import TRAJECTORY_SCHEMA_VERSION
 from evolution_sim.mind.contracts import MIND_MODEL_ARTIFACT_VERSION
+from evolution_sim.mind.provenance import validate_dataset_provenance
 
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "global_action_prior_bc_v1"
 
@@ -18,8 +19,10 @@ BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "global_action_prior_bc_v1"
 class BehaviorCloningBaseline:
     action_scores: dict[str, float]
     record_count: int
+    provenance: dict[str, object]
 
     def to_artifact(self) -> dict[str, object]:
+        provenance = validate_dataset_provenance(self.provenance)
         return {
             "manifest": {
                 "artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -29,6 +32,7 @@ class BehaviorCloningBaseline:
                 "policy_interface_version": POLICY_INTERFACE_VERSION,
                 "action_contract_version": ACTION_CONTRACT_VERSION,
                 "trained_record_count": self.record_count,
+                "provenance": provenance,
             },
             "model": {
                 "action_scores": dict(sorted(self.action_scores.items())),
@@ -39,6 +43,8 @@ class BehaviorCloningBaseline:
 
 def train_behavior_cloning_baseline(
     records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
 ) -> BehaviorCloningBaseline:
     counts: Counter[str] = Counter()
     record_count = 0
@@ -62,4 +68,5 @@ def train_behavior_cloning_baseline(
     return BehaviorCloningBaseline(
         action_scores=action_scores,
         record_count=record_count,
+        provenance=provenance,
     )

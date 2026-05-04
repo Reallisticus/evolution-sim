@@ -178,7 +178,10 @@ def compare_heuristic_and_learned(
                 "births",
             ),
         },
-        "mind_v1_gates": build_mind_v1_gate_report(learned),
+        "mind_v1_gates": build_mind_v1_gate_report(
+            learned,
+            baseline_report=heuristic,
+        ),
     }
 
 

@@ -1,157 +1,37 @@
-export const REQUIRED_AGENT_FIELDS = [
-  "agent_id",
-  "x",
-  "y",
-  "energy",
-  "hydration",
-  "health",
-  "health_ratio",
-  "injury_load",
-  "age",
-  "energy_modifier",
-  "hydration_modifier",
-  "trophic_role",
-  "last_damage_source",
-  "water_access_reason",
-  "species_id",
-];
+import {
+  ACTION_CONTRACT_VERSION,
+  ACTION_OUTCOME_SCHEMA_VERSION,
+  ASEXUAL_REPRODUCTION_MODE,
+  GENOME_RECOMBINATION_CONTRACT_VERSION,
+  OBSERVATION_ENCODER_VERSION,
+  OBSERVATION_INPUT_DECODED_DTYPE,
+  OBSERVATION_INPUT_STORAGE_DTYPE,
+  OBSERVATION_INPUT_STORAGE_ENCODING,
+  OBSERVATION_INPUT_VALUE_RANGE,
+  OBSERVATION_INPUT_VECTOR_SIZE,
+  OBSERVATION_SCHEMA_VERSION,
+  POLICY_INTERFACE_VERSION,
+  REPRODUCTION_EVENT_SCHEMA_VERSION,
+  REPRODUCTIVE_EXPRESSIONS,
+  REPRODUCTIVE_GROUP_CONTRACT_VERSION,
+  REPRODUCTIVE_STAGE_ORDER,
+  REQUIRED_AGENT_CATALOG_FIELDS,
+  REQUIRED_AGENT_FIELDS,
+  REQUIRED_BIOTIC_FIELDS,
+  REQUIRED_FRAME_MATRIX_FIELDS,
+  REQUIRED_MAP_FIELDS,
+  REQUIRED_REPRODUCTIVE_GROUP_FIELDS,
+  REQUIRED_SIGNAL_EMISSION_FIELDS,
+  REQUIRED_SIGNAL_FIELDS,
+  REQUIRED_SIGNAL_OUTCOME_FIELDS,
+  REQUIRED_TRAJECTORY_RECORD_FIELDS,
+  REWARD_SCHEMA_VERSION,
+  SEXUAL_REPRODUCTION_MODE,
+  SIGNAL_CONTRACT_VERSION,
+  TRAJECTORY_SCHEMA_VERSION,
+} from "./contracts.generated.mjs";
 
-const TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1";
-const OBSERVATION_SCHEMA_VERSION = "mind_observation_v3";
-const OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2";
-const OBSERVATION_INPUT_DECODED_DTYPE = "float32";
-const OBSERVATION_INPUT_STORAGE_DTYPE = "int16";
-const OBSERVATION_INPUT_STORAGE_ENCODING = "zlib_base64_little_endian_int16";
-const OBSERVATION_INPUT_VECTOR_SIZE = 542;
-const OBSERVATION_INPUT_VALUE_RANGE = [-1, 1];
-const POLICY_INTERFACE_VERSION = "mind_policy_interface_v1";
-const ACTION_CONTRACT_VERSION = "mind_action_contract_v1";
-const SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v2";
-const REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1";
-const GENOME_RECOMBINATION_CONTRACT_VERSION = "genome_recombination_contract_v1";
-const REWARD_SCHEMA_VERSION = "mind_reward_v1";
-const ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2";
-const REPRODUCTION_EVENT_SCHEMA_VERSION = "reproduction_event_v1";
-const ASEXUAL_REPRODUCTION_MODE = "asexual";
-const SEXUAL_REPRODUCTION_MODE = "same_group_sexual";
-const REQUIRED_MAP_FIELDS = ["fertility", "moisture", "heat"];
-const REQUIRED_AGENT_CATALOG_FIELDS = [
-  "agent_id",
-  "parent_id",
-  "secondary_parent_id",
-  "parent_ids",
-  "lineage_id",
-  "reproductive_group_id",
-  "reproductive_stage",
-  "reproductive_expression",
-  "birth_tick",
-  "death_tick",
-  "genome",
-  "mind_inheritance",
-];
-const REQUIRED_REPRODUCTIVE_GROUP_FIELDS = [
-  "group_id",
-  "founder_lineage_id",
-  "founder_agent_id",
-  "created_tick",
-  "last_seen_tick",
-  "stage",
-  "parent_group_ids",
-  "member_count",
-  "alive_member_count",
-  "alive_stage_counts",
-  "alive_expression_counts",
-  "asexual_births",
-  "sexual_births",
-  "hybrid_births",
-];
-const REQUIRED_FRAME_MATRIX_FIELDS = [
-  "fresh_kill_energy_codes",
-  "carcass_energy_codes",
-  "carcass_freshness_codes",
-  "habitat_state_codes",
-  "hydrology_primary_codes",
-  "hydrology_support_codes",
-  "refuge_codes",
-  "refuge_score_codes",
-  "hazard_type_codes",
-  "hazard_level_codes",
-  "trophic_role_codes",
-  "meat_mode_codes",
-  "ecology_state_codes",
-];
-const REQUIRED_BIOTIC_FIELDS = ["prey_biomass", "carrion", "predator_risk"];
-const REQUIRED_SIGNAL_FIELDS = ["reproductive_signal", "communication_signal"];
-const REQUIRED_SIGNAL_EMISSION_FIELDS = [
-  "field_name",
-  "profile_id",
-  "source_kind",
-  "source_agent_id",
-  "token_id",
-  "profile_index",
-  "x",
-  "y",
-  "intensity",
-  "radius",
-  "duration_ticks",
-  "remaining_ticks",
-  "decay_rate",
-  "energy_cost",
-  "emitted_tick",
-];
-const REQUIRED_SIGNAL_OUTCOME_FIELDS = [
-  "emitted",
-  "token_id",
-  "profile_index",
-  "intensity",
-  "radius",
-  "duration_ticks",
-  "decay_rate",
-  "energy_cost",
-  "invalid_reason",
-];
-const REQUIRED_TRAJECTORY_RECORD_FIELDS = [
-  "tick",
-  "agent_id",
-  "lineage_id",
-  "runtime_species_id",
-  "runtime_ecotype_id",
-  "observation_schema",
-  "observation_metadata",
-  "observation_input",
-  "observation_digest",
-  "action_mask",
-  "resolution_action_mask",
-  "requested_action",
-  "action_source",
-  "policy_id",
-  "policy_version",
-  "action_valid",
-  "resolution_action_valid",
-  "resolved_action",
-  "moved",
-  "before",
-  "after",
-  "outcome",
-  "reward",
-];
-const REPRODUCTIVE_STAGE_ORDER = [
-  "stage0_asexual",
-  "stage1_facultative_sex",
-  "stage2_proto_roles",
-  "stage3_x_y_z",
-  "stage4_hybridization",
-];
-const REPRODUCTIVE_EXPRESSIONS = [
-  "asexual",
-  "same_group_compatible",
-  "proto_x_like",
-  "proto_y_like",
-  "proto_z_plastic",
-  "x",
-  "y",
-  "z_plastic",
-];
+export { REQUIRED_AGENT_FIELDS } from "./contracts.generated.mjs";
 
 export function validateReplayPayload(payload) {
   assertObject(payload, "Replay payload");
