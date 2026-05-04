@@ -86,6 +86,7 @@ class RuntimeSurfaceContractTests(RuntimeContractTestHelpers):
             "_fresh_kill_patch_summaries",
             "_carcass_patch_summaries",
             "_signal_runtime_context",
+            "_reproduction_context",
         )
         with ExitStack() as stack:
             for name in private_reads:

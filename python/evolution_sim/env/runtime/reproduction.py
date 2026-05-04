@@ -641,39 +641,6 @@ def finalize_reproduction_energy_readiness_counts(
     }
 
 
-def _resolve_placement_context(
-    world: Any,
-    placement_context: ReproductionPlacementContext | None = None,
-) -> ReproductionPlacementContext:
-    if placement_context is not None:
-        return placement_context
-    return world._reproduction_placement_context()
-
-
-def build_reproduction_context(
-    world: Any,
-    *,
-    placement_context: ReproductionPlacementContext | None = None,
-) -> ReproductionContext:
-    placement = _resolve_placement_context(world, placement_context)
-    return ReproductionContext(
-        config=world.config,
-        rng=world.rng,
-        tick=world.tick,
-        next_agent_id=lambda: world.next_agent_id,
-        placement=placement,
-        trophic_profile=world._trophic_profile,
-        trophic_profile_for_genome=world._trophic_profile_for_genome,
-        trophic_role=world._trophic_role,
-        meat_mode=world._meat_mode,
-        matched_diet_ratio=world._matched_diet_ratio,
-        matched_diet_threshold=world._matched_diet_threshold,
-        health_ratio=world._health_ratio,
-        emit=world._emit,
-        signal_runtime_context=world._signal_runtime_context,
-    )
-
-
 def _resolve_reproduction_context(
     world: Any | None,
     context: ReproductionContext | None = None,
@@ -681,10 +648,13 @@ def _resolve_reproduction_context(
     placement_context: ReproductionPlacementContext | None = None,
 ) -> ReproductionContext:
     if context is not None:
+        if (
+            placement_context is not None
+            and context.placement is not placement_context
+        ):
+            return replace(context, placement=placement_context)
         return context
-    if world is None:
-        raise ValueError("world is required when reproduction context is omitted")
-    return build_reproduction_context(world, placement_context=placement_context)
+    raise ValueError("reproduction context is required")
 
 
 def _next_agent_id(context: ReproductionContext) -> int:
@@ -858,12 +828,15 @@ def is_reproduction_ready(
     )
 
 
-def run_reproduction_phase(world: Any) -> int:
+def run_reproduction_phase(
+    world: Any,
+    *,
+    context: ReproductionContext | None = None,
+) -> int:
     """Run reproductive signaling and births for one tick."""
 
+    reproduction_context = _resolve_reproduction_context(world, context)
     alive_agents = world.alive_agents()
-    reproduction_context = build_reproduction_context(world)
-    placement = reproduction_context.placement
     runtime_signals.emit_reproductive_readiness_signals(
         alive_agents,
         context=reproduction_context.signal_runtime_context(),
@@ -1157,8 +1130,9 @@ def build_frame_reproduction_stats(
     *,
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
+    context: ReproductionContext | None = None,
 ) -> dict[str, object]:
-    reproduction_context = build_reproduction_context(world)
+    reproduction_context = _resolve_reproduction_context(world, context)
     stats = reproduction_readiness_counts(
         world,
         alive,

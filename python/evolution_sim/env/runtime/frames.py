@@ -28,6 +28,7 @@ class FrameCaptureContext:
     fresh_kill_patches: list[dict[str, object]]
     carcass_patches: list[dict[str, object]]
     signal_emissions: dict[str, object]
+    reproduction_context: runtime_reproduction.ReproductionContext
 
 
 def _combat_stats(world: Any) -> dict[str, object]:
@@ -367,6 +368,7 @@ def capture_frame(
         alive,
         trophic_role_codes=trophic_role_codes,
         meat_mode_codes=meat_mode_codes,
+        context=frame_context.reproduction_context,
     )
     frame = build_frame_payload(
         tick=world.tick,

@@ -1801,7 +1801,10 @@ class FoundationGateCliTests(unittest.TestCase):
         self._place_role_fixture_agent(world, x=2, y=2, genome=proto_x)
         self._place_role_fixture_agent(world, x=3, y=2, genome=same_proto_x)
 
-        runtime_reproduction.run_reproduction_phase(world)
+        runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
         flags = _reproductive_role_readiness_flags(
             scope="fixture",
             reproduction=world._reproduction_readiness_counts(world.alive_agents()),

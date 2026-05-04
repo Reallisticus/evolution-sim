@@ -421,6 +421,7 @@ class SimulationWorld:
             action_mask=self._action_mask,
             action_resolution_context=self._action_resolution_context,
             lifecycle_context=self._lifecycle_context(),
+            reproduction_context=self._reproduction_context,
             kill_agent=self._kill_agent,
             finalize_trajectory_decisions=self._finalize_trajectory_decisions,
             record_animal_resource_opportunity_tick=(
@@ -2152,6 +2153,26 @@ class SimulationWorld:
             energy_before=energy_before,
             energy_after=energy_after,
             potential_energy=potential_energy,
+            context=self._feeding_context(),
+        )
+
+    def _feeding_context(self) -> runtime_feeding.FeedingContext:
+        return runtime_feeding.FeedingContext(
+            config=self.config,
+            emit=self._emit,
+            species_id_for_agent=self._species_id_for_agent,
+            trophic_profile=self._trophic_profile,
+            matched_diet_ratio=self._matched_diet_ratio,
+            agent_reachable_animal_resources=self._agent_reachable_animal_resources,
+            scavenger_carcass_hydration_fraction=(
+                self._scavenger_carcass_hydration_fraction
+            ),
+            hydration_ratio=self._hydration_ratio,
+            clamp01=self._clamp01,
+            fresh_kill_tile_summary_for_position=(
+                self._fresh_kill_tile_summary_for_position
+            ),
+            carcass_tile_summary_for_position=self._carcass_tile_summary_for_position,
         )
 
     def _record_animal_resource_consumption(
@@ -2405,6 +2426,7 @@ class SimulationWorld:
             radius=runtime_observations.NAVIGATION_RADIUS,
             action_masks_by_agent=action_masks_by_agent,
             resource_presence=resource_presence,
+            context=self._feeding_context(),
         )
 
     def _record_animal_resource_opportunity_tick(
@@ -3724,6 +3746,7 @@ class SimulationWorld:
             energy_after=agent.energy,
             potential_gain=potential_gain,
             tile=tile,
+            context=self._feeding_context(),
         )
 
     def _consume_fresh_kill(
@@ -3859,6 +3882,7 @@ class SimulationWorld:
             deposit_breakdown,
             immediate_kill_feed,
             freshness,
+            context=self._feeding_context(),
         )
 
     def _drink(self, agent: Agent) -> bool:
@@ -4066,7 +4090,11 @@ class SimulationWorld:
         )
 
     def _can_reproduce(self, agent: Agent) -> bool:
-        return runtime_reproduction.can_reproduce(self, agent)
+        return runtime_reproduction.can_reproduce(
+            self,
+            agent,
+            context=self._reproduction_context(),
+        )
 
     def _reproduction_energy_requirement(
         self,
@@ -4077,6 +4105,7 @@ class SimulationWorld:
             self,
             agent,
             profile,
+            context=self._reproduction_context(),
         )
 
     def _biological_reproduction_block_reasons(
@@ -4088,19 +4117,37 @@ class SimulationWorld:
             self,
             agent,
             profile,
+            context=self._reproduction_context(),
         )
 
     def _is_biologically_reproduction_ready(self, agent: Agent) -> bool:
-        return runtime_reproduction.is_biologically_reproduction_ready(self, agent)
+        return runtime_reproduction.is_biologically_reproduction_ready(
+            self,
+            agent,
+            context=self._reproduction_context(),
+        )
 
     def _reproduction_block_reason(self, agent: Agent) -> str | None:
-        return runtime_reproduction.reproduction_block_reason(self, agent)
+        return runtime_reproduction.reproduction_block_reason(
+            self,
+            agent,
+            context=self._reproduction_context(),
+        )
 
     def _is_reproduction_ready(self, agent: Agent) -> bool:
-        return runtime_reproduction.is_reproduction_ready(self, agent)
+        return runtime_reproduction.is_reproduction_ready(
+            self,
+            agent,
+            context=self._reproduction_context(),
+        )
 
     def _record_reproduction_blocked(self, agent: Agent, reason: str) -> None:
-        runtime_reproduction.record_reproduction_blocked(self, agent, reason)
+        runtime_reproduction.record_reproduction_blocked(
+            self,
+            agent,
+            reason,
+            context=self._reproduction_context(),
+        )
 
     def _reproduction_readiness_counts(self, alive: list[Agent]) -> dict[str, object]:
         return runtime_reproduction.reproduction_readiness_counts(
@@ -4108,6 +4155,7 @@ class SimulationWorld:
             alive,
             trophic_role_codes=TROPHIC_ROLE_CODES,
             meat_mode_codes=MEAT_MODE_CODES,
+            context=self._reproduction_context(),
         )
 
     def _population_trophic_counts(
@@ -4153,6 +4201,7 @@ class SimulationWorld:
             parent_genome,
             child_genome,
             parent_profile,
+            context=self._reproduction_context(),
         )
 
     def _child_starting_fraction(
@@ -4171,7 +4220,11 @@ class SimulationWorld:
         self,
         parent_profile: TrophicProfile,
     ) -> float:
-        return runtime_reproduction.reproduction_energy_cost(self, parent_profile)
+        return runtime_reproduction.reproduction_energy_cost(
+            self,
+            parent_profile,
+            context=self._reproduction_context(),
+        )
 
     def _sexual_reproduction_energy_cost(
         self,
@@ -4180,10 +4233,15 @@ class SimulationWorld:
         return runtime_reproduction.sexual_reproduction_energy_cost(
             self,
             parent_profile,
+            context=self._reproduction_context(),
         )
 
     def _sexual_partner_ready(self, agent: Agent) -> bool:
-        return runtime_reproduction.sexual_partner_ready(self, agent)
+        return runtime_reproduction.sexual_partner_ready(
+            self,
+            agent,
+            context=self._reproduction_context(),
+        )
 
     def _reproduction_placement_context(
         self,
@@ -4204,8 +4262,36 @@ class SimulationWorld:
             invalidate_spatial_state=self._invalidate_biotic_state,
         )
 
+    def _reproduction_context(
+        self,
+        *,
+        placement_context: (
+            runtime_reproduction.ReproductionPlacementContext | None
+        ) = None,
+    ) -> runtime_reproduction.ReproductionContext:
+        return runtime_reproduction.ReproductionContext(
+            config=self.config,
+            rng=self.rng,
+            tick=self.tick,
+            next_agent_id=lambda: self.next_agent_id,
+            placement=placement_context or self._reproduction_placement_context(),
+            trophic_profile=self._trophic_profile,
+            trophic_profile_for_genome=self._trophic_profile_for_genome,
+            trophic_role=self._trophic_role,
+            meat_mode=self._meat_mode,
+            matched_diet_ratio=self._matched_diet_ratio,
+            matched_diet_threshold=self._matched_diet_threshold,
+            health_ratio=self._health_ratio,
+            emit=self._emit,
+            signal_runtime_context=self._signal_runtime_context,
+        )
+
     def _reproduce(self, parent: Agent) -> bool:
-        return runtime_reproduction.reproduce(self, parent)
+        return runtime_reproduction.reproduce(
+            self,
+            parent,
+            context=self._reproduction_context(),
+        )
 
     def _reproduce_asexual(
         self,
@@ -4218,6 +4304,7 @@ class SimulationWorld:
             parent,
             destination,
             parent_profile,
+            context=self._reproduction_context(),
         )
 
     def _reproduce_sexual(
@@ -4233,6 +4320,7 @@ class SimulationWorld:
             mate_candidate,
             destination,
             parent_profile,
+            context=self._reproduction_context(),
         )
 
     def _kill_agent(
@@ -4650,6 +4738,7 @@ class SimulationWorld:
             signal_emissions=runtime_signals.signal_emission_debug_snapshot(
                 context=self._signal_runtime_context(),
             ),
+            reproduction_context=self._reproduction_context(),
         )
 
     def _build_species_metrics(

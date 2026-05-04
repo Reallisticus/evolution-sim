@@ -575,10 +575,12 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
 
     def test_feeding_telemetry_uses_runtime_accounting_for_all_food_sources(self) -> None:
         observed_sources: list[str] = []
+        observed_contexts: list[runtime_feeding.FeedingContext] = []
         original_record_feeding_event = runtime_feeding.record_feeding_event
 
         def record_spy(*args: object, **kwargs: object) -> None:
             observed_sources.append(str(args[2]))
+            observed_contexts.append(kwargs["context"])
             original_record_feeding_event(*args, **kwargs)
 
         with patch(
@@ -642,6 +644,12 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
         self.assertIsNotNone(fresh_outcome)
         self.assertIsNotNone(carcass_outcome)
         self.assertEqual(observed_sources, ["plant", "fresh_kill", "carcass"])
+        self.assertTrue(
+            all(
+                isinstance(context, runtime_feeding.FeedingContext)
+                for context in observed_contexts
+            )
+        )
         for world, food_source in (
             (plant_world, "plant"),
             (fresh_world, "fresh_kill"),

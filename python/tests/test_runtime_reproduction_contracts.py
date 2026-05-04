@@ -119,7 +119,10 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         first = self._place_ready_agent(world, x=1, y=1, lineage_id=1)
         second = self._place_ready_agent(world, x=3, y=3, lineage_id=2)
 
-        births = runtime_reproduction.run_reproduction_phase(world)
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
 
         blocked_events = [
             event
@@ -191,12 +194,14 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         availability = runtime_reproduction.reproduction_availability(
             world,
             placement_context=placement,
+            context=world._reproduction_context(placement_context=placement),
         )
         reason = runtime_reproduction.reproduction_block_reason(
             world,
             parent,
             availability,
             placement_context=placement,
+            context=world._reproduction_context(placement_context=placement),
         )
 
         self.assertTrue(availability.population_saturated)
@@ -223,6 +228,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
                 world,
                 parent,
                 placement_context=placement,
+                context=world._reproduction_context(placement_context=placement),
             )
 
         self.assertEqual(reason, "local_crowding")
@@ -511,7 +517,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         )
         first_parent = self._place_ready_agent(world, x=1, y=1, lineage_id=1)
         second_parent = self._place_ready_agent(world, x=5, y=5, lineage_id=2)
-        shared_context = runtime_reproduction.build_reproduction_context(world)
+        shared_context = world._reproduction_context()
 
         first_profile = shared_context.trophic_profile(first_parent)
         second_profile = shared_context.trophic_profile(second_parent)
@@ -1360,7 +1366,13 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             genome=genome,
         )
 
-        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+        self.assertTrue(
+            runtime_reproduction.reproduce(
+                world,
+                parent,
+                context=world._reproduction_context(),
+            )
+        )
 
         child = next(
             agent
@@ -1373,6 +1385,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             world.alive_agents(),
             trophic_role_codes=TROPHIC_ROLE_CODES,
             meat_mode_codes=MEAT_MODE_CODES,
+            context=world._reproduction_context(),
         )
 
         self.assertIsNone(child.secondary_parent_id)
@@ -1457,7 +1470,13 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             genome=genome,
         )
 
-        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+        self.assertTrue(
+            runtime_reproduction.reproduce(
+                world,
+                parent,
+                context=world._reproduction_context(),
+            )
+        )
 
         self.assertEqual(world.tick_reproduction_mate_search_events, [])
         self.assertEqual(
@@ -1506,7 +1525,13 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         parent_energy = parent.energy
         partner_energy = partner.energy
 
-        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+        self.assertTrue(
+            runtime_reproduction.reproduce(
+                world,
+                parent,
+                context=world._reproduction_context(),
+            )
+        )
 
         child = next(
             agent
@@ -1629,7 +1654,11 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             world._trophic_profile(partner)
         )
 
-        birth_count = runtime_reproduction.reproduce_birth_count(world, parent)
+        birth_count = runtime_reproduction.reproduce_birth_count(
+            world,
+            parent,
+            context=world._reproduction_context(),
+        )
 
         children = [
             agent
@@ -1792,6 +1821,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
                 parent,
                 alive_count=2,
                 placement_context=placement,
+                context=world._reproduction_context(placement_context=placement),
             )
 
         events = [
@@ -1862,6 +1892,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             world,
             parent,
             alive_count=2,
+            context=world._reproduction_context(),
         )
 
         event = world.events[-1].to_dict()
@@ -1932,7 +1963,11 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             genome=low_fecundity_genome,
         )
 
-        birth_count = runtime_reproduction.reproduce_birth_count(world, parent)
+        birth_count = runtime_reproduction.reproduce_birth_count(
+            world,
+            parent,
+            context=world._reproduction_context(),
+        )
 
         event = world.events[-1].to_dict()
         self.assertEqual(birth_count, 1)
@@ -1965,6 +2000,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         child_genome = self._mixed_genome()
         plant_profile = self._test_trophic_profile("none")
         hunter_profile = self._test_trophic_profile("hunter")
+        context = world._reproduction_context()
 
         forward = runtime_reproduction.sexual_child_stabilized_genome(
             world,
@@ -1973,6 +2009,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             child_genome,
             hunter_profile,
             plant_profile,
+            context=context,
         )
         reverse = runtime_reproduction.sexual_child_stabilized_genome(
             world,
@@ -1981,6 +2018,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             child_genome,
             plant_profile,
             hunter_profile,
+            context=context,
         )
 
         self.assertEqual(forward.to_dict(), reverse.to_dict())
@@ -2052,17 +2090,21 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             genome=secondary_genome,
         )
 
+        context = world._reproduction_context()
+
         forward = runtime_reproduction.sexual_reproductive_state_for_child(
             world,
             primary,
             secondary,
             child_genome,
+            context=context,
         )
         reverse = runtime_reproduction.sexual_reproductive_state_for_child(
             world,
             secondary,
             primary,
             child_genome,
+            context=context,
         )
 
         self.assertEqual(forward, reverse)
@@ -2114,7 +2156,13 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         )
         expected_child_agent_id = world.next_agent_id
 
-        self.assertTrue(runtime_reproduction.reproduce(world, parent))
+        self.assertTrue(
+            runtime_reproduction.reproduce(
+                world,
+                parent,
+                context=world._reproduction_context(),
+            )
+        )
 
         child = world.agents[expected_child_agent_id]
         event = world.events[-1].to_dict()

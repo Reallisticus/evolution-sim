@@ -30,6 +30,7 @@ class TickPhaseContext:
     action_mask: Callable[[Any], dict[str, bool]]
     action_resolution_context: Callable[[Any], runtime_actions.ActionResolutionContext]
     lifecycle_context: runtime_lifecycle.LifecycleContext
+    reproduction_context: Callable[[], runtime_reproduction.ReproductionContext]
     kill_agent: Callable[..., None]
     finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
     record_animal_resource_opportunity_tick: Callable[
@@ -154,7 +155,10 @@ def run_tick(
             acted_trajectory_agent_ids.add(agent_id)
         tick_context.invalidate_biotic_state()
 
-    births_this_tick = runtime_reproduction.run_reproduction_phase(world)
+    births_this_tick = runtime_reproduction.run_reproduction_phase(
+        world,
+        context=tick_context.reproduction_context(),
+    )
     post_reproduction_alive = len(world.alive_agents())
 
     for agent_id in sorted(world.agents):

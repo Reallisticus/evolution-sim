@@ -31,33 +31,13 @@ class FeedingContext:
     carcass_tile_summary_for_position: Callable[[int, int], dict[str, object]]
 
 
-def build_feeding_context(world: Any) -> FeedingContext:
-    return FeedingContext(
-        config=world.config,
-        emit=world._emit,
-        species_id_for_agent=world._species_id_for_agent,
-        trophic_profile=world._trophic_profile,
-        matched_diet_ratio=world._matched_diet_ratio,
-        agent_reachable_animal_resources=world._agent_reachable_animal_resources,
-        scavenger_carcass_hydration_fraction=(
-            world._scavenger_carcass_hydration_fraction
-        ),
-        hydration_ratio=world._hydration_ratio,
-        clamp01=world._clamp01,
-        fresh_kill_tile_summary_for_position=(
-            world._fresh_kill_tile_summary_for_position
-        ),
-        carcass_tile_summary_for_position=world._carcass_tile_summary_for_position,
-    )
-
-
 def _resolve_feeding_context(
     world: Any,
     context: FeedingContext | None = None,
 ) -> FeedingContext:
     if context is not None:
         return context
-    return build_feeding_context(world)
+    raise ValueError("feeding context is required")
 
 
 def empty_diet_totals() -> dict[str, float]:

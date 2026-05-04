@@ -491,7 +491,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         energy_required = world._reproduction_energy_requirement(agent, profile)
         agent.energy = energy_required + 0.05
 
-        births = runtime_reproduction.run_reproduction_phase(world)
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
 
         self.assertEqual(births, 1)
         self.assertEqual(world.tick_signal_totals["reproductive_emissions"], 0.0)
@@ -752,7 +755,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         parent = self._place_ready_agent(world, x=2, y=2)
 
-        births = runtime_reproduction.run_reproduction_phase(world)
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
 
         child = next(
             agent
