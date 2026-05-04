@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import evolution_sim.env.runtime.feeding as runtime_feeding
@@ -9,6 +10,24 @@ from evolution_sim.env.runtime.reporting import (
     finalize_diet_totals,
     finalize_grouped_diet_totals,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCaptureContext:
+    alive: list[Any]
+    species_map: dict[int, int]
+    species_records: list[Any]
+    ecotype_map: dict[int, int]
+    ecotype_records: list[Any]
+    trait_means: dict[str, float]
+    surfaces: dict[str, object]
+    season: str
+    agent_telemetry: dict[int, dict[str, object]]
+    species_metrics: dict[str, dict[str, object]]
+    ecotype_metrics: dict[str, dict[str, object]]
+    fresh_kill_patches: list[dict[str, object]]
+    carcass_patches: list[dict[str, object]]
+    signal_emissions: dict[str, object]
 
 
 def _combat_stats(world: Any) -> dict[str, object]:
@@ -316,38 +335,19 @@ def capture_frame(
     deaths_this_tick: int,
     trophic_role_codes: dict[str, int],
     meat_mode_codes: dict[str, int],
+    frame_context: FrameCaptureContext,
 ) -> None:
-    (
-        alive,
-        species_map,
-        species_records,
-        ecotype_map,
-        ecotype_records,
-    ) = world._refresh_population_snapshots()
-    trait_means = world._trait_means(alive)
-    surface_context = world._frame_surface_context()
-    surfaces = world._materialize_frame_surfaces(surface_context=surface_context)
-    season = str(surface_context.climate_state["season"])
-    agent_telemetry = world._build_agent_frame_telemetry(
-        alive,
-        season=season,
-        surfaces=surfaces,
-        surface_context=surface_context,
-    )
-    species_metrics = world._build_species_metrics(
-        alive,
-        species_map,
-        world.agent_last_species_map,
-        agent_telemetry=agent_telemetry,
-    )
-    ecotype_metrics = world._build_species_metrics(
-        alive,
-        ecotype_map,
-        world.agent_last_ecotype_map,
-        agent_telemetry=agent_telemetry,
-    )
-    fresh_kill_patches = world._fresh_kill_patch_summaries()
-    carcass_patches = world._carcass_patch_summaries()
+    alive = frame_context.alive
+    species_map = frame_context.species_map
+    species_records = frame_context.species_records
+    ecotype_map = frame_context.ecotype_map
+    ecotype_records = frame_context.ecotype_records
+    trait_means = frame_context.trait_means
+    surfaces = frame_context.surfaces
+    season = frame_context.season
+    agent_telemetry = frame_context.agent_telemetry
+    fresh_kill_patches = frame_context.fresh_kill_patches
+    carcass_patches = frame_context.carcass_patches
     combat_stats = _combat_stats(world)
     fresh_kill_flow = _fresh_kill_flow(world)
     carcass_flow = _carcass_flow(world)
@@ -373,9 +373,7 @@ def capture_frame(
         season=season,
         surfaces=surfaces,
         signal_flow=runtime_signals.finalize_signal_totals(world.tick_signal_totals),
-        signal_emissions=runtime_signals.signal_emission_debug_snapshot(
-            context=world._signal_runtime_context(),
-        ),
+        signal_emissions=frame_context.signal_emissions,
         fresh_kill_patches=fresh_kill_patches,
         fresh_kill_flow=fresh_kill_flow,
         carcass_patches=carcass_patches,
@@ -407,8 +405,8 @@ def capture_frame(
         births_this_tick=births_this_tick,
         deaths_this_tick=deaths_this_tick,
         trait_means=trait_means,
-        species_metrics=species_metrics,
-        ecotype_metrics=ecotype_metrics,
+        species_metrics=frame_context.species_metrics,
+        ecotype_metrics=frame_context.ecotype_metrics,
         species_counts=[
             [record.species_id, record.member_count] for record in species_records
         ],

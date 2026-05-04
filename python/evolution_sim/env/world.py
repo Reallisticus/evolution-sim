@@ -4600,6 +4600,56 @@ class SimulationWorld:
             deaths_this_tick=deaths_this_tick,
             trophic_role_codes=TROPHIC_ROLE_CODES,
             meat_mode_codes=MEAT_MODE_CODES,
+            frame_context=self._frame_capture_context(),
+        )
+
+    def _frame_capture_context(self) -> runtime_frames.FrameCaptureContext:
+        (
+            alive,
+            species_map,
+            species_records,
+            ecotype_map,
+            ecotype_records,
+        ) = self._refresh_population_snapshots()
+        trait_means = self._trait_means(alive)
+        surface_context = self._frame_surface_context()
+        surfaces = self._materialize_frame_surfaces(surface_context=surface_context)
+        season = str(surface_context.climate_state["season"])
+        agent_telemetry = self._build_agent_frame_telemetry(
+            alive,
+            season=season,
+            surfaces=surfaces,
+            surface_context=surface_context,
+        )
+        species_metrics = self._build_species_metrics(
+            alive,
+            species_map,
+            self.agent_last_species_map,
+            agent_telemetry=agent_telemetry,
+        )
+        ecotype_metrics = self._build_species_metrics(
+            alive,
+            ecotype_map,
+            self.agent_last_ecotype_map,
+            agent_telemetry=agent_telemetry,
+        )
+        return runtime_frames.FrameCaptureContext(
+            alive=alive,
+            species_map=species_map,
+            species_records=species_records,
+            ecotype_map=ecotype_map,
+            ecotype_records=ecotype_records,
+            trait_means=trait_means,
+            surfaces=surfaces,
+            season=season,
+            agent_telemetry=agent_telemetry,
+            species_metrics=species_metrics,
+            ecotype_metrics=ecotype_metrics,
+            fresh_kill_patches=self._fresh_kill_patch_summaries(),
+            carcass_patches=self._carcass_patch_summaries(),
+            signal_emissions=runtime_signals.signal_emission_debug_snapshot(
+                context=self._signal_runtime_context(),
+            ),
         )
 
     def _build_species_metrics(

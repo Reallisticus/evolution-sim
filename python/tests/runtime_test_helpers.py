@@ -52,6 +52,7 @@ from evolution_sim.env.runtime.action_space import (
 )
 import evolution_sim.env.runtime.feeding as runtime_feeding
 import evolution_sim.env.runtime.feeding_opportunity as runtime_feeding_opportunity
+import evolution_sim.env.runtime.frames as runtime_frames
 import evolution_sim.env.runtime.actions as runtime_actions
 import evolution_sim.env.runtime.collectors as runtime_collectors
 import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary

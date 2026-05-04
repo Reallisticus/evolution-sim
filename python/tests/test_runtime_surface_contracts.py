@@ -57,6 +57,59 @@ class RuntimeSurfaceContractTests(RuntimeContractTestHelpers):
         self.assertEqual(kwargs["deaths_this_tick"], 1)
         self.assertIs(kwargs["trophic_role_codes"], TROPHIC_ROLE_CODES)
         self.assertIs(kwargs["meat_mode_codes"], MEAT_MODE_CODES)
+        self.assertIsInstance(
+            kwargs["frame_context"],
+            runtime_frames.FrameCaptureContext,
+        )
+
+    def test_frame_capture_uses_explicit_context(self) -> None:
+        expected_world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        expected_context = expected_world._frame_capture_context()
+        runtime_frames.capture_frame(
+            expected_world,
+            births_this_tick=2,
+            deaths_this_tick=1,
+            trophic_role_codes=TROPHIC_ROLE_CODES,
+            meat_mode_codes=MEAT_MODE_CODES,
+            frame_context=expected_context,
+        )
+
+        actual_world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        context = actual_world._frame_capture_context()
+        private_reads = (
+            "_refresh_population_snapshots",
+            "_trait_means",
+            "_frame_surface_context",
+            "_materialize_frame_surfaces",
+            "_build_agent_frame_telemetry",
+            "_build_species_metrics",
+            "_fresh_kill_patch_summaries",
+            "_carcass_patch_summaries",
+            "_signal_runtime_context",
+        )
+        with ExitStack() as stack:
+            for name in private_reads:
+                stack.enter_context(
+                    patch.object(actual_world, name, side_effect=AssertionError(name))
+                )
+            runtime_frames.capture_frame(
+                actual_world,
+                births_this_tick=2,
+                deaths_this_tick=1,
+                trophic_role_codes=TROPHIC_ROLE_CODES,
+                meat_mode_codes=MEAT_MODE_CODES,
+                frame_context=context,
+            )
+
+        self.assertEqual(actual_world.viewer_frames, expected_world.viewer_frames)
+        self.assertEqual(
+            actual_world.agent_last_species_map,
+            expected_world.agent_last_species_map,
+        )
+        self.assertEqual(
+            actual_world.agent_last_ecotype_map,
+            expected_world.agent_last_ecotype_map,
+        )
 
     def test_surface_materialization_uses_explicit_frame_context(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
