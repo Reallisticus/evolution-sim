@@ -25,15 +25,20 @@ def build_mind_v1_gate_report(
     if not isinstance(trajectory, Mapping):
         flags.append(_flag("error", "policy", "trajectory", "Missing trajectory aggregate."))
     else:
-        invalid_rate = float(trajectory.get("invalid_action_rate", 1.0))
+        invalid_rate = float(
+            trajectory.get(
+                "invalid_observation_action_rate",
+                trajectory.get("invalid_action_rate", 1.0),
+            )
+        )
         if invalid_rate > max_invalid_action_rate:
             flags.append(
                 _flag(
                     "error",
                     "policy",
-                    "trajectory.invalid_action_rate",
+                    "trajectory.invalid_observation_action_rate",
                     (
-                        f"Invalid-action rate {invalid_rate:.4f} exceeds "
+                        f"Invalid observation-action rate {invalid_rate:.4f} exceeds "
                         f"{max_invalid_action_rate:.4f}."
                     ),
                 )

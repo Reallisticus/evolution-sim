@@ -26,22 +26,25 @@ from evolution_sim.mind.contracts import (
 )
 from evolution_sim.mind.dataset import (
     TrajectoryDatasetError,
+    combined_dataset_provenance,
     dataset_provenance,
     load_trajectory_jsonl,
 )
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
+from evolution_sim.mind.feature_policy import feature_keys_from_observation
+from evolution_sim.mind.gates import build_mind_v1_gate_report
 from evolution_sim.mind.learned_policy import LearnedPolicy, load_learned_policy
 from evolution_sim.mind.splits import deterministic_seed_split
 
 
 class MindV1Tests(unittest.TestCase):
-    def _write_tiny_trajectory(self, path: Path) -> None:
+    def _write_tiny_trajectory(self, path: Path, *, seed: int = 7) -> None:
         writer = JsonlTrajectoryWriter(
             path,
-            source_seeds=[7],
+            source_seeds=[seed],
             split_id="tiny_train",
         )
-        SimulationWorld(WorldConfig(seed=7, max_ticks=2)).run(
+        SimulationWorld(WorldConfig(seed=seed, max_ticks=2)).run(
             mode=RunMode.SUMMARY_ONLY,
             trajectory_sink=writer,
         )
@@ -125,6 +128,7 @@ class MindV1Tests(unittest.TestCase):
             policy = load_learned_policy(artifact_path, enable_mind=True)
 
         self.assertEqual(policy.policy_id, "mind_v1_learned_policy")
+        self.assertTrue(policy.heuristic_guard)
 
     def test_behavior_cloning_artifact_manifest_requires_provenance(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -169,6 +173,64 @@ class MindV1Tests(unittest.TestCase):
                 artifact["manifest"]["trained_record_count"],
             )
 
+    def test_mind_train_cli_accepts_seed_bank_trajectories(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            first_trajectory_path = Path(tmpdir) / "trajectory-seed7.jsonl.gz"
+            second_trajectory_path = Path(tmpdir) / "trajectory-seed8.jsonl.gz"
+            artifact_path = Path(tmpdir) / "bc-seed-bank-artifact.json"
+            self._write_tiny_trajectory(first_trajectory_path, seed=7)
+            self._write_tiny_trajectory(second_trajectory_path, seed=8)
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(first_trajectory_path),
+                        "--trajectory",
+                        str(second_trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+            provenance = artifact["manifest"]["provenance"]
+            self.assertEqual(provenance["source_seeds"], [7, 8])
+            self.assertEqual(provenance["source_dataset_count"], 2)
+            self.assertEqual(
+                provenance["record_count"],
+                artifact["manifest"]["trained_record_count"],
+            )
+            self.assertEqual(
+                provenance["trajectory_paths"],
+                [str(first_trajectory_path), str(second_trajectory_path)],
+            )
+            self.assertGreater(len(artifact["model"]["conditional_action_scores"]), 0)
+
+    def test_combined_dataset_provenance_rejects_mismatched_contracts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            first_trajectory_path = Path(tmpdir) / "trajectory-seed7.jsonl.gz"
+            second_trajectory_path = Path(tmpdir) / "trajectory-stale.jsonl.gz"
+            self._write_tiny_trajectory(first_trajectory_path, seed=7)
+            with gzip.open(first_trajectory_path, "rt", encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle]
+            rows[-1]["provenance"]["contract_digest"] = "stale"
+            with gzip.open(second_trajectory_path, "wt", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+            first_dataset = load_trajectory_jsonl(first_trajectory_path)
+            second_dataset = load_trajectory_jsonl(second_trajectory_path)
+
+            with self.assertRaisesRegex(TrajectoryDatasetError, "contract digests"):
+                combined_dataset_provenance([first_dataset, second_dataset])
+
     def test_learned_policy_obeys_action_mask(self) -> None:
         policy = LearnedPolicy(action_scores={"eat": 1.0, "stay": 0.1})
 
@@ -177,6 +239,31 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertEqual(blocked.requested_action, "stay")
         self.assertEqual(allowed.requested_action, "eat")
+
+    def test_learned_policy_uses_contextual_scores_before_global_prior(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.2,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+            },
+            "local_patch": [
+                {"dx": 0, "dy": 0, "food": 0.2, "fresh_kill_energy": 0.0, "carcass_energy": 0.0}
+            ],
+            "navigation": {},
+        }
+        action_mask = {"stay": True, "eat": True}
+        contextual_key = feature_keys_from_observation(observation, action_mask)[0]
+        policy = LearnedPolicy(
+            action_scores={"eat": 1.0, "stay": 0.1},
+            conditional_action_scores={contextual_key: {"eat": 0.0, "stay": 1.0}},
+        )
+
+        decision = policy.decide(observation, action_mask)
+
+        self.assertEqual(decision.requested_action, "stay")
 
     def test_policy_evaluation_compares_heuristic_and_learned_on_summary_only_seeds(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
@@ -194,6 +281,31 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("heuristic", report)
         self.assertIn("learned", report)
         json.dumps(report)
+
+    def test_mind_gate_uses_policy_visible_invalid_action_rate(self) -> None:
+        report = {
+            "runs": [
+                {
+                    "alive_agents": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                    "land_tile_count": 1,
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 0.0},
+                "trajectory": {
+                    "invalid_action_rate": 0.0,
+                    "invalid_observation_action_rate": 0.0,
+                    "invalid_resolution_action_rate": 0.5,
+                },
+            },
+        }
+
+        gate = build_mind_v1_gate_report(report)
+
+        self.assertEqual(gate["status"], "pass")
 
 
 if __name__ == "__main__":

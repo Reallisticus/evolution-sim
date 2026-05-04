@@ -4,7 +4,7 @@ import gzip
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, TextIO
+from typing import Iterator, Sequence, TextIO
 
 from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
@@ -21,7 +21,10 @@ from evolution_sim.env.runtime.trajectory import (
     update_trajectory_stats,
 )
 from evolution_sim.genome.recombination import GENOME_RECOMBINATION_CONTRACT_VERSION
-from evolution_sim.mind.provenance import validate_dataset_provenance
+from evolution_sim.mind.provenance import (
+    stable_payload_digest,
+    validate_dataset_provenance,
+)
 
 TRAJECTORY_JSONL_FORMAT = "evolution_sim_trajectory_jsonl_v1"
 
@@ -197,3 +200,61 @@ def dataset_provenance(dataset: TrajectoryJsonlDataset) -> dict[str, object]:
     provenance["trajectory_paths"] = [str(dataset.path)]
     provenance["record_count"] = dataset.record_count
     return provenance
+
+
+def combined_dataset_provenance(
+    datasets: Sequence[TrajectoryJsonlDataset],
+) -> dict[str, object]:
+    if not datasets:
+        raise TrajectoryDatasetError("at least one trajectory dataset is required")
+    if len(datasets) == 1:
+        return dataset_provenance(datasets[0])
+
+    source_seeds: list[int] = []
+    seen_seeds: set[int] = set()
+    trajectory_paths: list[str] = []
+    split_ids: list[str] = []
+    contract_digests: set[str] = set()
+    config_sources: list[dict[str, object]] = []
+    record_count = 0
+
+    for dataset in datasets:
+        provenance = validate_dataset_provenance(dataset.footer.get("provenance"))
+        trajectory_paths.append(str(dataset.path))
+        record_count += dataset.record_count
+        split_id = str(provenance["split_id"])
+        if split_id not in split_ids:
+            split_ids.append(split_id)
+        contract_digests.add(str(provenance["contract_digest"]))
+        for seed in provenance["source_seeds"]:
+            if seed in seen_seeds:
+                continue
+            seen_seeds.add(seed)
+            source_seeds.append(int(seed))
+        config_sources.append(
+            {
+                "path": str(dataset.path),
+                "source_seeds": list(provenance["source_seeds"]),
+                "config_digest": str(provenance["config_digest"]),
+                "record_count": dataset.record_count,
+            }
+        )
+
+    if len(contract_digests) != 1:
+        raise TrajectoryDatasetError(
+            "cannot combine trajectory datasets with different contract digests"
+        )
+
+    return {
+        "source_seeds": source_seeds,
+        "config_digest": stable_payload_digest(
+            {
+                "combined_from": config_sources,
+            }
+        ),
+        "contract_digest": next(iter(contract_digests)),
+        "split_id": split_ids[0] if len(split_ids) == 1 else "+".join(split_ids),
+        "trajectory_paths": trajectory_paths,
+        "record_count": record_count,
+        "source_dataset_count": len(datasets),
+    }

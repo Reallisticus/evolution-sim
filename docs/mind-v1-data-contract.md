@@ -37,9 +37,19 @@ records, and footer before returning records for offline training.
 ## Offline Baseline
 
 `evolution_sim.mind.baseline.train_behavior_cloning_baseline()` trains a tiny
-global action-prior behavior-cloning model from strict trajectory records. It is
-intentionally small: it proves dataset, artifact, adapter, and gate plumbing
-without claiming learned-controller quality.
+guarded contextual action-prior behavior-cloning model from strict trajectory
+records. It buckets policy-visible vitals, trophic mode, local resource hints,
+navigation hints, and action masks. Runtime loading enables a heuristic safety
+floor for survival/navigation conflicts, so this baseline proves dataset,
+artifact, adapter, and gate plumbing without claiming learned-controller
+quality.
+
+`npm run sim:mind:train -- --trajectory <path> --output <artifact>` validates
+the trajectory file before writing an artifact. Repeat `--trajectory` to train a
+single seed-bank baseline from multiple JSONL/JSONL.GZ streams. Combined
+artifacts preserve first-seen source seed order, source trajectory paths, total
+record count, source dataset count, and a combined config digest; all sources
+must share the same data-contract digest.
 
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
@@ -52,7 +62,8 @@ heuristic and learned policy over summary-only seeds with trajectory recording
 enabled. The Mind v1 gate report checks:
 
 - schema compatibility through the loaded artifact manifest;
-- invalid-action rate from trajectory summaries;
+- policy-visible invalid-action rate from trajectory summaries, with
+  resolution-conflict rate reported separately;
 - survival through viable-run share;
 - reproduction through births per run;
 - resource pressure through plant energy available per land tile.

@@ -5,7 +5,10 @@ from pathlib import Path
 
 from evolution_sim.mind.artifacts import write_model_artifact
 from evolution_sim.mind.baseline import train_behavior_cloning_baseline
-from evolution_sim.mind.dataset import dataset_provenance, load_trajectory_jsonl
+from evolution_sim.mind.dataset import (
+    combined_dataset_provenance,
+    load_trajectory_jsonl,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--trajectory",
         type=Path,
         required=True,
+        action="append",
         help="Trajectory JSONL or JSONL.GZ input.",
     )
     parser.add_argument(
@@ -29,16 +33,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    dataset = load_trajectory_jsonl(args.trajectory)
+    datasets = [load_trajectory_jsonl(path) for path in args.trajectory]
+    records = (
+        record
+        for dataset in datasets
+        for record in dataset.records
+    )
     baseline = train_behavior_cloning_baseline(
-        dataset.records,
-        provenance=dataset_provenance(dataset),
+        records,
+        provenance=combined_dataset_provenance(datasets),
     )
     write_model_artifact(args.output, baseline.to_artifact())
     print(f"artifact={args.output}")
     print(f"model_type={baseline.to_artifact()['manifest']['model_type']}")
     print(f"trained_record_count={baseline.record_count}")
-    print(f"source_records={dataset.record_count}")
+    print(f"source_records={sum(dataset.record_count for dataset in datasets)}")
+    print(f"source_trajectories={len(datasets)}")
 
 
 if __name__ == "__main__":

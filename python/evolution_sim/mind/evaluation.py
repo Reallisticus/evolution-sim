@@ -60,11 +60,15 @@ def evaluate_policy(
 
     aggregate = _aggregate_report(runs)
     if total_records:
+        invalid_observation_rate = _round_float(invalid_observation / total_records)
+        invalid_resolution_rate = _round_float(invalid_resolution / total_records)
         aggregate["trajectory"] = {
             "record_count": total_records,
             "invalid_observation_action_count": invalid_observation,
             "invalid_resolution_action_count": invalid_resolution,
-            "invalid_action_rate": _round_float(invalid_resolution / total_records),
+            "invalid_observation_action_rate": invalid_observation_rate,
+            "invalid_resolution_action_rate": invalid_resolution_rate,
+            "invalid_action_rate": invalid_observation_rate,
             "mean_reward": _round_float(total_reward / total_records),
             "action_counts": {
                 action: trajectory_counter[action]

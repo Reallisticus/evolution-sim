@@ -52,6 +52,28 @@ The trajectory stream is gzip JSONL when the output path ends in `.gz`. It write
 a header with the trajectory/observation/reward contract, one record per
 decision, and a footer with summary and trajectory statistics.
 
+Train and evaluate the current disabled-by-default Mind v1 behavior-cloning
+baseline from one or more trajectory streams:
+
+```bash
+cd /Users/njm/Projects/evolution-sim
+npm run sim:mind:train -- \
+  --trajectory output/trajectories/seed7.jsonl.gz \
+  --output output/mind/seed7-bc-artifact.json
+
+npm run sim:mind:evaluate -- \
+  --artifact output/mind/seed7-bc-artifact.json \
+  --enable-mind \
+  --seeds 8 \
+  --ticks 120 \
+  --output output/mind/seed7-bc-eval.json
+```
+
+Repeat `--trajectory` on `sim:mind:train` to build a seed-bank artifact. The
+baseline is intentionally small and guarded by the existing observation
+heuristic for survival/navigation conflicts; use evaluation gates as an honest
+readiness report, not as a learned-controller quality claim.
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:
