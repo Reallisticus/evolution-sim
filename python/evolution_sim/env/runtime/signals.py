@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, MutableMapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any
 
 from evolution_sim.config.schema import SignalConfig
 
@@ -102,6 +103,32 @@ class SignalFieldState:
         if name == COMMUNICATION_SIGNAL_FIELD:
             return self.communication_signal
         raise KeyError(name)
+
+
+DiffusionTargetCache = MutableMapping[
+    int,
+    tuple[tuple[tuple[int, float], ...], ...],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRuntimeContext:
+    config: Any
+    width: int
+    height: int
+    grid: Sequence[Sequence[Any]]
+    tick: int
+    reproductive_signal_emissions: list[SignalEmission]
+    communication_signal_emissions: list[SignalEmission]
+    tick_signal_emission_events: list[dict[str, object]]
+    tick_signal_totals: dict[str, float]
+    run_signal_totals: dict[str, float]
+    diffusion_target_cache: DiffusionTargetCache
+    record_runtime_cost: Callable[[str, int], None]
+    invalidate_signal_state: Callable[[], None]
+    is_biologically_reproduction_ready: Callable[[Any], bool]
+    trophic_profile: Callable[[Any], Any]
+    reproduction_energy_requirement: Callable[[Any, Any], float]
 
 
 def inert_signal_profile(
@@ -369,38 +396,36 @@ def _positive_signal_intensity_ceiling(
     return min(float(getattr(config, "max_intensity", 0.0)), configured_ceiling) > 0.0
 
 
-def invalidate_signal_state(world: Any) -> None:
-    _record_runtime_cost(world, "signal_state_invalidations")
-    world.signal_state_revision += 1
-    world.cached_signal_state_revision = None
-    world.cached_signal_state = None
+def invalidate_signal_state(context: SignalRuntimeContext) -> None:
+    context.invalidate_signal_state()
 
 
-def decay_signal_emissions(world: Any) -> None:
-    config = world.config.signals
+def decay_signal_emissions(*, context: SignalRuntimeContext) -> None:
+    config = context.config
     changed = False
     if not config.enabled:
-        if world.reproductive_signal_emissions:
-            world.reproductive_signal_emissions = []
+        if context.reproductive_signal_emissions:
+            context.reproductive_signal_emissions.clear()
             changed = True
-        if world.communication_signal_emissions:
-            world.communication_signal_emissions = []
+        if context.communication_signal_emissions:
+            context.communication_signal_emissions.clear()
             changed = True
         if changed:
-            invalidate_signal_state(world)
+            invalidate_signal_state(context)
         return
 
-    changed = _decay_emission_list(world.reproductive_signal_emissions) or changed
-    changed = _decay_emission_list(world.communication_signal_emissions) or changed
+    changed = _decay_emission_list(context.reproductive_signal_emissions) or changed
+    changed = _decay_emission_list(context.communication_signal_emissions) or changed
     if changed:
-        invalidate_signal_state(world)
+        invalidate_signal_state(context)
 
 
 def emit_reproductive_readiness_signals(
-    world: Any,
     agents: Iterable[Any],
+    *,
+    context: SignalRuntimeContext,
 ) -> dict[str, object]:
-    config = world.config.signals
+    config = context.config
     if not reproductive_signal_emission_enabled(config):
         return finalize_signal_totals(empty_signal_totals())
 
@@ -409,17 +434,17 @@ def emit_reproductive_readiness_signals(
     for agent in sorted(agents, key=lambda item: item.agent_id):
         if not agent.alive:
             continue
-        if not world._in_bounds(agent.x, agent.y):
+        if not _in_bounds(context, agent.x, agent.y):
             continue
-        if world.grid[agent.y][agent.x].terrain == "water":
+        if context.grid[agent.y][agent.x].terrain == "water":
             continue
-        if not world._is_biologically_reproduction_ready(agent):
+        if not context.is_biologically_reproduction_ready(agent):
             continue
-        intensity = _reproductive_signal_intensity(world, agent)
+        intensity = _reproductive_signal_intensity(config, agent)
         if intensity <= SIGNAL_EPSILON:
             continue
-        cost = _reproductive_signal_energy_cost(world, intensity)
-        if not _reproductive_signal_cost_preserves_readiness(world, agent, cost):
+        cost = _reproductive_signal_energy_cost(config, intensity)
+        if not _reproductive_signal_cost_preserves_readiness(context, agent, cost):
             continue
         if cost > 0:
             agent.energy = max(0.0, agent.energy - cost)
@@ -439,25 +464,25 @@ def emit_reproductive_readiness_signals(
             remaining_ticks=config.reproductive_signal_duration_ticks,
             decay_rate=config.reproductive_signal_decay_rate,
             energy_cost=cost,
-            emitted_tick=int(getattr(world, "tick", 0)),
+            emitted_tick=context.tick,
         )
-        world.reproductive_signal_emissions.append(emission)
-        _record_signal_emission_event(world, emission)
+        context.reproductive_signal_emissions.append(emission)
+        _record_signal_emission_event(context, emission)
         emitted += 1
 
     if emitted > 0:
-        _record_runtime_cost(world, "signal_emissions", emitted)
+        _record_runtime_cost(context, "signal_emissions", emitted)
         _accumulate_signal_totals(
-            world.tick_signal_totals,
+            context.tick_signal_totals,
             reproductive_emissions=float(emitted),
             energy_spent=energy_spent,
         )
         _accumulate_signal_totals(
-            world.run_signal_totals,
+            context.run_signal_totals,
             reproductive_emissions=float(emitted),
             energy_spent=energy_spent,
         )
-        invalidate_signal_state(world)
+        invalidate_signal_state(context)
 
     return finalize_signal_totals(
         {
@@ -469,16 +494,17 @@ def emit_reproductive_readiness_signals(
 
 
 def communication_signal_action_available(
-    world: Any,
     agent: Any,
     action: str,
+    *,
+    context: SignalRuntimeContext,
 ) -> bool:
-    config = world.config.signals
+    config = context.config
     if (
         not communication_signal_emission_enabled(config)
         or not agent.alive
-        or not world._in_bounds(agent.x, agent.y)
-        or world.grid[agent.y][agent.x].terrain == "water"
+        or not _in_bounds(context, agent.x, agent.y)
+        or context.grid[agent.y][agent.x].terrain == "water"
     ):
         return False
     parsed = parse_communication_signal_action(action, config)
@@ -488,11 +514,12 @@ def communication_signal_action_available(
 
 
 def emit_communication_signal_action(
-    world: Any,
     agent: Any,
     action: str,
+    *,
+    context: SignalRuntimeContext,
 ) -> dict[str, object]:
-    config = world.config.signals
+    config = context.config
     parsed = parse_communication_signal_action(action, config)
     if parsed is None:
         return _communication_signal_outcome(
@@ -500,7 +527,7 @@ def emit_communication_signal_action(
             invalid_reason="unknown_signal_profile",
         )
     token_id, profile_index = parsed
-    if not communication_signal_action_available(world, agent, action):
+    if not communication_signal_action_available(agent, action, context=context):
         return _communication_signal_outcome(
             emitted=False,
             token_id=token_id,
@@ -541,22 +568,22 @@ def emit_communication_signal_action(
         remaining_ticks=profile.duration_ticks,
         decay_rate=profile.decay_rate,
         energy_cost=cost,
-        emitted_tick=int(getattr(world, "tick", 0)),
+        emitted_tick=context.tick,
     )
-    world.communication_signal_emissions.append(emission)
-    _record_signal_emission_event(world, emission)
-    _record_runtime_cost(world, "signal_emissions", 1)
+    context.communication_signal_emissions.append(emission)
+    _record_signal_emission_event(context, emission)
+    _record_runtime_cost(context, "signal_emissions", 1)
     _accumulate_signal_totals(
-        world.tick_signal_totals,
+        context.tick_signal_totals,
         communication_emissions=1.0,
         energy_spent=cost,
     )
     _accumulate_signal_totals(
-        world.run_signal_totals,
+        context.run_signal_totals,
         communication_emissions=1.0,
         energy_spent=cost,
     )
-    invalidate_signal_state(world)
+    invalidate_signal_state(context)
     return _communication_signal_outcome(
         emitted=True,
         token_id=token_id,
@@ -590,20 +617,20 @@ def parse_communication_signal_action(
     return token_id, profile_index
 
 
-def build_signal_state(world: Any) -> SignalFieldState:
-    config = world.config.signals
+def build_signal_state(*, context: SignalRuntimeContext) -> SignalFieldState:
+    config = context.config
     if not config.enabled:
-        return empty_signal_state(world.config.width, world.config.height)
+        return empty_signal_state(context.width, context.height)
     return SignalFieldState(
         reproductive_signal=_diffuse_signal_emissions(
-            world,
-            world.reproductive_signal_emissions,
+            context.reproductive_signal_emissions,
             max_intensity=config.max_intensity,
+            context=context,
         ),
         communication_signal=_diffuse_signal_emissions(
-            world,
-            world.communication_signal_emissions,
+            context.communication_signal_emissions,
             max_intensity=config.max_intensity,
+            context=context,
         ),
     )
 
@@ -637,20 +664,16 @@ def signal_field_stats(
 
 
 def signal_emission_debug_snapshot(
-    world: Any,
     *,
+    context: SignalRuntimeContext,
     include_active_emissions: bool = False,
 ) -> dict[str, object]:
-    reproductive_emissions = list(
-        getattr(world, "reproductive_signal_emissions", [])
-    )
-    communication_emissions = list(
-        getattr(world, "communication_signal_emissions", [])
-    )
+    reproductive_emissions = list(context.reproductive_signal_emissions)
+    communication_emissions = list(context.communication_signal_emissions)
     snapshot: dict[str, object] = {
         "schema_version": SIGNAL_CONTRACT_VERSION,
         "policy_visible": False,
-        "events": list(getattr(world, "tick_signal_emission_events", [])),
+        "events": list(context.tick_signal_emission_events),
         "active_counts": {
             REPRODUCTIVE_SIGNAL_FIELD: len(reproductive_emissions),
             COMMUNICATION_SIGNAL_FIELD: len(communication_emissions),
@@ -684,8 +707,7 @@ def _decay_emission_list(emissions: list[SignalEmission]) -> bool:
     return True
 
 
-def _reproductive_signal_intensity(world: Any, agent: Any) -> float:
-    config = world.config.signals
+def _reproductive_signal_intensity(config: Any, agent: Any) -> float:
     trait_bias = max(
         0.0,
         min(1.0, float(agent.genome.reproductive.signal_emission_bias)),
@@ -697,23 +719,23 @@ def _reproductive_signal_intensity(world: Any, agent: Any) -> float:
     return max(0.0, min(config.max_intensity, intensity))
 
 
-def _reproductive_signal_energy_cost(world: Any, intensity: float) -> float:
-    max_intensity = max(float(world.config.signals.max_intensity), SIGNAL_EPSILON)
-    scaled_cost = world.config.signals.base_emission_energy_cost * (
+def _reproductive_signal_energy_cost(config: Any, intensity: float) -> float:
+    max_intensity = max(float(config.max_intensity), SIGNAL_EPSILON)
+    scaled_cost = config.base_emission_energy_cost * (
         intensity / max_intensity
     )
     return max(0.0, scaled_cost)
 
 
 def _reproductive_signal_cost_preserves_readiness(
-    world: Any,
+    context: SignalRuntimeContext,
     agent: Any,
     cost: float,
 ) -> bool:
     if cost <= SIGNAL_EPSILON:
         return True
-    profile = world._trophic_profile(agent)
-    energy_required = world._reproduction_energy_requirement(agent, profile)
+    profile = context.trophic_profile(agent)
+    energy_required = context.reproduction_energy_requirement(agent, profile)
     return agent.energy - cost >= energy_required
 
 
@@ -766,13 +788,13 @@ def _accumulate_signal_totals(
 
 
 def _diffuse_signal_emissions(
-    world: Any,
     emissions: list[SignalEmission],
     *,
     max_intensity: float,
+    context: SignalRuntimeContext,
 ) -> list[list[float]]:
-    width = world.config.width
-    height = world.config.height
+    width = context.width
+    height = context.height
     if max_intensity <= 0:
         return [[0.0 for _ in range(width)] for _ in range(height)]
 
@@ -780,9 +802,9 @@ def _diffuse_signal_emissions(
     for emission in emissions:
         if emission.intensity <= SIGNAL_EPSILON or emission.remaining_ticks <= 0:
             continue
-        if not world._in_bounds(emission.x, emission.y):
+        if not _in_bounds(context, emission.x, emission.y):
             continue
-        if world.grid[emission.y][emission.x].terrain == "water":
+        if context.grid[emission.y][emission.x].terrain == "water":
             continue
         source_index = emission.y * width + emission.x
         radius_sources = sources_by_radius.setdefault(max(0, emission.radius), {})
@@ -791,27 +813,28 @@ def _diffuse_signal_emissions(
             radius_sources.get(source_index, 0.0) + emission.intensity,
         )
     return _diffuse_sparse_signal_fields(
-        world,
         sources_by_radius,
         max_intensity=max_intensity,
+        context=context,
     )
 
 
-def _record_signal_emission_event(world: Any, emission: SignalEmission) -> None:
-    events = getattr(world, "tick_signal_emission_events", None)
-    if events is not None:
-        events.append(emission.to_debug_dict())
+def _record_signal_emission_event(
+    context: SignalRuntimeContext,
+    emission: SignalEmission,
+) -> None:
+    context.tick_signal_emission_events.append(emission.to_debug_dict())
 
 
 def _diffuse_sparse_signal_fields(
-    world: Any,
     sources_by_radius: dict[int, dict[int, float]],
     *,
     max_intensity: float,
+    context: SignalRuntimeContext,
 ) -> list[list[float]]:
-    _record_runtime_cost(world, "signal_diffusions")
-    width = world.config.width
-    height = world.config.height
+    _record_runtime_cost(context, "signal_diffusions")
+    width = context.width
+    height = context.height
     field = [0.0 for _ in range(width * height)]
     if not sources_by_radius:
         return [
@@ -820,7 +843,7 @@ def _diffuse_sparse_signal_fields(
         ]
 
     for radius, sources in sorted(sources_by_radius.items()):
-        targets_by_source = _diffusion_targets_for_world(world, radius)
+        targets_by_source = _diffusion_targets(context, radius)
         for source_index, source in sorted(sources.items()):
             if source <= SIGNAL_EPSILON:
                 continue
@@ -849,28 +872,31 @@ def _diffusion_offsets(radius: int) -> tuple[tuple[int, int, float], ...]:
     return tuple(offsets)
 
 
-def _diffusion_targets_for_world(
-    world: Any,
+def _diffusion_targets(
+    context: SignalRuntimeContext,
     radius: int,
 ) -> tuple[tuple[tuple[int, float], ...], ...]:
-    cache = world._signal_diffusion_target_cache
+    cache = context.diffusion_target_cache
     cached_targets = cache.get(radius)
     if cached_targets is not None:
-        _record_runtime_cost(world, "signal_diffusion_target_cache_hits")
+        _record_runtime_cost(context, "signal_diffusion_target_cache_hits")
         return cached_targets
 
-    _record_runtime_cost(world, "signal_diffusion_target_cache_misses")
+    _record_runtime_cost(context, "signal_diffusion_target_cache_misses")
     offsets = _diffusion_offsets(radius)
-    width = world.config.width
+    width = context.width
     targets_by_source: list[tuple[tuple[int, float], ...]] = []
-    for sy, row in enumerate(world.grid):
+    for sy, row in enumerate(context.grid):
         for sx, tile in enumerate(row):
             targets: list[tuple[int, float]] = []
             if tile.terrain != "water":
                 for dx, dy, divisor in offsets:
                     x = sx + dx
                     y = sy + dy
-                    if not world._in_bounds(x, y) or world.grid[y][x].terrain == "water":
+                    if (
+                        not _in_bounds(context, x, y)
+                        or context.grid[y][x].terrain == "water"
+                    ):
                         continue
                     targets.append((y * width + x, divisor))
             targets_by_source.append(tuple(targets))
@@ -879,7 +905,13 @@ def _diffusion_targets_for_world(
     return cached_targets
 
 
-def _record_runtime_cost(world: Any, name: str, amount: int = 1) -> None:
-    recorder = getattr(world, "_record_runtime_cost", None)
-    if callable(recorder):
-        recorder(name, amount)
+def _record_runtime_cost(
+    context: SignalRuntimeContext,
+    name: str,
+    amount: int = 1,
+) -> None:
+    context.record_runtime_cost(name, amount)
+
+
+def _in_bounds(context: SignalRuntimeContext, x: int, y: int) -> bool:
+    return 0 <= x < context.width and 0 <= y < context.height

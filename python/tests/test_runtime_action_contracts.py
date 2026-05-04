@@ -4,6 +4,124 @@ from python.tests.runtime_test_helpers import *
 
 
 class RuntimeActionContractTests(RuntimeContractTestHelpers):
+    def _standalone_hunter_agent(self, agent_id: int) -> Agent:
+        genome = self._hunter_genome()
+        return Agent(
+            agent_id=agent_id,
+            parent_id=None,
+            lineage_id=1,
+            birth_tick=0,
+            death_tick=None,
+            x=0,
+            y=0,
+            energy=1.0,
+            hydration=1.0,
+            health=1.0,
+            max_health=1.0,
+            injury_load=0.0,
+            age=1,
+            alive=True,
+            last_reproduction_tick=-10_000,
+            last_damage_source="none",
+            recent_plant_energy=0.0,
+            recent_fresh_kill_energy=0.0,
+            recent_carcass_energy=0.0,
+            genome_vector=genome_vector(genome),
+            genome=genome,
+        )
+
+    def test_action_mask_builds_from_explicit_context(self) -> None:
+        mask = build_action_mask(
+            ActionMaskContext(
+                action_names=action_names(
+                    SignalConfig(
+                        enabled=True,
+                        communication_token_count=1,
+                        communication_profiles_per_token=1,
+                        communication_signal_emission_enabled=True,
+                    )
+                ),
+                can_eat=True,
+                can_drink=False,
+                movement=(
+                    MovementActionAvailability(
+                        action="move_north",
+                        dx=0,
+                        dy=-1,
+                        can_move=True,
+                        can_attack=False,
+                    ),
+                    MovementActionAvailability(
+                        action="move_south",
+                        dx=0,
+                        dy=1,
+                        can_move=False,
+                        can_attack=True,
+                    ),
+                ),
+                communication_action_available={"signal_0_profile_0": True},
+            )
+        )
+
+        self.assertTrue(mask["stay"])
+        self.assertTrue(mask["eat"])
+        self.assertFalse(mask["drink"])
+        self.assertTrue(mask["move_north"])
+        self.assertFalse(mask["attack_north"])
+        self.assertFalse(mask["move_south"])
+        self.assertTrue(mask["attack_south"])
+        self.assertTrue(mask["signal_0_profile_0"])
+
+    def test_resolve_action_requires_explicit_resolution_context(self) -> None:
+        agent = self._standalone_hunter_agent(2)
+
+        with self.assertRaisesRegex(ValueError, "resolution_context"):
+            runtime_actions.resolve_action_with_outcome(
+                object(),
+                agent,
+                "stay",
+                resolution_action_mask={"stay": True},
+            )
+
+    def test_decision_context_requires_explicit_scoring_context(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scoring_context"):
+            runtime_actions.build_decision_context(
+                object(),
+                self._standalone_hunter_agent(4),
+            )
+
+    def test_resolve_action_uses_explicit_resolution_context(self) -> None:
+        agent = self._standalone_hunter_agent(3)
+        movement_calls: list[tuple[str, int, int]] = []
+
+        def move_action(
+            action: str,
+            dx: int,
+            dy: int,
+        ) -> tuple[bool, dict[str, object] | None]:
+            movement_calls.append((action, dx, dy))
+            return True, {"moved": True, "from_x": 0, "from_y": 0, "to_x": dx, "to_y": dy}
+
+        moved, outcome = runtime_actions.resolve_action_with_outcome(
+            object(),
+            agent,
+            "move_east",
+            observation_action_mask={"move_east": True},
+            resolution_action_mask={"move_east": True},
+            resolution_context=runtime_actions.ActionResolutionContext(
+                movement_actions=(("move_east", 1, 0),),
+                eat_action_outcome=lambda: None,
+                drink_action_outcome=lambda: None,
+                signal_action_outcome=lambda _action: {},
+                attack_action_outcome=lambda _action, _dx, _dy: ({}, None),
+                move_action=move_action,
+            ),
+        )
+
+        self.assertTrue(moved)
+        self.assertEqual(movement_calls, [("move_east", 1, 0)])
+        self.assertEqual(outcome["movement"]["to_x"], 1)
+
     def test_desperate_meat_policy_prioritizes_urgent_water_over_prey(self) -> None:
         navigation = self._empty_navigation()
         navigation["water"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 1.0}
@@ -579,7 +697,7 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
         agent.hydration = agent.genome.max_hydration
         energy_before = agent.energy
 
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         moved = world._resolve_action(agent, "eat")
 
         self.assertFalse(mask["eat"])
@@ -641,7 +759,7 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
     def test_action_contract_reserves_future_slots_without_enabling_them(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         contract = action_contract()
 
         self.assertEqual(contract["schema_version"], ACTION_CONTRACT_VERSION)

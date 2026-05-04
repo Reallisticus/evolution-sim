@@ -7,7 +7,6 @@ from evolution_sim.env.runtime.action_contract import (
     ACTION_NAMES,
     action_names,
 )
-from evolution_sim.env.runtime.state import Agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +27,8 @@ class ActionMaskContext:
     communication_action_available: dict[str, bool]
 
 
-def build_action_mask(world: Any, agent: Agent) -> dict[str, bool]:
-    return build_action_mask_from_context(world._action_mask_context(agent))
+def build_action_mask(context: ActionMaskContext) -> dict[str, bool]:
+    return build_action_mask_from_context(context)
 
 
 def build_action_mask_from_context(context: ActionMaskContext) -> dict[str, bool]:

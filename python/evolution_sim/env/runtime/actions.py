@@ -85,7 +85,7 @@ def _resolve_scoring_context(
         return scoring_context
     if context is not None:
         return context.scoring_context
-    return world._action_scoring_context(agent)
+    raise ValueError("scoring_context or context is required")
 
 
 def build_decision_context(
@@ -263,9 +263,13 @@ def resolve_action_with_outcome(
     resolution_action_mask: dict[str, bool] | None = None,
     resolution_context: ActionResolutionContext | None = None,
 ) -> tuple[bool, dict[str, object]]:
-    resolution_mask = resolution_action_mask or world._action_mask(agent)
+    if resolution_action_mask is None:
+        raise ValueError("resolution_action_mask is required")
+    if resolution_context is None:
+        raise ValueError("resolution_context is required")
+    resolution_mask = resolution_action_mask
     observation_mask = observation_action_mask or resolution_mask
-    context = resolution_context or world._action_resolution_context(agent)
+    context = resolution_context
     resolved_action = action if resolution_mask.get(action, False) else "stay"
     outcome = base_action_outcome(
         requested_action=action,

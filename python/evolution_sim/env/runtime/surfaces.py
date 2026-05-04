@@ -46,7 +46,7 @@ def _resolve_surface_context(
 ) -> FrameSurfaceContext:
     if surface_context is not None:
         return surface_context
-    return world._frame_surface_context()
+    raise ValueError("surface_context is required")
 
 
 def materialize_frame_surfaces(

@@ -91,7 +91,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             WorldConfig(seed=7, max_ticks=1, signals=signal_config)
         )
         agent = world.alive_agents()[0]
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         contract = action_contract(signal_config)
 
         expected_communication_actions = [
@@ -133,7 +133,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
 
         contract = action_contract(signal_config)
         signal_contract = runtime_signals.signal_contract(signal_config)
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         signal_specs = [
             action
             for action in contract["actions"]
@@ -182,7 +182,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
 
         contract = action_contract(signal_config)
         signal_contract = runtime_signals.signal_contract(signal_config)
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
 
         self.assertFalse(contract["communication"]["emission_enabled"])
         self.assertFalse(signal_contract["reproductive_signal_emission_enabled"])
@@ -213,10 +213,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
 
         contract = action_contract(signal_config)
         signal_contract = runtime_signals.signal_contract(signal_config)
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         reproductive_totals = runtime_signals.emit_reproductive_readiness_signals(
-            world,
             [agent],
+            context=world._signal_runtime_context(),
         )
 
         self.assertFalse(contract["communication"]["emission_enabled"])
@@ -233,7 +233,11 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
     def test_pre_mind_reproductive_slots_start_without_emitted_signals(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
-        observation = build_observation(world, agent)
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
         decoded = decode_observation_input(encode_observation_input(observation))
 
         self.assertEqual(agent.reproductive_group_id, agent.lineage_id)
@@ -286,9 +290,16 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
         energy_before = agent.energy
 
-        totals = runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        totals = runtime_signals.emit_reproductive_readiness_signals(
+            [agent],
+            context=world._signal_runtime_context(),
+        )
         signal_state = world._current_signal_state()
-        observation = build_observation(world, agent)
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
         decoded = decode_observation_input(encode_observation_input(observation))
 
         self.assertEqual(totals["reproductive_emissions"], 1)
@@ -320,7 +331,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
 
-        runtime_signals.decay_signal_emissions(world)
+        runtime_signals.decay_signal_emissions(
+            context=world._signal_runtime_context(),
+        )
         decayed_state = world._current_signal_state()
         self.assertEqual(world.reproductive_signal_emissions[0].remaining_ticks, 2)
         self.assertAlmostEqual(world.reproductive_signal_emissions[0].intensity, 0.25)
@@ -352,7 +365,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
 
-        runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        runtime_signals.emit_reproductive_readiness_signals(
+            [agent],
+            context=world._signal_runtime_context(),
+        )
         emission = world.reproductive_signal_emissions[0]
         source_agent_id = agent.agent_id
         agent.x = 6
@@ -361,8 +377,12 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         agent.death_tick = world.tick
         world.tick_signal_emission_events = []
 
-        runtime_signals.decay_signal_emissions(world)
-        snapshot = runtime_signals.signal_emission_debug_snapshot(world)
+        runtime_signals.decay_signal_emissions(
+            context=world._signal_runtime_context(),
+        )
+        snapshot = runtime_signals.signal_emission_debug_snapshot(
+            context=world._signal_runtime_context(),
+        )
         decayed_state = world._current_signal_state()
 
         self.assertEqual(snapshot["events"], [])
@@ -396,17 +416,24 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         agent = self._place_ready_agent(world, x=2, y=2, genome=genome)
 
-        runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        runtime_signals.emit_reproductive_readiness_signals(
+            [agent],
+            context=world._signal_runtime_context(),
+        )
         agent.x = 6
         agent.y = 6
         agent.alive = False
         agent.death_tick = world.tick
         world.tick_signal_emission_events = []
-        runtime_signals.decay_signal_emissions(world)
+        runtime_signals.decay_signal_emissions(
+            context=world._signal_runtime_context(),
+        )
 
-        default_snapshot = runtime_signals.signal_emission_debug_snapshot(world)
+        default_snapshot = runtime_signals.signal_emission_debug_snapshot(
+            context=world._signal_runtime_context(),
+        )
         detailed_snapshot = runtime_signals.signal_emission_debug_snapshot(
-            world,
+            context=world._signal_runtime_context(),
             include_active_emissions=True,
         )
         active_reproductive = detailed_snapshot["active_emissions"][
@@ -436,7 +463,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         agent = self._place_ready_agent(world, x=2, y=2)
         agent.energy = 0.0
 
-        totals = runtime_signals.emit_reproductive_readiness_signals(world, [agent])
+        totals = runtime_signals.emit_reproductive_readiness_signals(
+            [agent],
+            context=world._signal_runtime_context(),
+        )
         signal_state = world._current_signal_state()
 
         self.assertEqual(totals["reproductive_emissions"], 0)
@@ -482,7 +512,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             default_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(default_world, default_agent)["signal_0_profile_0"]
+            build_action_mask(
+                default_world._action_mask_context(default_agent)
+            )["signal_0_profile_0"]
         )
 
         enabled_world = SimulationWorld(
@@ -504,7 +536,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             enabled_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(enabled_world, gated_agent)["signal_0_profile_0"]
+            build_action_mask(
+                enabled_world._action_mask_context(gated_agent)
+            )["signal_0_profile_0"]
         )
 
     def test_communication_signal_action_emits_opaque_numeric_field(self) -> None:
@@ -530,7 +564,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         agent.energy = 1.0
         action = "signal_1_profile_1"
-        mask = build_action_mask(world, agent)
+        mask = build_action_mask(world._action_mask_context(agent))
         contract = action_contract(world.config.signals)
         signal_spec = next(
             spec for spec in contract["actions"] if spec["key"] == action
@@ -547,7 +581,11 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         signal_outcome = outcome["signal"]
         signal_state = world._current_signal_state()
-        observation = build_observation(world, agent)
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
         event = world.tick_signal_emission_events[0]
 
         self.assertFalse(moved)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from evolution_sim.env.runtime.action_contract import (
@@ -87,6 +88,13 @@ class TrajectorySink(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class TrajectoryStateContext:
+    energy_ratio: Callable[[Agent], float]
+    hydration_ratio: Callable[[Agent], float]
+    health_ratio: Callable[[Agent], float]
+
+
 def trajectory_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
         "schema_version": TRAJECTORY_SCHEMA_VERSION,
@@ -118,16 +126,20 @@ def reward_contract() -> dict[str, object]:
     }
 
 
-def capture_agent_state(world: Any, agent: Agent) -> dict[str, object]:
+def capture_agent_state(
+    agent: Agent,
+    *,
+    context: TrajectoryStateContext,
+) -> dict[str, object]:
     return {
         "x": agent.x,
         "y": agent.y,
         "energy": _round(agent.energy),
         "hydration": _round(agent.hydration),
         "health": _round(agent.health),
-        "energy_ratio": _round(world._energy_ratio(agent)),
-        "hydration_ratio": _round(world._hydration_ratio(agent)),
-        "health_ratio": _round(world._health_ratio(agent)),
+        "energy_ratio": _round(context.energy_ratio(agent)),
+        "hydration_ratio": _round(context.hydration_ratio(agent)),
+        "health_ratio": _round(context.health_ratio(agent)),
         "age": agent.age,
         "alive": agent.alive,
     }
@@ -210,6 +222,7 @@ def finalize_trajectory_decision_records(
     world: Any,
     pending_records: list[dict[str, object]],
     *,
+    state_context: TrajectoryStateContext,
     passive_outcome_for_agent: Callable[..., dict[str, object]],
     is_reproduction_ready: Callable[[Agent], bool],
 ) -> list[dict[str, object]]:
@@ -226,7 +239,7 @@ def finalize_trajectory_decision_records(
     for pending in pending_records:
         agent_id = int(pending["agent_id"])
         agent = world.agents[agent_id]
-        after = capture_agent_state(world, agent)
+        after = capture_agent_state(agent, context=state_context)
         reproduction_ready_after = bool(agent.alive and is_reproduction_ready(agent))
         action_outcome = dict(pending["action_outcome"])
         action_outcome["passive"] = passive_outcome_for_agent(

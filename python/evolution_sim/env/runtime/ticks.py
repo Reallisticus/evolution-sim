@@ -28,6 +28,7 @@ class TickPhaseContext:
     decay_recent_diet: Callable[[Any], None]
     choose_action: Callable[[Any, dict[str, object] | None], str]
     action_mask: Callable[[Any], dict[str, bool]]
+    action_resolution_context: Callable[[Any], runtime_actions.ActionResolutionContext]
     lifecycle_context: runtime_lifecycle.LifecycleContext
     kill_agent: Callable[..., None]
     finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
@@ -109,6 +110,7 @@ def run_tick(
                 action,
                 observation_action_mask=trajectory_context["action_mask"],
                 resolution_action_mask=live_action_mask,
+                resolution_context=tick_context.action_resolution_context(agent),
             )
             resolved_action = str(action_outcome["resolved_action"])
         else:
@@ -117,6 +119,7 @@ def run_tick(
                 agent,
                 action,
                 resolution_action_mask=live_action_mask,
+                resolution_context=tick_context.action_resolution_context(agent),
             )
             resolved_action = action if live_action_mask.get(action, False) else "stay"
             action_outcome = None

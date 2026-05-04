@@ -168,12 +168,14 @@ extracting, preserve behavior first, then make the boundary explicit.
 Highest-priority remaining leaks after the current Foundation hardening slice:
 
 - `runtime/reproduction.py` now routes private world authority through the
-  `ReproductionContext` adapter. Keep future birth planning and biological
-  readiness work context-only.
-- `runtime/actions.py` has been reduced to three compatibility fallback reads;
-  keep future action scoring/resolution work on explicit contexts.
-- `runtime/observations.py`, `runtime/surfaces.py`, and `runtime/action_space.py`
-  each have a single compatibility adapter read left.
+  `ReproductionContext` adapter, including reproductive signal context access.
+  Keep future birth planning and biological readiness work context-only.
+- `runtime/derived.py`, `runtime/biotic.py`, `runtime/signals.py`,
+  `runtime/actions.py`, `runtime/observations.py`, `runtime/surfaces.py`, and
+  `runtime/action_space.py` are clean of direct private world reads. Do not
+  reintroduce compatibility fallbacks there.
+- `runtime/frames.py`, `runtime/summary.py`, `runtime/lifecycle_summary.py`,
+  and `runtime/collectors.py` are the next reporting/export authority cluster.
 - `runtime/surface_snapshots.py` gathers frame/summary snapshots through a
   single snapshot adapter; reporting should stay on the extracted authority
   modules.
@@ -181,16 +183,26 @@ Highest-priority remaining leaks after the current Foundation hardening slice:
   `FeedingContext` adapter. Keep telemetry and opportunity accounting split.
 
 Latest mechanical private-call audit after the resource/lifecycle/tick context
-extractions:
+and derived/biotic/signal context extractions:
 
-- `runtime/reproduction.py`: 9 private world reads, all in context adapters.
+- `runtime/reproduction.py`: 10 private world reads, all in context adapters.
 - `runtime/feeding.py`: 10 private world reads, all in the context adapter.
 - `runtime/surface_snapshots.py`: 9 private world reads, all in the snapshot
   adapter.
-- `runtime/actions.py`: 3 private world reads, 3 unique helpers.
-- `runtime/observations.py`: 1 private world read, 1 unique helper.
-- `runtime/surfaces.py`: 1 private world read, 1 unique helper.
-- `runtime/action_space.py`: 1 private world read, 1 unique helper.
+- `runtime/frames.py`: 10 private world reads across frame assembly/reporting
+  authority.
+- `runtime/summary.py`: 7 private world reads across summary finalization.
+- `runtime/lifecycle_summary.py`: 8 private world reads across trophic lifecycle
+  aggregation.
+- `runtime/collectors.py`: 5 private world reads in collector orchestration
+  adapters.
+- `runtime/derived.py`: 0 private world reads.
+- `runtime/biotic.py`: 0 private world reads.
+- `runtime/signals.py`: 0 private world reads.
+- `runtime/action_space.py`: 0 private world reads.
+- `runtime/actions.py`: 0 private world reads.
+- `runtime/observations.py`: 0 private world reads.
+- `runtime/surfaces.py`: 0 private world reads.
 - `runtime/resources.py`: 0 private world reads.
 - `runtime/ticks.py`: 0 private world reads.
 - `runtime/lifecycle.py`: 0 private world reads.

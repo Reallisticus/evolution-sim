@@ -20,12 +20,10 @@ import evolution_sim.env.runtime.resources as runtime_resources
 import evolution_sim.env.runtime.signals as runtime_signals
 import evolution_sim.env.runtime.surfaces as runtime_surfaces
 from evolution_sim.env.runtime.biotic import (
+    BioticDiffusionContext,
+    BioticStateContext,
     build_biotic_state as build_runtime_biotic_state,
-)
-from evolution_sim.env.runtime.biotic import (
     diffuse_biotic_field as diffuse_runtime_biotic_field,
-)
-from evolution_sim.env.runtime.biotic import (
     invalidate_biotic_state as invalidate_runtime_biotic_state,
 )
 from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_neighbor_ratio
@@ -268,7 +266,14 @@ class SimulationWorld:
         self.peak_alive_agents = len(self.alive_agents())
 
     def reset_derived_caches(self, *, include_biotic: bool = True) -> None:
-        reset_derived_caches(self, include_biotic=include_biotic)
+        reset_derived_caches(
+            self,
+            include_biotic=include_biotic,
+            biotic_diffusion_target_cache=self._biotic_diffusion_target_cache,
+            signal_diffusion_target_cache=self._signal_diffusion_target_cache,
+            invalidate_biotic_state=self._invalidate_biotic_state,
+            invalidate_signal_state=self._invalidate_signal_state,
+        )
 
     @staticmethod
     def _empty_runtime_cost_counters() -> dict[str, int]:
@@ -402,6 +407,7 @@ class SimulationWorld:
             decay_recent_diet=self._decay_recent_diet,
             choose_action=self._choose_action,
             action_mask=self._action_mask,
+            action_resolution_context=self._action_resolution_context,
             lifecycle_context=self._lifecycle_context(),
             kill_agent=self._kill_agent,
             finalize_trajectory_decisions=self._finalize_trajectory_decisions,
@@ -1038,10 +1044,15 @@ class SimulationWorld:
         invalidate_runtime_biotic_state(self)
 
     def _invalidate_signal_state(self) -> None:
-        runtime_signals.invalidate_signal_state(self)
+        self._record_runtime_cost("signal_state_invalidations")
+        self.signal_state_revision += 1
+        self.cached_signal_state_revision = None
+        self.cached_signal_state = None
 
     def _decay_signal_emissions(self) -> None:
-        runtime_signals.decay_signal_emissions(self)
+        runtime_signals.decay_signal_emissions(
+            context=self._signal_runtime_context(),
+        )
 
     @staticmethod
     def _merge_fresh_kill_deposit_group(deposits: list[FreshKillDeposit]) -> FreshKillDeposit:
@@ -2209,7 +2220,9 @@ class SimulationWorld:
         policy_action_mask = (
             action_mask
             if action_mask is not None
-            else runtime_action_space.build_action_mask(self, agent)
+            else runtime_action_space.build_action_mask(
+                self._action_mask_context(agent)
+            )
         )
         fresh_kill_actionable, fresh_kill_blockers = self._policy_actionable_resource(
             agent,
@@ -2409,12 +2422,37 @@ class SimulationWorld:
             + (1.0 - self._health_ratio(agent)) * 0.7
         )
 
+    def _biotic_diffusion_context(self) -> BioticDiffusionContext:
+        return BioticDiffusionContext(
+            width=self.config.width,
+            height=self.config.height,
+            grid=self.grid,
+            diffusion_radius=self.config.biotic_fields.diffusion_radius,
+            target_cache=self._biotic_diffusion_target_cache,
+            record_runtime_cost=self._record_runtime_cost,
+        )
+
+    def _biotic_state_context(self) -> BioticStateContext:
+        return BioticStateContext(
+            width=self.config.width,
+            grid=self.grid,
+            alive_agents=self.alive_agents(),
+            trophic_profile=self._trophic_profile,
+            agent_biomass=self._agent_biomass,
+            prey_vulnerability=self._prey_vulnerability,
+            health_ratio=self._health_ratio,
+            diffusion=self._biotic_diffusion_context(),
+        )
+
     def _diffuse_biotic_field(self, sources: list[list[float]]) -> list[list[float]]:
-        return diffuse_runtime_biotic_field(self, sources)
+        return diffuse_runtime_biotic_field(
+            sources,
+            context=self._biotic_diffusion_context(),
+        )
 
     def _build_biotic_state(self) -> BioticFieldState:
         self._record_runtime_cost("biotic_state_builds")
-        return build_runtime_biotic_state(self)
+        return build_runtime_biotic_state(self._biotic_state_context())
 
     def _current_biotic_state(self) -> BioticFieldState:
         if (
@@ -2427,9 +2465,33 @@ class SimulationWorld:
         self.cached_biotic_state_revision = self.biotic_state_revision
         return self.cached_biotic_state
 
+    def _signal_runtime_context(self) -> runtime_signals.SignalRuntimeContext:
+        return runtime_signals.SignalRuntimeContext(
+            config=self.config.signals,
+            width=self.config.width,
+            height=self.config.height,
+            grid=self.grid,
+            tick=self.tick,
+            reproductive_signal_emissions=self.reproductive_signal_emissions,
+            communication_signal_emissions=self.communication_signal_emissions,
+            tick_signal_emission_events=self.tick_signal_emission_events,
+            tick_signal_totals=self.tick_signal_totals,
+            run_signal_totals=self.run_signal_totals,
+            diffusion_target_cache=self._signal_diffusion_target_cache,
+            record_runtime_cost=self._record_runtime_cost,
+            invalidate_signal_state=self._invalidate_signal_state,
+            is_biologically_reproduction_ready=(
+                self._is_biologically_reproduction_ready
+            ),
+            trophic_profile=self._trophic_profile,
+            reproduction_energy_requirement=self._reproduction_energy_requirement,
+        )
+
     def _build_signal_state(self) -> runtime_signals.SignalFieldState:
         self._record_runtime_cost("signal_state_builds")
-        return runtime_signals.build_signal_state(self)
+        return runtime_signals.build_signal_state(
+            context=self._signal_runtime_context(),
+        )
 
     def _current_signal_state(self) -> runtime_signals.SignalFieldState:
         if (
@@ -2791,9 +2853,14 @@ class SimulationWorld:
             agents=self.agents,
             movement_actions=tuple(self._movement_actions()),
             tile_memo=DerivedTileMemo(
-                world=self,
                 season=season,
                 climate_state=self._climate_state(),
+                effective_fields_for=self._effective_tile_fields,
+                water_reason_for=self._water_access_reason,
+                soft_refuge_reason_for=self._soft_refuge_reason,
+                refuge_score_for=self._refuge_score,
+                hazard_for=self._hazard_at,
+                current_biotic_state_for=self._current_biotic_state,
             ),
             random_choice=self.rng.choice,
             set_policy_action_source=set_policy_action_source,
@@ -2824,6 +2891,25 @@ class SimulationWorld:
             terrain_preference_score=self._terrain_preference_score,
             field_preference_score=self._field_preference_score,
         )
+
+    def _decision_context(
+        self,
+        agent: Agent,
+        *,
+        profile: TrophicProfile | None = None,
+        season: str | None = None,
+        context: DecisionContext | None = None,
+    ) -> DecisionContext:
+        if context is not None:
+            return context
+        return runtime_actions.build_decision_context(
+            self,
+            agent,
+            profile=profile,
+            season=season,
+            scoring_context=self._action_scoring_context(agent),
+        )
+
     def _action_mask_context(self, agent: Agent) -> runtime_action_space.ActionMaskContext:
         profile = self._trophic_profile(agent)
         tile = self.grid[agent.y][agent.x]
@@ -2884,6 +2970,7 @@ class SimulationWorld:
                 )
             )
         action_names = runtime_action_space.action_names_for_config(self)
+        signal_context = self._signal_runtime_context()
         return runtime_action_space.ActionMaskContext(
             action_names=action_names,
             can_eat=runtime_action_space.can_eat_from_values(
@@ -2901,9 +2988,9 @@ class SimulationWorld:
             movement=tuple(movement_options),
             communication_action_available={
                 action: runtime_signals.communication_signal_action_available(
-                    self,
                     agent,
                     action,
+                    context=signal_context,
                 )
                 for action in action_names
                 if action.startswith("signal_")
@@ -2920,7 +3007,11 @@ class SimulationWorld:
             return self._drink_action_outcome(agent)
 
         def signal_action_outcome(action: str) -> dict[str, object]:
-            return runtime_signals.emit_communication_signal_action(self, agent, action)
+            return runtime_signals.emit_communication_signal_action(
+                agent,
+                action,
+                context=self._signal_runtime_context(),
+            )
 
         def attack_action_outcome(
             action: str,
@@ -2968,7 +3059,9 @@ class SimulationWorld:
         )
     def _action_mask(self, agent: Agent) -> dict[str, bool]:
         self._record_runtime_cost("action_mask_builds")
-        return runtime_action_space.build_action_mask(self, agent)
+        return runtime_action_space.build_action_mask(
+            self._action_mask_context(agent)
+        )
     def _observation_context(
         self,
         agent: Agent,
@@ -3064,7 +3157,9 @@ class SimulationWorld:
             climate_state=self._climate_state(),
             biotic_state=self._current_biotic_state(),
             signal_state=self._current_signal_state(),
-            action_mask=runtime_action_space.build_action_mask(self, agent),
+            action_mask=runtime_action_space.build_action_mask(
+                self._action_mask_context(agent)
+            ),
             movement_actions=tuple(self._movement_actions()),
             profile_for=profile_for,
             energy_ratio=energy_ratio,
@@ -3086,9 +3181,21 @@ class SimulationWorld:
         )
     def _observe_agent(self, agent: Agent) -> dict[str, object]:
         self._record_runtime_cost("observation_builds")
-        return runtime_observations.build_observation(self, agent)
+        return runtime_observations.build_observation(
+            self,
+            agent,
+            observation_context=self._observation_context(agent),
+        )
     def _observation_digest(self, observation: dict[str, object]) -> str:
         return runtime_observations.observation_digest(observation)
+
+    def _trajectory_state_context(self) -> runtime_trajectory.TrajectoryStateContext:
+        return runtime_trajectory.TrajectoryStateContext(
+            energy_ratio=self._energy_ratio,
+            hydration_ratio=self._hydration_ratio,
+            health_ratio=self._health_ratio,
+        )
+
     def _begin_trajectory_decision(
         self,
         agent: Agent,
@@ -3110,7 +3217,10 @@ class SimulationWorld:
             "action_mask": dict(observation["action_mask"]),
             "policy_id": None,
             "policy_version": None,
-            "before": runtime_trajectory.capture_agent_state(self, agent),
+            "before": runtime_trajectory.capture_agent_state(
+                agent,
+                context=self._trajectory_state_context(),
+            ),
         }
     def _finalize_trajectory_decisions(
         self,
@@ -3119,6 +3229,7 @@ class SimulationWorld:
         records = runtime_trajectory.finalize_trajectory_decision_records(
             self,
             pending_records,
+            state_context=self._trajectory_state_context(),
             passive_outcome_for_agent=self._passive_outcome_for_agent,
             is_reproduction_ready=self._is_reproduction_ready,
         )
@@ -3164,8 +3275,13 @@ class SimulationWorld:
         profile: TrophicProfile | None = None,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.best_visible_biotic_action(
-            self, agent, profile=profile, context=context
+            self, agent, profile=profile, context=decision_context
         )
     def _best_visible_fresh_kill_action(
         self,
@@ -3173,8 +3289,13 @@ class SimulationWorld:
         profile: TrophicProfile | None = None,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.best_visible_fresh_kill_action(
-            self, agent, profile=profile, context=context
+            self, agent, profile=profile, context=decision_context
         )
     def _best_visible_carrion_action(
         self,
@@ -3182,8 +3303,13 @@ class SimulationWorld:
         profile: TrophicProfile | None = None,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.best_visible_carrion_action(
-            self, agent, profile=profile, context=context
+            self, agent, profile=profile, context=decision_context
         )
     def _attack_damage(
         self,
@@ -3249,15 +3375,25 @@ class SimulationWorld:
         agent: Agent,
         profile: TrophicProfile | None = None,
     ) -> str | None:
-        return runtime_actions.best_adjacent_attack_action(self, agent, profile=profile)
+        return runtime_actions.best_adjacent_attack_action(
+            self,
+            agent,
+            profile=profile,
+            scoring_context=self._action_scoring_context(agent),
+        )
     def _best_visible_prey_action(
         self,
         agent: Agent,
         profile: TrophicProfile | None = None,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.best_visible_prey_action(
-            self, agent, profile=profile, context=context
+            self, agent, profile=profile, context=decision_context
         )
     def _biotic_opportunity_score(
         self,
@@ -3267,8 +3403,13 @@ class SimulationWorld:
         profile: TrophicProfile,
         context: DecisionContext | None = None,
     ) -> float:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.biotic_opportunity_score(
-            self, agent, x, y, profile, context=context
+            self, agent, x, y, profile, context=decision_context
         )
     def _step_toward_target(
         self,
@@ -3284,6 +3425,12 @@ class SimulationWorld:
         include_animal_signal: bool = True,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            season=season,
+            context=context,
+        )
         return runtime_actions.step_toward_target(
             self,
             agent,
@@ -3296,7 +3443,7 @@ class SimulationWorld:
             include_fresh_kill_channel=include_fresh_kill_channel,
             include_carcass_channel=include_carcass_channel,
             include_animal_signal=include_animal_signal,
-            context=context,
+            context=decision_context,
         )
     def _candidate_tile_score(
         self,
@@ -3329,6 +3476,7 @@ class SimulationWorld:
             include_carcass_channel=include_carcass_channel,
             include_animal_signal=include_animal_signal,
             context=context,
+            scoring_context=self._action_scoring_context(agent),
         )
     def _best_visible_action_toward_need(
         self,
@@ -3336,12 +3484,23 @@ class SimulationWorld:
         profile: TrophicProfile | None = None,
         context: DecisionContext | None = None,
     ) -> str | None:
+        decision_context = self._decision_context(
+            agent,
+            profile=profile,
+            context=context,
+        )
         return runtime_actions.best_visible_action_toward_need(
-            self, agent, profile=profile, context=context
+            self, agent, profile=profile, context=decision_context
         )
     def _resolve_action(self, agent: Agent, action: str) -> bool:
         """Apply an action request and return whether it moved the agent."""
-        return runtime_actions.resolve_action(self, agent, action)
+        return runtime_actions.resolve_action(
+            self,
+            agent,
+            action,
+            resolution_action_mask=self._action_mask(agent),
+            resolution_context=self._action_resolution_context(agent),
+        )
 
     def _resolve_action_with_outcome(
         self,
@@ -3352,12 +3511,18 @@ class SimulationWorld:
         resolution_action_mask: dict[str, bool] | None = None,
     ) -> tuple[bool, dict[str, object]]:
         """Apply an action request and return movement plus the causal outcome."""
+        resolved_action_mask = (
+            resolution_action_mask
+            if resolution_action_mask is not None
+            else self._action_mask(agent)
+        )
         return runtime_actions.resolve_action_with_outcome(
             self,
             agent,
             action,
             observation_action_mask=observation_action_mask,
-            resolution_action_mask=resolution_action_mask,
+            resolution_action_mask=resolved_action_mask,
+            resolution_context=self._action_resolution_context(agent),
         )
 
     def _eat(self, agent: Agent) -> bool:
@@ -4345,7 +4510,11 @@ class SimulationWorld:
     ) -> dict[str, object]:
         return runtime_surfaces.materialize_frame_surfaces(
             self,
-            surface_context=surface_context,
+            surface_context=(
+                surface_context
+                if surface_context is not None
+                else self._frame_surface_context()
+            ),
         )
     def _build_agent_frame_telemetry(
         self,

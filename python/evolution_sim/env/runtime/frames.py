@@ -373,7 +373,9 @@ def capture_frame(
         season=season,
         surfaces=surfaces,
         signal_flow=runtime_signals.finalize_signal_totals(world.tick_signal_totals),
-        signal_emissions=runtime_signals.signal_emission_debug_snapshot(world),
+        signal_emissions=runtime_signals.signal_emission_debug_snapshot(
+            context=world._signal_runtime_context(),
+        ),
         fresh_kill_patches=fresh_kill_patches,
         fresh_kill_flow=fresh_kill_flow,
         carcass_patches=carcass_patches,

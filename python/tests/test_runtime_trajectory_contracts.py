@@ -4,6 +4,56 @@ from python.tests.runtime_test_helpers import *
 
 
 class RuntimeTrajectoryContractTests(RuntimeContractTestHelpers):
+    def test_capture_agent_state_uses_explicit_ratio_context(self) -> None:
+        genome = self._hunter_genome()
+        agent = Agent(
+            agent_id=42,
+            parent_id=None,
+            lineage_id=3,
+            birth_tick=0,
+            death_tick=None,
+            x=2,
+            y=1,
+            energy=0.625,
+            hydration=0.5,
+            health=0.875,
+            max_health=genome.max_health,
+            injury_load=0.0,
+            age=12,
+            alive=True,
+            last_reproduction_tick=-10_000,
+            last_damage_source="none",
+            recent_plant_energy=0.0,
+            recent_fresh_kill_energy=0.0,
+            recent_carcass_energy=0.0,
+            genome_vector=genome_vector(genome),
+            genome=genome,
+        )
+        seen_agent_ids: list[int] = []
+
+        def ratio(value: float):
+            def _ratio(candidate: Agent) -> float:
+                seen_agent_ids.append(candidate.agent_id)
+                return value
+
+            return _ratio
+
+        state = capture_agent_state(
+            agent,
+            context=TrajectoryStateContext(
+                energy_ratio=ratio(0.625),
+                hydration_ratio=ratio(0.5),
+                health_ratio=ratio(0.875),
+            ),
+        )
+
+        self.assertEqual(state["x"], 2)
+        self.assertEqual(state["y"], 1)
+        self.assertEqual(state["energy_ratio"], 0.625)
+        self.assertEqual(state["hydration_ratio"], 0.5)
+        self.assertEqual(state["health_ratio"], 0.875)
+        self.assertEqual(seen_agent_ids, [42, 42, 42])
+
     def test_full_replay_records_mind_trajectory_contract(self) -> None:
         result = SimulationWorld(WorldConfig(seed=7, max_ticks=4)).run()
 
@@ -661,6 +711,80 @@ class RuntimeTrajectoryContractTests(RuntimeContractTestHelpers):
         self.assertIsNot(rebuilt_habitat[1], first_habitat[1])
         self.assertIsNot(world._current_biotic_state(), first_biotic)
 
+    def test_derived_tile_memo_uses_explicit_context_callables(self) -> None:
+        calls = {
+            "effective": 0,
+            "water": 0,
+            "soft_refuge": 0,
+            "refuge": 0,
+            "hazard": 0,
+            "biotic": 0,
+        }
+        biotic_state = BioticFieldState(
+            prey_biomass=[[0.1]],
+            carrion=[[0.2]],
+            predator_risk=[[0.3]],
+        )
+
+        def effective_fields(x: int, y: int) -> tuple[float, float, float]:
+            calls["effective"] += 1
+            return (float(x), float(y), 0.5)
+
+        def water_reason(x: int, y: int) -> str:
+            calls["water"] += 1
+            return "wetland"
+
+        def soft_refuge_reason(x: int, y: int) -> str:
+            calls["soft_refuge"] += 1
+            return "canopy_refuge"
+
+        def refuge_score(x: int, y: int) -> float:
+            calls["refuge"] += 1
+            return 0.9
+
+        def hazard(x: int, y: int) -> tuple[str, float]:
+            calls["hazard"] += 1
+            return ("exposure", 0.4)
+
+        def current_biotic_state() -> BioticFieldState:
+            calls["biotic"] += 1
+            return biotic_state
+
+        memo = DerivedTileMemo(
+            season="wet",
+            climate_state={"name": "wet"},
+            effective_fields_for=effective_fields,
+            water_reason_for=water_reason,
+            soft_refuge_reason_for=soft_refuge_reason,
+            refuge_score_for=refuge_score,
+            hazard_for=hazard,
+            current_biotic_state_for=current_biotic_state,
+        )
+
+        self.assertEqual(memo.effective_fields(2, 3), (2.0, 3.0, 0.5))
+        self.assertEqual(memo.effective_fields(2, 3), (2.0, 3.0, 0.5))
+        self.assertEqual(memo.water_reason(2, 3), "wetland")
+        self.assertEqual(memo.water_reason(2, 3), "wetland")
+        self.assertEqual(memo.soft_refuge_reason(2, 3), "canopy_refuge")
+        self.assertEqual(memo.soft_refuge_reason(2, 3), "canopy_refuge")
+        self.assertEqual(memo.refuge_score(2, 3), 0.9)
+        self.assertEqual(memo.refuge_score(2, 3), 0.9)
+        self.assertEqual(memo.hazard(2, 3), ("exposure", 0.4))
+        self.assertEqual(memo.hazard(2, 3), ("exposure", 0.4))
+        self.assertIs(memo.current_biotic_state(), biotic_state)
+        self.assertIs(memo.current_biotic_state(), biotic_state)
+        self.assertEqual(
+            calls,
+            {
+                "effective": 1,
+                "water": 1,
+                "soft_refuge": 1,
+                "refuge": 1,
+                "hazard": 1,
+                "biotic": 1,
+            },
+        )
+
     def test_trophic_profile_cache_uses_consistent_raw_genome_key(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
@@ -699,14 +823,18 @@ class RuntimeTrajectoryContractTests(RuntimeContractTestHelpers):
             if world.grid[y][x].terrain != "water":
                 sources[y][x] = value
 
-        actual = diffuse_biotic_field(world, sources)
+        diffusion_context = world._biotic_diffusion_context()
+        actual = diffuse_biotic_field(sources, context=diffusion_context)
         sparse_sources = {
             y * world.config.width + x: source
             for y, row in enumerate(sources)
             for x, source in enumerate(row)
             if source > 1e-9
         }
-        sparse_actual = diffuse_sparse_biotic_field(world, sparse_sources)
+        sparse_actual = diffuse_sparse_biotic_field(
+            sparse_sources,
+            context=diffusion_context,
+        )
         expected = [
             [0.0 for _ in range(world.config.width)]
             for _ in range(world.config.height)

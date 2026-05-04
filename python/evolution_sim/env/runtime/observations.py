@@ -289,7 +289,7 @@ def _resolve_observation_context(
 ) -> ObservationContext:
     if observation_context is not None:
         return observation_context
-    return world._observation_context(agent)
+    raise ValueError("observation_context is required")
 
 
 def build_observation(

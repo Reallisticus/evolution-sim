@@ -8,7 +8,11 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
 
-        observation = build_observation(world, agent)
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
         digest = observation_digest(observation)
         encoded = encode_observation_input(observation)
         decoded = decode_observation_input(encoded)
@@ -102,7 +106,11 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
     def test_observation_input_encoder_excludes_privileged_payloads(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]
-        observation = build_observation(world, agent)
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
         baseline = encode_observation_input(observation)
 
         mutated = copy.deepcopy(observation)

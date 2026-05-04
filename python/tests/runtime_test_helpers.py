@@ -34,6 +34,7 @@ from evolution_sim.env.contracts import (
     VIEWER_MAP_KEYS,
 )
 from evolution_sim.env.runtime.biotic import diffuse_biotic_field, diffuse_sparse_biotic_field
+from evolution_sim.env.runtime.derived import DerivedTileMemo
 import evolution_sim.env.runtime.resources as runtime_resources
 from evolution_sim.env.runtime.action_contract import (
     ACTION_CONTRACT_VERSION,
@@ -51,6 +52,7 @@ from evolution_sim.env.runtime.action_space import (
 )
 import evolution_sim.env.runtime.feeding as runtime_feeding
 import evolution_sim.env.runtime.feeding_opportunity as runtime_feeding_opportunity
+import evolution_sim.env.runtime.actions as runtime_actions
 from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
 import evolution_sim.env.runtime.signals as runtime_signals
 import evolution_sim.env.runtime.surface_snapshots as runtime_surface_snapshots
@@ -59,6 +61,7 @@ import evolution_sim.env.runtime.mating as runtime_mating
 from evolution_sim.env.runtime.state import (
     MIND_INHERITANCE_PLACEHOLDER_VERSION,
     Agent,
+    BioticFieldState,
     CarcassDeposit,
     FreshKillDeposit,
     SimulationWorldResult,
@@ -94,7 +97,9 @@ from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
     TRAJECTORY_SCHEMA_VERSION,
+    TrajectoryStateContext,
     build_reward,
+    capture_agent_state,
     complete_action_outcome,
     reward_contract,
 )
@@ -410,6 +415,10 @@ class RuntimeContractTestHelpers(unittest.TestCase):
         next_agent_id: int = 100,
     ) -> runtime_reproduction.ReproductionContext:
         profile = profile or self._test_trophic_profile("none")
+
+        def missing_signal_context() -> runtime_signals.SignalRuntimeContext:
+            raise AssertionError("context-only reproduction test did not provide signals")
+
         placement = runtime_reproduction.ReproductionPlacementContext(
             max_agents=20,
             current_alive_count=lambda: 1,
@@ -438,6 +447,7 @@ class RuntimeContractTestHelpers(unittest.TestCase):
             matched_diet_threshold=lambda checked_profile: 0.0,
             health_ratio=lambda checked_agent: 1.0,
             emit=lambda *args, **kwargs: None,
+            signal_runtime_context=missing_signal_context,
         )
 
     def _run_scripted_lethal_attack(self) -> tuple[SimulationWorldResult, int, int]:

@@ -322,7 +322,7 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
             )
         )
 
-        action_mask = build_action_mask(world, agent)
+        action_mask = build_action_mask(world._action_mask_context(agent))
         outcome = world._eat_action_outcome(agent)
 
         self.assertTrue(action_mask["eat"])
@@ -352,7 +352,7 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
         world.grid[blocker.y][blocker.x].terrain = "wetland"
         agent.hydration = agent.genome.max_hydration * 0.03
 
-        action_mask = build_action_mask(world, agent)
+        action_mask = build_action_mask(world._action_mask_context(agent))
         outcome = world._drink_action_outcome(agent)
 
         self.assertTrue(action_mask["drink"])
@@ -382,7 +382,7 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
         world.grid[blocker.y][blocker.x].terrain = "wetland"
         agent.hydration = agent.genome.max_hydration * 0.5
 
-        action_mask = build_action_mask(world, agent)
+        action_mask = build_action_mask(world._action_mask_context(agent))
         outcome = world._drink_action_outcome(agent)
 
         self.assertFalse(action_mask["drink"])
@@ -506,7 +506,11 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
             )
         )
 
-        navigation = build_observation(world, agent)["navigation"]["carrion"]
+        navigation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )["navigation"]["carrion"]
 
         self.assertEqual(navigation["dx"], 0)
         self.assertEqual(navigation["dy"], -1)

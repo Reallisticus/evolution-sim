@@ -289,6 +289,10 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             place_agent=lambda child: None,
             invalidate_spatial_state=lambda: None,
         )
+
+        def missing_signal_context() -> runtime_signals.SignalRuntimeContext:
+            raise AssertionError("context-only reproduction test did not provide signals")
+
         context = runtime_reproduction.ReproductionContext(
             config=config,
             rng=Random(7),
@@ -303,6 +307,7 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             matched_diet_threshold=lambda checked_profile: 0.6,
             health_ratio=lambda checked_agent: 0.4,
             emit=lambda *args, **kwargs: None,
+            signal_runtime_context=missing_signal_context,
         )
 
         reasons = runtime_reproduction.biological_reproduction_block_reasons(

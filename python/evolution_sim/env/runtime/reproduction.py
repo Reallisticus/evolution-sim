@@ -123,6 +123,7 @@ class ReproductionContext:
     matched_diet_threshold: Callable[[TrophicProfile], float]
     health_ratio: Callable[[Agent], float]
     emit: Callable[..., None]
+    signal_runtime_context: Callable[[], runtime_signals.SignalRuntimeContext]
 
 
 @dataclass(slots=True)
@@ -669,6 +670,7 @@ def build_reproduction_context(
         matched_diet_threshold=world._matched_diet_threshold,
         health_ratio=world._health_ratio,
         emit=world._emit,
+        signal_runtime_context=world._signal_runtime_context,
     )
 
 
@@ -863,8 +865,8 @@ def run_reproduction_phase(world: Any) -> int:
     reproduction_context = build_reproduction_context(world)
     placement = reproduction_context.placement
     runtime_signals.emit_reproductive_readiness_signals(
-        world,
         alive_agents,
+        context=reproduction_context.signal_runtime_context(),
     )
     alive_count = len(alive_agents)
     births_this_tick = 0
