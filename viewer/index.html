@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Evolution Sim Replay Viewer</title>
-    <link rel="stylesheet" href="./styles.css?assetVersion=dashboard-v08" />
+    <link rel="stylesheet" href="./styles.css?assetVersion=dashboard-v09" />
   </head>
   <body>
     <div class="app-shell">
@@ -387,61 +387,69 @@
 
         <div id="canvas-panel" class="panel canvas-panel glass-panel">
           <div class="legend map-legend">
-            <div id="terrain-legend" class="terrain-legend"></div>
-            <div id="glyph-legend" class="glyph-legend" aria-label="Map glyph legend">
-              <div class="map-key-group">
-                <strong>Agent forms</strong>
-                <span class="glyph-legend-item">
-                  <i class="glyph-symbol herbivore"></i>
-                  Herbivore
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="glyph-symbol omnivore"></i>
-                  Omnivore
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="glyph-symbol carnivore"></i>
-                  Carnivore
-                </span>
+            <details class="map-key-drawer">
+              <summary>
+                <span>Map Key</span>
+                <small>Terrain, agent glyphs, rings, and event pulses</small>
+              </summary>
+              <div class="map-key-drawer-body">
+                <div id="terrain-legend" class="terrain-legend"></div>
+                <div id="glyph-legend" class="glyph-legend" aria-label="Map glyph legend">
+                  <div class="map-key-group">
+                    <strong>Agent forms</strong>
+                    <span class="glyph-legend-item">
+                      <i class="glyph-symbol herbivore"></i>
+                      Herbivore
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="glyph-symbol omnivore"></i>
+                      Omnivore
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="glyph-symbol carnivore"></i>
+                      Carnivore
+                    </span>
+                  </div>
+                  <div class="map-key-group">
+                    <strong>Vital rings</strong>
+                    <span class="glyph-legend-item">
+                      <i class="ring-key energy"></i>
+                      Energy
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="ring-key hydration"></i>
+                      Water
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="ring-key health"></i>
+                      Health
+                    </span>
+                  </div>
+                  <div class="map-key-group">
+                    <strong>Activity cues</strong>
+                    <span class="glyph-legend-item">
+                      <i class="ring-key ready"></i>
+                      Ready
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="dot-key diet"></i>
+                      Diet match
+                    </span>
+                    <span class="glyph-legend-item">
+                      <i class="stroke-key meat"></i>
+                      Meat stroke
+                    </span>
+                  </div>
+                  <div class="map-key-group">
+                    <strong>Event pulses</strong>
+                    <span class="glyph-legend-item">
+                      <i class="pulse-key"></i>
+                      Event
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div class="map-key-group">
-                <strong>Vital rings</strong>
-                <span class="glyph-legend-item">
-                  <i class="ring-key energy"></i>
-                  Energy
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="ring-key hydration"></i>
-                  Water
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="ring-key health"></i>
-                  Health
-                </span>
-              </div>
-              <div class="map-key-group">
-                <strong>Activity cues</strong>
-                <span class="glyph-legend-item">
-                  <i class="ring-key ready"></i>
-                  Ready
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="dot-key diet"></i>
-                  Diet match
-                </span>
-                <span class="glyph-legend-item">
-                  <i class="stroke-key meat"></i>
-                  Meat stroke
-                </span>
-              </div>
-              <div class="map-key-group">
-                <strong>Event pulses</strong>
-                <span class="glyph-legend-item">
-                  <i class="pulse-key"></i>
-                  Event
-                </span>
-              </div>
-            </div>
+            </details>
             <div id="map-control-strip" class="map-control-strip" aria-label="Map display controls">
               <span id="overlay-label" class="legend-note">Overlay: terrain</span>
               <label class="map-control" for="decision-overlay-mode">
@@ -595,7 +603,7 @@
     <script type="module">
       const requestedAssetVersion =
         new URLSearchParams(window.location.search).get("assetVersion") ?? "local";
-      const assetVersion = `${requestedAssetVersion}-dashboard-v08`;
+      const assetVersion = `${requestedAssetVersion}-dashboard-v09`;
       await import(`./app.js?assetVersion=${encodeURIComponent(assetVersion)}`);
     </script>
   </body>

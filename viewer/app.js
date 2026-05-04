@@ -938,6 +938,7 @@ function renderMapDecisionOverlay(frame, decodedAgents, tileSize, offset) {
 
 function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
   if (!elements.mapAnnotations || !state.payload) return;
+  const selectedAgent = decodedAgents.find((agent) => agent.agentId === state.selectedAgentId);
   const topSpeciesIds = new Set(
     [...(frame.species_counts ?? [])]
       .sort((left, right) => right[1] - left[1])
@@ -946,6 +947,9 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
   );
   if (state.selectedSpeciesId != null) {
     topSpeciesIds.add(state.selectedSpeciesId);
+  }
+  if (selectedAgent) {
+    topSpeciesIds.delete(selectedAgent.speciesId);
   }
   const bySpecies = new Map();
   for (const agent of decodedAgents) {
@@ -960,6 +964,25 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
   }
 
   const placedBoxes = [];
+  const selectedAgentAnnotation = selectedAgent
+    ? (() => {
+        const center = tileCenter(selectedAgent.x, selectedAgent.y, tileSize, offset);
+        return placeMapAnnotation(
+          {
+            agentId: selectedAgent.agentId,
+            speciesId: selectedAgent.speciesId,
+            x: Math.round(center.x),
+            y: Math.round(center.y),
+            boxWidth: 148,
+            boxHeight: 48,
+          },
+          placedBoxes,
+          state.payload.viewer.map,
+          tileSize,
+          offset,
+        );
+      })()
+    : null;
   const annotations = [...bySpecies.entries()]
     .filter(([, centroid]) => centroid.count > 0)
     .map(([speciesId, centroid]) => {
@@ -984,22 +1007,20 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
     )
     .filter(Boolean);
 
-  const selectedAgent = decodedAgents.find((agent) => agent.agentId === state.selectedAgentId);
-  const selectedAgentAnnotation = selectedAgent
-    ? (() => {
-        const center = tileCenter(selectedAgent.x, selectedAgent.y, tileSize, offset);
-        return `
+  elements.mapAnnotations.innerHTML = `
+    ${
+      selectedAgentAnnotation
+        ? `
           <div
             class="map-annotation agent-callout"
-            style="left:${Math.round(center.x)}px;top:${Math.round(center.y)}px;"
+            style="left:${selectedAgentAnnotation.x}px;top:${selectedAgentAnnotation.y}px;--annotation-width:148px;"
           >
-            <span>Agent ${escapeHtml(String(selectedAgent.agentId))}</span>
+            <span>Agent ${escapeHtml(String(selectedAgentAnnotation.agentId))}</span>
+            <small>${escapeHtml(speciesLabel(selectedAgentAnnotation.speciesId))}</small>
           </div>
-        `;
-      })()
-    : "";
-
-  elements.mapAnnotations.innerHTML = `
+        `
+        : ""
+    }
     ${annotations
       .map(
         (annotation) => `
@@ -1018,7 +1039,6 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
         `,
       )
       .join("")}
-    ${selectedAgentAnnotation}
   `;
 }
 
@@ -1066,8 +1086,14 @@ function renderMapMinimap(map, tileSize, offset) {
 function placeMapAnnotation(annotation, placed, map, tileSize, offset) {
   const mapWidth = map.width * tileSize;
   const mapHeight = map.height * tileSize;
-  const boxWidth = 176;
-  const boxHeight = 50;
+  const boxWidth = annotation.boxWidth ?? 176;
+  const boxHeight = annotation.boxHeight ?? 50;
+  const hostWidth = elements.canvasHost?.clientWidth ?? offset.x + mapWidth;
+  const hostHeight = elements.canvasHost?.clientHeight ?? offset.y + mapHeight;
+  const minX = Math.max(12 + boxWidth / 2, offset.x + boxWidth / 2);
+  const maxX = Math.min(hostWidth - 12 - boxWidth / 2, offset.x + mapWidth - boxWidth / 2);
+  const minY = Math.max(12 + boxHeight + 12, offset.y + boxHeight + 12);
+  const maxY = Math.min(hostHeight - 8, offset.y + mapHeight - 6);
   const spread = Math.max(54, tileSize * 4.6);
   const candidates = [
     [0, 0],
@@ -1083,8 +1109,8 @@ function placeMapAnnotation(annotation, placed, map, tileSize, offset) {
     [0, -(boxHeight + 18)],
   ];
   for (const [dx, dy] of candidates) {
-    const x = clamp(annotation.x + dx, offset.x + boxWidth / 2, offset.x + mapWidth - boxWidth / 2);
-    const y = clamp(annotation.y + dy, offset.y + boxHeight + 12, offset.y + mapHeight - 6);
+    const x = clampToOrderedRange(annotation.x + dx, minX, maxX);
+    const y = clampToOrderedRange(annotation.y + dy, minY, maxY);
     const box = {
       left: x - boxWidth / 2,
       right: x + boxWidth / 2,
@@ -1824,9 +1850,23 @@ function actionLabel(value) {
 }
 
 function policyLabel(record) {
-  const source = titleCase(record?.action_source ?? "unknown_source");
-  const policy = record?.policy_id ? titleCase(record.policy_id) : null;
+  const sourceKey = record?.action_source ?? "unknown_source";
+  const policyKey = record?.policy_id ?? null;
+  const source = titleCase(sourceKey);
+  const policy = policyKey ? titleCase(policyKey) : null;
+  if (policyKey && normalizedLabelKey(sourceKey) === normalizedLabelKey(policyKey)) {
+    return normalizedLabelKey(policyKey).includes("heuristic") ? "Heuristic" : policy;
+  }
   return policy ? `${source} / ${policy}` : source;
+}
+
+function normalizedLabelKey(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .sort()
+    .join("_");
 }
 
 function maskSummary(mask) {
@@ -4637,6 +4677,10 @@ function clamp01(value) {
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function clampToOrderedRange(value, first, second) {
+  return clamp(value, Math.min(first, second), Math.max(first, second));
 }
 
 function buildEncodingMap(fields) {

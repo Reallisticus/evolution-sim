@@ -94,11 +94,12 @@ body {
   height: calc(100vh - 132px);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .canvas-host {
   position: relative;
+  order: 1;
   flex: 1;
   min-height: 420px;
   border-radius: 8px;
@@ -149,6 +150,7 @@ body {
 }
 
 .tile-inspector {
+  order: 3;
   display: grid;
   grid-template-columns: minmax(104px, 0.55fr) minmax(142px, 0.75fr) minmax(0, 2.2fr);
   align-items: center;
@@ -193,6 +195,7 @@ body {
 }
 
 .tile-explainer {
+  order: 4;
   display: grid;
   gap: 10px;
   border: 1px solid rgba(140, 198, 255, 0.16);
@@ -333,7 +336,10 @@ body {
 .map-annotation {
   position: absolute;
   transform: translate(-50%, calc(-100% - 10px));
-  width: min(176px, calc(100% - 24px));
+  width: min(var(--annotation-width, 176px), calc(100% - 24px));
+  min-width: 0;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
   border: 1px solid rgba(248, 250, 252, 0.18);
   border-radius: 8px;
   padding: 6px 8px;
@@ -366,6 +372,7 @@ body {
   position: relative;
   z-index: 1;
   display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,11 +381,13 @@ body {
 .map-annotation span {
   font-size: 0.76rem;
   font-weight: 750;
+  line-height: 1.18;
 }
 
 .map-annotation small {
   color: rgba(203, 213, 225, 0.82);
   font-size: 0.68rem;
+  line-height: 1.2;
 }
 
 .species-callout {
@@ -395,6 +404,12 @@ body {
 
 .agent-callout {
   border-color: rgba(248, 250, 252, 0.38);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(8, 15, 26, 0.94)),
+    rgba(8, 15, 26, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(140, 198, 255, 0.26) inset,
+    0 12px 30px rgba(0, 0, 0, 0.3);
 }
 
 .map-minimap {
@@ -442,6 +457,7 @@ body {
 }
 
 .story-timeline {
+  order: 5;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -655,6 +671,8 @@ input[type="range"] {
 
 .summary-grid dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 
@@ -672,14 +690,88 @@ input[type="range"] {
 }
 
 .map-legend {
+  order: 2;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
   border: 1px solid var(--glass-line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 8px;
   background: rgba(7, 14, 25, 0.64);
+}
+
+.map-key-drawer {
+  min-width: 0;
+  border: 1px solid rgba(140, 198, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(8, 16, 28, 0.44);
+}
+
+.map-key-drawer summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  padding: 7px 9px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.map-key-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.map-key-drawer summary::after {
+  content: "+";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(140, 198, 255, 0.18);
+  border-radius: 6px;
+  color: rgba(248, 250, 252, 0.86);
+}
+
+.map-key-drawer[open] summary::after {
+  content: "-";
+}
+
+.map-key-drawer summary span,
+.map-key-drawer summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-key-drawer summary span {
+  color: rgba(248, 250, 252, 0.92);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.map-key-drawer summary small {
+  flex: 1;
+  color: rgba(159, 179, 209, 0.74);
+  font-size: 0.76rem;
+  text-align: right;
+}
+
+.map-key-drawer-body {
+  display: none;
+  grid-template-columns: minmax(240px, 1.15fr) minmax(240px, 0.85fr);
+  gap: 8px;
+  max-height: 176px;
+  overflow: auto;
+  padding: 0 8px 8px;
+}
+
+.map-key-drawer[open] .map-key-drawer-body {
+  display: grid;
 }
 
 .terrain-legend {
@@ -689,14 +781,14 @@ input[type="range"] {
 .terrain-legend-item {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(76px, 1fr) minmax(88px, auto);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  min-height: 28px;
+  gap: 3px 6px;
+  min-height: 30px;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 8px;
-  padding: 5px 7px;
+  padding: 5px 7px 6px;
   background: rgba(8, 16, 28, 0.54);
 }
 
@@ -711,18 +803,20 @@ input[type="range"] {
 }
 
 .terrain-legend-item small {
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   color: rgba(159, 179, 209, 0.72);
-  font-size: 0.78rem;
-  justify-self: end;
+  font-size: 0.68rem;
+  line-height: 1;
+  justify-self: start;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .legend-note {
   align-self: center;
-  justify-self: end;
+  justify-self: stretch;
   border: 1px solid rgba(140, 198, 255, 0.18);
   border-radius: 8px;
   padding: 7px 9px;
@@ -731,6 +825,7 @@ input[type="range"] {
 }
 
 .event-lens-summary {
+  grid-column: span 2;
   justify-self: stretch;
   overflow: hidden;
   color: rgba(203, 213, 225, 0.9);
@@ -740,7 +835,7 @@ input[type="range"] {
 
 .map-control-strip {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
   justify-items: stretch;
   gap: 8px;
@@ -789,7 +884,7 @@ input[type="range"] {
 
 .glyph-legend {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
 }
@@ -805,6 +900,7 @@ input[type="range"] {
 }
 
 .map-navigation {
+  grid-column: span 2;
   display: grid;
   grid-template-columns: 34px minmax(48px, 1fr) 34px repeat(2, minmax(84px, 1fr));
   align-items: center;
@@ -839,7 +935,7 @@ input[type="range"] {
   min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 8px;
-  padding: 8px;
+  padding: 7px;
   background: rgba(8, 16, 28, 0.48);
 }
 
@@ -860,7 +956,7 @@ input[type="range"] {
 
 .terrain-key-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 6px;
 }
 
@@ -1685,7 +1781,10 @@ input[type="range"] {
 
 .agent-fact-grid dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-weight: 650;
+  line-height: 1.18;
 }
 
 .agent-action-timeline {
