@@ -28,7 +28,7 @@ from evolution_sim.env.runtime.biotic import (
     invalidate_biotic_state as invalidate_runtime_biotic_state,
 )
 from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_neighbor_ratio
-from evolution_sim.env.runtime.collectors import collector_for_mode
+from evolution_sim.env.runtime.collectors import CollectorContext, collector_for_mode
 from evolution_sim.env.runtime.derived import DerivedTileMemo, reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
@@ -331,6 +331,7 @@ class SimulationWorld:
         )
         self.trajectory_sink = trajectory_sink
         collector = collector_for_mode(mode)
+        collector_context = self._collector_context()
         sink_finished = False
         try:
             if trajectory_sink is not None:
@@ -346,7 +347,7 @@ class SimulationWorld:
                 self.tick = tick
                 births_this_tick, deaths_this_tick = self._run_tick()
                 collector.on_tick(
-                    self,
+                    collector_context,
                     births_this_tick=births_this_tick,
                     deaths_this_tick=deaths_this_tick,
                 )
@@ -361,7 +362,7 @@ class SimulationWorld:
                     "deaths": self.deaths,
                 },
             )
-            summary, event_payloads, viewer = collector.finalize(self)
+            summary, event_payloads, viewer = collector.finalize(collector_context)
             if trajectory_sink is not None:
                 trajectory_sink.finish(summary=summary)
                 sink_finished = True
@@ -389,6 +390,16 @@ class SimulationWorld:
             self,
             meat_mode_codes=MEAT_MODE_CODES,
             tick_context=self._tick_phase_context(),
+        )
+
+    def _collector_context(self) -> CollectorContext:
+        return CollectorContext(
+            config=self.config,
+            events=self.events,
+            capture_frame=self._capture_frame,
+            build_summary=self._build_summary,
+            build_viewer_payload=self._build_viewer_payload,
+            refresh_population_snapshots=self._refresh_population_snapshots,
         )
 
     def _tick_phase_context(self) -> runtime_ticks.TickPhaseContext:

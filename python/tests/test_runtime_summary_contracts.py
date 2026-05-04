@@ -4,6 +4,102 @@ from python.tests.runtime_test_helpers import *
 
 
 class RuntimeSummaryContractTests(RuntimeContractTestHelpers):
+    def test_collectors_use_explicit_context(self) -> None:
+        @dataclass(frozen=True, slots=True)
+        class EventRecord:
+            payload: dict[str, object]
+
+            def to_dict(self) -> dict[str, object]:
+                return self.payload
+
+        calls: list[tuple[str, object]] = []
+
+        def capture_frame(*, births_this_tick: int, deaths_this_tick: int) -> None:
+            calls.append(
+                (
+                    "capture_frame",
+                    {
+                        "births_this_tick": births_this_tick,
+                        "deaths_this_tick": deaths_this_tick,
+                    },
+                )
+            )
+
+        def build_summary(*, mode: RunMode) -> dict[str, object]:
+            calls.append(("build_summary", mode))
+            return {
+                "run_id": "context-only",
+                "summary_schema_version": SUMMARY_SCHEMA_VERSION,
+                "mode": mode.value,
+                "full_replay_only": True,
+            }
+
+        def build_viewer_payload() -> dict[str, object]:
+            calls.append(("build_viewer_payload", True))
+            return {"frames": []}
+
+        def refresh_population_snapshots(*, include_species: bool = True) -> object:
+            calls.append(("refresh_population_snapshots", include_species))
+            return object()
+
+        context = runtime_collectors.CollectorContext(
+            config=WorldConfig(seed=123),
+            events=[EventRecord({"type": "test"})],
+            capture_frame=capture_frame,
+            build_summary=build_summary,
+            build_viewer_payload=build_viewer_payload,
+            refresh_population_snapshots=refresh_population_snapshots,
+        )
+
+        full_replay = runtime_collectors.FullReplayCollector()
+        full_replay.on_tick(context, births_this_tick=2, deaths_this_tick=1)
+        with patch(
+            "evolution_sim.env.runtime.collectors.apply_replay_taxonomy",
+            side_effect=lambda *, config, summary, events, viewer: (
+                {**summary, "taxonomy_seed": config.seed},
+                viewer,
+            ),
+        ) as apply_taxonomy:
+            summary, events, viewer = full_replay.finalize(context)
+
+        self.assertEqual(
+            calls[:3],
+            [
+                (
+                    "capture_frame",
+                    {"births_this_tick": 2, "deaths_this_tick": 1},
+                ),
+                ("build_summary", RunMode.FULL_REPLAY),
+                ("build_viewer_payload", True),
+            ],
+        )
+        self.assertEqual(summary["taxonomy_seed"], 123)
+        self.assertEqual(events, [{"type": "test"}])
+        self.assertEqual(viewer, {"frames": []})
+        apply_taxonomy.assert_called_once()
+
+        summary_only = runtime_collectors.SummaryCollector()
+        summary_only.on_tick(context, births_this_tick=0, deaths_this_tick=0)
+        filtered_summary, event_payloads, summary_viewer = summary_only.finalize(context)
+
+        self.assertEqual(
+            calls[-3:],
+            [
+                ("refresh_population_snapshots", False),
+                ("refresh_population_snapshots", False),
+                ("build_summary", RunMode.SUMMARY_ONLY),
+            ],
+        )
+        self.assertEqual(
+            filtered_summary,
+            {
+                "run_id": "context-only",
+                "summary_schema_version": SUMMARY_SCHEMA_VERSION,
+            },
+        )
+        self.assertIsNone(event_payloads)
+        self.assertIsNone(summary_viewer)
+
     def test_trophic_lifecycle_summary_uses_explicit_context(self) -> None:
         genome = self._hunter_genome()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,22 +9,41 @@ from evolution_sim.env.runtime.state import RunMode
 from evolution_sim.env.taxonomy import apply_replay_taxonomy
 
 
+@dataclass(frozen=True, slots=True)
+class CollectorContext:
+    config: Any
+    events: Sequence[Any]
+    capture_frame: Callable[..., None]
+    build_summary: Callable[..., dict[str, object]]
+    build_viewer_payload: Callable[[], dict[str, object]]
+    refresh_population_snapshots: Callable[..., object]
+
+
 @dataclass(slots=True)
 class FullReplayCollector:
     mode: RunMode = RunMode.FULL_REPLAY
 
-    def on_tick(self, world: Any, *, births_this_tick: int, deaths_this_tick: int) -> None:
-        world._capture_frame(births_this_tick=births_this_tick, deaths_this_tick=deaths_this_tick)
+    def on_tick(
+        self,
+        context: CollectorContext,
+        *,
+        births_this_tick: int,
+        deaths_this_tick: int,
+    ) -> None:
+        context.capture_frame(
+            births_this_tick=births_this_tick,
+            deaths_this_tick=deaths_this_tick,
+        )
 
     def finalize(
         self,
-        world: Any,
+        context: CollectorContext,
     ) -> tuple[dict[str, object], list[dict[str, object]], dict[str, object]]:
-        summary = world._build_summary(mode=self.mode)
-        viewer = world._build_viewer_payload()
-        events = [event.to_dict() for event in world.events]
+        summary = context.build_summary(mode=self.mode)
+        viewer = context.build_viewer_payload()
+        events = [event.to_dict() for event in context.events]
         summary, viewer = apply_replay_taxonomy(
-            config=world.config,
+            config=context.config,
             summary=summary,
             events=events,
             viewer=viewer,
@@ -35,15 +55,21 @@ class FullReplayCollector:
 class SummaryCollector:
     mode: RunMode = RunMode.SUMMARY_ONLY
 
-    def on_tick(self, world: Any, *, births_this_tick: int, deaths_this_tick: int) -> None:
-        world._refresh_population_snapshots(include_species=False)
+    def on_tick(
+        self,
+        context: CollectorContext,
+        *,
+        births_this_tick: int,
+        deaths_this_tick: int,
+    ) -> None:
+        context.refresh_population_snapshots(include_species=False)
 
     def finalize(
         self,
-        world: Any,
+        context: CollectorContext,
     ) -> tuple[dict[str, object], None, None]:
-        world._refresh_population_snapshots(include_species=False)
-        summary = world._build_summary(mode=self.mode)
+        context.refresh_population_snapshots(include_species=False)
+        summary = context.build_summary(mode=self.mode)
         return filter_summary_fields(summary, SHARED_SUMMARY_FIELDS), None, None
 
 
