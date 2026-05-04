@@ -5060,7 +5060,28 @@ class SimulationWorld:
         return runtime_summary.build_summary(
             self,
             mode=mode,
-            surface_snapshot_context=self._surface_snapshot_context(),
+            summary_context=self._summary_context(mode=mode),
+        )
+
+    def _summary_context(self, *, mode: RunMode) -> runtime_summary.SummaryContext:
+        alive = self.alive_agents()
+        ticks_executed = self.tick + 1
+        trophic_role_counts, meat_mode_counts = self._population_trophic_counts(alive)
+        return runtime_summary.SummaryContext(
+            field_stats=self._field_stats(),
+            climate_end=self._climate_state(),
+            terrain_counts=self._terrain_counts(),
+            end_surfaces=runtime_surface_snapshots.summary_end_surface_state(
+                mode,
+                context=self._surface_snapshot_context(),
+            ),
+            trophic_role_counts=trophic_role_counts,
+            meat_mode_counts=meat_mode_counts,
+            reproduction_end=self._reproduction_readiness_counts(alive),
+            trophic_lifecycle=self._trophic_lifecycle_summary(
+                ticks_executed=ticks_executed,
+            ),
+            season_name=str(self._season_state()["name"]),
         )
 
     def _field_stats(self) -> dict[str, dict[str, float]]:

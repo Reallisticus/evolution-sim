@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
@@ -16,8 +17,6 @@ from evolution_sim.env.runtime.reporting import (
     finalize_fresh_kill_run_totals,
     finalize_grouped_animal_resource_opportunity_counts,
     finalize_grouped_diet_totals,
-    SurfaceSnapshotContext,
-    summary_end_surface_state,
 )
 from evolution_sim.env.runtime.state import RunMode
 from evolution_sim.env.taxonomy import REPLAY_TAXONOMY_MODE
@@ -39,6 +38,19 @@ GENE_SUMMARY_FIELDS = (
     "rocky_affinity",
     "heat_tolerance",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryContext:
+    field_stats: dict[str, dict[str, float]]
+    climate_end: dict[str, object]
+    terrain_counts: dict[str, int]
+    end_surfaces: dict[str, object]
+    trophic_role_counts: dict[str, int]
+    meat_mode_counts: dict[str, int]
+    reproduction_end: dict[str, object]
+    trophic_lifecycle: dict[str, object]
+    season_name: str
 
 
 def _average_gene(source_genomes: list[Genome], field: str) -> float:
@@ -173,18 +185,15 @@ def build_summary(
     world: Any,
     mode: RunMode = RunMode.FULL_REPLAY,
     *,
-    surface_snapshot_context: SurfaceSnapshotContext,
+    summary_context: SummaryContext,
 ) -> dict[str, object]:
     alive = world.alive_agents()
     lineage_sizes, alive_lineage_sizes = _lineage_counts(world)
 
-    field_stats = world._field_stats()
-    climate_end = world._climate_state()
-    terrain_counts = world._terrain_counts()
-    end_surfaces = summary_end_surface_state(
-        mode,
-        context=surface_snapshot_context,
-    )
+    field_stats = summary_context.field_stats
+    climate_end = summary_context.climate_end
+    terrain_counts = summary_context.terrain_counts
+    end_surfaces = summary_context.end_surfaces
     hydrology_primary_counts = end_surfaces["hydrology_primary_counts"]
     hydrology_support_counts = end_surfaces["hydrology_support_counts"]
     hydrology_primary_stats = end_surfaces["hydrology_primary_stats"]
@@ -201,16 +210,15 @@ def build_summary(
     habitat_counts = end_surfaces["habitat_counts"]
     latest_species_metrics = end_surfaces["latest_species_metrics"]
     land_tile_count = world.config.width * world.config.height - terrain_counts["water"]
-    trophic_role_counts, meat_mode_counts = world._population_trophic_counts(alive)
-    reproduction_end = world._reproduction_readiness_counts(alive)
+    trophic_role_counts = summary_context.trophic_role_counts
+    meat_mode_counts = summary_context.meat_mode_counts
+    reproduction_end = summary_context.reproduction_end
     reproductive_groups_end = runtime_reproduction.build_reproductive_group_summary(
         world.reproductive_groups,
         world.agents.values(),
     )
     ticks_executed = world.tick + 1
-    trophic_lifecycle = world._trophic_lifecycle_summary(
-        ticks_executed=ticks_executed
-    )
+    trophic_lifecycle = summary_context.trophic_lifecycle
     fresh_kill_totals = finalize_fresh_kill_run_totals(
         world.run_fresh_kill_totals,
         fresh_kill_stats,
@@ -250,7 +258,7 @@ def build_summary(
         ),
         "extinct": len(alive) == 0,
         "total_agents_seen": len(world.agents),
-        "season_at_end": world._season_state()["name"],
+        "season_at_end": summary_context.season_name,
         "disturbance_at_end": climate_end["disturbance_type"],
         "disturbance_strength_at_end": climate_end["disturbance_strength"],
         "lineages": sorted({agent.lineage_id for agent in world.agents.values()}),

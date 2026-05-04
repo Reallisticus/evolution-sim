@@ -89,6 +89,7 @@ from evolution_sim.env.runtime.policy import (
     POLICY_INTERFACE_VERSION,
 )
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
+import evolution_sim.env.runtime.summary as runtime_summary
 from evolution_sim.env.runtime.reproduction import (
     REPRODUCTION_EVENT_SCHEMA_VERSION,
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,

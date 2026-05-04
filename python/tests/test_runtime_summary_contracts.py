@@ -100,6 +100,38 @@ class RuntimeSummaryContractTests(RuntimeContractTestHelpers):
         self.assertIsNone(event_payloads)
         self.assertIsNone(summary_viewer)
 
+    def test_summary_builder_uses_explicit_authority_context(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        context = world._summary_context(mode=RunMode.SUMMARY_ONLY)
+        expected = runtime_summary.build_summary(
+            world,
+            mode=RunMode.SUMMARY_ONLY,
+            summary_context=context,
+        )
+
+        private_reads = (
+            "_field_stats",
+            "_climate_state",
+            "_terrain_counts",
+            "_surface_snapshot_context",
+            "_population_trophic_counts",
+            "_reproduction_readiness_counts",
+            "_trophic_lifecycle_summary",
+            "_season_state",
+        )
+        with ExitStack() as stack:
+            for name in private_reads:
+                stack.enter_context(
+                    patch.object(world, name, side_effect=AssertionError(name))
+                )
+            actual = runtime_summary.build_summary(
+                world,
+                mode=RunMode.SUMMARY_ONLY,
+                summary_context=context,
+            )
+
+        self.assertEqual(actual, expected)
+
     def test_trophic_lifecycle_summary_uses_explicit_context(self) -> None:
         genome = self._hunter_genome()
 
