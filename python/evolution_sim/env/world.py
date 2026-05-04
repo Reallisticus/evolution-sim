@@ -18,6 +18,7 @@ import evolution_sim.env.runtime.mating as runtime_mating
 import evolution_sim.env.runtime.policy as runtime_policy
 import evolution_sim.env.runtime.resources as runtime_resources
 import evolution_sim.env.runtime.signals as runtime_signals
+import evolution_sim.env.runtime.surface_snapshots as runtime_surface_snapshots
 import evolution_sim.env.runtime.surfaces as runtime_surfaces
 from evolution_sim.env.runtime.biotic import (
     BioticDiffusionContext,
@@ -4517,6 +4518,43 @@ class SimulationWorld:
             refuge_score=self._refuge_score,
             matched_diet_ratio=self._matched_diet_ratio,
         )
+
+    def _surface_snapshot_context(
+        self,
+    ) -> runtime_surface_snapshots.SurfaceSnapshotContext:
+        (
+            _,
+            _,
+            hydrology_primary_counts,
+            hydrology_support_counts,
+            hydrology_primary_stats,
+        ) = self._hydrology_snapshot()
+        _, _, refuge_counts, refuge_stats = self._refuge_snapshot()
+        _, _, hazard_counts, hazard_stats = self._hazard_snapshot()
+        _, fresh_kill_stats = self._fresh_kill_snapshot()
+        _, _, carcass_stats = self._carcass_snapshot()
+        _, biotic_field_stats = self._biotic_field_snapshot()
+        _, signal_field_stats = self._signal_field_snapshot()
+        _, ecology_counts, ecology_stats = self._ecology_snapshot()
+        habitat_counts = self._habitat_state_grid()[1]
+        return runtime_surface_snapshots.SurfaceSnapshotContext(
+            viewer_frames=self.viewer_frames,
+            hydrology_primary_counts=hydrology_primary_counts,
+            hydrology_support_counts=hydrology_support_counts,
+            hydrology_primary_stats=hydrology_primary_stats,
+            refuge_counts=refuge_counts,
+            refuge_stats=refuge_stats,
+            hazard_counts=hazard_counts,
+            hazard_stats=hazard_stats,
+            fresh_kill_stats=fresh_kill_stats,
+            carcass_stats=carcass_stats,
+            biotic_field_stats=biotic_field_stats,
+            signal_field_stats=signal_field_stats,
+            ecology_counts=ecology_counts,
+            ecology_stats=ecology_stats,
+            habitat_counts=habitat_counts,
+        )
+
     def _materialize_frame_surfaces(
         self,
         surface_context: runtime_surfaces.FrameSurfaceContext | None = None,
@@ -5008,7 +5046,11 @@ class SimulationWorld:
         return build_collapse_events(ticks, species_population)
 
     def _build_summary(self, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, object]:
-        return runtime_summary.build_summary(self, mode=mode)
+        return runtime_summary.build_summary(
+            self,
+            mode=mode,
+            surface_snapshot_context=self._surface_snapshot_context(),
+        )
 
     def _field_stats(self) -> dict[str, dict[str, float]]:
         land_tiles = [tile for row in self.grid for tile in row if tile.terrain != "water"]

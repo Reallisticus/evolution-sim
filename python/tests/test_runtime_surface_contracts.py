@@ -89,9 +89,8 @@ class RuntimeSurfaceContractTests(RuntimeContractTestHelpers):
 
     def test_summary_end_surface_state_uses_explicit_snapshot_context(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
-        context = runtime_surface_snapshots.build_surface_snapshot_context(world)
+        context = world._surface_snapshot_context()
         expected = runtime_surface_snapshots.summary_end_surface_state(
-            world,
             RunMode.SUMMARY_ONLY,
             context=context,
         )
@@ -113,7 +112,6 @@ class RuntimeSurfaceContractTests(RuntimeContractTestHelpers):
                     patch.object(world, name, side_effect=AssertionError(name))
                 )
             actual = runtime_surface_snapshots.summary_end_surface_state(
-                None,
                 RunMode.SUMMARY_ONLY,
                 context=context,
             )

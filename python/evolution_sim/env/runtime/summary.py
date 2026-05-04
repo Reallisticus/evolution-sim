@@ -16,6 +16,7 @@ from evolution_sim.env.runtime.reporting import (
     finalize_fresh_kill_run_totals,
     finalize_grouped_animal_resource_opportunity_counts,
     finalize_grouped_diet_totals,
+    SurfaceSnapshotContext,
     summary_end_surface_state,
 )
 from evolution_sim.env.runtime.state import RunMode
@@ -168,14 +169,22 @@ def _lineage_counts(world: Any) -> tuple[dict[int, int], dict[int, int]]:
     return lineage_sizes, alive_lineage_sizes
 
 
-def build_summary(world: Any, mode: RunMode = RunMode.FULL_REPLAY) -> dict[str, object]:
+def build_summary(
+    world: Any,
+    mode: RunMode = RunMode.FULL_REPLAY,
+    *,
+    surface_snapshot_context: SurfaceSnapshotContext,
+) -> dict[str, object]:
     alive = world.alive_agents()
     lineage_sizes, alive_lineage_sizes = _lineage_counts(world)
 
     field_stats = world._field_stats()
     climate_end = world._climate_state()
     terrain_counts = world._terrain_counts()
-    end_surfaces = summary_end_surface_state(world, mode)
+    end_surfaces = summary_end_surface_state(
+        mode,
+        context=surface_snapshot_context,
+    )
     hydrology_primary_counts = end_surfaces["hydrology_primary_counts"]
     hydrology_support_counts = end_surfaces["hydrology_support_counts"]
     hydrology_primary_stats = end_surfaces["hydrology_primary_stats"]

@@ -27,59 +27,12 @@ class SurfaceSnapshotContext:
     habitat_counts: dict[str, int]
 
 
-def build_surface_snapshot_context(world: Any) -> SurfaceSnapshotContext:
-    (
-        _,
-        _,
-        hydrology_primary_counts,
-        hydrology_support_counts,
-        hydrology_primary_stats,
-    ) = world._hydrology_snapshot()
-    _, _, refuge_counts, refuge_stats = world._refuge_snapshot()
-    _, _, hazard_counts, hazard_stats = world._hazard_snapshot()
-    _, fresh_kill_stats = world._fresh_kill_snapshot()
-    _, _, carcass_stats = world._carcass_snapshot()
-    _, biotic_field_stats = world._biotic_field_snapshot()
-    _, signal_field_stats = world._signal_field_snapshot()
-    _, ecology_counts, ecology_stats = world._ecology_snapshot()
-    habitat_counts = world._habitat_state_grid()[1]
-    return SurfaceSnapshotContext(
-        viewer_frames=world.viewer_frames,
-        hydrology_primary_counts=hydrology_primary_counts,
-        hydrology_support_counts=hydrology_support_counts,
-        hydrology_primary_stats=hydrology_primary_stats,
-        refuge_counts=refuge_counts,
-        refuge_stats=refuge_stats,
-        hazard_counts=hazard_counts,
-        hazard_stats=hazard_stats,
-        fresh_kill_stats=fresh_kill_stats,
-        carcass_stats=carcass_stats,
-        biotic_field_stats=biotic_field_stats,
-        signal_field_stats=signal_field_stats,
-        ecology_counts=ecology_counts,
-        ecology_stats=ecology_stats,
-        habitat_counts=habitat_counts,
-    )
-
-
-def _resolve_surface_snapshot_context(
-    world: Any | None,
-    context: SurfaceSnapshotContext | None = None,
-) -> SurfaceSnapshotContext:
-    if context is not None:
-        return context
-    if world is None:
-        raise ValueError("world is required when surface snapshot context is omitted")
-    return build_surface_snapshot_context(world)
-
-
 def summary_end_surface_state(
-    world: Any | None,
     mode: RunMode,
     *,
-    context: SurfaceSnapshotContext | None = None,
+    context: SurfaceSnapshotContext,
 ) -> dict[str, object]:
-    snapshot_context = _resolve_surface_snapshot_context(world, context)
+    snapshot_context = context
     latest_frame = (
         snapshot_context.viewer_frames[-1]
         if snapshot_context.viewer_frames and mode == RunMode.FULL_REPLAY
