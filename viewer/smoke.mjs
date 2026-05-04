@@ -168,6 +168,14 @@ try {
   await page.waitForFunction(() => {
     return document.querySelectorAll("#episode-list [data-episode-tick]").length > 0;
   });
+  await page.waitForFunction(() => {
+    return (
+      document.querySelectorAll("#episode-list [data-episode-storyline]").length > 0 &&
+      [...document.querySelectorAll("#episode-list [data-episode-storyline]")].every((node) =>
+        node.textContent.includes("Cause") && node.textContent.includes("Effect"),
+      )
+    );
+  });
   const episodeTick = await page.evaluate(() => {
     return Number(document.querySelector("#episode-list [data-episode-tick]")?.dataset.episodeTick);
   });
@@ -185,6 +193,7 @@ try {
       inspector &&
       inspector.textContent.includes("Involved Agents") &&
       inspector.textContent.includes("Event Ledger") &&
+      inspector.querySelector("[data-episode-cause-effect]") &&
       inspector.querySelectorAll("[data-episode-lens]").length >= 2 &&
       inspector.querySelectorAll("[data-episode-play]").length === 1 &&
       inspector.querySelectorAll("[data-episode-agent]").length > 0
@@ -224,7 +233,17 @@ try {
       document.querySelector("#episode-inspector")?.textContent?.includes("Playing causal window")
     );
   });
-  await page.locator("#episode-inspector [data-episode-play]").first().click();
+  if (await page.evaluate(() => window.__viewerDebug?.episodePlayback != null)) {
+    try {
+      await page
+        .locator("#episode-inspector [data-episode-play]", { hasText: "Stop Causal Playback" })
+        .first()
+        .click({ timeout: 5000 });
+    } catch (error) {
+      const stillPlaying = await page.evaluate(() => window.__viewerDebug?.episodePlayback != null);
+      if (stillPlaying) throw error;
+    }
+  }
   await page.waitForFunction(() => window.__viewerDebug?.episodePlayback === null);
   await page.locator('#episode-inspector [data-episode-lens="delta"]').first().click();
   await page.waitForFunction(() => {
@@ -246,7 +265,15 @@ try {
   await page.waitForFunction(() => {
     return (
       window.__viewerDebug?.lastStoryboardExport?.entryCount > 0 &&
+      window.__viewerDebug?.lastStoryboardExport?.pngFrameCount > 0 &&
+      window.__viewerDebug?.lastStoryboardExport?.previewCount > 0 &&
       document.querySelector("#storyboard-export-status")?.textContent?.includes("Exported")
+    );
+  });
+  await page.waitForFunction(() => {
+    return (
+      document.querySelectorAll("#storyboard-preview [data-storyboard-preview-tick] img[src^='data:image/png']").length > 0 &&
+      document.querySelector("#storyboard-preview")?.textContent?.includes("Storyboard Preview")
     );
   });
   await page.reload({ waitUntil: "networkidle" });
@@ -367,26 +394,60 @@ try {
   });
   await page.waitForFunction(() => {
     const controls = document.querySelector("#map-control-strip");
+    const tools = document.querySelector(".map-tools-drawer");
+    const isVisible = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
     return (
       controls &&
+      tools &&
+      !tools.open &&
       controls.textContent.includes("Decision Layer") &&
       controls.textContent.includes("Event Lens") &&
+      controls.textContent.includes("Map Tools") &&
       controls.textContent.includes("Overlay Opacity") &&
       controls.textContent.includes("Blend Terrain") &&
-      controls.textContent.includes("Reset View") &&
-      controls.textContent.includes("Fit Focus") &&
+      controls.textContent.includes("Reset") &&
+      controls.textContent.includes("Focus") &&
+      document.querySelector("#overlay-meaning[data-overlay-contract='terrain']") &&
+      document.querySelector("#overlay-meaning")?.textContent?.includes("Backend") &&
+      document.querySelector("#comparison-panel [data-comparison-delta='alive']") &&
       document.querySelector("#decision-overlay-mode") &&
       document.querySelector("#event-lens-mode") &&
       document.querySelector("#event-lens-summary") &&
       document.querySelector("#overlay-opacity") &&
       document.querySelector("#blend-terrain-toggle") &&
       document.querySelector("#map-navigation") &&
+      !isVisible("#map-navigation") &&
+      !isVisible("label[for='overlay-opacity']") &&
       document.querySelector("#map-minimap [data-minimap-viewport]")
     );
   });
   await assertNoControlClipping(page, "desktop startup");
+  await page.locator(".map-tools-drawer summary").click();
+  await page.waitForFunction(() => document.querySelector(".map-tools-drawer")?.open === true);
+  await page.waitForFunction(() => {
+    return document.querySelectorAll("#map-camera-presets [data-map-camera-preset]").length >= 4;
+  });
   await page.locator("#map-zoom-in").click();
   await page.waitForFunction(() => (window.__viewerDebug?.mapView?.zoom ?? 1) > 1);
+  await page.locator("#map-camera-presets [data-map-camera-preset='world']").click();
+  await page.waitForFunction(() => {
+    return window.__viewerDebug?.activeCameraPreset === "world" &&
+      Math.round((window.__viewerDebug?.mapView?.zoom ?? 0) * 100) === 100;
+  });
+  await page.locator("#map-camera-presets [data-map-camera-preset='pressure']").click();
+  await page.waitForFunction(() => window.__viewerDebug?.activeCameraPreset === "pressure");
+  await page.waitForFunction(() => window.__viewerDebug?.viewerPreferences?.activeCameraPreset === "pressure");
   await page.locator("#map-reset-view").click();
   await page.waitForFunction(() => Math.round((window.__viewerDebug?.mapView?.zoom ?? 0) * 100) === 100);
   await page.locator("#decision-overlay-mode").selectOption("recent");
@@ -467,10 +528,120 @@ try {
   });
   await page.locator("#overlay-mode").selectOption("hazard");
   await page.waitForFunction(() => {
-    return document.querySelector("#overlay-label")?.textContent?.includes("Hazard");
+    return (
+      document.querySelector("#overlay-label")?.textContent?.includes("Hazard") &&
+      document.querySelector("#overlay-meaning")?.dataset.overlayContract === "hazard" &&
+      document.querySelector("#overlay-meaning")?.textContent?.includes("hazard_type_codes")
+    );
+  });
+  await page.waitForFunction(() => {
+    return (
+      document.querySelector("#overlay-opacity-presets")?.textContent?.includes("Hazard") &&
+      document.querySelectorAll("#overlay-opacity-presets [data-overlay-opacity-preset]").length >= 3
+    );
+  });
+  await page.locator("[data-overlay-opacity-preset='default']").click();
+  await page.waitForFunction(() => {
+    return (
+      Math.round((window.__viewerDebug?.overlayOpacity ?? 0) * 100) ===
+      Math.round((window.__viewerDebug?.overlayOpacityDefaults?.hazard ?? 0) * 100)
+    );
+  });
+  await page.locator("[data-compare-preset='previous-event']").click();
+  await page.waitForFunction(() => {
+    return (
+      window.__viewerDebug?.comparison?.baselineTick != null &&
+      document.querySelector("#comparison-panel")?.textContent?.includes("vs tick") &&
+      document.querySelector("#comparison-panel")?.textContent?.includes("Current + Delta") &&
+      document.querySelectorAll("#comparison-panel [data-comparison-delta]").length >= 4 &&
+      document.querySelectorAll("#comparison-panel [data-comparison-map] img[src^='data:image/png']").length === 2 &&
+      window.__viewerDebug?.snapshotStats?.renders > 0
+    );
+  });
+  await page.locator("#event-strip [data-event-band]").first().click();
+  await page.waitForFunction(() => {
+    return (
+      window.__viewerDebug?.activeEventCluster?.tickCount > 0 &&
+      document.querySelector("#event-cluster-drilldown")?.textContent?.includes("Event Cluster") &&
+      document.querySelectorAll("#event-cluster-drilldown [data-cluster-tick]").length > 0
+    );
+  });
+  await page.locator("#map-camera-presets [data-map-camera-preset='pressure']").click();
+  await page.waitForFunction(() => window.__viewerDebug?.activeCameraPreset === "pressure");
+  await page.locator('[data-detail-view="events"]').click();
+  await page.waitForFunction(() => window.__viewerDebug?.activeDetailView === "events");
+  await page.locator("#episode-search").fill("death");
+  await page.locator("#episode-kind-filter").selectOption("death");
+  await page.waitForFunction(() => {
+    const items = [...document.querySelectorAll("#episode-list [data-episode-tick]")];
+    return (
+      window.__viewerDebug?.episodeFilters?.query === "death" &&
+      window.__viewerDebug?.episodeFilters?.kind === "death" &&
+      document.querySelector("#episode-filter-summary")?.textContent?.includes("of") &&
+      items.length > 0 &&
+      items.every((item) => item.dataset.episodeStoryline === "death")
+    );
+  });
+  await page.locator("#episode-search").fill("");
+  await page.locator("#episode-kind-filter").selectOption("all");
+  await page.locator("#presentation-toggle").click();
+  await page.waitForFunction(() => {
+    return (
+      document.body.classList.contains("presentation-mode") &&
+      window.__viewerDebug?.presentationMode === true &&
+      window.__viewerDebug?.viewerUrlState?.present === 1 &&
+      new URLSearchParams(window.location.search).get("present") === "1"
+    );
+  });
+  await page.locator("#share-view-link").click();
+  await page.waitForFunction(() => window.__viewerDebug?.shareUrl?.includes("present=1"));
+  await page.locator("#presentation-toggle").click();
+  await page.waitForFunction(() => {
+    return (
+      !document.body.classList.contains("presentation-mode") &&
+      window.__viewerDebug?.presentationMode === false &&
+      window.__viewerDebug?.viewerUrlState?.present === 0
+    );
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForFunction(() => window.__viewerDebug?.loaded === true);
+  await page.waitForFunction(() => {
+    return (
+      window.__viewerDebug?.viewerPreferences?.version === 1 &&
+      window.__viewerDebug?.overlayMode === "hazard" &&
+      window.__viewerDebug?.activeCameraPreset === "pressure" &&
+      window.__viewerDebug?.activeDetailView === "events"
+    );
+  });
+  await page.locator(".map-tools-drawer summary").click();
+  await page.waitForFunction(() => document.querySelector(".map-tools-drawer")?.open === true);
+  await page.locator("#map-reset-view").click();
+  await page.waitForFunction(() => {
+    const view = window.__viewerDebug?.mapView;
+    return (
+      window.__viewerDebug?.activeCameraPreset === "world" &&
+      Math.round((view?.zoom ?? 0) * 100) === 100 &&
+      Math.abs(view?.panX ?? 0) < 1 &&
+      Math.abs(view?.panY ?? 0) < 1
+    );
   });
   await page.waitForFunction(() => {
     return document.querySelectorAll("#event-strip [data-event-tick]").length > 0;
+  });
+  await page.waitForFunction(() => {
+    const significant = window.__viewerDebug?.significantEventTicks?.length ?? 0;
+    const strip = document.querySelector("#event-strip");
+    const stripWidth = strip?.getBoundingClientRect().width ?? 0;
+    const compactMax = Math.max(24, Math.floor(stripWidth / 10));
+    const dense = significant > compactMax;
+    const bandLabels = [...document.querySelectorAll("#event-strip [data-event-band] .event-band-label")];
+    return (
+      strip &&
+      significant > 0 &&
+      (!dense ||
+        (bandLabels.length > 0 &&
+          bandLabels.every((node) => /birth|combat|death|mortality|carcass|event/i.test(node.textContent ?? ""))))
+    );
   });
   await page.locator("#jump-next-event").click();
   await page.waitForFunction(() => {
@@ -521,24 +692,38 @@ try {
   });
   await page.locator("#canvas-host").scrollIntoViewIfNeeded();
   const debugState = await page.evaluate(() => window.__viewerDebug);
-  const selectedTarget =
-    debugState.frame.agents.find(
+  const selectedTargets = [
+    ...debugState.frame.agents.filter(
       (agent) => agent[1] > 4 && agent[1] < 44 && agent[2] > 4 && agent[2] < 26,
-    ) ??
-    debugState.frame.agents.find((agent) => agent[17] === "none" && agent[19] === "none") ??
-    debugState.frame.agents[0];
-  const [, gridX, gridY] = selectedTarget;
+    ),
+    ...debugState.frame.agents.filter((agent) => agent[17] === "none" && agent[19] === "none"),
+    ...debugState.frame.agents,
+  ].slice(0, 12);
   canvasBox = await page.locator("#canvas-host").boundingBox();
   if (!canvasBox) {
     throw new Error("Canvas host bounding box was not available after tile inspection.");
   }
-  const clickX = debugState.offset.x + gridX * debugState.tileSize + debugState.tileSize / 2;
-  const clickY = debugState.offset.y + gridY * debugState.tileSize + debugState.tileSize / 2;
-
-  await page.locator("#canvas-host").click({ position: { x: clickX, y: clickY } });
-  await page.waitForFunction(() => {
-    return window.__viewerDebug?.selectedAgentId !== null && window.__viewerDebug?.explainedTile !== null;
-  });
+  let selectedByCanvas = false;
+  for (const target of selectedTargets) {
+    const [, gridX, gridY] = target;
+    const clickX = debugState.offset.x + gridX * debugState.tileSize + debugState.tileSize / 2;
+    const clickY = debugState.offset.y + gridY * debugState.tileSize + debugState.tileSize / 2;
+    await page.locator("#canvas-host").click({ position: { x: clickX, y: clickY } });
+    try {
+      await page.waitForFunction(
+        () => window.__viewerDebug?.selectedAgentId !== null && window.__viewerDebug?.explainedTile !== null,
+        null,
+        { timeout: 1200 },
+      );
+      selectedByCanvas = true;
+      break;
+    } catch {
+      // Try another visible encoded agent candidate before failing the smoke.
+    }
+  }
+  if (!selectedByCanvas) {
+    throw new Error("Canvas click did not select any visible agent candidate.");
+  }
   await page.waitForFunction(() => {
     const explainer = document.querySelector("#tile-explainer");
     return (
@@ -573,7 +758,12 @@ try {
       dossier.textContent.includes("Life Timeline") &&
       dossier.textContent.includes("Energy") &&
       dossier.textContent.includes("Hydration") &&
-      dossier.textContent.includes("Health")
+      dossier.textContent.includes("Health") &&
+      document.querySelector("#agent-dossier .agent-dossier-summary") &&
+      document.querySelectorAll("#agent-dossier [data-agent-vital]").length >= 3 &&
+      document.querySelector("#agent-dossier [data-agent-primary-card='decision']") &&
+      document.querySelectorAll("#agent-dossier details[data-dossier-priority]").length >= 4 &&
+      document.querySelectorAll("#agent-dossier details[data-dossier-priority='deep']:not([open])").length >= 1
     );
   });
   await page.waitForFunction(() => {
@@ -608,6 +798,8 @@ try {
   await page.waitForFunction(() => {
     return document.querySelectorAll("#agent-action-timeline [data-agent-event-tick]").length > 0;
   });
+  await page.locator('#agent-dossier [data-dossier-section="life-timeline"] summary').click();
+  await page.waitForFunction(() => document.querySelector('#agent-dossier [data-dossier-section="life-timeline"]')?.open);
   const agentEventTick = await page.evaluate(() => {
     const currentTick = window.__viewerDebug?.frame?.tick;
     const items = [...document.querySelectorAll("#agent-action-timeline [data-agent-event-tick]")];

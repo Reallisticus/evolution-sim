@@ -29,7 +29,7 @@
     "viewer:contracts:generate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs",
     "viewer:contracts:check": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs --check",
     "viewer:map:test": "node viewer/map_layers_test.mjs",
-    "viewer:model:test": "node viewer/episode_model_test.mjs",
+    "viewer:model:test": "node viewer/episode_model_test.mjs && node viewer/dashboard_model_test.mjs && node viewer/snapshot_model_test.mjs",
     "viewer:validate": "node viewer/validator_smoke.mjs",
     "viewer:smoke:malformed": "node viewer/malformed_smoke.mjs",
     "viewer:smoke:session": "node viewer/session_smoke.mjs",

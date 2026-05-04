@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Evolution Sim Replay Viewer</title>
-    <link rel="stylesheet" href="./styles.css?assetVersion=dashboard-v09" />
+    <link rel="stylesheet" href="./styles.css?assetVersion=dashboard-v15" />
   </head>
   <body>
     <div class="app-shell">
@@ -242,6 +242,13 @@
           >
             Advanced
           </button>
+          <button id="presentation-toggle" class="view-tab utility-tab" type="button">
+            Present
+          </button>
+          <button id="share-view-link" class="view-tab utility-tab" type="button">
+            Share View
+          </button>
+          <span id="share-view-status" class="share-view-status"></span>
         </div>
 
         <section id="story-panel" class="view-panel active" role="tabpanel" aria-labelledby="story-tab">
@@ -361,9 +368,33 @@
                   <button id="export-storyboard" type="button">Export Storyboard</button>
                 </div>
                 <div id="storyboard-export-status" class="storyboard-export-status"></div>
+                <div id="storyboard-preview" class="storyboard-preview">
+                  <div class="muted">Storyboard previews will appear when event episodes load.</div>
+                </div>
                 <div id="bookmark-list" class="bookmark-list">
                   <div class="muted">Bookmarked episodes will appear here.</div>
                 </div>
+                <div class="episode-filter-bar">
+                  <label for="episode-search">
+                    <span>Search Episodes</span>
+                    <input id="episode-search" type="search" placeholder="death, birth, attack, carcass" />
+                  </label>
+                  <label for="episode-kind-filter">
+                    <span>Type</span>
+                    <select id="episode-kind-filter">
+                      <option value="all">All</option>
+                      <option value="birth">Birth</option>
+                      <option value="death">Death</option>
+                      <option value="combat">Combat</option>
+                      <option value="carcass">Carcass</option>
+                    </select>
+                  </label>
+                  <label class="episode-agent-filter" for="episode-selected-agent-filter">
+                    <input id="episode-selected-agent-filter" type="checkbox" />
+                    <span>Selected Agent</span>
+                  </label>
+                </div>
+                <div id="episode-filter-summary" class="episode-filter-summary"></div>
                 <div id="episode-list" class="episode-list">
                   <div class="muted">Load a replay to inspect major event episodes.</div>
                 </div>
@@ -476,21 +507,44 @@
               <span id="event-lens-summary" class="legend-note event-lens-summary">
                 Lens: current tick
               </span>
-              <label class="map-control" for="overlay-opacity">
-                <span>Overlay Opacity</span>
-                <input id="overlay-opacity" type="range" min="20" max="100" value="72" />
-              </label>
-              <label class="map-control toggle-control" for="blend-terrain-toggle">
-                <input id="blend-terrain-toggle" type="checkbox" checked />
-                <span>Blend Terrain</span>
-              </label>
-              <div id="map-navigation" class="map-navigation" aria-label="Map navigation controls">
-                <button id="map-zoom-out" type="button" aria-label="Zoom map out">-</button>
-                <span id="map-zoom-label">100%</span>
-                <button id="map-zoom-in" type="button" aria-label="Zoom map in">+</button>
-                <button id="map-reset-view" type="button">Reset View</button>
-                <button id="map-fit-focus" type="button">Fit Focus</button>
+              <div id="overlay-meaning" class="overlay-meaning" data-overlay-contract="terrain">
+                <span>Backend overlay meaning will appear after replay load.</span>
               </div>
+              <details class="map-tools-drawer">
+                <summary>
+                  <span>Map Tools</span>
+                  <small>Camera, opacity, terrain blend, zoom, and fit</small>
+                </summary>
+                <div class="map-tools-drawer-body">
+                  <div id="map-camera-presets" class="map-camera-presets" aria-label="Map camera presets">
+                    <button type="button" data-map-camera-preset="world" data-short="World">World</button>
+                    <button type="button" data-map-camera-preset="selected" data-short="Sel">Selected</button>
+                    <button type="button" data-map-camera-preset="episode" data-short="Ep">Episode</button>
+                    <button type="button" data-map-camera-preset="pressure" data-short="Press">Pressure</button>
+                  </div>
+                  <label class="map-control" for="overlay-opacity">
+                    <span>Overlay Opacity</span>
+                    <input id="overlay-opacity" type="range" min="20" max="100" value="72" />
+                  </label>
+                  <div id="overlay-opacity-presets" class="overlay-opacity-presets">
+                    <span>Terrain preset</span>
+                    <button type="button" data-overlay-opacity-preset="soft">Soft</button>
+                    <button type="button" data-overlay-opacity-preset="default">Default</button>
+                    <button type="button" data-overlay-opacity-preset="strong">Strong</button>
+                  </div>
+                  <label class="map-control toggle-control" for="blend-terrain-toggle">
+                    <input id="blend-terrain-toggle" type="checkbox" checked />
+                    <span>Blend Terrain</span>
+                  </label>
+                  <div id="map-navigation" class="map-navigation" aria-label="Map navigation controls">
+                    <button id="map-zoom-out" type="button" aria-label="Zoom map out">-</button>
+                    <span id="map-zoom-label">100%</span>
+                    <button id="map-zoom-in" type="button" aria-label="Zoom map in">+</button>
+                    <button id="map-reset-view" type="button">Reset</button>
+                    <button id="map-fit-focus" type="button">Focus</button>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
           <div
@@ -520,6 +574,11 @@
               </div>
             </div>
             <div id="event-strip" class="event-strip" aria-label="Replay event timeline"></div>
+            <div id="event-cluster-drilldown" class="event-cluster-drilldown"></div>
+            <div id="comparison-panel" class="comparison-panel">
+              <span>Compare</span>
+              <strong>Load a replay to compare ticks.</strong>
+            </div>
           </div>
         </div>
 
@@ -603,7 +662,7 @@
     <script type="module">
       const requestedAssetVersion =
         new URLSearchParams(window.location.search).get("assetVersion") ?? "local";
-      const assetVersion = `${requestedAssetVersion}-dashboard-v09`;
+      const assetVersion = `${requestedAssetVersion}-dashboard-v15`;
       await import(`./app.js?assetVersion=${encodeURIComponent(assetVersion)}`);
     </script>
   </body>

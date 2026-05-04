@@ -23,6 +23,23 @@ import {
   tilePressureTags,
 } from "./episode_model.mjs";
 import {
+  OVERLAY_CONTRACTS,
+  VIEWER_STATE_STORAGE_VERSION,
+  comparisonBaselineIndexForPreset,
+  defaultOverlayOpacityForMode,
+  episodeCauseEffect as modelEpisodeCauseEffect,
+  episodeFilterModel,
+  eventClusterDetailModel,
+  frameComparison as modelFrameComparison,
+  loadViewerPreferences,
+  normalizeViewerUrlState,
+  overlayContractForMode,
+  overlayOpacityPresetValue,
+  saveViewerPreferences,
+  serializeViewerUrlState,
+  serializeViewerPreferences,
+} from "./dashboard_model.mjs";
+import {
   EVENT_MARKER_STYLES,
   countChangedTileDeltas,
   renderAgentLayer,
@@ -33,6 +50,15 @@ import {
 } from "./map_layers.mjs";
 import { buildReplayModel } from "./replay_model.mjs";
 import { validateReplayPayload } from "./replay_validator.mjs";
+import {
+  DEFAULT_SNAPSHOT_BUDGET_MS,
+  DEFAULT_SNAPSHOT_CACHE_LIMIT,
+  buildSnapshotBudgetReport,
+  changedTileCoordinates,
+  snapshotCacheKey,
+  snapshotScaleForMap,
+  trimSnapshotCache,
+} from "./snapshot_model.mjs";
 
 const state = {
   payload: null,
@@ -40,6 +66,7 @@ const state = {
   selectedAgentId: null,
   selectedSpeciesId: null,
   overlayMode: "terrain",
+  overlayOpacityByMode: {},
   decisionOverlayMode: "selected",
   eventLensMode: "current",
   overlayOpacity: 0.72,
@@ -51,6 +78,8 @@ const state = {
     panX: 0,
     panY: 0,
   },
+  activeCameraPreset: "world",
+  comparisonBaselineFrameIndex: 0,
   mapPointer: null,
   activeView: "story",
   playing: false,
@@ -69,7 +98,22 @@ const state = {
   eventsByTick: new Map(),
   significantEventTicks: [],
   eventBookmarks: [],
+  activeEventCluster: null,
   lastStoryboardExport: null,
+  lastShareUrl: null,
+  pendingUrlState: normalizeViewerUrlState(new URLSearchParams(window.location.search)),
+  presentationMode: false,
+  episodeFilters: {
+    query: "",
+    kind: "all",
+    selectedAgentOnly: false,
+  },
+  snapshotCache: new Map(),
+  snapshotStats: {
+    renders: 0,
+    hits: 0,
+    lastBudget: null,
+  },
   activeDetailView: "overview",
   visualStats: {
     glyphs: 0,
@@ -82,6 +126,7 @@ const state = {
     decisionOverlays: 0,
     terrainBlends: 0,
     lineageBranches: 0,
+    eventBands: 0,
   },
 };
 
@@ -94,6 +139,8 @@ const EVENT_LENS_FRAME_WINDOW = 24;
 const EPISODE_PLAYBACK_WINDOW = 10;
 const EPISODE_PLAYBACK_INTERVAL_MS = 320;
 const MAX_EVENT_LENS_MARKERS = 96;
+const EVENT_STRIP_CLUSTER_PX = 120;
+const EVENT_STRIP_MIN_BUCKETS = 4;
 const MAP_MIN_ZOOM = 0.72;
 const MAP_MAX_ZOOM = 3.2;
 const MAP_ZOOM_STEP = 1.22;
@@ -135,6 +182,9 @@ const elements = {
   loadUrl: document.getElementById("load-url"),
   loadStatus: document.getElementById("load-status"),
   viewTabs: document.getElementById("view-tabs"),
+  presentationToggle: document.getElementById("presentation-toggle"),
+  shareViewLink: document.getElementById("share-view-link"),
+  shareViewStatus: document.getElementById("share-view-status"),
   storyPanel: document.getElementById("story-panel"),
   advancedPanel: document.getElementById("advanced-panel"),
   advancedSidebarGrid: document.getElementById("advanced-sidebar-grid"),
@@ -148,6 +198,7 @@ const elements = {
   eventLensMode: document.getElementById("event-lens-mode"),
   eventLensSummary: document.getElementById("event-lens-summary"),
   overlayOpacity: document.getElementById("overlay-opacity"),
+  overlayOpacityPresets: document.getElementById("overlay-opacity-presets"),
   blendTerrainToggle: document.getElementById("blend-terrain-toggle"),
   mapNavigation: document.getElementById("map-navigation"),
   mapZoomOut: document.getElementById("map-zoom-out"),
@@ -164,6 +215,8 @@ const elements = {
   birthsLabel: document.getElementById("births-label"),
   deathsLabel: document.getElementById("deaths-label"),
   overlayLabel: document.getElementById("overlay-label"),
+  overlayMeaning: document.getElementById("overlay-meaning"),
+  mapCameraPresets: document.getElementById("map-camera-presets"),
   terrainLegend: document.getElementById("terrain-legend"),
   summaryGrid: document.getElementById("summary-grid"),
   traitGrid: document.getElementById("trait-grid"),
@@ -207,10 +260,15 @@ const elements = {
   detailTabs: document.getElementById("story-detail-tabs"),
   detailPanels: [...document.querySelectorAll("[data-detail-panel]")],
   episodeInspector: document.getElementById("episode-inspector"),
+  episodeSearch: document.getElementById("episode-search"),
+  episodeKindFilter: document.getElementById("episode-kind-filter"),
+  episodeSelectedAgentFilter: document.getElementById("episode-selected-agent-filter"),
+  episodeFilterSummary: document.getElementById("episode-filter-summary"),
   episodeList: document.getElementById("episode-list"),
   bookmarkCurrentEvent: document.getElementById("bookmark-current-event"),
   exportStoryboard: document.getElementById("export-storyboard"),
   storyboardExportStatus: document.getElementById("storyboard-export-status"),
+  storyboardPreview: document.getElementById("storyboard-preview"),
   bookmarkList: document.getElementById("bookmark-list"),
   canvasHost: document.getElementById("canvas-host"),
   mapAnnotations: document.getElementById("map-annotations"),
@@ -220,6 +278,8 @@ const elements = {
   tileExplainer: document.getElementById("tile-explainer"),
   eventSummary: document.getElementById("event-summary"),
   eventStrip: document.getElementById("event-strip"),
+  eventClusterDrilldown: document.getElementById("event-cluster-drilldown"),
+  comparisonPanel: document.getElementById("comparison-panel"),
   jumpPrevEvent: document.getElementById("jump-prev-event"),
   jumpNextEvent: document.getElementById("jump-next-event"),
 };
@@ -231,6 +291,7 @@ const HYDROLOGY_SUPPORT_BITS = {
 };
 
 setupSimplifiedLayout();
+applyStoredViewerPreferences();
 await initPixi();
 bindEvents();
 await bootstrapDefaultReplay();
@@ -248,6 +309,63 @@ function setupSimplifiedLayout() {
       elements.advancedSidebarGrid.appendChild(panel);
     });
   }
+}
+
+function applyStoredViewerPreferences() {
+  const preferences = loadViewerPreferences(window.localStorage);
+  if (!preferences) {
+    state.overlayOpacityByMode = {
+      terrain: state.overlayOpacity,
+    };
+    applyUrlPreferenceState(state.pendingUrlState);
+    updatePreferenceControls();
+    return;
+  }
+  state.overlayMode = preferences.overlayMode;
+  state.overlayOpacityByMode = { ...preferences.overlayOpacityByMode };
+  state.overlayOpacity = preferences.overlayOpacity;
+  state.blendTerrain = preferences.blendTerrain;
+  state.decisionOverlayMode = preferences.decisionOverlayMode;
+  state.eventLensMode = preferences.eventLensMode;
+  state.activeDetailView = preferences.activeDetailView;
+  state.activeCameraPreset = preferences.activeCameraPreset;
+  state.activeView = preferences.activeView;
+  state.presentationMode = Boolean(preferences.presentationMode);
+  applyUrlPreferenceState(state.pendingUrlState);
+  updatePreferenceControls();
+}
+
+function applyUrlPreferenceState(urlState) {
+  if (!urlState) return;
+  state.overlayMode = urlState.overlay;
+  state.overlayOpacity = state.overlayOpacityByMode[urlState.overlay] ?? defaultOverlayOpacityForMode(urlState.overlay);
+  state.eventLensMode = urlState.lens;
+  state.activeDetailView = urlState.detail;
+  state.activeCameraPreset = urlState.camera;
+  state.activeView = urlState.view;
+  state.presentationMode = Boolean(urlState.present);
+}
+
+function updatePreferenceControls() {
+  if (elements.overlayMode) elements.overlayMode.value = state.overlayMode;
+  if (elements.overlayOpacity) elements.overlayOpacity.value = String(Math.round(state.overlayOpacity * 100));
+  if (elements.blendTerrainToggle) elements.blendTerrainToggle.checked = Boolean(state.blendTerrain);
+  if (elements.decisionOverlayMode) elements.decisionOverlayMode.value = state.decisionOverlayMode;
+  if (elements.eventLensMode) elements.eventLensMode.value = state.eventLensMode;
+  if (elements.episodeSearch) elements.episodeSearch.value = state.episodeFilters.query;
+  if (elements.episodeKindFilter) elements.episodeKindFilter.value = state.episodeFilters.kind;
+  if (elements.episodeSelectedAgentFilter) {
+    elements.episodeSelectedAgentFilter.checked = Boolean(state.episodeFilters.selectedAgentOnly);
+  }
+  renderOverlayOpacityPresets();
+  renderPresentationMode();
+}
+
+function persistViewerPreferences() {
+  const preferences = serializeViewerPreferences(state);
+  state.overlayOpacityByMode = { ...preferences.overlayOpacityByMode };
+  saveViewerPreferences(window.localStorage, preferences);
+  syncDebugState();
 }
 
 async function initPixi() {
@@ -317,29 +435,34 @@ function bindEvents() {
   });
 
   elements.overlayMode.addEventListener("change", () => {
-    state.overlayMode = elements.overlayMode.value;
-    drawTerrain();
-    renderFrame(state.currentFrameIndex);
+    setOverlayMode(elements.overlayMode.value);
   });
 
   elements.decisionOverlayMode?.addEventListener("change", () => {
     state.decisionOverlayMode = elements.decisionOverlayMode.value;
+    persistViewerPreferences();
     renderFrame(state.currentFrameIndex);
   });
 
   elements.eventLensMode?.addEventListener("change", () => {
     state.eventLensMode = elements.eventLensMode.value;
+    persistViewerPreferences();
     renderFrame(state.currentFrameIndex);
   });
 
   elements.overlayOpacity?.addEventListener("input", () => {
-    state.overlayOpacity = clamp(Number(elements.overlayOpacity.value) / 100, 0.2, 1);
-    drawTerrain();
-    renderFrame(state.currentFrameIndex);
+    setOverlayOpacity(Number(elements.overlayOpacity.value) / 100);
+  });
+
+  elements.overlayOpacityPresets?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-overlay-opacity-preset]");
+    if (!button) return;
+    setOverlayOpacity(overlayOpacityPresetValue(state.overlayMode, button.dataset.overlayOpacityPreset));
   });
 
   elements.blendTerrainToggle?.addEventListener("change", () => {
     state.blendTerrain = Boolean(elements.blendTerrainToggle.checked);
+    persistViewerPreferences();
     drawTerrain();
     renderFrame(state.currentFrameIndex);
   });
@@ -360,7 +483,29 @@ function bindEvents() {
     fitMapToFocus();
   });
 
+  elements.mapCameraPresets?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-map-camera-preset]");
+    if (!button) return;
+    applyMapCameraPreset(button.dataset.mapCameraPreset);
+  });
+
+  elements.comparisonPanel?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-compare-preset]");
+    if (!button) return;
+    applyComparisonPreset(button.dataset.comparePreset);
+  });
+
   elements.viewTabs.addEventListener("click", (event) => {
+    const presentation = event.target.closest("#presentation-toggle");
+    if (presentation) {
+      setPresentationMode(!state.presentationMode);
+      return;
+    }
+    const share = event.target.closest("#share-view-link");
+    if (share) {
+      shareCurrentView();
+      return;
+    }
     const button = event.target.closest("[data-view]");
     if (!button) return;
     setActiveView(button.dataset.view);
@@ -391,6 +536,11 @@ function bindEvents() {
   elements.eventStrip?.addEventListener("click", (event) => {
     const marker = event.target.closest("[data-event-tick]");
     if (!marker) return;
+    if (marker.dataset.eventRange) {
+      state.activeEventCluster = eventClusterFromRange(marker.dataset.eventRange);
+    } else {
+      state.activeEventCluster = null;
+    }
     jumpToTick(Number(marker.dataset.eventTick));
   });
 
@@ -439,6 +589,36 @@ function bindEvents() {
     const item = event.target.closest("[data-bookmark-tick]");
     if (!item) return;
     jumpToTick(Number(item.dataset.bookmarkTick));
+  });
+
+  elements.storyboardPreview?.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-storyboard-preview-tick]");
+    if (!item) return;
+    jumpToTick(Number(item.dataset.storyboardPreviewTick));
+  });
+
+  elements.eventClusterDrilldown?.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-cluster-tick]");
+    if (!item) return;
+    jumpToTick(Number(item.dataset.clusterTick));
+  });
+
+  elements.episodeSearch?.addEventListener("input", () => {
+    state.episodeFilters.query = elements.episodeSearch.value;
+    renderEventEpisodes(state.payload?.viewer?.frames?.[state.currentFrameIndex] ?? null);
+    syncDebugState();
+  });
+
+  elements.episodeKindFilter?.addEventListener("change", () => {
+    state.episodeFilters.kind = elements.episodeKindFilter.value;
+    renderEventEpisodes(state.payload?.viewer?.frames?.[state.currentFrameIndex] ?? null);
+    syncDebugState();
+  });
+
+  elements.episodeSelectedAgentFilter?.addEventListener("change", () => {
+    state.episodeFilters.selectedAgentOnly = Boolean(elements.episodeSelectedAgentFilter.checked);
+    renderEventEpisodes(state.payload?.viewer?.frames?.[state.currentFrameIndex] ?? null);
+    syncDebugState();
   });
 
   elements.tileExplainer?.addEventListener("click", (event) => {
@@ -559,6 +739,8 @@ function setActiveView(viewName) {
       renderFrame(state.currentFrameIndex);
     });
   }
+  persistViewerPreferences();
+  updateShareUrlState();
 }
 
 function setActiveDetailView(viewName) {
@@ -576,7 +758,57 @@ function setActiveDetailView(viewName) {
     button.setAttribute("aria-selected", active ? "true" : "false");
     button.setAttribute("tabindex", active ? "0" : "-1");
   });
+  persistViewerPreferences();
+  updateShareUrlState();
   syncDebugState();
+}
+
+function setPresentationMode(enabled) {
+  state.presentationMode = Boolean(enabled);
+  renderPresentationMode();
+  persistViewerPreferences();
+  updateShareUrlState();
+  if (state.payload) {
+    requestAnimationFrame(() => {
+      drawTerrain();
+      renderFrame(state.currentFrameIndex);
+    });
+  }
+}
+
+function renderPresentationMode() {
+  document.body.classList.toggle("presentation-mode", Boolean(state.presentationMode));
+  if (elements.presentationToggle) {
+    elements.presentationToggle.classList.toggle("active", Boolean(state.presentationMode));
+    elements.presentationToggle.textContent = state.presentationMode ? "Exit Present" : "Present";
+  }
+}
+
+async function shareCurrentView() {
+  const url = updateShareUrlState({ returnUrl: true });
+  state.lastShareUrl = url;
+  try {
+    await navigator.clipboard?.writeText(url);
+    if (elements.shareViewStatus) elements.shareViewStatus.textContent = "Link copied";
+  } catch {
+    if (elements.shareViewStatus) elements.shareViewStatus.textContent = "URL updated";
+  }
+  syncDebugState();
+}
+
+function updateShareUrlState(options = {}) {
+  if (!state.payload) return window.location.href;
+  const params = new URLSearchParams(window.location.search);
+  const urlState = serializeViewerUrlState(state);
+  for (const [key, value] of Object.entries(urlState)) {
+    params.set(key, String(value));
+  }
+  const nextUrl = `${window.location.pathname}?${params.toString()}${window.location.hash}`;
+  const absoluteUrl = `${window.location.origin}${nextUrl}`;
+  if (!options.returnOnly) {
+    window.history.replaceState(null, "", nextUrl);
+  }
+  return absoluteUrl;
 }
 
 async function bootstrapDefaultReplay() {
@@ -607,6 +839,8 @@ async function loadReplayFromUrl(url) {
 
 function loadReplay(payload, sourceLabel) {
   stopPlayback();
+  const preferredDetailView = state.activeDetailView;
+  const preferredCameraPreset = state.activeCameraPreset;
   state.payload = validateReplayPayload(payload);
   state.loadGeneration += 1;
   state.replaySource = sourceLabel;
@@ -619,8 +853,14 @@ function loadReplay(payload, sourceLabel) {
   state.decisionOverlayMode = elements.decisionOverlayMode?.value ?? "selected";
   state.eventLensMode = elements.eventLensMode?.value ?? "current";
   state.overlayOpacity = clamp(Number(elements.overlayOpacity?.value ?? 72) / 100, 0.2, 1);
+  state.overlayOpacityByMode[state.overlayMode] = state.overlayOpacity;
   state.blendTerrain = Boolean(elements.blendTerrainToggle?.checked ?? true);
   state.mapView = { zoom: 1, panX: 0, panY: 0 };
+  state.activeCameraPreset = ["world", "selected", "episode", "pressure"].includes(preferredCameraPreset)
+    ? preferredCameraPreset
+    : "world";
+  state.comparisonBaselineFrameIndex = 0;
+  state.activeEventCluster = null;
   state.mapPointer = null;
   state.agentEncoding = buildEncodingMap(state.payload.viewer.agent_encoding);
   state.replayModel = buildReplayModel(state.payload, decodeAgent);
@@ -628,7 +868,12 @@ function loadReplay(payload, sourceLabel) {
   state.significantEventTicks = state.replayModel.significantEventTicks;
   state.eventBookmarks = loadEventBookmarks();
   state.lastStoryboardExport = null;
-  state.activeDetailView = "overview";
+  state.snapshotCache.clear();
+  state.snapshotStats = { renders: 0, hits: 0, lastBudget: null };
+  state.activeDetailView = ["overview", "agent", "species", "events"].includes(preferredDetailView)
+    ? preferredDetailView
+    : "overview";
+  const initialFrameIndex = applyLoadedUrlState(state.pendingUrlState);
   state.visualStats = {
     glyphs: 0,
     trailSegments: 0,
@@ -640,6 +885,7 @@ function loadReplay(payload, sourceLabel) {
     decisionOverlays: 0,
     terrainBlends: 0,
     lineageBranches: 0,
+    eventBands: 0,
   };
 
   const frames = state.payload.viewer.frames;
@@ -655,10 +901,30 @@ function loadReplay(payload, sourceLabel) {
   populateSummary(state.payload.summary);
   populateTraits(state.payload.summary);
   populateTerrainLegend(state.payload.viewer.map);
-  setActiveDetailView("overview");
+  setActiveView(state.activeView);
+  setActiveDetailView(state.activeDetailView);
   drawTerrain();
-  renderFrame(0);
+  renderFrame(initialFrameIndex);
+  if (state.activeCameraPreset !== "world") {
+    requestAnimationFrame(() => applyMapCameraPreset(state.activeCameraPreset));
+  }
   setStatus(`Loaded ${sourceLabel}`);
+}
+
+function applyLoadedUrlState(urlState) {
+  if (!urlState || !state.payload) return 0;
+  state.overlayMode = urlState.overlay;
+  state.overlayOpacity = state.overlayOpacityByMode[urlState.overlay] ?? defaultOverlayOpacityForMode(urlState.overlay);
+  state.eventLensMode = urlState.lens;
+  state.activeDetailView = urlState.detail;
+  state.activeCameraPreset = urlState.camera;
+  state.activeView = urlState.view;
+  state.presentationMode = Boolean(urlState.present);
+  state.selectedAgentId = urlState.agent ?? null;
+  state.selectedSpeciesId = urlState.species ?? null;
+  updatePreferenceControls();
+  const index = frameIndexForTick(urlState.tick);
+  return index ?? 0;
 }
 
 function populateSummary(summary) {
@@ -706,6 +972,150 @@ function populateTerrainLegend(map) {
   `;
 }
 
+function renderOverlayMeaning(frame) {
+  if (!elements.overlayMeaning) return;
+  const contract = overlayContractForMode(state.overlayMode);
+  const opacity = `${Math.round(state.overlayOpacity * 100)}%`;
+  const fieldText = contract.fields.join(" + ");
+  const keyItems = contract.keys
+    .slice(0, 4)
+    .map((label) => `<span data-overlay-key="${escapeHtml(label)}">${escapeHtml(label)}</span>`)
+    .join("");
+  const frameText = frame ? `tick ${escapeHtml(formatValue(frame.tick))}` : "current tick";
+  elements.overlayMeaning.dataset.overlayContract = state.overlayMode;
+  elements.overlayMeaning.innerHTML = `
+    <div>
+      <span>Backend ${escapeHtml(contract.label)} · ${escapeHtml(frameText)}</span>
+      <strong>${escapeHtml(contract.summary)}</strong>
+      <small>${escapeHtml(fieldText)} · opacity ${escapeHtml(opacity)}</small>
+    </div>
+    <div class="overlay-meaning-keys">${keyItems}</div>
+  `;
+}
+
+function renderOverlayOpacityPresets() {
+  if (!elements.overlayOpacityPresets) return;
+  const contract = overlayContractForMode(state.overlayMode);
+  elements.overlayOpacityPresets.querySelector("span").textContent =
+    `${contract.label} preset`;
+  const activeDefault = Math.round(defaultOverlayOpacityForMode(state.overlayMode) * 100);
+  const current = Math.round(state.overlayOpacity * 100);
+  elements.overlayOpacityPresets.querySelectorAll("[data-overlay-opacity-preset]").forEach((button) => {
+    const value = Math.round(overlayOpacityPresetValue(state.overlayMode, button.dataset.overlayOpacityPreset) * 100);
+    button.classList.toggle("selected", value === current);
+    button.title = `${contract.label} ${button.textContent.trim()} opacity ${value}%`;
+    if (button.dataset.overlayOpacityPreset === "default") {
+      button.textContent = `Default ${activeDefault}%`;
+    }
+  });
+}
+
+function setOverlayMode(mode) {
+  const nextMode = Object.hasOwn(OVERLAY_CONTRACTS, mode) ? mode : "terrain";
+  state.overlayOpacityByMode[state.overlayMode] = state.overlayOpacity;
+  state.overlayMode = nextMode;
+  state.overlayOpacity =
+    state.overlayOpacityByMode[nextMode] ?? defaultOverlayOpacityForMode(nextMode);
+  if (elements.overlayMode) elements.overlayMode.value = nextMode;
+  if (elements.overlayOpacity) elements.overlayOpacity.value = String(Math.round(state.overlayOpacity * 100));
+  renderOverlayOpacityPresets();
+  persistViewerPreferences();
+  drawTerrain();
+  renderFrame(state.currentFrameIndex);
+}
+
+function setOverlayOpacity(value) {
+  state.overlayOpacity = clamp(Number(value), 0.2, 1);
+  state.overlayOpacityByMode[state.overlayMode] = state.overlayOpacity;
+  if (elements.overlayOpacity) elements.overlayOpacity.value = String(Math.round(state.overlayOpacity * 100));
+  renderOverlayOpacityPresets();
+  persistViewerPreferences();
+  drawTerrain();
+  renderFrame(state.currentFrameIndex);
+}
+
+function renderComparisonPanel(frame) {
+  if (!elements.comparisonPanel || !state.payload) return;
+  const frames = state.payload.viewer.frames;
+  const currentIndex = state.currentFrameIndex;
+  const baselineIndex = clamp(
+    Number.isFinite(state.comparisonBaselineFrameIndex)
+      ? Number(state.comparisonBaselineFrameIndex)
+      : Math.max(0, currentIndex - 1),
+    0,
+    Math.max(0, frames.length - 1),
+  );
+  state.comparisonBaselineFrameIndex = baselineIndex;
+  const baseline = frames[baselineIndex] ?? frame;
+  const comparison = frameComparison(frame, baseline);
+  const baselineMap = mapSnapshotDataUrl(baselineIndex, { maxPixels: 180 });
+  const currentMap = mapSnapshotDataUrl(currentIndex, {
+    maxPixels: 180,
+    baselineIndex,
+    delta: true,
+  });
+  elements.comparisonPanel.innerHTML = `
+    <div class="comparison-map-pair">
+      ${renderComparisonMap("baseline", baseline, baselineMap)}
+      ${renderComparisonMap("current", frame, currentMap)}
+    </div>
+    <div class="comparison-heading">
+      <span>Compare</span>
+      <strong>Tick ${escapeHtml(formatValue(frame.tick))} vs tick ${escapeHtml(formatValue(baseline.tick))}</strong>
+    </div>
+    <dl class="comparison-deltas">
+      ${[
+        ["alive", "Alive", comparison.alive],
+        ["species", "Sp", comparison.species],
+        ["births", "Born", comparison.births],
+        ["deaths", "Dead", comparison.deaths],
+        ["tiles", "Tiles", comparison.tiles],
+      ]
+        .map(
+          ([key, label, value]) => `
+            <div data-comparison-delta="${escapeHtml(key)}">
+              <dt>${escapeHtml(label)}</dt>
+              <dd>${escapeHtml(signedValue(value))}</dd>
+            </div>
+          `,
+        )
+        .join("")}
+    </dl>
+    <div class="comparison-actions">
+      <button type="button" data-compare-preset="previous">Prev Tick</button>
+      <button type="button" data-compare-preset="previous-event">Prev Event</button>
+      <button type="button" data-compare-preset="run-start">Start</button>
+    </div>
+  `;
+}
+
+function renderComparisonMap(kind, frame, dataUrl) {
+  const label = kind === "current" ? "Current + Delta" : titleCase(kind);
+  return `
+    <div data-comparison-map="${escapeHtml(kind)}">
+      ${dataUrl ? `<img alt="${escapeHtml(kind)} tick ${escapeHtml(formatValue(frame.tick))}" src="${dataUrl}" />` : ""}
+      <span>${escapeHtml(label)}</span>
+      <strong>Tick ${escapeHtml(formatValue(frame.tick))}</strong>
+    </div>
+  `;
+}
+
+function frameComparison(frame, baseline) {
+  return modelFrameComparison(frame, baseline, countChangedTileDeltas);
+}
+
+function applyComparisonPreset(preset) {
+  if (!state.payload) return;
+  const frames = state.payload.viewer.frames;
+  state.comparisonBaselineFrameIndex = comparisonBaselineIndexForPreset({
+    preset,
+    frames,
+    currentFrameIndex: state.currentFrameIndex,
+    significantEventTicks: state.significantEventTicks,
+  });
+  renderFrame(state.currentFrameIndex);
+}
+
 function drawTerrain() {
   const app = state.pixiApp;
   const payload = state.payload;
@@ -733,6 +1143,7 @@ function drawTerrain() {
   });
   state.visualStats.terrainBlends = stats.terrainBlends;
   elements.overlayLabel.textContent = `Overlay: ${titleCase(state.overlayMode)}`;
+  renderOverlayMeaning(frame);
   updateMapNavigation();
   syncDebugState();
 }
@@ -776,6 +1187,7 @@ function renderFrame(frameIndex) {
   renderAgentDossier(frame, decodedAgents);
   renderLineageTree(frame);
   renderStoryTimeline(frame);
+  renderComparisonPanel(frame);
   renderEpisodeInspector(frame);
   renderEventEpisodes(frame);
   renderEventBookmarks(frame);
@@ -789,6 +1201,7 @@ function renderFrame(frameIndex) {
   renderEcologyState(frame);
   updateInspector();
   renderAnalyticsPanels(frame);
+  updateShareUrlState();
   syncDebugState();
 }
 
@@ -1012,10 +1425,11 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
       selectedAgentAnnotation
         ? `
           <div
-            class="map-annotation agent-callout"
-            style="left:${selectedAgentAnnotation.x}px;top:${selectedAgentAnnotation.y}px;--annotation-width:148px;"
+            class="map-annotation agent-callout${selectedAgentAnnotation.mode === "pin" ? " compact-pin" : ""}"
+            data-callout-mode="${selectedAgentAnnotation.mode}"
+            style="left:${selectedAgentAnnotation.x}px;top:${selectedAgentAnnotation.y}px;--annotation-width:${selectedAgentAnnotation.boxWidth}px;"
           >
-            <span>Agent ${escapeHtml(String(selectedAgentAnnotation.agentId))}</span>
+            <span>${escapeHtml(selectedAgentAnnotation.mode === "pin" ? "A" : `Agent ${selectedAgentAnnotation.agentId}`)}</span>
             <small>${escapeHtml(speciesLabel(selectedAgentAnnotation.speciesId))}</small>
           </div>
         `
@@ -1026,14 +1440,15 @@ function renderMapAnnotations(frame, decodedAgents, tileSize, offset) {
         (annotation) => `
           <button
             type="button"
-            class="map-annotation species-callout${annotation.selected ? " selected" : ""}"
+            class="map-annotation species-callout${annotation.selected ? " selected" : ""}${annotation.mode === "pin" ? " compact-pin" : ""}"
             data-map-species-id="${annotation.speciesId}"
+            data-callout-mode="${annotation.mode}"
             aria-label="Focus ${escapeHtml(speciesLabel(annotation.speciesId))} species"
             style="left:${annotation.x}px;top:${annotation.y}px;--species-color:#${colorForSpecies(annotation.speciesId)
               .toString(16)
-              .padStart(6, "0")};"
+              .padStart(6, "0")};--annotation-width:${annotation.boxWidth}px;"
           >
-            <span>${escapeHtml(speciesLabel(annotation.speciesId))}</span>
+            <span>${escapeHtml(annotation.mode === "pin" ? String(annotation.count) : speciesLabel(annotation.speciesId))}</span>
             <small>${escapeHtml(speciesCode(annotation.speciesId))} · ${annotation.count}</small>
           </button>
         `,
@@ -1084,42 +1499,98 @@ function renderMapMinimap(map, tileSize, offset) {
 }
 
 function placeMapAnnotation(annotation, placed, map, tileSize, offset) {
+  const labelPlacement = placeMapAnnotationCandidate(
+    annotation,
+    placed,
+    map,
+    tileSize,
+    offset,
+    {
+      mode: "label",
+      boxWidth: annotation.boxWidth ?? 176,
+      boxHeight: annotation.boxHeight ?? 50,
+    },
+  );
+  if (labelPlacement) return labelPlacement;
+  return placeMapAnnotationCandidate(
+    annotation,
+    placed,
+    map,
+    tileSize,
+    offset,
+    {
+      mode: "pin",
+      boxWidth: 34,
+      boxHeight: 34,
+    },
+  );
+}
+
+function placeMapAnnotationCandidate(annotation, placed, map, tileSize, offset, options) {
   const mapWidth = map.width * tileSize;
   const mapHeight = map.height * tileSize;
-  const boxWidth = annotation.boxWidth ?? 176;
-  const boxHeight = annotation.boxHeight ?? 50;
+  const { mode, boxWidth, boxHeight } = options;
   const hostWidth = elements.canvasHost?.clientWidth ?? offset.x + mapWidth;
   const hostHeight = elements.canvasHost?.clientHeight ?? offset.y + mapHeight;
   const minX = Math.max(12 + boxWidth / 2, offset.x + boxWidth / 2);
   const maxX = Math.min(hostWidth - 12 - boxWidth / 2, offset.x + mapWidth - boxWidth / 2);
-  const minY = Math.max(12 + boxHeight + 12, offset.y + boxHeight + 12);
-  const maxY = Math.min(hostHeight - 8, offset.y + mapHeight - 6);
+  const minY =
+    mode === "pin"
+      ? Math.max(12 + boxHeight / 2, offset.y + boxHeight / 2)
+      : Math.max(12 + boxHeight + 12, offset.y + boxHeight + 12);
+  const maxY =
+    mode === "pin"
+      ? Math.min(hostHeight - 12 - boxHeight / 2, offset.y + mapHeight - boxHeight / 2)
+      : Math.min(hostHeight - 8, offset.y + mapHeight - 6);
   const spread = Math.max(54, tileSize * 4.6);
-  const candidates = [
-    [0, 0],
-    [spread, 0],
-    [-spread, 0],
-    [0, boxHeight + 12],
-    [spread, boxHeight + 12],
-    [-spread, boxHeight + 12],
-    [spread * 1.25, boxHeight * 0.45],
-    [-spread * 1.25, boxHeight * 0.45],
-    [spread * 0.7, -(boxHeight + 12)],
-    [-spread * 0.7, -(boxHeight + 12)],
-    [0, -(boxHeight + 18)],
-  ];
+  const candidates =
+    mode === "pin"
+      ? [
+          [0, 0],
+          [tileSize * 1.2, 0],
+          [-tileSize * 1.2, 0],
+          [0, tileSize * 1.2],
+          [0, -tileSize * 1.2],
+          [tileSize * 1.8, tileSize * 1.8],
+          [-tileSize * 1.8, tileSize * 1.8],
+          [tileSize * 1.8, -tileSize * 1.8],
+          [-tileSize * 1.8, -tileSize * 1.8],
+        ]
+      : [
+          [0, 0],
+          [spread, 0],
+          [-spread, 0],
+          [0, boxHeight + 12],
+          [spread, boxHeight + 12],
+          [-spread, boxHeight + 12],
+          [spread * 1.25, boxHeight * 0.45],
+          [-spread * 1.25, boxHeight * 0.45],
+          [spread * 0.7, -(boxHeight + 12)],
+          [-spread * 0.7, -(boxHeight + 12)],
+          [0, -(boxHeight + 18)],
+          [spread * 1.6, -(boxHeight + 10)],
+          [-spread * 1.6, -(boxHeight + 10)],
+        ];
   for (const [dx, dy] of candidates) {
     const x = clampToOrderedRange(annotation.x + dx, minX, maxX);
     const y = clampToOrderedRange(annotation.y + dy, minY, maxY);
-    const box = {
-      left: x - boxWidth / 2,
-      right: x + boxWidth / 2,
-      top: y - boxHeight - 12,
-      bottom: y + 8,
-    };
+    const box =
+      mode === "pin"
+        ? {
+            left: x - boxWidth / 2,
+            right: x + boxWidth / 2,
+            top: y - boxHeight / 2,
+            bottom: y + boxHeight / 2,
+          }
+        : {
+            left: x - boxWidth / 2,
+            right: x + boxWidth / 2,
+            top: y - boxHeight - 12,
+            bottom: y + 8,
+          };
     if (!placed.some((candidate) => boxesOverlap(box, candidate))) {
       placed.push(box);
-      return { ...annotation, x: Math.round(x), y: Math.round(y) };
+      return { ...annotation, x: Math.round(x), y: Math.round(y), mode, boxWidth, boxHeight };
     }
   }
   return null;
@@ -1546,8 +2017,15 @@ function renderAgentDossier(frame, decodedAgents) {
       </div>
     </div>
 
-    <section class="dossier-section">
-      <h3>${escapeHtml(conditionHeading)}</h3>
+    ${renderAgentDossierSummary({
+      current,
+      latest,
+      currentDecision,
+      tileContext,
+      speciesTrend,
+    })}
+
+    ${renderDossierSection(conditionHeading, `
       <div class="condition-bars">
         ${metrics
           .map(
@@ -1566,10 +2044,9 @@ function renderAgentDossier(frame, decodedAgents) {
       <div class="stress-tags">
         ${stressTags.map((tag) => `<span class="${escapeHtml(tag.kind)}">${escapeHtml(tag.label)}</span>`).join("")}
       </div>
-    </section>
+    `, { priority: "primary", open: true })}
 
-    <section class="dossier-section">
-      <h3>Agent Context</h3>
+    ${renderDossierSection("Agent Context", `
       <dl class="agent-fact-grid">
         ${keyFacts
           .map(
@@ -1582,17 +2059,23 @@ function renderAgentDossier(frame, decodedAgents) {
           )
           .join("")}
       </dl>
-    </section>
+    `, { priority: "primary", open: true })}
 
-    <section class="dossier-section">
-      <h3>Decision Trace</h3>
+    ${renderDossierSection("Decision Trace", `
       ${renderAgentDecisionTrace(decisionRecords, currentDecision)}
-      ${renderRewardComponents(currentDecision)}
-      ${renderObservationPatch(currentDecision)}
-    </section>
+    `, { priority: "secondary", open: true })}
 
-    <section class="dossier-section">
-      <h3>Life Timeline</h3>
+    ${renderDossierSection("Reward Components", renderRewardComponents(currentDecision), {
+      priority: "deep",
+      open: false,
+    })}
+
+    ${renderDossierSection("Observation Patch", renderObservationPatch(currentDecision), {
+      priority: "deep",
+      open: false,
+    })}
+
+    ${renderDossierSection("Life Timeline", `
       <div id="agent-action-timeline" class="agent-action-timeline">
         ${
           lifeEvents.length
@@ -1600,7 +2083,74 @@ function renderAgentDossier(frame, decodedAgents) {
             : '<div class="muted">No recorded agent events before this tick.</div>'
         }
       </div>
-    </section>
+    `, { priority: "secondary", open: false })}
+  `;
+}
+
+function renderDossierSection(title, bodyHtml, options = {}) {
+  const priority = options.priority ?? "secondary";
+  const open = options.open ? " open" : "";
+  return `
+    <details
+      class="dossier-section"
+      data-dossier-priority="${escapeHtml(priority)}"
+      data-dossier-section="${escapeHtml(safeFilePart(title))}"
+      ${open}
+    >
+      <summary>
+        <h3>${escapeHtml(title)}</h3>
+        <span>${escapeHtml(priority === "primary" ? "Primary" : priority === "deep" ? "Details" : "Trace")}</span>
+      </summary>
+      <div class="dossier-section-body">
+        ${bodyHtml}
+      </div>
+    </details>
+  `;
+}
+
+function renderAgentDossierSummary({ current, latest, currentDecision, tileContext, speciesTrend }) {
+  const vitalSource = current ?? latest ?? {};
+  const vitals = [
+    ["energy", "Energy", vitalSource.energyRatio ?? 0],
+    ["hydration", "Hydration", vitalSource.hydrationRatio ?? 0],
+    ["health", "Health", vitalSource.healthRatio ?? 0],
+  ];
+  const requested = currentDecision ? actionLabel(currentDecision.requested_action) : VIEWER_EMPTY_LABELS.not_applicable;
+  const resolved = currentDecision ? actionLabel(currentDecision.resolved_action) : VIEWER_EMPTY_LABELS.not_applicable;
+  const rewardTotal = currentDecision
+    ? roundValue(currentDecision.reward?.total ?? 0).toString()
+    : VIEWER_EMPTY_LABELS.not_applicable;
+  return `
+    <div class="agent-dossier-summary">
+      <div class="agent-primary-card" data-agent-primary-card="decision">
+        <span>Decision</span>
+        <strong>${escapeHtml(resolved)}</strong>
+        <small>Requested ${escapeHtml(requested)} · reward ${escapeHtml(rewardTotal)}</small>
+      </div>
+      <div class="agent-primary-card" data-agent-primary-card="environment">
+        <span>Tile Context</span>
+        <strong>${escapeHtml(terrainLabel(tileContext.terrainName))}</strong>
+        <small>${escapeHtml(hydrologyLabel(tileContext.hydrologyReason))} · ${escapeHtml(hazardLabel(tileContext.hazardType))}</small>
+      </div>
+      <div class="agent-primary-card" data-agent-primary-card="trend">
+        <span>Species Trend</span>
+        <strong>${escapeHtml(titleCase(speciesTrend))}</strong>
+        <small>${escapeHtml(habitatLabel(tileContext.habitatState))} habitat</small>
+      </div>
+      <div class="agent-vital-grid">
+        ${vitals
+          .map(
+            ([kind, label, value]) => `
+              <div class="agent-vital-card ${escapeHtml(kind)}" data-agent-vital="${escapeHtml(kind)}">
+                <span>${escapeHtml(label)}</span>
+                <strong>${escapeHtml(formatPercent(value ?? 0))}</strong>
+                <i style="width:${clamp01(Number(value ?? 0)) * 100}%;"></i>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
   `;
 }
 
@@ -1991,6 +2541,134 @@ function agentFocusSentence(current, latest, speciesTrend, stressTags, deathEven
   return `This ${trophicRoleLabel(current.trophicRole).toLowerCase()} is ${stress}; its species trend is ${speciesTrend}.`;
 }
 
+function eventStripMarkerClass(entry, currentTick, cluster) {
+  return [
+    "event-strip-marker",
+    cluster ? "clustered" : "",
+    currentTick >= entry.startTick && currentTick <= entry.endTick ? "current" : "",
+    entry.endTick < currentTick ? "past" : "",
+    entry.hasDeaths ? "death" : "",
+    entry.hasBirths ? "birth" : "",
+    entry.hasCombat ? "combat" : "",
+    entry.hasCarcass ? "carcass" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function aggregateEventStripEntries(entries, maxTick, bucketIndex) {
+  const startTick = Math.min(...entries.map((entry) => Number(entry.tick)));
+  const endTick = Math.max(...entries.map((entry) => Number(entry.tick)));
+  const aggregate = entries.reduce(
+    (total, entry) => ({
+      tick: total.tick,
+      startTick,
+      endTick,
+      total: total.total + (Number(entry.total) || 0),
+      births: total.births + (Number(entry.births) || 0),
+      deaths: total.deaths + (Number(entry.deaths) || 0),
+      attacks: total.attacks + (Number(entry.attacks) || 0),
+      carcasses: total.carcasses + (Number(entry.carcasses) || 0),
+      hasBirths: total.hasBirths || Boolean(entry.hasBirths),
+      hasDeaths: total.hasDeaths || Boolean(entry.hasDeaths),
+      hasCombat: total.hasCombat || Boolean(entry.hasCombat),
+      hasCarcass: total.hasCarcass || Boolean(entry.hasCarcass),
+    }),
+    {
+      tick: entries[0]?.tick ?? 0,
+      startTick,
+      endTick,
+      total: 0,
+      births: 0,
+      deaths: 0,
+      attacks: 0,
+      carcasses: 0,
+      hasBirths: false,
+      hasDeaths: false,
+      hasCombat: false,
+      hasCarcass: false,
+    },
+  );
+  const busiest = entries.reduce((best, entry) => {
+    const bestTotal = Number(best.total) || 0;
+    const entryTotal = Number(entry.total) || 0;
+    return entryTotal > bestTotal ? entry : best;
+  }, entries[0]);
+  return {
+    ...aggregate,
+    tick: Number(busiest?.tick ?? aggregate.tick),
+    startTick,
+    endTick,
+    bucketIndex,
+    entryCount: entries.length,
+    positionTick: (startTick + endTick) / 2,
+    percent: maxTick > 0 ? ((startTick + endTick) / 2 / maxTick) * 100 : 0,
+    startPercent: maxTick > 0 ? (startTick / maxTick) * 100 : 0,
+    endPercent: maxTick > 0 ? (endTick / maxTick) * 100 : 0,
+  };
+}
+
+function buildEventStripMarkers(eventTicks, maxTick) {
+  if (!elements.eventStrip || eventTicks.length === 0) return [];
+  const stripWidth = elements.eventStrip.clientWidth || 720;
+  const bucketCount = Math.max(EVENT_STRIP_MIN_BUCKETS, Math.floor(stripWidth / EVENT_STRIP_CLUSTER_PX));
+  if (eventTicks.length <= bucketCount) {
+    return eventTicks.map((entry) => ({
+      ...entry,
+      startTick: Number(entry.tick),
+      endTick: Number(entry.tick),
+      entryCount: 1,
+      positionTick: Number(entry.tick),
+      percent: maxTick > 0 ? (Number(entry.tick) / maxTick) * 100 : 0,
+      startPercent: maxTick > 0 ? (Number(entry.tick) / maxTick) * 100 : 0,
+      endPercent: maxTick > 0 ? (Number(entry.tick) / maxTick) * 100 : 0,
+    }));
+  }
+
+  const buckets = new Map();
+  for (const entry of eventTicks) {
+    const tick = Number(entry.tick);
+    const bucketIndex = Math.min(bucketCount - 1, Math.max(0, Math.floor((tick / maxTick) * bucketCount)));
+    const bucket = buckets.get(bucketIndex) ?? [];
+    bucket.push(entry);
+    buckets.set(bucketIndex, bucket);
+  }
+  return [...buckets.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([bucketIndex, entries]) => aggregateEventStripEntries(entries, maxTick, bucketIndex));
+}
+
+function eventStripMarkerTitle(entry) {
+  if ((entry.entryCount ?? 1) <= 1 || entry.startTick === entry.endTick) {
+    return `Tick ${entry.tick}: ${eventTickSummary(entry)}`;
+  }
+  return `Ticks ${entry.startTick}-${entry.endTick}: ${entry.entryCount} event ticks, ${eventTickSummary(entry)}`;
+}
+
+function eventBandKind(entry) {
+  if ((entry.attacks ?? 0) > 0 || entry.hasCombat) return "combat";
+  if ((entry.deaths ?? 0) > 0 || entry.hasDeaths) return "death";
+  if ((entry.births ?? 0) > 0 || entry.hasBirths) return "birth";
+  if ((entry.carcasses ?? 0) > 0 || entry.hasCarcass) return "carcass";
+  return "event";
+}
+
+function eventBandLabel(entry) {
+  const kind = eventBandKind(entry);
+  const labels = {
+    birth: "Births",
+    death: "Deaths",
+    combat: "Combat",
+    carcass: "Carcass",
+    event: "Events",
+  };
+  return labels[kind] ?? labels.event;
+}
+
+function eventBandWidth(entry) {
+  return Math.max(1.8, (Number(entry.endPercent) || 0) - (Number(entry.startPercent) || 0));
+}
+
 function renderStoryTimeline(frame) {
   if (!elements.eventStrip || !elements.eventSummary || !state.payload) return;
   const eventTicks = state.significantEventTicks;
@@ -1998,6 +2676,7 @@ function renderStoryTimeline(frame) {
   if (eventTicks.length === 0) {
     elements.eventSummary.textContent = "No major replay events in this run.";
     elements.eventStrip.innerHTML = "";
+    if (elements.eventClusterDrilldown) elements.eventClusterDrilldown.innerHTML = "";
     elements.jumpPrevEvent.disabled = true;
     elements.jumpNextEvent.disabled = true;
     return;
@@ -2016,31 +2695,102 @@ function renderStoryTimeline(frame) {
   elements.jumpPrevEvent.disabled = !previousEntry;
   elements.jumpNextEvent.disabled = !nextEntry;
 
+  const timelineEntries = buildEventStripMarkers(eventTicks, maxTick);
+  state.visualStats.eventBands = timelineEntries.filter((entry) => (entry.entryCount ?? 1) > 1).length;
+  const cluster = selectedEventCluster(timelineEntries, currentTick);
+  state.activeEventCluster = cluster ? eventClusterDetailModel(cluster, state.significantEventTicks) : null;
   elements.eventStrip.innerHTML = [
     `<span class="event-strip-current" style="left:${(currentTick / maxTick) * 100}%;"></span>`,
-    ...eventTicks.map((entry) => {
-      const classes = [
-        "event-strip-marker",
-        entry.tick === currentTick ? "current" : "",
-        entry.tick < currentTick ? "past" : "",
-        entry.hasDeaths ? "death" : "",
-        entry.hasBirths ? "birth" : "",
-        entry.hasCombat ? "combat" : "",
-        entry.hasCarcass ? "carcass" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+    ...timelineEntries.map((entry) => {
+      const clustered = (entry.entryCount ?? 1) > 1;
+      if (clustered) {
+        const kind = eventBandKind(entry);
+        const current = currentTick >= entry.startTick && currentTick <= entry.endTick;
+        const past = entry.endTick < currentTick;
+        const classes = ["event-band", kind, current ? "current" : "", past ? "past" : ""]
+          .filter(Boolean)
+          .join(" ");
+        return `
+          <button
+            type="button"
+            class="${classes}"
+            data-event-band="${kind}"
+            data-event-tick="${entry.tick}"
+            data-event-count="${entry.entryCount}"
+            data-event-range="${entry.startTick}-${entry.endTick}"
+            style="left:${entry.startPercent}%;width:max(28px, ${eventBandWidth(entry)}%);"
+            title="${escapeHtml(eventStripMarkerTitle(entry))}"
+          >
+            <span class="event-band-label">${escapeHtml(eventBandLabel(entry))}</span>
+            <small>${escapeHtml(String(entry.entryCount))}</small>
+          </button>
+        `;
+      }
+      const classes = eventStripMarkerClass(entry, currentTick, clustered);
       return `
         <button
           type="button"
           class="${classes}"
           data-event-tick="${entry.tick}"
-          style="left:${(entry.tick / maxTick) * 100}%;"
-          title="Tick ${entry.tick}: ${escapeHtml(eventTickSummary(entry))}"
+          ${clustered ? `data-event-count="${entry.entryCount}" data-event-range="${entry.startTick}-${entry.endTick}"` : ""}
+          style="left:${entry.percent}%;"
+          title="${escapeHtml(eventStripMarkerTitle(entry))}"
         ></button>
       `;
     }),
   ].join("");
+  renderEventClusterDrilldown();
+}
+
+function selectedEventCluster(timelineEntries, currentTick) {
+  const clusters = timelineEntries.filter((entry) => (entry.entryCount ?? 1) > 1);
+  if (clusters.length === 0) return null;
+  const active = state.activeEventCluster;
+  if (active) {
+    const matching = clusters.find(
+      (entry) =>
+        Number(entry.startTick) === Number(active.startTick) &&
+        Number(entry.endTick) === Number(active.endTick),
+    );
+    if (matching) return matching;
+  }
+  return null;
+}
+
+function renderEventClusterDrilldown() {
+  if (!elements.eventClusterDrilldown) return;
+  const cluster = state.activeEventCluster;
+  if (!cluster?.tickCount) {
+    elements.eventClusterDrilldown.innerHTML = "";
+    return;
+  }
+  elements.eventClusterDrilldown.innerHTML = `
+    <div class="event-cluster-heading">
+      <span>Event Cluster</span>
+      <strong>${escapeHtml(cluster.rangeLabel)}</strong>
+      <small>${escapeHtml(cluster.summary)}</small>
+    </div>
+    <div class="event-cluster-ticks">
+      ${cluster.ticks
+        .map(
+          (entry) => `
+            <button type="button" data-cluster-tick="${escapeHtml(String(entry.tick))}">
+              <span>Tick ${escapeHtml(String(entry.tick))}</span>
+              <strong>${escapeHtml(entry.label)}</strong>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function eventClusterFromRange(range) {
+  const [start, end] = String(range ?? "")
+    .split("-")
+    .map((part) => Number(part));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return eventClusterDetailModel({ startTick: start, endTick: end }, state.significantEventTicks);
 }
 
 function renderEpisodeInspector(frame) {
@@ -2061,6 +2811,7 @@ function renderEpisodeInspector(frame) {
   const events = state.eventsByTick.get(episodeTick) ?? [];
   const counts = eventCategoryCounts(events);
   const deltas = episodeDeltas(episodeFrame, previousFrame, counts);
+  const causeEffect = episodeCauseEffect(episode, counts, deltas);
   const agents = episodeInvolvedAgents(events, episodeTick);
   const ledger = episodeLedger(events).slice(0, 7);
   const lensModes = episodeLensModes(counts);
@@ -2098,6 +2849,16 @@ function renderEpisodeInspector(frame) {
       </div>
       ${playbackProgress ? `<div class="episode-playback-status">Playing causal window ${escapeHtml(playbackProgress)}</div>` : ""}
       <p>${escapeHtml(episodeCausalitySentence(counts, deltas))}</p>
+      <div class="episode-cause-effect" data-episode-cause-effect>
+        <div>
+          <span>Cause</span>
+          <strong>${escapeHtml(causeEffect.cause)}</strong>
+        </div>
+        <div>
+          <span>Effect</span>
+          <strong>${escapeHtml(causeEffect.effect)}</strong>
+        </div>
+      </div>
       <div class="episode-kpi-grid">
         ${[
           ["Alive Delta", signedValue(deltas.aliveDelta)],
@@ -2191,6 +2952,14 @@ function episodeDeltas(frame, previousFrame, counts) {
   };
 }
 
+function episodeCauseEffect(episode, counts, deltas) {
+  return modelEpisodeCauseEffect(episode, counts, deltas, {
+    formatValue,
+    signedValue,
+    episodeLabel,
+  });
+}
+
 function eventLensLabel(mode) {
   const labels = {
     current: "Current Tick",
@@ -2242,6 +3011,7 @@ function setEventLensMode(mode) {
   }
   state.eventLensMode = nextMode;
   if (elements.eventLensMode) elements.eventLensMode.value = nextMode;
+  persistViewerPreferences();
   renderFrame(state.currentFrameIndex);
 }
 
@@ -2322,31 +3092,66 @@ function renderEventEpisodes(frame) {
   if (episodes.length === 0) {
     elements.episodeList.innerHTML =
       '<div class="muted">No birth, death, or carcass episodes are present in this replay.</div>';
+    if (elements.episodeFilterSummary) elements.episodeFilterSummary.textContent = "";
     return;
   }
 
-  const currentTick = Number(frame.tick);
-  let currentIndex = episodes.findIndex((episode) => episode.tick >= currentTick);
-  if (currentIndex < 0) currentIndex = episodes.length - 1;
-  const start = Math.max(0, currentIndex - 4);
-  const visibleEpisodes = episodes.slice(start, start + 10);
-  elements.episodeList.innerHTML = visibleEpisodes
+  const currentTick = Number(frame?.tick ?? 0);
+  const filter = episodeFilterModel(episodes, {
+    currentTick,
+    query: state.episodeFilters.query,
+    kind: state.episodeFilters.kind,
+    agentId: state.episodeFilters.selectedAgentOnly ? state.selectedAgentId : null,
+    eventAgentIdsByTick: eventAgentIdsByTick(),
+    limit: 10,
+  });
+  if (elements.episodeFilterSummary) {
+    elements.episodeFilterSummary.textContent = filter.summary;
+  }
+  if (filter.visibleEpisodes.length === 0) {
+    elements.episodeList.innerHTML = '<div class="muted">No episodes match the current filters.</div>';
+    return;
+  }
+  elements.episodeList.innerHTML = filter.visibleEpisodes
     .map((episode) => {
       const selected = episode.tick === currentTick;
-      const relative = episode.tick < currentTick ? "past" : episode.tick > currentTick ? "future" : "current";
+      const relative = episode.relative;
+      const frameIndex = frameIndexForTick(episode.tick) ?? state.currentFrameIndex;
+      const episodeFrame = state.payload.viewer.frames[frameIndex] ?? frame;
+      const previousFrame = state.payload.viewer.frames[Math.max(0, frameIndex - 1)] ?? episodeFrame;
+      const events = state.eventsByTick.get(Number(episode.tick)) ?? [];
+      const counts = eventCategoryCounts(events);
+      const causeEffect = episodeCauseEffect(episode, counts, episodeDeltas(episodeFrame, previousFrame, counts));
       return `
         <button
           type="button"
           class="episode-item ${escapeHtml(episode.kind)} ${escapeHtml(relative)}${selected ? " selected" : ""}"
           data-episode-tick="${episode.tick}"
+          data-episode-storyline="${escapeHtml(episode.kind)}"
         >
           <span>Tick ${escapeHtml(String(episode.tick))}</span>
           <strong>${escapeHtml(eventTickSummary(episode))}</strong>
           <small>${escapeHtml(episodeLabel(episode))}</small>
+          <em class="episode-storyline">
+            <b>Cause</b> ${escapeHtml(causeEffect.cause)}
+            <b>Effect</b> ${escapeHtml(causeEffect.effect)}
+          </em>
         </button>
       `;
     })
     .join("");
+}
+
+function eventAgentIdsByTick() {
+  const byTick = new Map();
+  for (const [tick, events] of state.eventsByTick.entries()) {
+    const ids = new Set();
+    for (const entry of episodeAgentRoleEntries(events, { limit: 1000 })) {
+      ids.add(entry.agentId);
+    }
+    byTick.set(Number(tick), ids);
+  }
+  return byTick;
 }
 
 function renderEventBookmarks(frame) {
@@ -2364,6 +3169,7 @@ function renderEventBookmarks(frame) {
 
   if (state.eventBookmarks.length === 0) {
     elements.bookmarkList.innerHTML = '<div class="muted">Bookmarked episodes will appear here.</div>';
+    renderStoryboardPreview(frame);
     return;
   }
 
@@ -2386,6 +3192,68 @@ function renderEventBookmarks(frame) {
       `;
     })
     .join("");
+  renderStoryboardPreview(frame);
+}
+
+function renderStoryboardPreview(frame) {
+  if (!elements.storyboardPreview || !state.payload) return;
+  const entries = storyboardPreviewEntries(Number(frame.tick));
+  if (entries.length === 0) {
+    elements.storyboardPreview.innerHTML =
+      '<div class="muted">Storyboard previews will appear when event episodes load.</div>';
+    return;
+  }
+  elements.storyboardPreview.innerHTML = `
+    <div class="storyboard-preview-header">
+      <span>Storyboard Preview</span>
+      <strong>${escapeHtml(String(entries.length))} frame${entries.length === 1 ? "" : "s"} ready</strong>
+    </div>
+    <div class="storyboard-preview-grid">
+      ${entries
+        .map(
+          (entry) => `
+            <button type="button" data-storyboard-preview-tick="${escapeHtml(String(entry.tick))}">
+              <img alt="Storyboard map tick ${escapeHtml(String(entry.tick))}" src="${entry.image}" />
+              <span>Tick ${escapeHtml(String(entry.tick))}</span>
+              <strong>${escapeHtml(entry.summary)}</strong>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function storyboardPreviewEntries(currentTick) {
+  const sourceEntries =
+    state.eventBookmarks.length > 0
+      ? state.eventBookmarks.map((entry) => ({ tick: entry.tick, summary: entry.summary }))
+      : nearestStoryboardEpisodes(currentTick);
+  return sourceEntries
+    .map((entry) => {
+      const frameIndex = frameIndexForTick(entry.tick) ?? 0;
+      const image = mapSnapshotDataUrl(frameIndex, { maxPixels: 160 });
+      if (!image) return null;
+      return {
+        tick: Number(entry.tick),
+        summary: entry.summary ?? eventBookmarkSummary(entry.tick),
+        image,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function nearestStoryboardEpisodes(currentTick) {
+  const episodes = state.replayModel?.episodes ?? [];
+  if (episodes.length === 0) return [];
+  const ordered = [...episodes].sort(
+    (left, right) => Math.abs(Number(left.tick) - currentTick) - Math.abs(Number(right.tick) - currentTick),
+  );
+  return ordered.slice(0, 4).map((episode) => ({
+    tick: Number(episode.tick),
+    summary: eventTickSummary(episode),
+  }));
 }
 
 function toggleCurrentEventBookmark() {
@@ -2427,11 +3295,15 @@ function exportStoryboard() {
   state.lastStoryboardExport = {
     source: payload.source,
     entryCount: payload.entries.length,
+    pngFrameCount: payload.entries.filter((entry) => typeof entry.map_png_data_url === "string").length,
+    previewCount: elements.storyboardPreview?.querySelectorAll("[data-storyboard-preview-tick] img").length ?? 0,
     runId: payload.run_id,
   };
   if (elements.storyboardExportStatus) {
     elements.storyboardExportStatus.textContent = `Exported ${payload.entries.length} storyboard ${
       payload.entries.length === 1 ? "entry" : "entries"
+    } with ${state.lastStoryboardExport.pngFrameCount} PNG map frame${
+      state.lastStoryboardExport.pngFrameCount === 1 ? "" : "s"
     }.`;
   }
   syncDebugState();
@@ -2474,7 +3346,93 @@ function storyboardEntryForTick(tick, sourceEntry) {
     deltas,
     involved_agents: agents,
     event_ledger: episodeLedger(events).slice(0, 10),
+    map_png_data_url: storyboardMapPngDataUrl(frameIndex),
   };
+}
+
+function storyboardMapPngDataUrl(frameIndex) {
+  return mapSnapshotDataUrl(frameIndex, { maxPixels: 300 });
+}
+
+function mapSnapshotDataUrl(frameIndex, options = {}) {
+  const payload = state.payload;
+  const frame = payload?.viewer?.frames?.[frameIndex];
+  const map = payload?.viewer?.map;
+  if (!payload || !frame || !map) return null;
+  const maxPixels = Number(options.maxPixels ?? 300);
+  const baselineIndex = options.baselineIndex == null ? null : Number(options.baselineIndex);
+  const delta = Boolean(options.delta && baselineIndex != null);
+  const key = snapshotCacheKey({
+    frameIndex,
+    baselineIndex,
+    overlayMode: state.overlayMode,
+    overlayOpacity: state.overlayOpacity,
+    blendTerrain: state.blendTerrain,
+    maxPixels,
+    delta,
+  });
+  const cached = state.snapshotCache.get(key);
+  if (cached) {
+    state.snapshotStats.hits += 1;
+    state.snapshotStats.lastBudget = buildSnapshotBudgetReport({
+      durationMs: 0,
+      budgetMs: DEFAULT_SNAPSHOT_BUDGET_MS,
+      cacheHit: true,
+    });
+    return cached;
+  }
+  const startedAt = performance.now();
+  const scale = snapshotScaleForMap(map, maxPixels);
+  const canvas = document.createElement("canvas");
+  canvas.width = map.width * scale;
+  canvas.height = map.height * scale;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  for (let y = 0; y < map.height; y += 1) {
+    for (let x = 0; x < map.width; x += 1) {
+      const code = map.terrain_codes?.[y]?.[x] ?? 0;
+      const overlay = state.overlayMode === "terrain" ? terrainColor(code) : overlayColorForTile(payload, frame, x, y, code);
+      context.fillStyle = `#${overlay.toString(16).padStart(6, "0")}`;
+      context.fillRect(x * scale, y * scale, scale, scale);
+    }
+  }
+
+  const agents = state.replayModel?.decodedFrames?.[frameIndex]?.agents ?? [];
+  for (const agent of agents) {
+    context.fillStyle = `#${colorForSpecies(agent.speciesId).toString(16).padStart(6, "0")}`;
+    context.beginPath();
+    context.arc((agent.x + 0.5) * scale, (agent.y + 0.5) * scale, Math.max(1.2, scale * 0.42), 0, Math.PI * 2);
+    context.fill();
+  }
+
+  if (delta) {
+    const baseline = payload.viewer.frames[baselineIndex];
+    const changes = changedTileCoordinates({
+      frame,
+      baseline,
+      map,
+      maxChanges: Math.max(128, Math.floor((map.width * map.height) / 2)),
+    });
+    context.lineWidth = Math.max(1, scale * 0.18);
+    for (const change of changes) {
+      context.fillStyle = "rgba(255, 214, 92, 0.5)";
+      context.fillRect(change.x * scale, change.y * scale, scale, scale);
+      context.strokeStyle = "rgba(255, 255, 255, 0.82)";
+      context.strokeRect(change.x * scale + 0.5, change.y * scale + 0.5, scale - 1, scale - 1);
+    }
+  }
+
+  const dataUrl = canvas.toDataURL("image/png");
+  state.snapshotStats.renders += 1;
+  state.snapshotStats.lastBudget = buildSnapshotBudgetReport({
+    durationMs: performance.now() - startedAt,
+    budgetMs: DEFAULT_SNAPSHOT_BUDGET_MS,
+    cacheHit: false,
+  });
+  state.snapshotCache.set(key, dataUrl);
+  trimSnapshotCache(state.snapshotCache, DEFAULT_SNAPSHOT_CACHE_LIMIT);
+  return dataUrl;
 }
 
 function safeFilePart(value) {
@@ -3157,7 +4115,7 @@ function updateInspector() {
   const entries = [
     ["Agent", state.selectedAgentId],
     ["Species", speciesId != null ? `${speciesLabel(speciesId)} (${speciesCode(speciesId)})` : MISSING_LABEL],
-    ["Species Status", speciesRecord?.status ? titleCase(speciesRecord.status.replaceAll("_", " ")) : UNKNOWN_LABEL],
+    ["Species Status", speciesRecord?.status ? titleCase(String(speciesRecord.status).replaceAll("_", " ")) : UNKNOWN_LABEL],
     ["Ecotype", hasKnownSnapshot ? ecotypeRecord?.label ?? snapshot?.ecotypeId ?? UNKNOWN_LABEL : UNKNOWN_LABEL],
     ["Species Members", liveSpeciesCount],
     ["Species Peak", speciesRecord?.peak_members ?? "-"],
@@ -4256,25 +5214,55 @@ function getMapOffset(width, height, tileSize) {
 
 function setMapZoom(nextZoom) {
   if (!state.payload) return;
+  state.activeCameraPreset = "custom";
   state.mapView.zoom = clamp(Number(nextZoom) || 1, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
   clampMapView();
+  persistViewerPreferences();
   renderFrame(state.currentFrameIndex);
 }
 
 function resetMapView() {
   state.mapView = { zoom: 1, panX: 0, panY: 0 };
+  state.activeCameraPreset = "world";
+  persistViewerPreferences();
   renderFrame(state.currentFrameIndex);
 }
 
 function fitMapToFocus() {
+  state.activeCameraPreset = "selected";
+  persistViewerPreferences();
+  focusMapOnPoint(mapFocusTarget(), 1.82);
+}
+
+function applyMapCameraPreset(preset) {
   if (!state.payload) return;
-  const target = mapFocusTarget();
+  const normalized = ["world", "selected", "episode", "pressure"].includes(preset) ? preset : "world";
+  state.activeCameraPreset = normalized;
+  persistViewerPreferences();
+  if (normalized === "world") {
+    state.mapView = { zoom: 1, panX: 0, panY: 0 };
+    renderFrame(state.currentFrameIndex);
+    return;
+  }
+  if (normalized === "selected") {
+    focusMapOnPoint(mapFocusTarget(), 1.82);
+    return;
+  }
+  if (normalized === "episode") {
+    focusMapOnPoint(currentEpisodeFocusTarget(), 2.05);
+    return;
+  }
+  focusMapOnPoint(primaryPressureTarget(), 1.9);
+}
+
+function focusMapOnPoint(target, zoom = 1.82) {
+  if (!state.payload) return;
   if (!target) {
     resetMapView();
     return;
   }
   const map = state.payload.viewer.map;
-  state.mapView.zoom = clamp(1.82, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
+  state.mapView.zoom = clamp(zoom, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
   state.mapView.panX = 0;
   state.mapView.panY = 0;
   const tileSize = getTileSize(map.width, map.height);
@@ -4288,6 +5276,38 @@ function fitMapToFocus() {
     elements.canvasHost.clientHeight / 2 - (baseOffset.y + (target.y + 0.5) * tileSize);
   clampMapView();
   renderFrame(state.currentFrameIndex);
+}
+
+function currentEpisodeFocusTarget() {
+  const tick = state.payload?.viewer?.frames?.[state.currentFrameIndex]?.tick ?? 0;
+  const context = episodeContextForTick(tick);
+  const event = (state.eventsByTick.get(Number(context?.episode?.tick ?? tick)) ?? [])
+    .map((candidate) => eventMarkerPosition(candidate, new Map(), candidate.tick))
+    .find((marker) => marker && isPointOnMap(marker.x, marker.y));
+  return event ? { x: event.x, y: event.y } : mapFocusTarget();
+}
+
+function primaryPressureTarget() {
+  const payload = state.payload;
+  if (!payload) return null;
+  const frame = payload.viewer.frames[state.currentFrameIndex];
+  const map = payload.viewer.map;
+  let best = null;
+  for (let y = 0; y < map.height; y += 1) {
+    for (let x = 0; x < map.width; x += 1) {
+      const terrainCode = map.terrain_codes?.[y]?.[x];
+      if (terrainCode === terrainCodeByName("water")) continue;
+      const hazard = (frame.hazard_level_codes?.[y]?.[x] ?? 0) / 100;
+      const carcass = (frame.carcass_energy_codes?.[y]?.[x] ?? 0) / 100;
+      const recoveryDebt = (frame.tile_recovery_debt_codes?.[y]?.[x] ?? 0) / 100;
+      const vegetation = Number(effectiveFieldValue(payload, frame, "fertility", x, y) ?? 0);
+      const score = hazard * 1.25 + carcass + recoveryDebt * 0.6 + Math.max(0, 0.5 - vegetation) * 0.45;
+      if (!best || score > best.score) {
+        best = { x, y, score };
+      }
+    }
+  }
+  return best ? { x: best.x, y: best.y } : mapFocusTarget();
 }
 
 function mapFocusTarget() {
@@ -4320,6 +5340,9 @@ function clampMapView() {
 function updateMapNavigation() {
   if (!elements.mapZoomLabel) return;
   elements.mapZoomLabel.textContent = `${Math.round(state.mapView.zoom * 100)}%`;
+  elements.mapCameraPresets?.querySelectorAll("[data-map-camera-preset]").forEach((button) => {
+    button.classList.toggle("selected", button.dataset.mapCameraPreset === state.activeCameraPreset);
+  });
 }
 
 function setStatus(message) {
@@ -4782,7 +5805,7 @@ function hslToRgb(hue, saturation, lightness) {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -4807,10 +5830,29 @@ function syncDebugState() {
     selectedAgentId: state.selectedAgentId,
     selectedSpeciesId: state.selectedSpeciesId,
     overlayMode: state.overlayMode,
+    overlayOpacityDefaults: Object.fromEntries(
+      Object.keys(OVERLAY_CONTRACTS).map((mode) => [mode, defaultOverlayOpacityForMode(mode)]),
+    ),
     decisionOverlayMode: state.decisionOverlayMode,
     eventLensMode: state.eventLensMode,
     overlayOpacity: state.overlayOpacity,
     blendTerrain: state.blendTerrain,
+    activeCameraPreset: state.activeCameraPreset,
+    activeEventCluster: state.activeEventCluster ? { ...state.activeEventCluster } : null,
+    presentationMode: state.presentationMode,
+    episodeFilters: { ...state.episodeFilters },
+    shareUrl: state.lastShareUrl ?? window.location.href,
+    snapshotStats: {
+      ...state.snapshotStats,
+      cacheSize: state.snapshotCache.size,
+    },
+    viewerStateStorageVersion: VIEWER_STATE_STORAGE_VERSION,
+    viewerPreferences: serializeViewerPreferences(state),
+    viewerUrlState: serializeViewerUrlState(state),
+    comparison: {
+      baselineFrameIndex: state.comparisonBaselineFrameIndex,
+      baselineTick: payload.viewer.frames[state.comparisonBaselineFrameIndex]?.tick ?? null,
+    },
     hoveredTile: state.hoveredTile ? { ...state.hoveredTile } : null,
     explainedTile: state.explainedTile ? { ...state.explainedTile } : null,
     mapView: { ...state.mapView },
