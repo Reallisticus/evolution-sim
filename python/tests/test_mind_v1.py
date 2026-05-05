@@ -1219,6 +1219,10 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("action_source_counts", learned_diagnostics)
         self.assertIn("by_trophic_role", learned_diagnostics)
         self.assertIn("by_meat_mode", learned_diagnostics)
+        self.assertIn("heuristic_delegate_by_score_source", learned_diagnostics)
+        self.assertIn("heuristic_delegate_by_support_bucket", learned_diagnostics)
+        self.assertIn("heuristic_delegate_by_score_margin_bucket", learned_diagnostics)
+        self.assertIn("top_delegated_contexts", learned_diagnostics)
         json.dumps(report)
 
     def test_mind_evaluation_uses_public_reporting_helpers(self) -> None:
@@ -1276,6 +1280,9 @@ class MindV1Tests(unittest.TestCase):
                     "heuristic_delegate_used": True,
                     "learned_action": "eat",
                     "heuristic_action": record["requested_action"],
+                    "score_source": "conditional",
+                    "score_support": 0,
+                    "learned_score_margin": 0.12,
                 }
             ],
         )
@@ -1288,6 +1295,49 @@ class MindV1Tests(unittest.TestCase):
             diagnostics["heuristic_delegate_by_action"][requested_action][
                 "heuristic_delegate_count"
             ],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["heuristic_delegate_suppressed_learned_action"]["eat"][
+                "heuristic_delegate_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["heuristic_delegate_by_score_source"]["conditional"][
+                "heuristic_delegate_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["heuristic_delegate_by_support_bucket"]["0"][
+                "heuristic_delegate_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["heuristic_delegate_by_score_margin_bucket"]["0.10-0.24"][
+                "heuristic_delegate_count"
+            ],
+            1,
+        )
+        self.assertGreaterEqual(len(diagnostics["top_delegated_contexts"]), 1)
+        top_context = diagnostics["top_delegated_contexts"][0]
+        self.assertIn("feature_key", top_context)
+        self.assertEqual(top_context["heuristic_delegate_count"], 1)
+        self.assertIn("action_counts", top_context)
+        self.assertEqual(
+            sum(
+                int(group["heuristic_delegate_count"])
+                for group in diagnostics["by_trophic_role"].values()
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                int(group["heuristic_delegate_count"])
+                for group in diagnostics["by_meat_mode"].values()
+            ),
             1,
         )
 

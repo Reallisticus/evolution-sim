@@ -95,17 +95,17 @@ trajectories before runtime evaluation:
 Runtime evaluation diagnostics are computed from trajectory records without
 changing the trajectory schema. They report action-source counts, guard
 intervention share, confidence-delegation share, per-trophic-role and
-per-meat-mode mean reward, action counts, and guard intervention rates. They also
-report guard intervention breakdowns by final requested action plus the top
-policy-visible context buckets where the guard fired, using the
+per-meat-mode mean reward, action counts, guard intervention rates, and
+confidence-delegation rates. They also report guard and delegation breakdowns by
+final requested action, learned action suppressed or deferred, matched score
+source, training-support bucket, score-margin bucket, and the top policy-visible
+context buckets where either safety floor took control. Context buckets use the
 vitals/role/action-mask feature depth from the contextual baseline. During
-in-process evaluation, learned policies may attach decision diagnostics that
-identify the learned action suppressed by the heuristic guard or deferred by the
-confidence delegate; these diagnostics are summarized in the report but are not
-written into trajectory JSONL records and do not change `mind_trajectory_v1`.
-The same sidecar also carries the matched score source, feature-key depth,
-training support, and learned score margin so guard interventions and delegates
-can be grouped by calibration evidence.
+in-process evaluation, learned policies may attach decision diagnostics that are
+summarized in the report but are not written into trajectory JSONL records and
+do not change `mind_trajectory_v1`. The same sidecar carries the matched score
+source, feature-key depth, training support, and learned score margin so guard
+interventions and delegates can be grouped by calibration evidence.
 Paired evaluation reports compare heuristic and guarded learned outcomes by
 trophic role and meat mode, including terminal count deltas and role/mode policy
 diagnostic deltas, without changing trajectory records.

@@ -107,6 +107,7 @@ def build_policy_diagnostics(
     safe_deviation_action_stats: dict[str, dict[str, object]] = {}
     context_stats: dict[str, dict[str, object]] = {}
     suppressed_action_stats: dict[str, dict[str, object]] = {}
+    delegate_suppressed_action_stats: dict[str, dict[str, object]] = {}
     score_source_stats: dict[str, dict[str, object]] = {}
     support_bucket_stats: dict[str, dict[str, object]] = {}
     score_margin_bucket_stats: dict[str, dict[str, object]] = {}
@@ -152,6 +153,10 @@ def build_policy_diagnostics(
             decision_diagnostic,
             guard_used=guard_used,
         )
+        delegate_suppressed_action = _delegate_suppressed_action(
+            decision_diagnostic,
+            heuristic_delegate_used=heuristic_delegate_used,
+        )
         score_source = _diagnostic_label(
             decision_diagnostic,
             "score_source",
@@ -170,6 +175,16 @@ def build_policy_diagnostics(
                 reward=reward,
                 action=action,
                 guard_used=guard_used,
+                heuristic_delegate_used=heuristic_delegate_used,
+            )
+        if delegate_suppressed_action is not None:
+            _update_group_stats(
+                delegate_suppressed_action_stats,
+                delegate_suppressed_action,
+                reward=reward,
+                action=action,
+                guard_used=guard_used,
+                heuristic_delegate_used=heuristic_delegate_used,
             )
         _update_group_stats(
             score_source_stats,
@@ -177,6 +192,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         _update_group_stats(
             support_bucket_stats,
@@ -184,6 +200,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         _update_group_stats(
             score_margin_bucket_stats,
@@ -191,6 +208,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         _update_group_stats(
             action_stats,
@@ -198,6 +216,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         _update_group_stats(
             context_stats,
@@ -205,6 +224,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         role = _record_enum_label(record, "trophic_role_code", TROPHIC_ROLE_VOCAB)
         mode = _record_enum_label(record, "meat_mode_code", MEAT_MODE_VOCAB)
@@ -214,6 +234,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
         _update_group_stats(
             mode_stats,
@@ -221,6 +242,7 @@ def build_policy_diagnostics(
             reward=reward,
             action=action,
             guard_used=guard_used,
+            heuristic_delegate_used=heuristic_delegate_used,
         )
 
     record_count = len(records)
@@ -243,16 +265,29 @@ def build_policy_diagnostics(
         "guard_suppressed_learned_action": _finalize_group_stats(
             suppressed_action_stats
         ),
+        "heuristic_delegate_suppressed_learned_action": _finalize_group_stats(
+            delegate_suppressed_action_stats
+        ),
         "guard_intervention_by_score_source": _finalize_group_stats(
+            score_source_stats
+        ),
+        "heuristic_delegate_by_score_source": _finalize_group_stats(
             score_source_stats
         ),
         "guard_intervention_by_support_bucket": _finalize_group_stats(
             support_bucket_stats
         ),
+        "heuristic_delegate_by_support_bucket": _finalize_group_stats(
+            support_bucket_stats
+        ),
         "guard_intervention_by_score_margin_bucket": _finalize_group_stats(
             score_margin_bucket_stats
         ),
+        "heuristic_delegate_by_score_margin_bucket": _finalize_group_stats(
+            score_margin_bucket_stats
+        ),
         "top_guarded_contexts": _top_guarded_contexts(context_stats),
+        "top_delegated_contexts": _top_delegated_contexts(context_stats),
         "by_trophic_role": _finalize_group_stats(role_stats),
         "by_meat_mode": _finalize_group_stats(mode_stats),
     }
@@ -420,6 +455,19 @@ def _guard_suppressed_action(
     return learned_action
 
 
+def _delegate_suppressed_action(
+    diagnostic: Mapping[str, object],
+    *,
+    heuristic_delegate_used: bool,
+) -> str | None:
+    if not heuristic_delegate_used:
+        return None
+    learned_action = diagnostic.get("learned_action")
+    if not isinstance(learned_action, str) or not learned_action:
+        return None
+    return learned_action
+
+
 def _diagnostic_label(
     diagnostic: Mapping[str, object],
     key: str,
@@ -502,6 +550,7 @@ def _update_group_stats(
     reward: float,
     action: str,
     guard_used: bool,
+    heuristic_delegate_used: bool = False,
 ) -> None:
     stats = groups.setdefault(
         group,
@@ -509,6 +558,7 @@ def _update_group_stats(
             "record_count": 0,
             "total_reward": 0.0,
             "guard_intervention_count": 0,
+            "heuristic_delegate_count": 0,
             "action_counts": Counter(),
         },
     )
@@ -516,6 +566,10 @@ def _update_group_stats(
     stats["total_reward"] = float(stats["total_reward"]) + reward
     if guard_used:
         stats["guard_intervention_count"] = int(stats["guard_intervention_count"]) + 1
+    if heuristic_delegate_used:
+        stats["heuristic_delegate_count"] = (
+            int(stats["heuristic_delegate_count"]) + 1
+        )
     action_counts = stats["action_counts"]
     if isinstance(action_counts, Counter):
         action_counts[action] += 1
@@ -571,11 +625,14 @@ def _finalize_group_stats(
         if not isinstance(action_counts, Counter):
             action_counts = Counter()
         guard_count = int(stats["guard_intervention_count"])
+        delegate_count = int(stats["heuristic_delegate_count"])
         finalized[group] = {
             "record_count": record_count,
             "mean_reward": _rate(float(stats["total_reward"]), record_count),
             "guard_intervention_count": guard_count,
             "guard_intervention_rate": _rate(guard_count, record_count),
+            "heuristic_delegate_count": delegate_count,
+            "heuristic_delegate_rate": _rate(delegate_count, record_count),
             "action_counts": _sorted_counts(action_counts),
         }
     return finalized
@@ -639,6 +696,38 @@ def _top_guarded_contexts(
         key=lambda context: (
             -int(context["guard_intervention_count"]),
             -float(context["guard_intervention_rate"]),
+            str(context["feature_key"]),
+        )
+    )
+    return contexts[:POLICY_DIAGNOSTIC_TOP_CONTEXT_LIMIT]
+
+
+def _top_delegated_contexts(
+    groups: Mapping[str, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    contexts: list[dict[str, object]] = []
+    for feature_key, stats in groups.items():
+        record_count = int(stats["record_count"])
+        delegate_count = int(stats["heuristic_delegate_count"])
+        if delegate_count <= 0:
+            continue
+        action_counts = stats["action_counts"]
+        if not isinstance(action_counts, Counter):
+            action_counts = Counter()
+        contexts.append(
+            {
+                "feature_key": feature_key,
+                "record_count": record_count,
+                "mean_reward": _rate(float(stats["total_reward"]), record_count),
+                "heuristic_delegate_count": delegate_count,
+                "heuristic_delegate_rate": _rate(delegate_count, record_count),
+                "action_counts": _sorted_counts(action_counts),
+            }
+        )
+    contexts.sort(
+        key=lambda context: (
+            -int(context["heuristic_delegate_count"]),
+            -float(context["heuristic_delegate_rate"]),
             str(context["feature_key"]),
         )
     )
