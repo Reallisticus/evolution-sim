@@ -411,6 +411,8 @@ def _metadata_number(
 def _support_bucket(value: float | None) -> str:
     if value is None:
         return "unknown"
+    if value <= 0:
+        return "0"
     if value < 10:
         return "1-9"
     if value < 32:

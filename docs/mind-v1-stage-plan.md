@@ -15,6 +15,8 @@ The phase boundary is not "a model exists." The boundary is:
   blockers or warnings;
 - artifact and runtime diagnostics expose imitation quality, action drift,
   contextual coverage, guard fallback share, and per-role/per-mode outcomes;
+- Stage 2 guard-share criteria are enforced, including aggregate and per
+  role/mode caps plus optional reduction checks against a prior artifact;
 - guarded runtime experiments remain opt-in and cannot regress the heuristic
   baseline on held-out seeds;
 - a stronger offline baseline reduces guard fallback share while keeping the
@@ -46,18 +48,23 @@ Improve the offline learner so it can safely reduce guard fallback share without
 weakening gates. Candidate implementation work includes reward-weighted action
 priors, calibrated per-context support/margin metadata, train/validation
 diagnostic splits, and explicit per-role/per-mode performance comparisons.
-The current checkpoint adds guard-by-action and top guarded-context diagnostics
-so learner changes can target measured fallback clusters instead of optimizing
-against a narrow seed slice. Evaluation also summarizes the learned actions
-suppressed by the guard through an in-memory sidecar, keeping trajectory JSONL
-schema stable. The first calibrated baseline adjustment lowers the contextual
-support floor from 12 to 10 records: lower floors improved offline imitation but
-failed the extended 180-tick seed-5 boundary, while 10 preserved the gate in the
-candidate screen. The next diagnostic slice adds artifact and runtime
-support/margin metadata so future learner changes can be evaluated by evidence
-strength, not just by aggregate guard fallback share. The follow-up report slice
-adds paired heuristic-vs-learned role/mode comparisons, keeping Stage 2 model
-iteration grounded in outcome deltas rather than aggregate policy averages.
+The strict Stage 2 gate currently exposes the remaining blocker: the guarded
+baseline preserves Foundation outcomes, but aggregate and carnivore guard
+intervention rates are still above the new caps.
+The current checkpoint adds strict model-artifact validation, held-out artifact
+diagnostics, guard-by-action and top guarded-context diagnostics, and
+per-role/per-mode guard caps so learner changes can target measured fallback
+clusters instead of optimizing against a narrow seed slice. Evaluation also
+summarizes the learned actions suppressed by the guard through an in-memory
+sidecar, keeping trajectory JSONL schema stable. The first calibrated baseline
+adjustment lowers the contextual support floor from 12 to 10 records: lower
+floors improved offline imitation but failed the extended 180-tick seed-5
+boundary, while 10 preserved the gate in the candidate screen. The diagnostic
+slice adds artifact/runtime support and margin metadata so future learner
+changes can be evaluated by evidence strength, not just by aggregate guard
+fallback share. The paired report slice adds heuristic-vs-learned role/mode
+comparisons, keeping Stage 2 model iteration grounded in outcome deltas rather
+than aggregate policy averages.
 
 Exit criteria:
 

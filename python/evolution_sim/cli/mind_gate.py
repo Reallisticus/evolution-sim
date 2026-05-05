@@ -22,6 +22,7 @@ DEFAULT_TRAIN_SEEDS: tuple[int, ...] = (3, 7, 11, 17)
 DEFAULT_VALIDATION_SEEDS: tuple[int, ...] = (5, 13, 19, 29)
 DEFAULT_TICKS = 120
 DEFAULT_SPLIT_ID = "mind-v1-gate-train"
+DEFAULT_ARTIFACT_DIAGNOSTIC_SPLIT_ID = "mind-v1-gate-artifact-diagnostic"
 DEFAULT_TRAJECTORY_DIR = Path("output/trajectories/mind-v1-gate")
 DEFAULT_ARTIFACT_OUTPUT = Path("output/mind/mind-v1-gate-artifact.json")
 DEFAULT_REPORT_OUTPUT = Path("output/mind/mind-v1-gate-report.json")
@@ -127,6 +128,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum policy-visible invalid action rate.",
     )
     parser.add_argument(
+        "--max-guard-intervention-rate",
+        type=float,
+        default=DEFAULT_GATE_CRITERIA["max_guard_intervention_rate"],
+        help="Maximum aggregate learned-policy guard intervention rate.",
+    )
+    parser.add_argument(
+        "--max-guard-intervention-rate-by-group",
+        type=float,
+        default=DEFAULT_GATE_CRITERIA["max_guard_intervention_rate_by_group"],
+        help="Maximum guard intervention rate for each role and meat-mode group.",
+    )
+    parser.add_argument(
+        "--min-guard-intervention-rate-reduction",
+        type=float,
+        default=DEFAULT_GATE_CRITERIA["min_guard_intervention_rate_reduction"],
+        help="Required guard intervention rate reduction versus a prior artifact.",
+    )
+    parser.add_argument(
+        "--reference-guard-intervention-rate",
+        type=float,
+        help="Prior artifact guard intervention rate used for reduction checks.",
+    )
+    parser.add_argument(
         "--min-viable-run-share",
         type=float,
         default=DEFAULT_GATE_CRITERIA["min_viable_run_share"],
@@ -190,6 +214,7 @@ def main() -> None:
         report_output=args.output,
         reuse_trajectories=args.reuse_trajectories,
         gate_criteria=gate_criteria,
+        reference_guard_intervention_rate=args.reference_guard_intervention_rate,
     )
     print(json.dumps(report, indent=2))
     status = report["readiness"]["status"]
@@ -210,6 +235,7 @@ def run_mind_gate(
     validation_ticks: Sequence[int] | None = None,
     reuse_trajectories: bool = False,
     gate_criteria: Mapping[str, object] | None = None,
+    reference_guard_intervention_rate: float | None = None,
 ) -> dict[str, object]:
     if not train_seeds:
         raise ValueError("at least one training seed is required")
@@ -231,7 +257,12 @@ def run_mind_gate(
         trajectory_paths.append(trajectory_path)
         if reuse_trajectories and trajectory_path.exists():
             _log(f"reuse trajectory seed={seed} path={trajectory_path}")
-            dataset = load_trajectory_jsonl(trajectory_path)
+            dataset = _load_expected_trajectory_dataset(
+                trajectory_path,
+                seed=seed,
+                ticks=ticks,
+                split_id=split_id,
+            )
             trajectory_records.append(
                 _trajectory_record_from_dataset(seed=seed, dataset=dataset)
             )
@@ -247,14 +278,67 @@ def run_mind_gate(
         )
 
     _log(f"train artifact path={artifact_output}")
-    datasets = [load_trajectory_jsonl(path) for path in trajectory_paths]
+    datasets = [
+        _load_expected_trajectory_dataset(
+            path,
+            seed=seed,
+            ticks=ticks,
+            split_id=split_id,
+        )
+        for seed, path in zip(train_seeds, trajectory_paths, strict=True)
+    ]
     records = (record for dataset in datasets for record in dataset.records)
     baseline = train_behavior_cloning_baseline(
         records,
         provenance=combined_dataset_provenance(datasets),
     )
     artifact = baseline.to_artifact()
-    artifact_diagnostics = build_artifact_diagnostics(artifact, datasets)
+
+    diagnostic_split_id = DEFAULT_ARTIFACT_DIAGNOSTIC_SPLIT_ID
+    diagnostic_trajectory_dir = trajectory_dir / "artifact-diagnostics"
+    diagnostic_records: list[dict[str, object]] = []
+    diagnostic_paths: list[Path] = []
+    for seed in validation_seeds:
+        diagnostic_path = diagnostic_trajectory_dir / f"seed{seed}-ticks{ticks}.jsonl.gz"
+        diagnostic_paths.append(diagnostic_path)
+        if reuse_trajectories and diagnostic_path.exists():
+            _log(f"reuse artifact diagnostic trajectory seed={seed} path={diagnostic_path}")
+            dataset = _load_expected_trajectory_dataset(
+                diagnostic_path,
+                seed=seed,
+                ticks=ticks,
+                split_id=diagnostic_split_id,
+            )
+            diagnostic_records.append(
+                _trajectory_record_from_dataset(seed=seed, dataset=dataset)
+            )
+            continue
+        _log(
+            "collect artifact diagnostic trajectory "
+            f"seed={seed} ticks={ticks} path={diagnostic_path}"
+        )
+        diagnostic_records.append(
+            collect_training_trajectory(
+                seed=seed,
+                ticks=ticks,
+                split_id=diagnostic_split_id,
+                output_path=diagnostic_path,
+            )
+        )
+    diagnostic_datasets = [
+        _load_expected_trajectory_dataset(
+            path,
+            seed=seed,
+            ticks=ticks,
+            split_id=diagnostic_split_id,
+        )
+        for seed, path in zip(validation_seeds, diagnostic_paths, strict=True)
+    ]
+
+    artifact_diagnostics = {
+        "train": build_artifact_diagnostics(artifact, datasets),
+        "held_out": build_artifact_diagnostics(artifact, diagnostic_datasets),
+    }
     write_model_artifact(artifact_output, artifact)
 
     _log(
@@ -271,6 +355,7 @@ def run_mind_gate(
                 seeds=validation_seeds,
                 ticks=validation_tick,
                 gate_criteria=resolved_gate_criteria,
+                reference_guard_intervention_rate=reference_guard_intervention_rate,
             ),
         }
         for validation_tick in resolved_validation_ticks
@@ -286,14 +371,17 @@ def run_mind_gate(
             "validation_ticks": resolved_validation_ticks,
             "mode": RunMode.SUMMARY_ONLY.value,
             "trajectory_split_id": split_id,
+            "artifact_diagnostic_split_id": diagnostic_split_id,
             "trajectory_dir": str(trajectory_dir),
             "artifact_output": str(artifact_output),
             "report_output": str(report_output) if report_output else None,
             "reuse_trajectories": reuse_trajectories,
             "criteria": resolved_gate_criteria,
+            "reference_guard_intervention_rate": reference_guard_intervention_rate,
         },
         "complete": True,
         "trajectory_collection": trajectory_records,
+        "artifact_diagnostic_collection": diagnostic_records,
         "artifact": {
             "path": str(artifact_output),
             "model_type": artifact["manifest"]["model_type"],
@@ -385,6 +473,62 @@ def _trajectory_record_from_dataset(
         "wall_seconds": 0.0,
         "reused": True,
     }
+
+
+def _load_expected_trajectory_dataset(
+    path: Path,
+    *,
+    seed: int,
+    ticks: int,
+    split_id: str,
+):
+    dataset = load_trajectory_jsonl(path)
+    _validate_reused_trajectory_dataset(
+        dataset,
+        seed=seed,
+        ticks=ticks,
+        split_id=split_id,
+    )
+    return dataset
+
+
+def _validate_reused_trajectory_dataset(
+    dataset: object,
+    *,
+    seed: int,
+    ticks: int,
+    split_id: str,
+) -> None:
+    footer = getattr(dataset, "footer")
+    if not isinstance(footer, dict):
+        raise ValueError("trajectory dataset footer must be an object")
+    summary = footer.get("summary")
+    provenance = footer.get("provenance")
+    if not isinstance(summary, dict) or not isinstance(provenance, dict):
+        raise ValueError("trajectory dataset footer is missing summary or provenance")
+    expected_run_id = f"seed-{seed}-ticks-{ticks}"
+    if summary.get("run_id") != expected_run_id:
+        raise ValueError(
+            (
+                f"reused trajectory for seed {seed} ticks {ticks} has run_id "
+                f"{summary.get('run_id')!r}; expected {expected_run_id!r}"
+            )
+        )
+    source_seeds = provenance.get("source_seeds")
+    if source_seeds != [seed]:
+        raise ValueError(
+            (
+                f"reused trajectory for seed {seed} has provenance source_seeds "
+                f"{source_seeds!r}; expected [{seed}]"
+            )
+        )
+    if provenance.get("split_id") != split_id:
+        raise ValueError(
+            (
+                f"reused trajectory for seed {seed} has split_id "
+                f"{provenance.get('split_id')!r}; expected {split_id!r}"
+            )
+        )
 
 
 def _parse_seed_selection(
@@ -495,6 +639,13 @@ def _gate_criteria_from_args(args: argparse.Namespace) -> dict[str, float]:
             "max_births_mean_regression": args.max_births_mean_regression,
             "max_births_per_seed_regression": args.max_births_per_seed_regression,
             "max_invalid_action_rate": args.max_invalid_action_rate,
+            "max_guard_intervention_rate": args.max_guard_intervention_rate,
+            "max_guard_intervention_rate_by_group": (
+                args.max_guard_intervention_rate_by_group
+            ),
+            "min_guard_intervention_rate_reduction": (
+                args.min_guard_intervention_rate_reduction
+            ),
             "min_viable_run_share": args.min_viable_run_share,
             "min_births_per_run_mean": args.min_births_per_run_mean,
             "min_plant_energy_available_per_land_tile": (

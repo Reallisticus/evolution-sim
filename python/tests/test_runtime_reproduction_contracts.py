@@ -1765,7 +1765,6 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             genome=fecund_genome,
         )
         original_place_agent = world._place_agent
-        original_invalidate = world._invalidate_biotic_state
         placements: list[tuple[int, int]] = []
         invalidations = 0
 
@@ -1776,7 +1775,6 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         def invalidate_spatial_state() -> None:
             nonlocal invalidations
             invalidations += 1
-            original_invalidate()
 
         placement = replace(
             world._reproduction_placement_context(),
@@ -1808,11 +1806,6 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             patch.object(
                 world,
                 "_place_agent",
-                side_effect=AssertionError("placement context was bypassed"),
-            ),
-            patch.object(
-                world,
-                "_invalidate_biotic_state",
                 side_effect=AssertionError("placement context was bypassed"),
             ),
         ):

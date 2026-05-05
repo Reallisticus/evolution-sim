@@ -9,6 +9,9 @@ MIND_V1_GATE_CRITERIA_DEFAULTS: dict[str, float] = {
     "max_births_mean_regression": 0.0,
     "max_births_per_seed_regression": 1.0,
     "max_invalid_action_rate": 0.02,
+    "max_guard_intervention_rate": 0.45,
+    "max_guard_intervention_rate_by_group": 0.5,
+    "min_guard_intervention_rate_reduction": 0.0,
     "min_viable_run_share": 1.0,
     "min_births_per_run_mean": 0.0,
     "min_plant_energy_available_per_land_tile": 0.02,
@@ -49,6 +52,16 @@ def build_mind_v1_gate_report(
     max_invalid_action_rate: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
         "max_invalid_action_rate"
     ],
+    max_guard_intervention_rate: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_guard_intervention_rate"
+    ],
+    max_guard_intervention_rate_by_group: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_guard_intervention_rate_by_group"
+    ],
+    min_guard_intervention_rate_reduction: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "min_guard_intervention_rate_reduction"
+    ],
+    reference_guard_intervention_rate: float | None = None,
     min_viable_run_share: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
         "min_viable_run_share"
     ],
@@ -88,6 +101,15 @@ def build_mind_v1_gate_report(
                     ),
                 )
             )
+
+    _append_guard_intervention_flags(
+        flags,
+        aggregate=aggregate,
+        max_guard_intervention_rate=max_guard_intervention_rate,
+        max_guard_intervention_rate_by_group=max_guard_intervention_rate_by_group,
+        min_guard_intervention_rate_reduction=min_guard_intervention_rate_reduction,
+        reference_guard_intervention_rate=reference_guard_intervention_rate,
+    )
 
     run_count = max(len(runs), 1)
     viable_runs = sum(
@@ -254,6 +276,136 @@ def _min_plant_available_per_land_tile(
             continue
         values.append(float(available) / land_tile_count)
     return min(values) if values else None
+
+
+def _append_guard_intervention_flags(
+    flags: list[dict[str, object]],
+    *,
+    aggregate: Mapping[str, object],
+    max_guard_intervention_rate: float,
+    max_guard_intervention_rate_by_group: float,
+    min_guard_intervention_rate_reduction: float,
+    reference_guard_intervention_rate: float | None,
+) -> None:
+    diagnostics = aggregate.get("policy_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        flags.append(
+            _flag(
+                "error",
+                "policy",
+                "policy_diagnostics",
+                "Policy report is missing Mind policy diagnostics.",
+            )
+        )
+        return
+    guard_rate = _mapping_number(diagnostics, "guard_intervention_rate")
+    if guard_rate is None:
+        flags.append(
+            _flag(
+                "error",
+                "policy",
+                "policy_diagnostics.guard_intervention_rate",
+                "Policy diagnostics are missing guard intervention rate.",
+            )
+        )
+        return
+    if guard_rate > max_guard_intervention_rate:
+        flags.append(
+            _flag(
+                "error",
+                "policy",
+                "policy_diagnostics.guard_intervention_rate",
+                (
+                    f"Guard intervention rate {guard_rate:.4f} exceeds "
+                    f"{max_guard_intervention_rate:.4f}."
+                ),
+            )
+        )
+    if min_guard_intervention_rate_reduction > 0.0:
+        if reference_guard_intervention_rate is None:
+            flags.append(
+                _flag(
+                    "warning",
+                    "policy",
+                    "policy_diagnostics.guard_intervention_rate_reduction",
+                    (
+                        "Guard intervention reduction criterion is configured, "
+                        "but no reference guard intervention rate was supplied."
+                    ),
+                )
+            )
+        else:
+            reduction = reference_guard_intervention_rate - guard_rate
+            if reduction < min_guard_intervention_rate_reduction:
+                flags.append(
+                    _flag(
+                        "error",
+                        "policy",
+                        "policy_diagnostics.guard_intervention_rate_reduction",
+                        (
+                            f"Guard intervention rate reduction {reduction:.4f} "
+                            f"is below {min_guard_intervention_rate_reduction:.4f}."
+                        ),
+                    )
+                )
+    for group_field in ("by_trophic_role", "by_meat_mode"):
+        groups = diagnostics.get(group_field)
+        if not isinstance(groups, Mapping):
+            flags.append(
+                _flag(
+                    "error",
+                    "policy",
+                    f"policy_diagnostics.{group_field}",
+                    f"Policy diagnostics are missing {group_field} guard rates.",
+                )
+            )
+            continue
+        for label, group in groups.items():
+            if not isinstance(group, Mapping):
+                continue
+            group_guard_rate = _mapping_number(group, "guard_intervention_rate")
+            if group_guard_rate is None:
+                flags.append(
+                    _flag(
+                        "error",
+                        "policy",
+                        (
+                            f"policy_diagnostics.{group_field}."
+                            f"{label}.guard_intervention_rate"
+                        ),
+                        (
+                            f"Policy diagnostics for {group_field} {label!r} "
+                            "are missing guard intervention rate."
+                        ),
+                    )
+                )
+                continue
+            if group_guard_rate > max_guard_intervention_rate_by_group:
+                flags.append(
+                    _flag(
+                        "error",
+                        "policy",
+                        (
+                            f"policy_diagnostics.{group_field}."
+                            f"{label}.guard_intervention_rate"
+                        ),
+                        (
+                            f"Guard intervention rate for {group_field} {label!r} "
+                            f"{group_guard_rate:.4f} exceeds "
+                            f"{max_guard_intervention_rate_by_group:.4f}."
+                        ),
+                    )
+                )
+
+
+def _mapping_number(
+    payload: Mapping[str, object],
+    field: str,
+) -> float | None:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _append_per_seed_regression_flags(

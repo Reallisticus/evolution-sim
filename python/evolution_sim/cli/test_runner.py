@@ -58,38 +58,49 @@ def _assert_no_direct_cache_poking() -> None:
     failures: list[str] = []
     for path in sorted(test_dir.glob("test_*.py")):
         text = path.read_text(encoding="utf-8")
-        tree = ast.parse(text, filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                targets: list[ast.expr] = []
-                if isinstance(node, ast.Assign):
-                    targets.extend(node.targets)
-                else:
-                    targets.append(node.target)
-                for target in targets:
-                    if (
-                        isinstance(target, ast.Attribute)
-                        and target.attr.startswith("cached_")
-                    ):
-                        failures.append(f"{path}:{node.lineno}: cached attribute assignment")
-            if isinstance(node, ast.Call):
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "_invalidate_biotic_state"
-                ):
-                    failures.append(f"{path}:{node.lineno}: _invalidate_biotic_state call")
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id == "setattr"
-                    and len(node.args) >= 2
-                    and isinstance(node.args[1], ast.Constant)
-                    and isinstance(node.args[1].value, str)
-                    and node.args[1].value.startswith("cached_")
-                ):
-                    failures.append(f"{path}:{node.lineno}: cached attribute setattr")
+        failures.extend(_cache_poking_failures(text, filename=str(path)))
     if failures:
         joined = "\n".join(failures)
         raise SystemExit(f"Direct cache poking detected in tests:\n{joined}")
+
+
+def _cache_poking_failures(source: str, *, filename: str) -> list[str]:
+    failures: list[str] = []
+    tree = ast.parse(source, filename=filename)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "_invalidate_biotic_state":
+            failures.append(f"{filename}:{node.lineno}: _invalidate_biotic_state attribute access")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets.extend(node.targets)
+            else:
+                targets.append(node.target)
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr.startswith("cached_")
+                ):
+                    failures.append(f"{filename}:{node.lineno}: cached attribute assignment")
+        if isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and node.args[1].value.startswith("cached_")
+            ):
+                failures.append(f"{filename}:{node.lineno}: cached attribute setattr")
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "object"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "_invalidate_biotic_state"
+            ):
+                failures.append(f"{filename}:{node.lineno}: _invalidate_biotic_state patch")
+    return failures
 
 
 def _discover_suite() -> unittest.TestSuite:

@@ -24,6 +24,25 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("wall_seconds=1.235", report)
         self.assertIn("budget_seconds=30.000", report)
 
+    def test_cache_poking_scan_reports_invalidate_hook_references(self) -> None:
+        source = """
+def test_case(world):
+    original = world._invalidate_biotic_state
+    with patch.object(world, "_invalidate_biotic_state", lambda: None):
+        pass
+"""
+
+        failures = test_runner._cache_poking_failures(source, filename="test_case.py")
+
+        self.assertIn(
+            "test_case.py:3: _invalidate_biotic_state attribute access",
+            failures,
+        )
+        self.assertIn(
+            "test_case.py:4: _invalidate_biotic_state patch",
+            failures,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

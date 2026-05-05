@@ -151,6 +151,21 @@ class MindV1Tests(unittest.TestCase):
             with self.assertRaisesRegex(MindArtifactError, "provenance"):
                 validate_model_artifact_manifest(artifact)
 
+    def test_behavior_cloning_artifact_rejects_incomplete_action_scores(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            artifact = baseline.to_artifact()
+            del artifact["model"]["action_scores"]["eat"]
+
+            with self.assertRaisesRegex(MindArtifactError, "action_scores"):
+                validate_model_artifact_manifest(artifact)
+
     def test_mind_train_cli_writes_valid_bc_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
@@ -298,6 +313,9 @@ class MindV1Tests(unittest.TestCase):
                     "max_births_mean_regression": 0.25,
                     "max_births_per_seed_regression": 1.0,
                     "max_invalid_action_rate": 0.03,
+                    "max_guard_intervention_rate": 0.45,
+                    "max_guard_intervention_rate_by_group": 0.5,
+                    "min_guard_intervention_rate_reduction": 0.0,
                     "min_viable_run_share": 0.5,
                     "min_births_per_run_mean": 0.0,
                     "min_plant_energy_available_per_land_tile": 0.0,
@@ -323,13 +341,42 @@ class MindV1Tests(unittest.TestCase):
                 artifact["model"]["heuristic_override_min_margin"],
             )
             self.assertEqual(
-                report["artifact_diagnostics"]["record_count"],
+                report["artifact_diagnostics"]["train"]["record_count"],
                 report["artifact"]["trained_record_count"],
             )
-            self.assertIn("imitation", report["artifact_diagnostics"])
-            self.assertIn("contextual_coverage", report["artifact_diagnostics"])
+            self.assertGreater(
+                report["artifact_diagnostics"]["held_out"]["record_count"],
+                0,
+            )
+            self.assertIn("imitation", report["artifact_diagnostics"]["train"])
+            self.assertIn("imitation", report["artifact_diagnostics"]["held_out"])
+            self.assertIn(
+                "contextual_coverage",
+                report["artifact_diagnostics"]["train"],
+            )
             self.assertIn(report["readiness"]["status"], {"pass", "review", "fail"})
             self.assertEqual(len(report["trajectory_collection"]), 1)
+            self.assertEqual(len(report["artifact_diagnostic_collection"]), 1)
+
+    def test_mind_gate_rejects_reused_trajectory_seed_mismatch(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_dir = tmp_path / "trajectories"
+            trajectory_dir.mkdir()
+            mislabeled_path = trajectory_dir / "seed8-ticks2.jsonl.gz"
+            self._write_tiny_trajectory(mislabeled_path, seed=7)
+
+            with self.assertRaisesRegex(ValueError, "seed 8"):
+                mind_gate.run_mind_gate(
+                    train_seeds=[8],
+                    validation_seeds=[9],
+                    ticks=2,
+                    validation_ticks=[2],
+                    trajectory_dir=trajectory_dir,
+                    artifact_output=tmp_path / "artifact.json",
+                    report_output=tmp_path / "report.json",
+                    reuse_trajectories=True,
+                )
 
     def test_mind_gate_default_validation_seeds_are_held_out_seed_bank(self) -> None:
         self.assertEqual(mind_gate.DEFAULT_VALIDATION_SEEDS, (5, 13, 19, 29))
@@ -441,6 +488,10 @@ class MindV1Tests(unittest.TestCase):
                         str(report_path),
                         "--min-births-per-run-mean",
                         "999.0",
+                        "--max-guard-intervention-rate",
+                        "1.0",
+                        "--max-guard-intervention-rate-by-group",
+                        "1.0",
                         "--fail-on-review",
                     ],
                 ),
@@ -826,6 +877,13 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("by_meat_mode", learned_diagnostics)
         json.dumps(report)
 
+    def test_mind_evaluation_uses_public_reporting_helpers(self) -> None:
+        source = Path("python/evolution_sim/mind/evaluation.py").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertNotIn("from evolution_sim.cli.evaluate import _", source)
+
     def test_policy_diagnostics_report_guard_actions_and_contexts(self) -> None:
         with TemporaryDirectory() as tmpdir:
             trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
@@ -920,6 +978,29 @@ class MindV1Tests(unittest.TestCase):
             report["learned"]["runs"][0]["trajectory"],
         )
 
+    def test_policy_diagnostics_separates_zero_support_bucket(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        record = dict(dataset.records[0])
+        record["action_source"] = (
+            "mind_v1_learned_policy:observation_heuristic_safety_floor_v1"
+        )
+        record["policy_decision_diagnostics"] = {
+            "guard_used": True,
+            "score_support": 0,
+        }
+
+        diagnostics = build_policy_diagnostics(
+            [record],
+            decision_diagnostics=[record["policy_decision_diagnostics"]],
+        )
+
+        self.assertIn("0", diagnostics["guard_intervention_by_support_bucket"])
+        self.assertNotIn("1-9", diagnostics["guard_intervention_by_support_bucket"])
+
     def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
 
@@ -976,6 +1057,11 @@ class MindV1Tests(unittest.TestCase):
                 "trajectory": {
                     "invalid_observation_action_rate": 0.0,
                 },
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.0,
+                    "by_trophic_role": {},
+                    "by_meat_mode": {},
+                },
             },
         }
         heuristic_report = {
@@ -1013,6 +1099,11 @@ class MindV1Tests(unittest.TestCase):
                 "births": {"mean": 5.0},
                 "trajectory": {
                     "invalid_observation_action_rate": 0.0,
+                },
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.0,
+                    "by_trophic_role": {},
+                    "by_meat_mode": {},
                 },
             },
         }
@@ -1052,12 +1143,133 @@ class MindV1Tests(unittest.TestCase):
                     "invalid_observation_action_rate": 0.0,
                     "invalid_resolution_action_rate": 0.5,
                 },
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.0,
+                    "by_trophic_role": {},
+                    "by_meat_mode": {},
+                },
             },
         }
 
         gate = build_mind_v1_gate_report(report)
 
         self.assertEqual(gate["status"], "pass")
+
+    def test_mind_gate_blocks_high_guard_intervention_rate(self) -> None:
+        report = {
+            "runs": [
+                {
+                    "alive_agents": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                    "land_tile_count": 1,
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 1.0},
+                "trajectory": {"invalid_observation_action_rate": 0.0},
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.75,
+                    "by_trophic_role": {
+                        "herbivore": {"guard_intervention_rate": 0.75}
+                    },
+                    "by_meat_mode": {
+                        "none": {"guard_intervention_rate": 0.75}
+                    },
+                },
+            },
+        }
+
+        gate = build_mind_v1_gate_report(
+            report,
+            max_guard_intervention_rate=0.5,
+            max_guard_intervention_rate_by_group=0.6,
+        )
+
+        self.assertEqual(gate["status"], "fail")
+        self.assertEqual(
+            gate["blockers"][0]["field"],
+            "policy_diagnostics.guard_intervention_rate",
+        )
+
+    def test_mind_gate_blocks_guard_group_cap(self) -> None:
+        report = {
+            "runs": [
+                {
+                    "alive_agents": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                    "land_tile_count": 1,
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 1.0},
+                "trajectory": {"invalid_observation_action_rate": 0.0},
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.4,
+                    "by_trophic_role": {
+                        "carnivore": {"guard_intervention_rate": 0.6}
+                    },
+                    "by_meat_mode": {
+                        "hunter": {"guard_intervention_rate": 0.4}
+                    },
+                },
+            },
+        }
+
+        gate = build_mind_v1_gate_report(
+            report,
+            max_guard_intervention_rate=0.45,
+            max_guard_intervention_rate_by_group=0.5,
+        )
+
+        self.assertEqual(gate["status"], "fail")
+        self.assertEqual(
+            gate["blockers"][0]["field"],
+            "policy_diagnostics.by_trophic_role.carnivore.guard_intervention_rate",
+        )
+
+    def test_mind_gate_blocks_insufficient_guard_reduction(self) -> None:
+        report = {
+            "runs": [
+                {
+                    "alive_agents": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                    "land_tile_count": 1,
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 1.0},
+                "trajectory": {"invalid_observation_action_rate": 0.0},
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.42,
+                    "by_trophic_role": {
+                        "herbivore": {"guard_intervention_rate": 0.42}
+                    },
+                    "by_meat_mode": {
+                        "none": {"guard_intervention_rate": 0.42}
+                    },
+                },
+            },
+        }
+
+        gate = build_mind_v1_gate_report(
+            report,
+            max_guard_intervention_rate=1.0,
+            max_guard_intervention_rate_by_group=1.0,
+            min_guard_intervention_rate_reduction=0.1,
+            reference_guard_intervention_rate=0.45,
+        )
+
+        self.assertEqual(gate["status"], "fail")
+        self.assertEqual(
+            gate["blockers"][0]["field"],
+            "policy_diagnostics.guard_intervention_rate_reduction",
+        )
 
 
 if __name__ == "__main__":

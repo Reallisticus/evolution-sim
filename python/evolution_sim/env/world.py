@@ -29,6 +29,10 @@ from evolution_sim.env.runtime.biotic import (
 )
 from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_neighbor_ratio
 from evolution_sim.env.runtime.collectors import CollectorContext, collector_for_mode
+from evolution_sim.env.runtime.costs import (
+    empty_runtime_cost_counters,
+    record_runtime_cost,
+)
 from evolution_sim.env.runtime.derived import DerivedTileMemo, reset_derived_caches
 from evolution_sim.env.runtime.lifecycle import cached_trophic_profile
 import evolution_sim.env.runtime.lifecycle_summary as runtime_lifecycle_summary
@@ -258,7 +262,7 @@ class SimulationWorld:
             int,
             tuple[tuple[tuple[int, float], ...], ...],
         ] = {}
-        self.runtime_cost_counters = self._empty_runtime_cost_counters()
+        self.runtime_cost_counters = empty_runtime_cost_counters()
 
         self._spawn_initial_agents()
         initial_alive = self.alive_agents()
@@ -278,29 +282,8 @@ class SimulationWorld:
             invalidate_signal_state=self._invalidate_signal_state,
         )
 
-    @staticmethod
-    def _empty_runtime_cost_counters() -> dict[str, int]:
-        return {
-            "observation_builds": 0,
-            "action_mask_builds": 0,
-            "biotic_state_builds": 0,
-            "biotic_state_cache_hits": 0,
-            "biotic_state_invalidations": 0,
-            "biotic_diffusions": 0,
-            "biotic_diffusion_target_cache_hits": 0,
-            "biotic_diffusion_target_cache_misses": 0,
-            "signal_state_builds": 0,
-            "signal_state_cache_hits": 0,
-            "signal_state_invalidations": 0,
-            "signal_diffusions": 0,
-            "signal_diffusion_target_cache_hits": 0,
-            "signal_diffusion_target_cache_misses": 0,
-            "signal_emissions": 0,
-            "resource_pressure_accounting_updates": 0,
-        }
-
     def _record_runtime_cost(self, name: str, amount: int = 1) -> None:
-        self.runtime_cost_counters[name] = self.runtime_cost_counters.get(name, 0) + amount
+        record_runtime_cost(self.runtime_cost_counters, name, amount)
 
     def run(
         self,

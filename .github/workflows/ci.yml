@@ -30,9 +30,20 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
+      - run: git diff --check
+      - run: npm run viewer:contracts:check
+      - run: npm run viewer:model:test
+      - run: npm run viewer:map:test
+      - run: npm run viewer:validate
       - run: npm run sim:golden
       - run: npm run sim:test
       - run: npm run sim:gate:quick -- --fail-on-blockers
+      - run: >
+          npm run sim:mind:gate -- --train-seed 7 --validation-seed 8 --ticks 2
+          --max-guard-intervention-rate 1.0
+          --max-guard-intervention-rate-by-group 1.0
+          --min-plant-energy-available-per-land-tile 0.0
+          --fail-on-blockers
       - run: |
           npm run sim:run -- --seed 7 --ticks 120 --output output/sim-runs/species-check.json
           python3 -m http.server 4173 >/tmp/viewer-serve.log 2>&1 &
@@ -54,5 +65,8 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
+      - run: npm run sim:golden
       - run: npm run sim:test:full
+      - run: npm run sim:gate:release
+      - run: npm run sim:mind:gate -- --reuse-trajectories --fail-on-blockers
       - run: npm run sim:bench

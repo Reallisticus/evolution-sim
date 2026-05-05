@@ -2,7 +2,7 @@
 
 This repo is a deterministic artificial-life simulator.
 
-Current phase: Foundation hardening before Mind v1. Do not start learned-controller work until Foundation ecology, observation/action contracts, trajectory data, reward components, release gates, and benchmark metrics are stable.
+Current phase: Mind v1 Stage 2. Foundation release gates are stable enough for guarded, disabled-by-default Mind work, but learned-controller changes must keep the heuristic safety floor, held-out diagnostics, and Foundation release gates intact.
 
 ## Environment
 
@@ -20,6 +20,10 @@ Fast local checks:
 - `npm run sim:golden:quick`
 - `npm run sim:gate:quick`
 - `npm run sim:bench:quick`
+- `npm run viewer:contracts:check`
+- `npm run viewer:model:test`
+- `npm run viewer:map:test`
+- `npm run viewer:validate`
 - `git diff --check`
 
 Viewer check:
@@ -30,6 +34,8 @@ Gate boundary checks:
 - `npm run sim:golden`
 - `npm run sim:test:full`
 - `npm run sim:gate:release`
+- `npm run sim:mind:gate -- --reuse-trajectories --fail-on-blockers`
+- `npm run sim:mind:gate:extended`
 - `npm run sim:bench`
 
 ## Project Rules
@@ -38,6 +44,6 @@ Gate boundary checks:
 - Summary-only mode must stay lightweight and must not build viewer/replay payloads.
 - Long sweeps are opt-in; use compact contract equivalents in the fast loop.
 - Every world mechanic needs matching observability, metrics, tests, and viewer/replay semantics where applicable.
-- Do not freeze Mind contracts around unstable Foundation ecology.
+- Mind contracts may evolve in Stage 2 only with matching artifact/runtime diagnostics and held-out gates.
 - Do not change golden/replay semantics casually.
 - Do not make tests poke cache internals or call `_invalidate_biotic_state()` directly.

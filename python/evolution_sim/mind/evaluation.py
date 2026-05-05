@@ -4,7 +4,11 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Sequence
 
-from evolution_sim.cli.evaluate import _aggregate_report, _dominant_lineage, _round_float
+from evolution_sim.evaluation.reporting import (
+    aggregate_report,
+    dominant_lineage,
+    round_float,
+)
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.policy import ObservationHeuristicPolicy, Policy
@@ -71,10 +75,10 @@ def evaluate_policy(
             trajectory_counter[str(action)] += int(count)
         runs.append(run)
 
-    aggregate = _aggregate_report(runs)
+    aggregate = aggregate_report(runs)
     if total_records:
-        invalid_observation_rate = _round_float(invalid_observation / total_records)
-        invalid_resolution_rate = _round_float(invalid_resolution / total_records)
+        invalid_observation_rate = round_float(invalid_observation / total_records)
+        invalid_resolution_rate = round_float(invalid_resolution / total_records)
         aggregate["trajectory"] = {
             "record_count": total_records,
             "invalid_observation_action_count": invalid_observation,
@@ -82,7 +86,7 @@ def evaluate_policy(
             "invalid_observation_action_rate": invalid_observation_rate,
             "invalid_resolution_action_rate": invalid_resolution_rate,
             "invalid_action_rate": invalid_observation_rate,
-            "mean_reward": _round_float(total_reward / total_records),
+            "mean_reward": round_float(total_reward / total_records),
             "action_counts": {
                 action: trajectory_counter[action]
                 for action in sorted(trajectory_counter)
@@ -123,7 +127,7 @@ def _policy_run_record(
         "carrying_capacity": summary["carrying_capacity"],
         "total_agents_seen": summary["total_agents_seen"],
         "last_birth_tick": summary["last_birth_tick"],
-        "dominant_lineage": _dominant_lineage(summary),
+        "dominant_lineage": dominant_lineage(summary),
         "resource_pressure": summary["resource_pressure"],
         "selection_heredity": summary["selection_heredity"],
         "trophic_lifecycle": summary["trophic_lifecycle"],
@@ -168,6 +172,7 @@ def compare_heuristic_and_learned(
     seeds: Sequence[int],
     ticks: int,
     gate_criteria: Mapping[str, object] | None = None,
+    reference_guard_intervention_rate: float | None = None,
 ) -> dict[str, object]:
     resolved_gate_criteria = normalize_mind_v1_gate_criteria(gate_criteria)
     heuristic = evaluate_policy(
@@ -235,6 +240,7 @@ def compare_heuristic_and_learned(
         "mind_v1_gates": build_mind_v1_gate_report(
             learned,
             baseline_report=heuristic,
+            reference_guard_intervention_rate=reference_guard_intervention_rate,
             **resolved_gate_criteria,
         ),
     }
@@ -253,7 +259,7 @@ def _metric_mean_delta(
     right_mean = right_stats.get("mean")
     if not isinstance(left_mean, (int, float)) or not isinstance(right_mean, (int, float)):
         return None
-    return _round_float(float(left_mean) - float(right_mean))
+    return round_float(float(left_mean) - float(right_mean))
 
 
 def _paired_count_totals_comparison(
@@ -283,9 +289,9 @@ def _paired_count_totals_comparison(
             "total_delta": _whole_number_if_integral(
                 learned_total_value - heuristic_total_value
             ),
-            "heuristic_per_run_mean": _round_float(heuristic_mean_value),
-            "learned_per_run_mean": _round_float(learned_mean_value),
-            "per_run_mean_delta": _round_float(
+            "heuristic_per_run_mean": round_float(heuristic_mean_value),
+            "learned_per_run_mean": round_float(learned_mean_value),
+            "per_run_mean_delta": round_float(
                 learned_mean_value - heuristic_mean_value
             ),
         }
@@ -411,7 +417,7 @@ def _optional_group_number(
     value = group.get(field)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return _round_float(float(value))
+    return round_float(float(value))
 
 
 def _optional_group_delta(
@@ -423,13 +429,13 @@ def _optional_group_delta(
     right_value = _optional_group_number(right, field)
     if left_value is None or right_value is None:
         return None
-    return _round_float(left_value - right_value)
+    return round_float(left_value - right_value)
 
 
 def _whole_number_if_integral(value: float) -> int | float:
     if value.is_integer():
         return int(value)
-    return _round_float(value)
+    return round_float(value)
 
 
 def _paired_seed_comparison(
@@ -451,7 +457,7 @@ def _paired_seed_comparison(
             record[f"{field}_delta"] = (
                 None
                 if heuristic_value is None or learned_value is None
-                else _round_float(learned_value - heuristic_value)
+                else round_float(learned_value - heuristic_value)
             )
         paired.append(record)
     return paired

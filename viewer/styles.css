@@ -1,25 +1,4 @@
-:root {
-  color-scheme: dark;
-  --bg: #0b1117;
-  --panel: #121922;
-  --panel-alt: #182231;
-  --line: #2a3543;
-  --text: #f3f6f8;
-  --muted: #a8b3bf;
-  --accent: #8cc6ff;
-  --good: #7bcf8a;
-  --warn: #e7c45b;
-  --bad: #e8897f;
-  --ink: #080d12;
-  --glass: rgba(13, 22, 35, 0.72);
-  --glass-strong: rgba(15, 24, 38, 0.88);
-  --glass-line: rgba(191, 219, 254, 0.18);
-  --plain: #293d2d;
-  --forest: #0f5132;
-  --wetland: #496e40;
-  --rocky: #5d5249;
-  --water: #1d4ed8;
-}
+@import "./tokens.css?assetVersion=dashboard-v15";
 
 * {
   box-sizing: border-box;
