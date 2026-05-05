@@ -11,6 +11,7 @@ from unittest.mock import patch
 from evolution_sim.cli import mind_gate, mind_train
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.artifacts import (
     MindArtifactError,
@@ -762,6 +763,50 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("feature_key", top_context)
         self.assertEqual(top_context["guard_intervention_count"], 1)
         self.assertIn("action_counts", top_context)
+
+    def test_policy_evaluation_reports_guard_suppressed_learned_actions(self) -> None:
+        class AlwaysGuardedPolicy:
+            policy_id = "mind_v1_learned_policy"
+            policy_version = "mind_v1_learned_policy_test"
+
+            def decide(
+                self,
+                observation: dict[str, object],
+                action_mask: dict[str, bool],
+            ) -> ActionDecision:
+                return ActionDecision(
+                    requested_action="stay",
+                    source=(
+                        "mind_v1_learned_policy:"
+                        "observation_heuristic_safety_floor_v1"
+                    ),
+                    policy_id=self.policy_id,
+                    policy_version=self.policy_version,
+                    diagnostics={
+                        "guard_used": True,
+                        "learned_action": "eat",
+                        "heuristic_action": "stay",
+                    },
+                )
+
+        report = compare_heuristic_and_learned(
+            learned_policy=AlwaysGuardedPolicy(),
+            seeds=[7],
+            ticks=1,
+        )
+
+        diagnostics = report["learned"]["aggregate"]["policy_diagnostics"]
+        self.assertIn("guard_suppressed_learned_action", diagnostics)
+        self.assertEqual(
+            diagnostics["guard_suppressed_learned_action"]["eat"][
+                "guard_intervention_count"
+            ],
+            diagnostics["guard_intervention_count"],
+        )
+        self.assertNotIn(
+            "policy_decision_diagnostics",
+            report["learned"]["runs"][0]["trajectory"],
+        )
 
     def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})

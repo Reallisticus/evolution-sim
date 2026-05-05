@@ -41,6 +41,7 @@ class ActionDecision:
     source: str
     policy_id: str
     policy_version: str
+    diagnostics: dict[str, object] | None = None
 
 
 class Policy(Protocol):

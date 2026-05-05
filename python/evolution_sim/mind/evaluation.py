@@ -33,6 +33,7 @@ def evaluate_policy(
     invalid_resolution = 0
     total_reward = 0.0
     all_records: list[dict[str, object]] = []
+    all_decision_diagnostics: list[dict[str, object] | None] = []
     for seed in seeds:
         world = SimulationWorld(
             WorldConfig(seed=seed, max_ticks=ticks),
@@ -41,6 +42,7 @@ def evaluate_policy(
         result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
         summary = result.summary
         all_records.extend(world.trajectory_records)
+        all_decision_diagnostics.extend(world.policy_decision_diagnostics_records)
         trajectory_summary = build_trajectory_summary(
             world.trajectory_records,
             signal_config=world.config.signals,
@@ -49,7 +51,10 @@ def evaluate_policy(
             seed=seed,
             summary=summary,
             trajectory_summary=trajectory_summary,
-            policy_diagnostics=build_policy_diagnostics(world.trajectory_records),
+            policy_diagnostics=build_policy_diagnostics(
+                world.trajectory_records,
+                decision_diagnostics=world.policy_decision_diagnostics_records,
+            ),
         )
         total_records += int(trajectory_summary["record_count"])
         invalid_observation += int(
@@ -83,7 +88,10 @@ def evaluate_policy(
                 for action in sorted(trajectory_counter)
             },
         }
-    aggregate["policy_diagnostics"] = build_policy_diagnostics(all_records)
+    aggregate["policy_diagnostics"] = build_policy_diagnostics(
+        all_records,
+        decision_diagnostics=all_decision_diagnostics,
+    )
     return {
         "policy": policy_name,
         "runs": runs,

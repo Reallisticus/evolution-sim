@@ -180,6 +180,7 @@ class SimulationWorld:
         self.tick_feeding_events: list[dict[str, object]] = []
         self.tick_trajectory_records: list[dict[str, object]] = []
         self.trajectory_records: list[dict[str, object]] = []
+        self.policy_decision_diagnostics_records: list[dict[str, object] | None] = []
         self.record_trajectory = True
         self.retain_trajectory_records = True
         self.trajectory_sink: runtime_trajectory.TrajectorySink | None = None
@@ -187,6 +188,7 @@ class SimulationWorld:
         self._policy_action_source = self.policy.policy_id
         self._policy_id = self.policy.policy_id
         self._policy_version = self.policy.policy_version
+        self._policy_decision_diagnostics: dict[str, object] | None = None
         self.tick_hazard_exposure_agents: set[int] = set()
         self.run_combat_totals = self._empty_combat_totals()
         self.run_fresh_kill_totals = self._empty_fresh_kill_totals()
@@ -432,6 +434,7 @@ class SimulationWorld:
                 "action_source": self._policy_action_source,
                 "policy_id": self._policy_id,
                 "policy_version": self._policy_version,
+                "decision_diagnostics": self._policy_decision_diagnostics,
             },
         )
 
@@ -2864,6 +2867,11 @@ class SimulationWorld:
         self._policy_action_source = decision.source
         self._policy_id = decision.policy_id
         self._policy_version = decision.policy_version
+        self._policy_decision_diagnostics = (
+            dict(decision.diagnostics)
+            if isinstance(decision.diagnostics, dict)
+            else None
+        )
         return decision.requested_action
     def _action_scoring_context(
         self,
@@ -3267,11 +3275,15 @@ class SimulationWorld:
             passive_outcome_for_agent=self._passive_outcome_for_agent,
             is_reproduction_ready=self._is_reproduction_ready,
         )
-        for record in records:
+        for pending, record in zip(pending_records, records):
             self.tick_trajectory_records.append(record)
             if self.trajectory_sink is not None:
                 self.trajectory_sink.write_record(record)
             if self.retain_trajectory_records:
+                diagnostics = pending.get("policy_decision_diagnostics")
+                self.policy_decision_diagnostics_records.append(
+                    dict(diagnostics) if isinstance(diagnostics, dict) else None
+                )
                 self.trajectory_records.append(record)
 
     def _passive_outcome_for_agent(self, agent_id: int, *, acted: bool) -> dict[str, object]:

@@ -78,14 +78,17 @@ def build_artifact_diagnostics(
 
 def build_policy_diagnostics(
     records: Sequence[Mapping[str, object]],
+    *,
+    decision_diagnostics: Sequence[Mapping[str, object] | None] | None = None,
 ) -> dict[str, object]:
     action_source_counts: Counter[str] = Counter()
     guard_intervention_count = 0
     action_stats: dict[str, dict[str, object]] = {}
     context_stats: dict[str, dict[str, object]] = {}
+    suppressed_action_stats: dict[str, dict[str, object]] = {}
     role_stats: dict[str, dict[str, object]] = {}
     mode_stats: dict[str, dict[str, object]] = {}
-    for record in records:
+    for index, record in enumerate(records):
         action_source = str(record.get("action_source", "unknown"))
         action_source_counts[action_source] += 1
         guard_used = HEURISTIC_GUARD_POLICY in action_source
@@ -93,6 +96,19 @@ def build_policy_diagnostics(
             guard_intervention_count += 1
         reward = _reward_total(record)
         action = str(record.get("requested_action", "unknown"))
+        decision_diagnostic = _decision_diagnostic_at(decision_diagnostics, index)
+        suppressed_action = _guard_suppressed_action(
+            decision_diagnostic,
+            guard_used=guard_used,
+        )
+        if suppressed_action is not None:
+            _update_group_stats(
+                suppressed_action_stats,
+                suppressed_action,
+                reward=reward,
+                action=action,
+                guard_used=guard_used,
+            )
         _update_group_stats(
             action_stats,
             action,
@@ -131,6 +147,9 @@ def build_policy_diagnostics(
         "guard_intervention_count": guard_intervention_count,
         "guard_intervention_rate": _rate(guard_intervention_count, record_count),
         "guard_intervention_by_action": _finalize_group_stats(action_stats),
+        "guard_suppressed_learned_action": _finalize_group_stats(
+            suppressed_action_stats
+        ),
         "top_guarded_contexts": _top_guarded_contexts(context_stats),
         "by_trophic_role": _finalize_group_stats(role_stats),
         "by_meat_mode": _finalize_group_stats(mode_stats),
@@ -262,6 +281,31 @@ def _record_policy_context_key(record: Mapping[str, object]) -> str:
     if len(feature_keys) > POLICY_DIAGNOSTIC_CONTEXT_DEPTH:
         return feature_keys[POLICY_DIAGNOSTIC_CONTEXT_DEPTH]
     return feature_keys[-1]
+
+
+def _decision_diagnostic_at(
+    diagnostics: Sequence[Mapping[str, object] | None] | None,
+    index: int,
+) -> Mapping[str, object]:
+    if diagnostics is None or index >= len(diagnostics):
+        return {}
+    diagnostic = diagnostics[index]
+    if isinstance(diagnostic, Mapping):
+        return diagnostic
+    return {}
+
+
+def _guard_suppressed_action(
+    diagnostic: Mapping[str, object],
+    *,
+    guard_used: bool,
+) -> str | None:
+    if not guard_used:
+        return None
+    learned_action = diagnostic.get("learned_action")
+    if not isinstance(learned_action, str) or not learned_action:
+        return None
+    return learned_action
 
 
 def _enum_label(value: float, vocab: tuple[str, ...]) -> str:

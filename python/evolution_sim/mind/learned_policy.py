@@ -53,8 +53,23 @@ class LearnedPolicy:
                 return self._decision(
                     heuristic_action.requested_action,
                     source=f"{self.policy_id}:{HEURISTIC_GUARD_POLICY}",
+                    diagnostics={
+                        "guard_used": True,
+                        "learned_action": learned_action,
+                        "learned_score": learned_score,
+                        "heuristic_action": heuristic_action.requested_action,
+                        "heuristic_score": heuristic_score,
+                    },
                 )
-        return self._decision(learned_action, source=self.policy_id)
+        return self._decision(
+            learned_action,
+            source=self.policy_id,
+            diagnostics={
+                "guard_used": False,
+                "learned_action": learned_action,
+                "learned_score": learned_score,
+            },
+        )
 
     def _best_scored_action(
         self,
@@ -72,12 +87,19 @@ class LearnedPolicy:
                 best_action = action
         return best_action, best_score
 
-    def _decision(self, requested_action: str, *, source: str) -> ActionDecision:
+    def _decision(
+        self,
+        requested_action: str,
+        *,
+        source: str,
+        diagnostics: dict[str, object] | None = None,
+    ) -> ActionDecision:
         return ActionDecision(
             requested_action=requested_action,
             source=source,
             policy_id=self.policy_id,
             policy_version=self.policy_version,
+            diagnostics=diagnostics,
         )
 
     def _scores_for(

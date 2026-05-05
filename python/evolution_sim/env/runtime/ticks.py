@@ -145,6 +145,9 @@ def run_tick(
                     "action_source": policy_metadata["action_source"],
                     "policy_id": policy_metadata["policy_id"],
                     "policy_version": policy_metadata["policy_version"],
+                    "policy_decision_diagnostics": policy_metadata.get(
+                        "decision_diagnostics"
+                    ),
                     "resolution_action_mask": live_action_mask,
                     "resolved_action": resolved_action,
                     "moved": moved,
@@ -286,6 +289,7 @@ def append_passive_trajectory_contexts(
                 "action_source": "passive",
                 "policy_id": None,
                 "policy_version": None,
+                "policy_decision_diagnostics": None,
                 "resolution_action_mask": action_mask,
                 "resolved_action": "stay",
                 "moved": False,

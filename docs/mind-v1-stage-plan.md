@@ -48,7 +48,9 @@ priors, calibrated per-context support/margin metadata, train/validation
 diagnostic splits, and explicit per-role/per-mode performance comparisons.
 The current checkpoint adds guard-by-action and top guarded-context diagnostics
 so the next learner change can target measured fallback clusters instead of
-optimizing against a narrow seed slice.
+optimizing against a narrow seed slice. Evaluation also summarizes the learned
+actions suppressed by the guard through an in-memory sidecar, keeping trajectory
+JSONL schema stable.
 
 Exit criteria:
 
