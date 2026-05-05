@@ -19,6 +19,7 @@ class LearnedPolicy:
     policy_version: str = "mind_v1_learned_policy_v1"
     fallback_action: str = "stay"
     heuristic_guard: bool = False
+    heuristic_confidence_threshold: float | None = None
 
     def decide(
         self,
@@ -26,19 +27,25 @@ class LearnedPolicy:
         action_mask: dict[str, bool],
     ) -> ActionDecision:
         action_scores = self._scores_for(observation, action_mask)
-        learned_action = self._best_scored_action(action_scores, action_mask)
+        learned_action, learned_score = self._best_scored_action(
+            action_scores,
+            action_mask,
+        )
         if self.heuristic_guard:
             heuristic_action = ObservationHeuristicPolicy().decide(
                 observation,
                 action_mask,
-            ).requested_action
+            )
             if _guard_should_use_heuristic(
                 learned_action=learned_action,
-                heuristic_action=heuristic_action,
+                learned_score=learned_score,
+                heuristic_action=heuristic_action.requested_action,
+                heuristic_source=heuristic_action.source,
                 observation=observation,
+                confidence_threshold=self.heuristic_confidence_threshold,
             ):
                 return self._decision(
-                    heuristic_action,
+                    heuristic_action.requested_action,
                     source=f"{self.policy_id}:{HEURISTIC_GUARD_POLICY}",
                 )
         return self._decision(learned_action, source=self.policy_id)
@@ -47,7 +54,7 @@ class LearnedPolicy:
         self,
         action_scores: dict[str, float],
         action_mask: dict[str, bool],
-    ) -> str:
+    ) -> tuple[str, float]:
         best_action = self.fallback_action if action_mask.get(self.fallback_action, False) else "stay"
         best_score = float("-inf")
         for action in sorted(action_mask):
@@ -57,7 +64,7 @@ class LearnedPolicy:
             if score > best_score:
                 best_score = score
                 best_action = action
-        return best_action
+        return best_action, best_score
 
     def _decision(self, requested_action: str, *, source: str) -> ActionDecision:
         return ActionDecision(
@@ -94,6 +101,7 @@ def load_learned_policy(
     fallback_action = model.get("fallback_action", "stay")
     conditional_action_scores = model.get("conditional_action_scores")
     heuristic_guard_policy = model.get("heuristic_guard_policy")
+    heuristic_confidence_threshold = model.get("heuristic_confidence_threshold")
     return LearnedPolicy(
         action_scores={
             str(action): float(score)
@@ -105,6 +113,9 @@ def load_learned_policy(
         ),
         fallback_action=str(fallback_action),
         heuristic_guard=heuristic_guard_policy == HEURISTIC_GUARD_POLICY,
+        heuristic_confidence_threshold=_optional_float(
+            heuristic_confidence_threshold
+        ),
     )
 
 
@@ -128,11 +139,18 @@ def _parse_conditional_action_scores(
 def _guard_should_use_heuristic(
     *,
     learned_action: str,
+    learned_score: float,
     heuristic_action: str,
+    heuristic_source: str,
     observation: dict[str, object],
+    confidence_threshold: float | None,
 ) -> bool:
     if learned_action == heuristic_action:
         return False
+    if heuristic_source == "heuristic_observation_conserve":
+        return True
+    if confidence_threshold is not None and learned_score < confidence_threshold:
+        return True
     if heuristic_action != "stay":
         return True
     if learned_action.startswith("attack_"):
@@ -161,4 +179,12 @@ def _guard_should_use_heuristic(
 def _ratio(value: object, *, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
+    return float(value)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
     return float(value)

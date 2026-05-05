@@ -91,6 +91,7 @@ seed bank and at most `2.0` alive-agent regression on any single validation
 seed.
 Use `--fail-on-blockers` for CI-style failure on hard gate blockers, or
 `--fail-on-review` when review warnings should also fail the command.
+Use `--validation-ticks 120,240` for an opt-in longer-horizon validation matrix.
 
 ## Foundation Gate
 

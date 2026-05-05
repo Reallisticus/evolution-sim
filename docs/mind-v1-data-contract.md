@@ -82,3 +82,32 @@ gate failures and `--fail-on-review` when review warnings should also produce a
 non-zero exit. Evaluation reports include paired per-seed heuristic versus
 learned deltas for alive agents, births, and deaths so aggregate regressions can
 be traced to individual validation seeds.
+
+The gate report also includes artifact diagnostics computed from the training
+trajectories before runtime evaluation:
+
+- imitation top-1 accuracy against the behavior-cloning label;
+- predicted versus label action distribution drift;
+- contextual feature coverage and fallback depth.
+
+Runtime evaluation diagnostics are computed from trajectory records without
+changing the trajectory schema. They report action-source counts, guard
+intervention share, and per-trophic-role/per-meat-mode mean reward, action
+counts, and guard intervention rates.
+
+The guarded contextual baseline only materializes conditional action priors once
+the feature context has at least 12 training records. Lower-support contexts
+fall back to coarser feature keys or the global prior, which keeps offline
+imitation from overfitting sparse seed-bank states before runtime experiments
+are allowed beyond the heuristic safety floor.
+
+Longer-horizon validation is supported through a validation matrix without
+changing the training horizon:
+
+```bash
+npm run sim:mind:gate -- --reuse-trajectories --validation-ticks 120,240
+```
+
+The first horizon remains available as `evaluation` for compatibility, and all
+horizons are listed under `evaluation_matrix`. Overall readiness fails or enters
+review if any validation horizon emits blockers or warnings.

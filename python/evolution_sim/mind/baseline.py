@@ -17,7 +17,8 @@ from evolution_sim.mind.feature_policy import (
 from evolution_sim.mind.provenance import validate_dataset_provenance
 
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_action_prior_bc_v1"
-CONDITIONAL_MIN_RECORDS = 4
+CONDITIONAL_MIN_RECORDS = 12
+HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 
 
@@ -51,6 +52,7 @@ class BehaviorCloningBaseline:
                 "feature_policy_version": FEATURE_POLICY_VERSION,
                 "conditional_min_records": CONDITIONAL_MIN_RECORDS,
                 "heuristic_guard_policy": HEURISTIC_GUARD_POLICY,
+                "heuristic_confidence_threshold": HEURISTIC_CONFIDENCE_THRESHOLD,
             },
         }
 

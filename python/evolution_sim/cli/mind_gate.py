@@ -13,6 +13,7 @@ from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.artifacts import write_model_artifact
 from evolution_sim.mind.baseline import train_behavior_cloning_baseline
 from evolution_sim.mind.dataset import combined_dataset_provenance, load_trajectory_jsonl
+from evolution_sim.mind.diagnostics import build_artifact_diagnostics
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.gates import normalize_mind_v1_gate_criteria
 from evolution_sim.mind.learned_policy import load_learned_policy
@@ -60,7 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--ticks",
         type=int,
         default=DEFAULT_TICKS,
-        help="Ticks for each training and validation run.",
+        help="Ticks for each training run and the default validation horizon.",
+    )
+    parser.add_argument(
+        "--validation-ticks",
+        help="Comma-separated validation tick horizons.",
+    )
+    parser.add_argument(
+        "--validation-tick",
+        action="append",
+        type=int,
+        help="Add one validation tick horizon.",
     )
     parser.add_argument(
         "--trajectory-dir",
@@ -160,12 +171,20 @@ def main() -> None:
     )
     if args.ticks <= 0:
         raise SystemExit("--ticks must be positive")
+    validation_ticks = _parse_tick_selection(
+        args.validation_tick,
+        args.validation_ticks,
+        default=(args.ticks,),
+    )
+    if any(tick <= 0 for tick in validation_ticks):
+        raise SystemExit("validation ticks must be positive")
     gate_criteria = _gate_criteria_from_args(args)
 
     report = run_mind_gate(
         train_seeds=train_seeds,
         validation_seeds=validation_seeds,
         ticks=args.ticks,
+        validation_ticks=validation_ticks,
         trajectory_dir=args.trajectory_dir,
         artifact_output=args.artifact_output,
         report_output=args.output,
@@ -188,6 +207,7 @@ def run_mind_gate(
     trajectory_dir: Path,
     artifact_output: Path,
     report_output: Path | None,
+    validation_ticks: Sequence[int] | None = None,
     reuse_trajectories: bool = False,
     gate_criteria: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
@@ -195,6 +215,9 @@ def run_mind_gate(
         raise ValueError("at least one training seed is required")
     if not validation_seeds:
         raise ValueError("at least one validation seed is required")
+    resolved_validation_ticks = list(validation_ticks or (ticks,))
+    if not resolved_validation_ticks:
+        raise ValueError("at least one validation tick horizon is required")
     resolved_gate_criteria = normalize_mind_v1_gate_criteria(
         DEFAULT_GATE_CRITERIA if gate_criteria is None else gate_criteria
     )
@@ -231,23 +254,36 @@ def run_mind_gate(
         provenance=combined_dataset_provenance(datasets),
     )
     artifact = baseline.to_artifact()
+    artifact_diagnostics = build_artifact_diagnostics(artifact, datasets)
     write_model_artifact(artifact_output, artifact)
 
-    _log(f"evaluate validation_seeds={list(validation_seeds)} ticks={ticks}")
-    policy = load_learned_policy(artifact_output, enable_mind=True)
-    evaluation = compare_heuristic_and_learned(
-        learned_policy=policy,
-        seeds=validation_seeds,
-        ticks=ticks,
-        gate_criteria=resolved_gate_criteria,
+    _log(
+        "evaluate "
+        f"validation_seeds={list(validation_seeds)} "
+        f"validation_ticks={resolved_validation_ticks}"
     )
-    readiness = evaluation["mind_v1_gates"]
+    policy = load_learned_policy(artifact_output, enable_mind=True)
+    evaluation_matrix = [
+        {
+            "ticks": validation_tick,
+            "evaluation": compare_heuristic_and_learned(
+                learned_policy=policy,
+                seeds=validation_seeds,
+                ticks=validation_tick,
+                gate_criteria=resolved_gate_criteria,
+            ),
+        }
+        for validation_tick in resolved_validation_ticks
+    ]
+    evaluation = evaluation_matrix[0]["evaluation"]
+    readiness = _combine_readiness(evaluation_matrix)
     report = {
         "protocol": {
             "profile": "mind_v1_seedbank_gate",
             "train_seeds": list(train_seeds),
             "validation_seeds": list(validation_seeds),
             "ticks": ticks,
+            "validation_ticks": resolved_validation_ticks,
             "mode": RunMode.SUMMARY_ONLY.value,
             "trajectory_split_id": split_id,
             "trajectory_dir": str(trajectory_dir),
@@ -268,7 +304,9 @@ def run_mind_gate(
             ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
         },
+        "artifact_diagnostics": artifact_diagnostics,
         "evaluation": evaluation,
+        "evaluation_matrix": evaluation_matrix,
         "readiness": readiness,
         "timings": {
             "total_wall_seconds": round(time.perf_counter() - started, 4),
@@ -365,6 +403,77 @@ def _parse_seed_selection(
         seen.add(seed)
         seeds.append(seed)
     return seeds
+
+
+def _parse_tick_selection(
+    tick_args: Sequence[int] | None,
+    ticks_arg: str | None,
+    *,
+    default: Sequence[int],
+) -> list[int]:
+    raw_ticks: list[int] = []
+    if ticks_arg:
+        for chunk in ticks_arg.split(","):
+            value = chunk.strip()
+            if value:
+                raw_ticks.append(int(value))
+    if tick_args:
+        raw_ticks.extend(tick_args)
+    if not raw_ticks:
+        raw_ticks.extend(default)
+
+    seen: set[int] = set()
+    ticks: list[int] = []
+    for tick in raw_ticks:
+        if tick in seen:
+            continue
+        seen.add(tick)
+        ticks.append(tick)
+    return ticks
+
+
+def _combine_readiness(
+    evaluation_matrix: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    blockers: list[dict[str, object]] = []
+    warnings: list[dict[str, object]] = []
+    for entry in evaluation_matrix:
+        ticks = entry.get("ticks")
+        evaluation = entry.get("evaluation")
+        if not isinstance(evaluation, Mapping):
+            continue
+        readiness = evaluation.get("mind_v1_gates")
+        if not isinstance(readiness, Mapping):
+            continue
+        blockers.extend(
+            _flag_with_ticks(flag, ticks=ticks)
+            for flag in _flag_list(readiness.get("blockers"))
+        )
+        warnings.extend(
+            _flag_with_ticks(flag, ticks=ticks)
+            for flag in _flag_list(readiness.get("warnings"))
+        )
+    return {
+        "status": "fail" if blockers else ("review" if warnings else "pass"),
+        "blockers": blockers,
+        "warnings": warnings,
+    }
+
+
+def _flag_list(payload: object) -> list[dict[str, object]]:
+    if not isinstance(payload, list):
+        return []
+    return [dict(flag) for flag in payload if isinstance(flag, Mapping)]
+
+
+def _flag_with_ticks(
+    flag: Mapping[str, object],
+    *,
+    ticks: object,
+) -> dict[str, object]:
+    payload = dict(flag)
+    payload["validation_ticks"] = ticks
+    return payload
 
 
 def _gate_criteria_from_args(args: argparse.Namespace) -> dict[str, float]:

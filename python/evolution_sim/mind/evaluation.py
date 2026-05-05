@@ -12,6 +12,7 @@ from evolution_sim.env.runtime.trajectory import (
     build_trajectory_summary,
 )
 from evolution_sim.mind.contracts import mind_v1_data_contract
+from evolution_sim.mind.diagnostics import build_policy_diagnostics
 from evolution_sim.mind.gates import (
     build_mind_v1_gate_report,
     normalize_mind_v1_gate_criteria,
@@ -31,6 +32,7 @@ def evaluate_policy(
     invalid_observation = 0
     invalid_resolution = 0
     total_reward = 0.0
+    all_records: list[dict[str, object]] = []
     for seed in seeds:
         world = SimulationWorld(
             WorldConfig(seed=seed, max_ticks=ticks),
@@ -38,6 +40,7 @@ def evaluate_policy(
         )
         result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
         summary = result.summary
+        all_records.extend(world.trajectory_records)
         trajectory_summary = build_trajectory_summary(
             world.trajectory_records,
             signal_config=world.config.signals,
@@ -46,6 +49,7 @@ def evaluate_policy(
             seed=seed,
             summary=summary,
             trajectory_summary=trajectory_summary,
+            policy_diagnostics=build_policy_diagnostics(world.trajectory_records),
         )
         total_records += int(trajectory_summary["record_count"])
         invalid_observation += int(
@@ -79,6 +83,7 @@ def evaluate_policy(
                 for action in sorted(trajectory_counter)
             },
         }
+    aggregate["policy_diagnostics"] = build_policy_diagnostics(all_records)
     return {
         "policy": policy_name,
         "runs": runs,
@@ -91,6 +96,7 @@ def _policy_run_record(
     seed: int,
     summary: dict[str, object],
     trajectory_summary: dict[str, object],
+    policy_diagnostics: dict[str, object],
 ) -> dict[str, object]:
     return {
         "seed": seed,
@@ -144,6 +150,7 @@ def _policy_run_record(
             "avg_recovery_debt": summary["ecology_stats_at_end"]["avg_recovery_debt"],
         },
         "trajectory": trajectory_summary,
+        "policy_diagnostics": policy_diagnostics,
     }
 
 

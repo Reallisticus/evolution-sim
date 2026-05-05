@@ -30,6 +30,7 @@ from evolution_sim.mind.dataset import (
     dataset_provenance,
     load_trajectory_jsonl,
 )
+from evolution_sim.mind.diagnostics import build_artifact_diagnostics
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.feature_policy import feature_keys_from_observation
 from evolution_sim.mind.gates import build_mind_v1_gate_report
@@ -173,6 +174,43 @@ class MindV1Tests(unittest.TestCase):
                 artifact["manifest"]["trained_record_count"],
             )
 
+    def test_behavior_cloning_artifact_diagnostics_report_imitation_and_coverage(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+
+            diagnostics = build_artifact_diagnostics(baseline.to_artifact(), [dataset])
+
+        self.assertEqual(diagnostics["record_count"], dataset.record_count)
+        self.assertGreaterEqual(diagnostics["imitation"]["top1_accuracy"], 0.0)
+        self.assertLessEqual(diagnostics["imitation"]["top1_accuracy"], 1.0)
+        self.assertEqual(
+            sum(diagnostics["action_distribution"]["label_counts"].values()),
+            dataset.record_count,
+        )
+        self.assertEqual(
+            sum(diagnostics["action_distribution"]["predicted_counts"].values()),
+            dataset.record_count,
+        )
+        self.assertGreaterEqual(
+            diagnostics["action_distribution"]["prediction_label_tvd"],
+            0.0,
+        )
+        self.assertLessEqual(
+            diagnostics["action_distribution"]["prediction_label_tvd"],
+            1.0,
+        )
+        self.assertIn("match_depth_counts", diagnostics["contextual_coverage"])
+        self.assertGreaterEqual(
+            diagnostics["contextual_coverage"]["matched_record_rate"],
+            0.0,
+        )
+
     def test_mind_gate_cli_writes_seed_bank_report_and_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -245,6 +283,12 @@ class MindV1Tests(unittest.TestCase):
                 report["artifact"]["trained_record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
+            self.assertEqual(
+                report["artifact_diagnostics"]["record_count"],
+                report["artifact"]["trained_record_count"],
+            )
+            self.assertIn("imitation", report["artifact_diagnostics"])
+            self.assertIn("contextual_coverage", report["artifact_diagnostics"])
             self.assertIn(report["readiness"]["status"], {"pass", "review", "fail"})
             self.assertEqual(len(report["trajectory_collection"]), 1)
 
@@ -286,6 +330,45 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 1)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["readiness"]["status"], "fail")
+
+    def test_mind_gate_cli_evaluates_validation_tick_matrix(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            report_path = tmp_path / "mind-gate-report.json"
+            artifact_path = tmp_path / "mind-gate-artifact.json"
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_gate",
+                        "--train-seed",
+                        "7",
+                        "--validation-seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--validation-ticks",
+                        "2,3",
+                        "--artifact-output",
+                        str(artifact_path),
+                        "--output",
+                        str(report_path),
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                mind_gate.main()
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["protocol"]["validation_ticks"], [2, 3])
+            self.assertEqual(
+                [entry["ticks"] for entry in report["evaluation_matrix"]],
+                [2, 3],
+            )
+            self.assertEqual(report["evaluation"]["protocol"]["ticks"], 2)
+            self.assertIn(report["readiness"]["status"], {"pass", "review", "fail"})
 
     def test_mind_gate_cli_fail_on_review_exits_nonzero(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -462,6 +545,99 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(decision.requested_action, "stay")
         self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
 
+    def test_heuristic_guard_defers_low_confidence_learned_action(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.9,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_north": 0.42, "stay": 0.4},
+            heuristic_guard=True,
+            heuristic_confidence_threshold=0.5,
+        )
+
+        decision = policy.decide(observation, {"stay": True, "move_north": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
+
+    def test_heuristic_guard_preserves_explicit_conservation(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.7,
+                "hydration_ratio": 0.8,
+                "health_ratio": 1.0,
+                "trophic_role": "carnivore",
+                "meat_mode": "hunter",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_north": 1.0, "stay": 0.0},
+            heuristic_guard=True,
+        )
+
+        decision = policy.decide(observation, {"stay": True, "move_north": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
+
     def test_policy_evaluation_compares_heuristic_and_learned_on_summary_only_seeds(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
 
@@ -477,6 +653,11 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn(report["mind_v1_gates"]["status"], {"pass", "review", "fail"})
         self.assertIn("heuristic", report)
         self.assertIn("learned", report)
+        learned_diagnostics = report["learned"]["aggregate"]["policy_diagnostics"]
+        self.assertIn("guard_intervention_rate", learned_diagnostics)
+        self.assertIn("action_source_counts", learned_diagnostics)
+        self.assertIn("by_trophic_role", learned_diagnostics)
+        self.assertIn("by_meat_mode", learned_diagnostics)
         json.dumps(report)
 
     def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
