@@ -25,6 +25,7 @@
     "sim:mind:split": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_split",
     "sim:mind:train": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_train",
     "sim:mind:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_policy_eval",
+    "sim:mind:gate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate",
     "viewer:serve": "python3 -m http.server 4173",
     "viewer:contracts:generate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs",
     "viewer:contracts:check": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs --check",

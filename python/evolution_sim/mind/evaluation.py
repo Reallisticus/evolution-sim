@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import Sequence
 
 from evolution_sim.cli.evaluate import _aggregate_report, _dominant_lineage, _round_float
@@ -11,7 +12,10 @@ from evolution_sim.env.runtime.trajectory import (
     build_trajectory_summary,
 )
 from evolution_sim.mind.contracts import mind_v1_data_contract
-from evolution_sim.mind.gates import build_mind_v1_gate_report
+from evolution_sim.mind.gates import (
+    build_mind_v1_gate_report,
+    normalize_mind_v1_gate_criteria,
+)
 
 
 def evaluate_policy(
@@ -148,7 +152,9 @@ def compare_heuristic_and_learned(
     learned_policy: Policy,
     seeds: Sequence[int],
     ticks: int,
+    gate_criteria: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    resolved_gate_criteria = normalize_mind_v1_gate_criteria(gate_criteria)
     heuristic = evaluate_policy(
         policy_name=ObservationHeuristicPolicy().policy_id,
         policy=ObservationHeuristicPolicy(),
@@ -167,6 +173,7 @@ def compare_heuristic_and_learned(
             "seeds": list(seeds),
             "ticks": ticks,
             "mode": RunMode.SUMMARY_ONLY.value,
+            "gate_criteria": resolved_gate_criteria,
         },
         "heuristic": heuristic,
         "learned": learned,
@@ -181,10 +188,15 @@ def compare_heuristic_and_learned(
                 heuristic["aggregate"],
                 "births",
             ),
+            "per_seed": _paired_seed_comparison(
+                heuristic["runs"],
+                learned["runs"],
+            ),
         },
         "mind_v1_gates": build_mind_v1_gate_report(
             learned,
             baseline_report=heuristic,
+            **resolved_gate_criteria,
         ),
     }
 
@@ -203,3 +215,50 @@ def _metric_mean_delta(
     if not isinstance(left_mean, (int, float)) or not isinstance(right_mean, (int, float)):
         return None
     return _round_float(float(left_mean) - float(right_mean))
+
+
+def _paired_seed_comparison(
+    heuristic_runs: Sequence[dict[str, object]],
+    learned_runs: Sequence[dict[str, object]],
+) -> list[dict[str, object]]:
+    heuristic_by_seed = _runs_by_seed(heuristic_runs)
+    learned_by_seed = _runs_by_seed(learned_runs)
+    paired: list[dict[str, object]] = []
+    for seed in sorted(set(heuristic_by_seed) | set(learned_by_seed)):
+        heuristic = heuristic_by_seed.get(seed, {})
+        learned = learned_by_seed.get(seed, {})
+        record: dict[str, object] = {"seed": seed}
+        for field in ("alive_agents", "births", "deaths"):
+            heuristic_value = _run_numeric_value(heuristic, field)
+            learned_value = _run_numeric_value(learned, field)
+            record[f"heuristic_{field}"] = heuristic_value
+            record[f"learned_{field}"] = learned_value
+            record[f"{field}_delta"] = (
+                None
+                if heuristic_value is None or learned_value is None
+                else _round_float(learned_value - heuristic_value)
+            )
+        paired.append(record)
+    return paired
+
+
+def _runs_by_seed(
+    runs: Sequence[dict[str, object]],
+) -> dict[int, dict[str, object]]:
+    by_seed: dict[int, dict[str, object]] = {}
+    for run in runs:
+        seed = run.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            continue
+        by_seed[seed] = run
+    return by_seed
+
+
+def _run_numeric_value(
+    run: dict[str, object],
+    field: str,
+) -> float | None:
+    value = run.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)

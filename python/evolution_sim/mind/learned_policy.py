@@ -145,6 +145,14 @@ def _guard_should_use_heuristic(
     health_ratio = _ratio(self_state.get("health_ratio"), default=1.0)
     return (
         (learned_action == "eat" and (energy_ratio >= 0.82 or hydration_ratio < 0.58))
+        or (
+            learned_action.startswith("move_")
+            and (
+                energy_ratio < 0.62
+                or hydration_ratio < 0.58
+                or health_ratio < 0.72
+            )
+        )
         or hydration_ratio < 0.34
         or health_ratio < 0.42
     )

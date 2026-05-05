@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_train
+from evolution_sim.cli import mind_gate, mind_train
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.io import JsonlTrajectoryWriter
@@ -173,6 +173,156 @@ class MindV1Tests(unittest.TestCase):
                 artifact["manifest"]["trained_record_count"],
             )
 
+    def test_mind_gate_cli_writes_seed_bank_report_and_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            report_path = tmp_path / "mind-gate-report.json"
+            artifact_path = tmp_path / "mind-gate-artifact.json"
+            trajectory_dir = tmp_path / "trajectories"
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_gate",
+                        "--train-seed",
+                        "7",
+                        "--validation-seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--trajectory-dir",
+                        str(trajectory_dir),
+                        "--artifact-output",
+                        str(artifact_path),
+                        "--output",
+                        str(report_path),
+                        "--max-alive-agents-mean-regression",
+                        "0.5",
+                        "--max-births-mean-regression",
+                        "0.25",
+                        "--max-invalid-action-rate",
+                        "0.03",
+                        "--min-viable-run-share",
+                        "0.5",
+                        "--min-births-per-run-mean",
+                        "0.0",
+                        "--min-plant-energy-available-per-land-tile",
+                        "0.0",
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                mind_gate.main()
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+            self.assertTrue(report["complete"])
+            self.assertEqual(report["protocol"]["train_seeds"], [7])
+            self.assertEqual(report["protocol"]["validation_seeds"], [8])
+            self.assertEqual(
+                report["protocol"]["criteria"],
+                {
+                    "max_alive_agents_mean_regression": 0.5,
+                    "max_alive_agents_per_seed_regression": 2.0,
+                    "max_births_mean_regression": 0.25,
+                    "max_births_per_seed_regression": 1.0,
+                    "max_invalid_action_rate": 0.03,
+                    "min_viable_run_share": 0.5,
+                    "min_births_per_run_mean": 0.0,
+                    "min_plant_energy_available_per_land_tile": 0.0,
+                },
+            )
+            self.assertEqual(
+                report["evaluation"]["protocol"]["gate_criteria"],
+                report["protocol"]["criteria"],
+            )
+            self.assertEqual(report["artifact"]["path"], str(artifact_path))
+            self.assertGreater(report["artifact"]["trained_record_count"], 0)
+            self.assertEqual(
+                report["artifact"]["trained_record_count"],
+                artifact["manifest"]["trained_record_count"],
+            )
+            self.assertIn(report["readiness"]["status"], {"pass", "review", "fail"})
+            self.assertEqual(len(report["trajectory_collection"]), 1)
+
+    def test_mind_gate_default_validation_seeds_are_held_out_seed_bank(self) -> None:
+        self.assertEqual(mind_gate.DEFAULT_VALIDATION_SEEDS, (5, 13, 19, 29))
+
+    def test_mind_gate_cli_fail_on_blockers_exits_nonzero(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            report_path = tmp_path / "mind-gate-report.json"
+            artifact_path = tmp_path / "mind-gate-artifact.json"
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_gate",
+                        "--train-seed",
+                        "7",
+                        "--validation-seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--artifact-output",
+                        str(artifact_path),
+                        "--output",
+                        str(report_path),
+                        "--min-viable-run-share",
+                        "2.0",
+                        "--fail-on-blockers",
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    mind_gate.main()
+
+            self.assertEqual(raised.exception.code, 1)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["readiness"]["status"], "fail")
+
+    def test_mind_gate_cli_fail_on_review_exits_nonzero(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            report_path = tmp_path / "mind-gate-report.json"
+            artifact_path = tmp_path / "mind-gate-artifact.json"
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_gate",
+                        "--train-seed",
+                        "7",
+                        "--validation-seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--artifact-output",
+                        str(artifact_path),
+                        "--output",
+                        str(report_path),
+                        "--min-births-per-run-mean",
+                        "999.0",
+                        "--fail-on-review",
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    mind_gate.main()
+
+            self.assertEqual(raised.exception.code, 1)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["readiness"]["status"], "review")
+
     def test_mind_train_cli_accepts_seed_bank_trajectories(self) -> None:
         with TemporaryDirectory() as tmpdir:
             first_trajectory_path = Path(tmpdir) / "trajectory-seed7.jsonl.gz"
@@ -265,6 +415,53 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertEqual(decision.requested_action, "stay")
 
+    def test_heuristic_guard_conserves_low_energy_agent_before_learned_move(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.42,
+                "hydration_ratio": 0.7,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        action_mask = {"stay": True, "move_north": True}
+        policy = LearnedPolicy(
+            action_scores={"move_north": 1.0, "stay": 0.1},
+            heuristic_guard=True,
+        )
+
+        decision = policy.decide(observation, action_mask)
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
+
     def test_policy_evaluation_compares_heuristic_and_learned_on_summary_only_seeds(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
 
@@ -281,6 +478,120 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("heuristic", report)
         self.assertIn("learned", report)
         json.dumps(report)
+
+    def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
+        policy = LearnedPolicy(action_scores={"stay": 1.0})
+
+        report = compare_heuristic_and_learned(
+            learned_policy=policy,
+            seeds=[7],
+            ticks=2,
+        )
+
+        per_seed = report["comparison"]["per_seed"]
+        self.assertEqual(len(per_seed), 1)
+        self.assertEqual(per_seed[0]["seed"], 7)
+        self.assertEqual(
+            per_seed[0]["alive_agents_delta"],
+            per_seed[0]["learned_alive_agents"] - per_seed[0]["heuristic_alive_agents"],
+        )
+        self.assertEqual(
+            per_seed[0]["births_delta"],
+            per_seed[0]["learned_births"] - per_seed[0]["heuristic_births"],
+        )
+
+    def test_policy_evaluation_applies_mind_gate_criteria(self) -> None:
+        policy = LearnedPolicy(action_scores={"stay": 1.0})
+
+        report = compare_heuristic_and_learned(
+            learned_policy=policy,
+            seeds=[7],
+            ticks=2,
+            gate_criteria={"min_viable_run_share": 2.0},
+        )
+
+        self.assertEqual(report["protocol"]["gate_criteria"]["min_viable_run_share"], 2.0)
+        self.assertEqual(report["mind_v1_gates"]["status"], "fail")
+        self.assertEqual(
+            report["mind_v1_gates"]["blockers"][0]["field"],
+            "alive_agents",
+        )
+
+    def test_mind_gate_blocks_per_seed_alive_regression(self) -> None:
+        learned_report = {
+            "runs": [
+                {
+                    "seed": 1,
+                    "alive_agents": 7,
+                    "births": 8,
+                    "land_tile_count": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 8.0},
+                "trajectory": {
+                    "invalid_observation_action_rate": 0.0,
+                },
+            },
+        }
+        heuristic_report = {
+            "runs": [{"seed": 1, "alive_agents": 10, "births": 8}],
+            "aggregate": {"alive_agents": {"mean": 10.0}, "births": {"mean": 8.0}},
+        }
+
+        gate = build_mind_v1_gate_report(
+            learned_report,
+            baseline_report=heuristic_report,
+            max_alive_agents_mean_regression=10.0,
+            max_alive_agents_per_seed_regression=2.0,
+        )
+
+        self.assertEqual(gate["status"], "fail")
+        self.assertEqual(
+            gate["blockers"][0]["field"],
+            "alive_agents.per_seed_delta",
+        )
+
+    def test_mind_gate_warns_on_per_seed_birth_regression(self) -> None:
+        learned_report = {
+            "runs": [
+                {
+                    "seed": 1,
+                    "alive_agents": 10,
+                    "births": 5,
+                    "land_tile_count": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 5.0},
+                "trajectory": {
+                    "invalid_observation_action_rate": 0.0,
+                },
+            },
+        }
+        heuristic_report = {
+            "runs": [{"seed": 1, "alive_agents": 10, "births": 7}],
+            "aggregate": {"alive_agents": {"mean": 10.0}, "births": {"mean": 7.0}},
+        }
+
+        gate = build_mind_v1_gate_report(
+            learned_report,
+            baseline_report=heuristic_report,
+            max_births_mean_regression=10.0,
+            max_births_per_seed_regression=1.0,
+        )
+
+        self.assertEqual(gate["status"], "review")
+        self.assertEqual(
+            gate["warnings"][0]["field"],
+            "births.per_seed_delta",
+        )
 
     def test_mind_gate_uses_policy_visible_invalid_action_rate(self) -> None:
         report = {

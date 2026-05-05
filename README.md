@@ -74,6 +74,24 @@ baseline is intentionally small and guarded by the existing observation
 heuristic for survival/navigation conflicts; use evaluation gates as an honest
 readiness report, not as a learned-controller quality claim.
 
+Run the reproducible Mind v1 gate to collect the default seed bank, train the
+guarded baseline, and evaluate held-out seeds `5,13,19,29`:
+
+```bash
+cd /Users/njm/Projects/evolution-sim
+npm run sim:mind:gate
+```
+
+The default gate writes `output/mind/mind-v1-gate-report.json`, the trained
+artifact at `output/mind/mind-v1-gate-artifact.json`, and training trajectories
+under `output/trajectories/mind-v1-gate/`. The report includes the explicit
+readiness criteria; the current guarded offline baseline allows at most `0.5`
+mean terminal alive-agent regression versus the heuristic across the validation
+seed bank and at most `2.0` alive-agent regression on any single validation
+seed.
+Use `--fail-on-blockers` for CI-style failure on hard gate blockers, or
+`--fail-on-review` when review warnings should also fail the command.
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:

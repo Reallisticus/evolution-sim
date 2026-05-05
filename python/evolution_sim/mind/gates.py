@@ -3,16 +3,61 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 
+MIND_V1_GATE_CRITERIA_DEFAULTS: dict[str, float] = {
+    "max_alive_agents_mean_regression": 0.0,
+    "max_alive_agents_per_seed_regression": 2.0,
+    "max_births_mean_regression": 0.0,
+    "max_births_per_seed_regression": 1.0,
+    "max_invalid_action_rate": 0.02,
+    "min_viable_run_share": 1.0,
+    "min_births_per_run_mean": 0.0,
+    "min_plant_energy_available_per_land_tile": 0.02,
+}
+
+
+def normalize_mind_v1_gate_criteria(
+    overrides: Mapping[str, object] | None = None,
+) -> dict[str, float]:
+    criteria = dict(MIND_V1_GATE_CRITERIA_DEFAULTS)
+    if overrides is None:
+        return criteria
+    for key, value in overrides.items():
+        if key not in criteria:
+            raise ValueError(f"unknown Mind v1 gate criterion: {key}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Mind v1 gate criterion {key} must be numeric")
+        criteria[key] = float(value)
+    return criteria
+
+
 def build_mind_v1_gate_report(
     policy_report: Mapping[str, object],
     *,
     baseline_report: Mapping[str, object] | None = None,
-    max_alive_agents_mean_regression: float = 0.0,
-    max_births_mean_regression: float = 0.0,
-    max_invalid_action_rate: float = 0.02,
-    min_viable_run_share: float = 1.0,
-    min_births_per_run_mean: float = 0.0,
-    min_plant_energy_available_per_land_tile: float = 0.02,
+    max_alive_agents_mean_regression: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_alive_agents_mean_regression"
+    ],
+    max_alive_agents_per_seed_regression: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_alive_agents_per_seed_regression"
+    ],
+    max_births_mean_regression: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_births_mean_regression"
+    ],
+    max_births_per_seed_regression: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_births_per_seed_regression"
+    ],
+    max_invalid_action_rate: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_invalid_action_rate"
+    ],
+    min_viable_run_share: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "min_viable_run_share"
+    ],
+    min_births_per_run_mean: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "min_births_per_run_mean"
+    ],
+    min_plant_energy_available_per_land_tile: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "min_plant_energy_available_per_land_tile"
+    ],
 ) -> dict[str, object]:
     flags: list[dict[str, object]] = []
     runs = policy_report.get("runs")
@@ -114,6 +159,17 @@ def build_mind_v1_gate_report(
                         ),
                     )
                 )
+            baseline_runs = baseline_report.get("runs")
+            if isinstance(baseline_runs, Sequence):
+                _append_per_seed_regression_flags(
+                    flags,
+                    policy_runs=runs,
+                    baseline_runs=baseline_runs,
+                    max_alive_agents_per_seed_regression=(
+                        max_alive_agents_per_seed_regression
+                    ),
+                    max_births_per_seed_regression=max_births_per_seed_regression,
+                )
 
     min_plant_available = _min_plant_available_per_land_tile(runs)
     if min_plant_available is None:
@@ -198,6 +254,89 @@ def _min_plant_available_per_land_tile(
             continue
         values.append(float(available) / land_tile_count)
     return min(values) if values else None
+
+
+def _append_per_seed_regression_flags(
+    flags: list[dict[str, object]],
+    *,
+    policy_runs: Sequence[object],
+    baseline_runs: Sequence[object],
+    max_alive_agents_per_seed_regression: float,
+    max_births_per_seed_regression: float,
+) -> None:
+    policy_by_seed = _runs_by_seed(policy_runs)
+    baseline_by_seed = _runs_by_seed(baseline_runs)
+    for seed in sorted(set(policy_by_seed) & set(baseline_by_seed)):
+        policy_run = policy_by_seed[seed]
+        baseline_run = baseline_by_seed[seed]
+        alive_delta = _run_value_delta(policy_run, baseline_run, "alive_agents")
+        if (
+            alive_delta is not None
+            and alive_delta < -max_alive_agents_per_seed_regression
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    "policy_vs_heuristic",
+                    "alive_agents.per_seed_delta",
+                    (
+                        "Policy regressed terminal alive agents for validation "
+                        f"seed {seed} versus the heuristic baseline "
+                        f"({alive_delta:.4f})."
+                    ),
+                )
+            )
+        births_delta = _run_value_delta(policy_run, baseline_run, "births")
+        if (
+            births_delta is not None
+            and births_delta < -max_births_per_seed_regression
+        ):
+            flags.append(
+                _flag(
+                    "warning",
+                    "policy_vs_heuristic",
+                    "births.per_seed_delta",
+                    (
+                        "Policy regressed births for validation seed "
+                        f"{seed} versus the heuristic baseline "
+                        f"({births_delta:.4f})."
+                    ),
+                )
+            )
+
+
+def _runs_by_seed(runs: Sequence[object]) -> dict[int, Mapping[str, object]]:
+    by_seed: dict[int, Mapping[str, object]] = {}
+    for run in runs:
+        if not isinstance(run, Mapping):
+            continue
+        seed = run.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            continue
+        by_seed[seed] = run
+    return by_seed
+
+
+def _run_value_delta(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+    field: str,
+) -> float | None:
+    left_value = _run_numeric_value(left, field)
+    right_value = _run_numeric_value(right, field)
+    if left_value is None or right_value is None:
+        return None
+    return round(left_value - right_value, 4)
+
+
+def _run_numeric_value(
+    run: Mapping[str, object],
+    field: str,
+) -> float | None:
+    value = run.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _flag(

@@ -67,3 +67,18 @@ enabled. The Mind v1 gate report checks:
 - survival through viable-run share;
 - reproduction through births per run;
 - resource pressure through plant energy available per land tile.
+
+`npm run sim:mind:gate` is the reproducible local gate for this baseline. By
+default it collects train seeds `3,7,11,17` for 120 ticks, trains the guarded
+seed-bank artifact, evaluates validation seeds `5,13,19,29`, and writes one
+report with trajectory collection summaries, artifact provenance, evaluation
+output, explicit gate criteria, and readiness status. The default gate criteria
+permit at most `0.5` terminal alive-agent mean regression versus the heuristic
+over the held-out seed bank, at most `2.0` alive-agent regression on any single
+validation seed, and at most `1.0` births regression before review on any single
+validation seed. Policy-visible invalid action rate is capped at `0.02`; the
+current baseline reports `0.0`. The CLI supports `--fail-on-blockers` for hard
+gate failures and `--fail-on-review` when review warnings should also produce a
+non-zero exit. Evaluation reports include paired per-seed heuristic versus
+learned deltas for alive agents, births, and deaths so aggregate regressions can
+be traced to individual validation seeds.
