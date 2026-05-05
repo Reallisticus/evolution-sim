@@ -40,12 +40,15 @@ Exit criteria:
 
 ### Stage 2: Stronger Offline Baseline
 
-Status: next.
+Status: in progress.
 
 Improve the offline learner so it can safely reduce guard fallback share without
 weakening gates. Candidate implementation work includes reward-weighted action
 priors, calibrated per-context support/margin metadata, train/validation
 diagnostic splits, and explicit per-role/per-mode performance comparisons.
+The current checkpoint adds guard-by-action and top guarded-context diagnostics
+so the next learner change can target measured fallback clusters instead of
+optimizing against a narrow seed slice.
 
 Exit criteria:
 

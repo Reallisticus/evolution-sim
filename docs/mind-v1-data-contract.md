@@ -93,7 +93,10 @@ trajectories before runtime evaluation:
 Runtime evaluation diagnostics are computed from trajectory records without
 changing the trajectory schema. They report action-source counts, guard
 intervention share, and per-trophic-role/per-meat-mode mean reward, action
-counts, and guard intervention rates.
+counts, and guard intervention rates. They also report guard intervention
+breakdowns by final requested action plus the top policy-visible context
+buckets where the guard fired, using the vitals/role/action-mask feature depth
+from the contextual baseline.
 
 The guarded contextual baseline only materializes conditional action priors once
 the feature context has at least 12 training records. Lower-support contexts

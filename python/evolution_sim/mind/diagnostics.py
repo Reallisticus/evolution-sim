@@ -15,6 +15,8 @@ from evolution_sim.mind.feature_policy import feature_keys_from_record
 from evolution_sim.mind.learned_policy import HEURISTIC_GUARD_POLICY
 
 SELF_FIELD_INDEX = {field: index for index, field in enumerate(SELF_INPUT_FIELDS)}
+POLICY_DIAGNOSTIC_CONTEXT_DEPTH = 2
+POLICY_DIAGNOSTIC_TOP_CONTEXT_LIMIT = 12
 
 
 def build_artifact_diagnostics(
@@ -79,6 +81,8 @@ def build_policy_diagnostics(
 ) -> dict[str, object]:
     action_source_counts: Counter[str] = Counter()
     guard_intervention_count = 0
+    action_stats: dict[str, dict[str, object]] = {}
+    context_stats: dict[str, dict[str, object]] = {}
     role_stats: dict[str, dict[str, object]] = {}
     mode_stats: dict[str, dict[str, object]] = {}
     for record in records:
@@ -89,6 +93,20 @@ def build_policy_diagnostics(
             guard_intervention_count += 1
         reward = _reward_total(record)
         action = str(record.get("requested_action", "unknown"))
+        _update_group_stats(
+            action_stats,
+            action,
+            reward=reward,
+            action=action,
+            guard_used=guard_used,
+        )
+        _update_group_stats(
+            context_stats,
+            _record_policy_context_key(record),
+            reward=reward,
+            action=action,
+            guard_used=guard_used,
+        )
         role = _record_enum_label(record, "trophic_role_code", TROPHIC_ROLE_VOCAB)
         mode = _record_enum_label(record, "meat_mode_code", MEAT_MODE_VOCAB)
         _update_group_stats(
@@ -112,6 +130,8 @@ def build_policy_diagnostics(
         "action_source_counts": _sorted_counts(action_source_counts),
         "guard_intervention_count": guard_intervention_count,
         "guard_intervention_rate": _rate(guard_intervention_count, record_count),
+        "guard_intervention_by_action": _finalize_group_stats(action_stats),
+        "top_guarded_contexts": _top_guarded_contexts(context_stats),
         "by_trophic_role": _finalize_group_stats(role_stats),
         "by_meat_mode": _finalize_group_stats(mode_stats),
     }
@@ -232,6 +252,18 @@ def _record_enum_label(
     return _enum_label(values[index], vocab)
 
 
+def _record_policy_context_key(record: Mapping[str, object]) -> str:
+    try:
+        feature_keys = feature_keys_from_record(record)
+    except ValueError:
+        return "unavailable"
+    if not feature_keys:
+        return "unavailable"
+    if len(feature_keys) > POLICY_DIAGNOSTIC_CONTEXT_DEPTH:
+        return feature_keys[POLICY_DIAGNOSTIC_CONTEXT_DEPTH]
+    return feature_keys[-1]
+
+
 def _enum_label(value: float, vocab: tuple[str, ...]) -> str:
     if not vocab:
         return "unknown"
@@ -284,6 +316,38 @@ def _finalize_group_stats(
             "action_counts": _sorted_counts(action_counts),
         }
     return finalized
+
+
+def _top_guarded_contexts(
+    groups: Mapping[str, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    contexts: list[dict[str, object]] = []
+    for feature_key, stats in groups.items():
+        record_count = int(stats["record_count"])
+        guard_count = int(stats["guard_intervention_count"])
+        if guard_count <= 0:
+            continue
+        action_counts = stats["action_counts"]
+        if not isinstance(action_counts, Counter):
+            action_counts = Counter()
+        contexts.append(
+            {
+                "feature_key": feature_key,
+                "record_count": record_count,
+                "mean_reward": _rate(float(stats["total_reward"]), record_count),
+                "guard_intervention_count": guard_count,
+                "guard_intervention_rate": _rate(guard_count, record_count),
+                "action_counts": _sorted_counts(action_counts),
+            }
+        )
+    contexts.sort(
+        key=lambda context: (
+            -int(context["guard_intervention_count"]),
+            -float(context["guard_intervention_rate"]),
+            str(context["feature_key"]),
+        )
+    )
+    return contexts[:POLICY_DIAGNOSTIC_TOP_CONTEXT_LIMIT]
 
 
 def _sorted_counts(counter: Counter[str]) -> dict[str, int]:

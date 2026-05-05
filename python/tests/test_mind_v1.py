@@ -30,7 +30,10 @@ from evolution_sim.mind.dataset import (
     dataset_provenance,
     load_trajectory_jsonl,
 )
-from evolution_sim.mind.diagnostics import build_artifact_diagnostics
+from evolution_sim.mind.diagnostics import (
+    build_artifact_diagnostics,
+    build_policy_diagnostics,
+)
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.feature_policy import feature_keys_from_observation
 from evolution_sim.mind.gates import build_mind_v1_gate_report
@@ -730,6 +733,35 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("by_trophic_role", learned_diagnostics)
         self.assertIn("by_meat_mode", learned_diagnostics)
         json.dumps(report)
+
+    def test_policy_diagnostics_report_guard_actions_and_contexts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(dataset.records[0]), dict(dataset.records[1])]
+        records[0]["action_source"] = (
+            "mind_v1_learned_policy:observation_heuristic_safety_floor_v1"
+        )
+        records[1]["action_source"] = "mind_v1_learned_policy"
+
+        diagnostics = build_policy_diagnostics(records)
+
+        guarded_action = str(records[0]["requested_action"])
+        self.assertEqual(diagnostics["guard_intervention_count"], 1)
+        self.assertIn(guarded_action, diagnostics["guard_intervention_by_action"])
+        self.assertEqual(
+            diagnostics["guard_intervention_by_action"][guarded_action][
+                "guard_intervention_count"
+            ],
+            1,
+        )
+        self.assertGreaterEqual(len(diagnostics["top_guarded_contexts"]), 1)
+        top_context = diagnostics["top_guarded_contexts"][0]
+        self.assertIn("feature_key", top_context)
+        self.assertEqual(top_context["guard_intervention_count"], 1)
+        self.assertIn("action_counts", top_context)
 
     def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
