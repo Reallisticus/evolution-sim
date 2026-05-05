@@ -74,8 +74,8 @@ baseline is intentionally small and guarded by the existing observation
 heuristic for survival/navigation conflicts; use evaluation gates as an honest
 readiness report, not as a learned-controller quality claim.
 
-Run the reproducible Mind v1 gate to collect the default seed bank, train the
-guarded baseline, and evaluate held-out seeds `5,13,19,29`:
+Run the reproducible Mind v1 gate to collect the default multi-seed bank, train
+the guarded baseline, and evaluate held-out seeds `5,13,19,29`:
 
 ```bash
 cd /Users/njm/Projects/evolution-sim
@@ -84,16 +84,17 @@ npm run sim:mind:gate
 
 The default gate writes `output/mind/mind-v1-gate-report.json`, the trained
 artifact at `output/mind/mind-v1-gate-artifact.json`, and training trajectories
-under `output/trajectories/mind-v1-gate/`. The report includes the explicit
-readiness criteria; the current guarded offline baseline allows at most `0.5`
-mean terminal alive-agent regression versus the heuristic across the validation
-seed bank and at most `2.0` alive-agent regression on any single validation
-seed.
+under `output/trajectories/mind-v1-gate/`. The default train bank is
+`1,2,3,4,6,7,8,9,10,11,12,17,23,31`. The report includes explicit readiness
+criteria for terminal alive/birth regressions, invalid actions, and guard
+intervention share. The Stage 2 checkpoint keeps aggregate guard intervention
+below `0.45`, every role/mode below `0.50`, and blocks per-seed alive or birth
+regressions beyond the configured floor.
 Use `--fail-on-blockers` for CI-style failure on hard gate blockers, or
 `--fail-on-review` when review warnings should also fail the command.
 Use `--validation-ticks 120,240` for an opt-in longer-horizon validation matrix.
-Use `npm run sim:mind:gate:extended` for the broader held-out seed matrix
-(`1,2,4,5,6,8,9,10,12`) at 120 and 180 ticks.
+Use `npm run sim:mind:gate:extended` for the next broader held-out seed matrix
+(`5,13,19,29,37,41`) at 120 and 180 ticks.
 See `docs/mind-v1-stage-plan.md` for the phase boundary before moving beyond
 the heuristic safety floor.
 

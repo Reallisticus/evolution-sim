@@ -2,7 +2,7 @@
 
 This repo is a deterministic artificial-life simulator.
 
-Current phase: Mind v1 Stage 2. Foundation release gates are stable enough for guarded, disabled-by-default Mind work, but learned-controller changes must keep the heuristic safety floor, held-out diagnostics, and Foundation release gates intact.
+Current phase: Mind v1 Stage 3 validation hardening. Stage 2 has a guarded, disabled-by-default baseline checkpoint, but learned-controller changes must keep the heuristic safety floor, held-out diagnostics, and Foundation release gates intact.
 
 ## Environment
 
@@ -44,6 +44,6 @@ Gate boundary checks:
 - Summary-only mode must stay lightweight and must not build viewer/replay payloads.
 - Long sweeps are opt-in; use compact contract equivalents in the fast loop.
 - Every world mechanic needs matching observability, metrics, tests, and viewer/replay semantics where applicable.
-- Mind contracts may evolve in Stage 2 only with matching artifact/runtime diagnostics and held-out gates.
+- Mind contracts may evolve only with matching artifact/runtime diagnostics and held-out gates.
 - Do not change golden/replay semantics casually.
 - Do not make tests poke cache internals or call `_invalidate_biotic_state()` directly.

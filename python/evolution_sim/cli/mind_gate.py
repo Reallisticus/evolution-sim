@@ -18,7 +18,22 @@ from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.gates import normalize_mind_v1_gate_criteria
 from evolution_sim.mind.learned_policy import load_learned_policy
 
-DEFAULT_TRAIN_SEEDS: tuple[int, ...] = (3, 7, 11, 17)
+DEFAULT_TRAIN_SEEDS: tuple[int, ...] = (
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    17,
+    23,
+    31,
+)
 DEFAULT_VALIDATION_SEEDS: tuple[int, ...] = (5, 13, 19, 29)
 DEFAULT_TICKS = 120
 DEFAULT_SPLIT_ID = "mind-v1-gate-train"
@@ -399,6 +414,27 @@ def run_mind_gate(
             ),
             "heuristic_override_min_margin": artifact["model"].get(
                 "heuristic_override_min_margin"
+            ),
+            "heuristic_safe_local_eat_min_score": artifact["model"].get(
+                "heuristic_safe_local_eat_min_score"
+            ),
+            "heuristic_safe_local_eat_min_food": artifact["model"].get(
+                "heuristic_safe_local_eat_min_food"
+            ),
+            "heuristic_safe_local_eat_min_plant_ratio": artifact["model"].get(
+                "heuristic_safe_local_eat_min_plant_ratio"
+            ),
+            "heuristic_safe_plant_move_min_score": artifact["model"].get(
+                "heuristic_safe_plant_move_min_score"
+            ),
+            "heuristic_safe_plant_move_min_strength": artifact["model"].get(
+                "heuristic_safe_plant_move_min_strength"
+            ),
+            "heuristic_safe_plant_move_max_local_food_ratio": artifact[
+                "model"
+            ].get("heuristic_safe_plant_move_max_local_food_ratio"),
+            "heuristic_safe_plant_move_max_distance": artifact["model"].get(
+                "heuristic_safe_plant_move_max_distance"
             ),
         },
         "artifact_diagnostics": artifact_diagnostics,

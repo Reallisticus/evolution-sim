@@ -97,7 +97,9 @@ def build_policy_diagnostics(
 ) -> dict[str, object]:
     action_source_counts: Counter[str] = Counter()
     guard_intervention_count = 0
+    safe_deviation_count = 0
     action_stats: dict[str, dict[str, object]] = {}
+    safe_deviation_action_stats: dict[str, dict[str, object]] = {}
     context_stats: dict[str, dict[str, object]] = {}
     suppressed_action_stats: dict[str, dict[str, object]] = {}
     score_source_stats: dict[str, dict[str, object]] = {}
@@ -114,6 +116,21 @@ def build_policy_diagnostics(
         reward = _reward_total(record)
         action = str(record.get("requested_action", "unknown"))
         decision_diagnostic = _decision_diagnostic_at(decision_diagnostics, index)
+        safe_deviation_used = _diagnostic_bool(
+            decision_diagnostic,
+            "safe_deviation_used",
+        )
+        if safe_deviation_used:
+            safe_deviation_count += 1
+            _update_safe_deviation_group_stats(
+                safe_deviation_action_stats,
+                _diagnostic_label(
+                    decision_diagnostic,
+                    "learned_action",
+                    default=action,
+                ),
+                reward=reward,
+            )
         suppressed_action = _guard_suppressed_action(
             decision_diagnostic,
             guard_used=guard_used,
@@ -195,6 +212,11 @@ def build_policy_diagnostics(
         "action_source_counts": _sorted_counts(action_source_counts),
         "guard_intervention_count": guard_intervention_count,
         "guard_intervention_rate": _rate(guard_intervention_count, record_count),
+        "safe_deviation_count": safe_deviation_count,
+        "safe_deviation_rate": _rate(safe_deviation_count, record_count),
+        "safe_deviation_by_action": _finalize_safe_deviation_group_stats(
+            safe_deviation_action_stats
+        ),
         "guard_intervention_by_action": _finalize_group_stats(action_stats),
         "guard_suppressed_learned_action": _finalize_group_stats(
             suppressed_action_stats
@@ -398,6 +420,13 @@ def _diagnostic_number(
     return float(value)
 
 
+def _diagnostic_bool(
+    diagnostic: Mapping[str, object],
+    key: str,
+) -> bool:
+    return diagnostic.get(key) is True
+
+
 def _metadata_number(
     metadata: Mapping[str, object],
     key: str,
@@ -470,6 +499,25 @@ def _update_group_stats(
         action_counts[action] += 1
 
 
+def _update_safe_deviation_group_stats(
+    groups: dict[str, dict[str, object]],
+    group: str,
+    *,
+    reward: float,
+) -> None:
+    stats = groups.setdefault(
+        group,
+        {
+            "record_count": 0,
+            "total_reward": 0.0,
+            "safe_deviation_count": 0,
+        },
+    )
+    stats["record_count"] = int(stats["record_count"]) + 1
+    stats["safe_deviation_count"] = int(stats["safe_deviation_count"]) + 1
+    stats["total_reward"] = float(stats["total_reward"]) + reward
+
+
 def _finalize_group_stats(
     groups: Mapping[str, Mapping[str, object]],
 ) -> dict[str, dict[str, object]]:
@@ -486,6 +534,22 @@ def _finalize_group_stats(
             "guard_intervention_count": guard_count,
             "guard_intervention_rate": _rate(guard_count, record_count),
             "action_counts": _sorted_counts(action_counts),
+        }
+    return finalized
+
+
+def _finalize_safe_deviation_group_stats(
+    groups: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    finalized: dict[str, dict[str, object]] = {}
+    for group, stats in sorted(groups.items()):
+        record_count = int(stats["record_count"])
+        safe_count = int(stats["safe_deviation_count"])
+        finalized[group] = {
+            "record_count": record_count,
+            "mean_reward": _rate(float(stats["total_reward"]), record_count),
+            "safe_deviation_count": safe_count,
+            "safe_deviation_rate": _rate(safe_count, record_count),
         }
     return finalized
 

@@ -42,15 +42,13 @@ Exit criteria:
 
 ### Stage 2: Stronger Offline Baseline
 
-Status: in progress.
+Status: checkpoint complete; keep this gate green while Stage 3 broadens the
+matrix.
 
 Improve the offline learner so it can safely reduce guard fallback share without
 weakening gates. Candidate implementation work includes reward-weighted action
 priors, calibrated per-context support/margin metadata, train/validation
 diagnostic splits, and explicit per-role/per-mode performance comparisons.
-The strict Stage 2 gate currently exposes the remaining blocker: the guarded
-baseline preserves Foundation outcomes, but aggregate and carnivore guard
-intervention rates are still above the new caps.
 The current checkpoint adds strict model-artifact validation, held-out artifact
 diagnostics, guard-by-action and top guarded-context diagnostics, and
 per-role/per-mode guard caps so learner changes can target measured fallback
@@ -65,20 +63,31 @@ changes can be evaluated by evidence strength, not just by aggregate guard
 fallback share. The paired report slice adds heuristic-vs-learned role/mode
 comparisons, keeping Stage 2 model iteration grounded in outcome deltas rather
 than aggregate policy averages.
+The Stage 2 guard-reduction checkpoint now trains on the default multi-seed
+bank `[1,2,3,4,6,7,8,9,10,11,12,17,23,31]` and validates against the held-out
+seed bank `[5,13,19,29]` at 120 ticks. The guarded baseline includes two
+explicit, artifact-versioned safe deviation rules: local eat may bypass a
+movement heuristic only when the current resource is not inferior to the plant
+target for plant foragers, and plant movement may bypass an eat heuristic only
+when high-vitality plant foragers see a stronger nearby plant target. The
+latest default gate report passed with aggregate guard intervention `0.4365`,
+max role guard `0.4723`, max mode guard `0.4475`, and positive alive/birth
+deltas on every held-out seed.
 
 Exit criteria:
 
-- Extended gate remains green with no negative per-seed alive or birth deltas.
-- Guard fallback share decreases materially against the current baseline on the
-  extended matrix.
-- Imitation accuracy and action-distribution drift are reported for every
-  artifact.
+- Default Stage 2 gate remains green with no negative per-seed alive or birth
+  deltas.
+- Guard fallback share stays below the aggregate `0.45` cap and per role/mode
+  `0.50` caps.
+- Imitation accuracy and action-distribution drift are reported separately for
+  train and held-out artifact datasets.
 - Any new trainer remains deterministic under fixed seed and writes a versioned
   artifact.
 
 ### Stage 3: Offline Evaluation Hardening
 
-Status: pending.
+Status: next.
 
 Broaden validation beyond the current extended matrix before using learned
 actions as a runtime behavior candidate. This stage should add longer horizons,

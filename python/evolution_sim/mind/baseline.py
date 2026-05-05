@@ -20,6 +20,13 @@ BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_action_prior_bc_v1"
 CONDITIONAL_MIN_RECORDS = 10
 HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_OVERRIDE_MIN_MARGIN = 1.0
+HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE = 0.35
+HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD = 0.25
+HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO = 1.0
+HEURISTIC_SAFE_PLANT_MOVE_MIN_SCORE = 0.4
+HEURISTIC_SAFE_PLANT_MOVE_MIN_STRENGTH = 0.3
+HEURISTIC_SAFE_PLANT_MOVE_MAX_LOCAL_FOOD_RATIO = 0.9
+HEURISTIC_SAFE_PLANT_MOVE_MAX_DISTANCE = 3
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 
 
@@ -66,6 +73,27 @@ class BehaviorCloningBaseline:
                 "heuristic_guard_policy": HEURISTIC_GUARD_POLICY,
                 "heuristic_confidence_threshold": HEURISTIC_CONFIDENCE_THRESHOLD,
                 "heuristic_override_min_margin": HEURISTIC_OVERRIDE_MIN_MARGIN,
+                "heuristic_safe_local_eat_min_score": (
+                    HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE
+                ),
+                "heuristic_safe_local_eat_min_food": (
+                    HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD
+                ),
+                "heuristic_safe_local_eat_min_plant_ratio": (
+                    HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO
+                ),
+                "heuristic_safe_plant_move_min_score": (
+                    HEURISTIC_SAFE_PLANT_MOVE_MIN_SCORE
+                ),
+                "heuristic_safe_plant_move_min_strength": (
+                    HEURISTIC_SAFE_PLANT_MOVE_MIN_STRENGTH
+                ),
+                "heuristic_safe_plant_move_max_local_food_ratio": (
+                    HEURISTIC_SAFE_PLANT_MOVE_MAX_LOCAL_FOOD_RATIO
+                ),
+                "heuristic_safe_plant_move_max_distance": (
+                    HEURISTIC_SAFE_PLANT_MOVE_MAX_DISTANCE
+                ),
             },
         }
 

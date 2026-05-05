@@ -69,19 +69,20 @@ enabled. The Mind v1 gate report checks:
 - resource pressure through plant energy available per land tile.
 
 `npm run sim:mind:gate` is the reproducible local gate for this baseline. By
-default it collects train seeds `3,7,11,17` for 120 ticks, trains the guarded
-seed-bank artifact, evaluates validation seeds `5,13,19,29`, and writes one
-report with trajectory collection summaries, artifact provenance, evaluation
-output, explicit gate criteria, and readiness status. The default gate criteria
-permit at most `0.5` terminal alive-agent mean regression versus the heuristic
-over the held-out seed bank, at most `2.0` alive-agent regression on any single
-validation seed, and at most `1.0` births regression before review on any single
-validation seed. Policy-visible invalid action rate is capped at `0.02`; the
-current baseline reports `0.0`. The CLI supports `--fail-on-blockers` for hard
-gate failures and `--fail-on-review` when review warnings should also produce a
-non-zero exit. Evaluation reports include paired per-seed heuristic versus
-learned deltas for alive agents, births, and deaths so aggregate regressions can
-be traced to individual validation seeds.
+default it collects train seeds `1,2,3,4,6,7,8,9,10,11,12,17,23,31` for 120
+ticks, trains the guarded seed-bank artifact, evaluates validation seeds
+`5,13,19,29`, and writes one report with trajectory collection summaries,
+artifact provenance, evaluation output, explicit gate criteria, and readiness
+status. The default gate criteria permit at most `0.5` terminal alive-agent mean
+regression versus the heuristic over the held-out seed bank, at most `2.0`
+alive-agent regression on any single validation seed, and at most `1.0` births
+regression before review on any single validation seed. Policy-visible invalid
+action rate is capped at `0.02`, aggregate guard intervention is capped at
+`0.45`, and each role/mode guard intervention rate is capped at `0.50`. The CLI
+supports `--fail-on-blockers` for hard gate failures and `--fail-on-review` when
+review warnings should also produce a non-zero exit. Evaluation reports include
+paired per-seed heuristic versus learned deltas for alive agents, births, and
+deaths so aggregate regressions can be traced to individual validation seeds.
 
 The gate report also includes artifact diagnostics computed from the training
 trajectories before runtime evaluation:
@@ -107,6 +108,14 @@ by calibration evidence.
 Paired evaluation reports compare heuristic and guarded learned outcomes by
 trophic role and meat mode, including terminal count deltas and role/mode policy
 diagnostic deltas, without changing trajectory records.
+
+The Stage 2 guarded baseline carries explicit artifact parameters for the
+safe-deviation policy. Local `eat` may bypass a movement heuristic only when the
+agent has safe vitality, low local hazard, and the current resource is not
+inferior to the plant navigation target for plant foragers. Plant movement may
+bypass an `eat` heuristic only for high-vitality plant foragers when the learned
+move targets a stronger nearby plant source. Both cases remain disabled unless
+the artifact contains the required finite thresholds.
 
 The guarded contextual baseline only materializes conditional action priors once
 the feature context has at least 10 training records. Lower-support contexts
@@ -140,8 +149,8 @@ The broader opt-in entrypoint is:
 npm run sim:mind:gate:extended
 ```
 
-It evaluates held-out seeds `1,2,4,5,6,8,9,10,12` at 120 and 180 ticks, reusing
-the seed-bank training trajectories, and writes
+It evaluates held-out seeds `5,13,19,29,37,41` at 120 and 180 ticks, reusing the
+seed-bank training trajectories where possible, and writes
 `output/mind/mind-v1-gate-extended-report.json`.
 
 The phase boundary and staged path beyond this guarded offline baseline are

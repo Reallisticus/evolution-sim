@@ -195,6 +195,14 @@ class MindV1Tests(unittest.TestCase):
             )
             self.assertEqual(artifact["model"]["heuristic_override_min_margin"], 1.0)
             self.assertEqual(
+                artifact["model"]["heuristic_safe_local_eat_min_score"],
+                0.35,
+            )
+            self.assertEqual(
+                artifact["model"]["heuristic_safe_plant_move_min_score"],
+                0.4,
+            )
+            self.assertEqual(
                 artifact["model"]["action_score_metadata"]["record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
@@ -341,6 +349,14 @@ class MindV1Tests(unittest.TestCase):
                 artifact["model"]["heuristic_override_min_margin"],
             )
             self.assertEqual(
+                report["artifact"]["heuristic_safe_local_eat_min_score"],
+                artifact["model"]["heuristic_safe_local_eat_min_score"],
+            )
+            self.assertEqual(
+                report["artifact"]["heuristic_safe_plant_move_min_score"],
+                artifact["model"]["heuristic_safe_plant_move_min_score"],
+            )
+            self.assertEqual(
                 report["artifact_diagnostics"]["train"]["record_count"],
                 report["artifact"]["trained_record_count"],
             )
@@ -380,13 +396,18 @@ class MindV1Tests(unittest.TestCase):
 
     def test_mind_gate_default_validation_seeds_are_held_out_seed_bank(self) -> None:
         self.assertEqual(mind_gate.DEFAULT_VALIDATION_SEEDS, (5, 13, 19, 29))
+        self.assertTrue(
+            set(mind_gate.DEFAULT_VALIDATION_SEEDS).isdisjoint(
+                mind_gate.DEFAULT_TRAIN_SEEDS
+            )
+        )
 
     def test_mind_extended_gate_has_npm_entrypoint(self) -> None:
         package = json.loads(Path("package.json").read_text(encoding="utf-8"))
         script = package["scripts"]["sim:mind:gate:extended"]
 
         self.assertIn("evolution_sim.cli.mind_gate", script)
-        self.assertIn("--validation-seeds 1,2,4,5,6,8,9,10,12", script)
+        self.assertIn("--validation-seeds 5,13,19,29,37,41", script)
         self.assertIn("--validation-ticks 120,180", script)
         self.assertIn("output/mind/mind-v1-gate-extended-report.json", script)
 
@@ -833,6 +854,235 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(decision.requested_action, "stay")
         self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
 
+    def test_heuristic_guard_allows_safe_local_eat_deviation(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.28,
+                    "vegetation": 0.3,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+                {
+                    "dx": 1,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "none",
+                    "water_access_reason": "none",
+                    "food": 0.5,
+                    "vegetation": 0.5,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 1, "dy": 0, "distance": 1, "strength": 0.5},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.3, "move_east": 0.2, "stay": 0.0},
+            heuristic_guard=True,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            heuristic_safe_local_eat_min_score=0.25,
+            heuristic_safe_local_eat_min_food=0.25,
+            heuristic_safe_local_eat_min_plant_ratio=0.5,
+        )
+
+        decision = policy.decide(
+            observation,
+            {"eat": True, "move_east": True, "stay": True},
+        )
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        self.assertTrue(decision.diagnostics["safe_deviation_used"])
+        self.assertEqual(
+            decision.diagnostics["safe_deviation_reason"],
+            "local_resource_eat",
+        )
+        self.assertEqual(decision.diagnostics["heuristic_action"], "move_east")
+
+    def test_heuristic_guard_rejects_inferior_local_eat_deviation(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.28,
+                    "vegetation": 0.3,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+                {
+                    "dx": 1,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "none",
+                    "water_access_reason": "none",
+                    "food": 0.5,
+                    "vegetation": 0.5,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 1, "dy": 0, "distance": 1, "strength": 0.5},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.3, "move_east": 0.2, "stay": 0.0},
+            heuristic_guard=True,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            heuristic_safe_local_eat_min_score=0.25,
+            heuristic_safe_local_eat_min_food=0.25,
+            heuristic_safe_local_eat_min_plant_ratio=1.0,
+        )
+
+        decision = policy.decide(
+            observation,
+            {"eat": True, "move_east": True, "stay": True},
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+        self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        self.assertFalse(decision.diagnostics["safe_deviation_used"])
+
+    def test_heuristic_guard_allows_safe_plant_move_deviation(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.82,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.25,
+                    "vegetation": 0.3,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+                {
+                    "dx": 1,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "none",
+                    "water_access_reason": "none",
+                    "food": 0.5,
+                    "vegetation": 0.5,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 1, "dy": 0, "distance": 1, "strength": 0.5},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_east": 0.4, "eat": 0.3, "stay": 0.0},
+            heuristic_guard=True,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            heuristic_safe_plant_move_min_score=0.4,
+            heuristic_safe_plant_move_min_strength=0.3,
+            heuristic_safe_plant_move_max_local_food_ratio=0.9,
+            heuristic_safe_plant_move_max_distance=3,
+        )
+
+        decision = policy.decide(
+            observation,
+            {"eat": True, "move_east": True, "stay": True},
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        self.assertTrue(decision.diagnostics["safe_deviation_used"])
+        self.assertEqual(
+            decision.diagnostics["safe_deviation_reason"],
+            "stronger_plant_navigation",
+        )
+
     def test_policy_evaluation_compares_heuristic_and_learned_on_summary_only_seeds(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})
 
@@ -1000,6 +1250,32 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertIn("0", diagnostics["guard_intervention_by_support_bucket"])
         self.assertNotIn("1-9", diagnostics["guard_intervention_by_support_bucket"])
+
+    def test_policy_diagnostics_reports_safe_deviation_share(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        record = dict(dataset.records[0])
+        record["action_source"] = "mind_v1_learned_policy"
+        diagnostic = {
+            "guard_used": False,
+            "safe_deviation_used": True,
+            "learned_action": "eat",
+        }
+
+        diagnostics = build_policy_diagnostics(
+            [record],
+            decision_diagnostics=[diagnostic],
+        )
+
+        self.assertEqual(diagnostics["safe_deviation_count"], 1)
+        self.assertEqual(diagnostics["safe_deviation_rate"], 1.0)
+        self.assertEqual(
+            diagnostics["safe_deviation_by_action"]["eat"]["safe_deviation_count"],
+            1,
+        )
 
     def test_policy_evaluation_reports_paired_seed_deltas(self) -> None:
         policy = LearnedPolicy(action_scores={"stay": 1.0})

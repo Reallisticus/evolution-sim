@@ -204,6 +204,47 @@ def _validate_behavior_cloning_model_payload(
         location="model",
         minimum=0.0,
     )
+    _required_finite_number(
+        model,
+        "heuristic_safe_local_eat_min_score",
+        location="model",
+        minimum=0.0,
+    )
+    _required_finite_number(
+        model,
+        "heuristic_safe_local_eat_min_food",
+        location="model",
+        minimum=0.0,
+    )
+    _required_finite_number(
+        model,
+        "heuristic_safe_local_eat_min_plant_ratio",
+        location="model",
+        minimum=0.0,
+    )
+    _required_finite_number(
+        model,
+        "heuristic_safe_plant_move_min_score",
+        location="model",
+        minimum=0.0,
+    )
+    _required_finite_number(
+        model,
+        "heuristic_safe_plant_move_min_strength",
+        location="model",
+        minimum=0.0,
+    )
+    _required_finite_number(
+        model,
+        "heuristic_safe_plant_move_max_local_food_ratio",
+        location="model",
+        minimum=0.0,
+    )
+    _required_positive_int(
+        model,
+        "heuristic_safe_plant_move_max_distance",
+        location="model",
+    )
 
 
 def _validate_action_score_map(

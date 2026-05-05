@@ -23,6 +23,13 @@ class LearnedPolicy:
     heuristic_guard: bool = False
     heuristic_confidence_threshold: float | None = None
     heuristic_override_min_margin: float | None = None
+    heuristic_safe_local_eat_min_score: float | None = None
+    heuristic_safe_local_eat_min_food: float | None = None
+    heuristic_safe_local_eat_min_plant_ratio: float | None = None
+    heuristic_safe_plant_move_min_score: float | None = None
+    heuristic_safe_plant_move_min_strength: float | None = None
+    heuristic_safe_plant_move_max_local_food_ratio: float | None = None
+    heuristic_safe_plant_move_max_distance: int | None = None
 
     def decide(
         self,
@@ -47,7 +54,29 @@ class LearnedPolicy:
             heuristic_score = float(
                 score_match.scores.get(heuristic_action.requested_action, 0.0)
             )
-            if _guard_should_use_heuristic(
+            safe_deviation_reason = _safe_deviation_reason(
+                learned_action=learned_action,
+                learned_score=learned_score,
+                learned_score_margin=learned_score_margin,
+                heuristic_action=heuristic_action.requested_action,
+                observation=observation,
+                local_eat_min_score=self.heuristic_safe_local_eat_min_score,
+                local_eat_min_food=self.heuristic_safe_local_eat_min_food,
+                local_eat_min_plant_ratio=(
+                    self.heuristic_safe_local_eat_min_plant_ratio
+                ),
+                plant_move_min_score=self.heuristic_safe_plant_move_min_score,
+                plant_move_min_strength=(
+                    self.heuristic_safe_plant_move_min_strength
+                ),
+                plant_move_max_local_food_ratio=(
+                    self.heuristic_safe_plant_move_max_local_food_ratio
+                ),
+                plant_move_max_distance=(
+                    self.heuristic_safe_plant_move_max_distance
+                ),
+            )
+            if safe_deviation_reason is None and _guard_should_use_heuristic(
                 learned_action=learned_action,
                 learned_score=learned_score,
                 heuristic_action=heuristic_action.requested_action,
@@ -69,6 +98,24 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        safe_deviation_used=False,
+                    ),
+                )
+            if safe_deviation_reason is not None:
+                return self._decision(
+                    learned_action,
+                    source=self.policy_id,
+                    diagnostics=_decision_diagnostics(
+                        score_match=score_match,
+                        guard_used=False,
+                        learned_action=learned_action,
+                        learned_score=learned_score,
+                        learned_runner_up_score=learned_runner_up_score,
+                        learned_score_margin=learned_score_margin,
+                        heuristic_action=heuristic_action.requested_action,
+                        heuristic_score=heuristic_score,
+                        safe_deviation_used=True,
+                        safe_deviation_reason=safe_deviation_reason,
                     ),
                 )
         return self._decision(
@@ -184,6 +231,27 @@ def load_learned_policy(
     heuristic_guard_policy = model.get("heuristic_guard_policy")
     heuristic_confidence_threshold = model.get("heuristic_confidence_threshold")
     heuristic_override_min_margin = model.get("heuristic_override_min_margin")
+    heuristic_safe_local_eat_min_score = model.get(
+        "heuristic_safe_local_eat_min_score"
+    )
+    heuristic_safe_local_eat_min_food = model.get(
+        "heuristic_safe_local_eat_min_food"
+    )
+    heuristic_safe_local_eat_min_plant_ratio = model.get(
+        "heuristic_safe_local_eat_min_plant_ratio"
+    )
+    heuristic_safe_plant_move_min_score = model.get(
+        "heuristic_safe_plant_move_min_score"
+    )
+    heuristic_safe_plant_move_min_strength = model.get(
+        "heuristic_safe_plant_move_min_strength"
+    )
+    heuristic_safe_plant_move_max_local_food_ratio = model.get(
+        "heuristic_safe_plant_move_max_local_food_ratio"
+    )
+    heuristic_safe_plant_move_max_distance = model.get(
+        "heuristic_safe_plant_move_max_distance"
+    )
     return LearnedPolicy(
         action_scores={
             str(action): float(score)
@@ -204,6 +272,27 @@ def load_learned_policy(
         ),
         heuristic_override_min_margin=_optional_float(
             heuristic_override_min_margin
+        ),
+        heuristic_safe_local_eat_min_score=_optional_float(
+            heuristic_safe_local_eat_min_score
+        ),
+        heuristic_safe_local_eat_min_food=_optional_float(
+            heuristic_safe_local_eat_min_food
+        ),
+        heuristic_safe_local_eat_min_plant_ratio=_optional_float(
+            heuristic_safe_local_eat_min_plant_ratio
+        ),
+        heuristic_safe_plant_move_min_score=_optional_float(
+            heuristic_safe_plant_move_min_score
+        ),
+        heuristic_safe_plant_move_min_strength=_optional_float(
+            heuristic_safe_plant_move_min_strength
+        ),
+        heuristic_safe_plant_move_max_local_food_ratio=_optional_float(
+            heuristic_safe_plant_move_max_local_food_ratio
+        ),
+        heuristic_safe_plant_move_max_distance=_optional_int(
+            heuristic_safe_plant_move_max_distance
         ),
     )
 
@@ -245,9 +334,12 @@ def _decision_diagnostics(
     learned_score_margin: float,
     heuristic_action: str | None = None,
     heuristic_score: float | None = None,
+    safe_deviation_used: bool = False,
+    safe_deviation_reason: str | None = None,
 ) -> dict[str, object]:
     diagnostics: dict[str, object] = {
         "guard_used": guard_used,
+        "safe_deviation_used": safe_deviation_used,
         "learned_action": learned_action,
         "learned_score": learned_score,
         "learned_runner_up_score": learned_runner_up_score,
@@ -266,6 +358,8 @@ def _decision_diagnostics(
         diagnostics["heuristic_action"] = heuristic_action
     if heuristic_score is not None:
         diagnostics["heuristic_score"] = heuristic_score
+    if safe_deviation_reason is not None:
+        diagnostics["safe_deviation_reason"] = safe_deviation_reason
     return diagnostics
 
 
@@ -377,6 +471,178 @@ def _guard_should_use_heuristic(
     )
 
 
+def _safe_deviation_reason(
+    *,
+    learned_action: str,
+    learned_score: float,
+    learned_score_margin: float,
+    heuristic_action: str,
+    observation: dict[str, object],
+    local_eat_min_score: float | None,
+    local_eat_min_food: float | None,
+    local_eat_min_plant_ratio: float | None,
+    plant_move_min_score: float | None,
+    plant_move_min_strength: float | None,
+    plant_move_max_local_food_ratio: float | None,
+    plant_move_max_distance: int | None,
+) -> str | None:
+    if not _has_safe_deviation_vitals(observation):
+        return None
+    center = _center_patch_cell(observation.get("local_patch"))
+    if not center:
+        return None
+    hazard_level = _ratio(center.get("hazard_level"), default=1.0)
+    if hazard_level > 0.4:
+        return None
+    if _safe_local_eat_deviation_allowed(
+        learned_action=learned_action,
+        learned_score=learned_score,
+        heuristic_action=heuristic_action,
+        observation=observation,
+        center=center,
+        min_score=local_eat_min_score,
+        min_food=local_eat_min_food,
+        min_plant_ratio=local_eat_min_plant_ratio,
+    ):
+        return "local_resource_eat"
+    if _safe_plant_move_deviation_allowed(
+        learned_action=learned_action,
+        learned_score=learned_score,
+        learned_score_margin=learned_score_margin,
+        heuristic_action=heuristic_action,
+        observation=observation,
+        center=center,
+        min_score=plant_move_min_score,
+        min_strength=plant_move_min_strength,
+        max_local_food_ratio=plant_move_max_local_food_ratio,
+        max_distance=plant_move_max_distance,
+    ):
+        return "stronger_plant_navigation"
+    return None
+
+
+def _has_safe_deviation_vitals(observation: dict[str, object]) -> bool:
+    self_state = observation.get("self")
+    if not isinstance(self_state, dict):
+        return False
+    energy_ratio = _ratio(self_state.get("energy_ratio"), default=0.0)
+    hydration_ratio = _ratio(self_state.get("hydration_ratio"), default=0.0)
+    health_ratio = _ratio(self_state.get("health_ratio"), default=0.0)
+    return energy_ratio >= 0.5 and hydration_ratio >= 0.7 and health_ratio >= 0.75
+
+
+def _safe_local_eat_deviation_allowed(
+    *,
+    learned_action: str,
+    learned_score: float,
+    heuristic_action: str,
+    observation: dict[str, object],
+    center: dict[str, object],
+    min_score: float | None,
+    min_food: float | None,
+    min_plant_ratio: float | None,
+) -> bool:
+    if (
+        min_score is None
+        or min_food is None
+        or min_plant_ratio is None
+        or learned_score < min_score
+    ):
+        return False
+    if learned_action != "eat" or not heuristic_action.startswith("move_"):
+        return False
+    center_food = _ratio(center.get("food"), default=0.0)
+    has_local_resource = (
+        center_food > 0.0
+        or _ratio(center.get("fresh_kill_energy"), default=0.0) > 0.0
+        or _ratio(center.get("carcass_energy"), default=0.0) > 0.0
+    )
+    if not has_local_resource:
+        return False
+    if _meat_mode(observation) != "none":
+        return True
+    return center_food >= max(
+        min_food,
+        min_plant_ratio * _navigation_strength(observation, "plant"),
+    )
+
+
+def _safe_plant_move_deviation_allowed(
+    *,
+    learned_action: str,
+    learned_score: float,
+    learned_score_margin: float,
+    heuristic_action: str,
+    observation: dict[str, object],
+    center: dict[str, object],
+    min_score: float | None,
+    min_strength: float | None,
+    max_local_food_ratio: float | None,
+    max_distance: int | None,
+) -> bool:
+    if (
+        min_score is None
+        or min_strength is None
+        or max_local_food_ratio is None
+        or max_distance is None
+    ):
+        return False
+    if learned_score < min_score or learned_score_margin < 0.0:
+        return False
+    if heuristic_action != "eat" or not learned_action.startswith("move_"):
+        return False
+    if _meat_mode(observation) != "none":
+        return False
+    plant_target = _navigation_target(observation, "plant")
+    distance = _navigation_distance(plant_target)
+    strength = _ratio(plant_target.get("strength"), default=0.0)
+    center_food = _ratio(center.get("food"), default=0.0)
+    return (
+        0 < distance <= max_distance
+        and strength >= min_strength
+        and center_food < max_local_food_ratio * strength
+    )
+
+
+def _center_patch_cell(payload: object) -> dict[str, object]:
+    if not isinstance(payload, list):
+        return {}
+    for cell in payload:
+        if not isinstance(cell, dict):
+            continue
+        if cell.get("dx") == 0 and cell.get("dy") == 0:
+            return cell
+    return {}
+
+
+def _meat_mode(observation: dict[str, object]) -> str:
+    self_state = observation.get("self")
+    if not isinstance(self_state, dict):
+        return "unknown"
+    return str(self_state.get("meat_mode", "unknown"))
+
+
+def _navigation_target(observation: dict[str, object], key: str) -> dict[str, object]:
+    navigation = observation.get("navigation")
+    if not isinstance(navigation, dict):
+        return {}
+    target = navigation.get(key)
+    if not isinstance(target, dict):
+        return {}
+    return target
+
+
+def _navigation_strength(observation: dict[str, object], key: str) -> float:
+    return _ratio(_navigation_target(observation, key).get("strength"), default=0.0)
+
+
+def _navigation_distance(target: dict[str, object]) -> int:
+    value = target.get("distance")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
 def _ratio(value: object, *, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
@@ -389,3 +655,11 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
