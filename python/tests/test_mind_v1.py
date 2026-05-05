@@ -135,6 +135,8 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(policy.policy_id, "mind_v1_learned_policy")
         self.assertTrue(policy.heuristic_guard)
         self.assertEqual(policy.heuristic_override_min_margin, 1.0)
+        self.assertTrue(policy.heuristic_delegate)
+        self.assertEqual(policy.heuristic_delegate_max_training_score_margin, 0.25)
 
     def test_behavior_cloning_artifact_manifest_requires_provenance(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -166,6 +168,26 @@ class MindV1Tests(unittest.TestCase):
             with self.assertRaisesRegex(MindArtifactError, "action_scores"):
                 validate_model_artifact_manifest(artifact)
 
+    def test_behavior_cloning_artifact_requires_explicit_safe_deviation_fields(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            artifact = baseline.to_artifact()
+            del artifact["model"]["heuristic_safe_local_eat_min_score"]
+
+            with self.assertRaisesRegex(
+                MindArtifactError,
+                "heuristic_safe_local_eat_min_score",
+            ):
+                validate_model_artifact_manifest(artifact)
+
     def test_mind_train_cli_writes_valid_bc_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
@@ -195,13 +217,15 @@ class MindV1Tests(unittest.TestCase):
             )
             self.assertEqual(artifact["model"]["heuristic_override_min_margin"], 1.0)
             self.assertEqual(
-                artifact["model"]["heuristic_safe_local_eat_min_score"],
-                0.35,
+                artifact["model"]["heuristic_delegate_policy"],
+                "observation_heuristic_confidence_delegate_v1",
             )
             self.assertEqual(
-                artifact["model"]["heuristic_safe_plant_move_min_score"],
-                0.4,
+                artifact["model"]["heuristic_delegate_max_training_score_margin"],
+                0.25,
             )
+            self.assertIsNone(artifact["model"]["heuristic_safe_local_eat_min_score"])
+            self.assertIsNone(artifact["model"]["heuristic_safe_plant_move_min_score"])
             self.assertEqual(
                 artifact["model"]["action_score_metadata"]["record_count"],
                 artifact["manifest"]["trained_record_count"],
@@ -347,6 +371,14 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(
                 report["artifact"]["heuristic_override_min_margin"],
                 artifact["model"]["heuristic_override_min_margin"],
+            )
+            self.assertEqual(
+                report["artifact"]["heuristic_delegate_policy"],
+                artifact["model"]["heuristic_delegate_policy"],
+            )
+            self.assertEqual(
+                report["artifact"]["heuristic_delegate_max_training_score_margin"],
+                artifact["model"]["heuristic_delegate_max_training_score_margin"],
             )
             self.assertEqual(
                 report["artifact"]["heuristic_safe_local_eat_min_score"],
@@ -808,6 +840,67 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(decision.requested_action, "stay")
         self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
 
+    def test_heuristic_delegate_handles_low_margin_action_prior(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.9,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_north": 0.58, "stay": 0.52},
+            action_score_metadata={"record_count": 20, "score_margin": 0.1},
+            heuristic_guard=True,
+            heuristic_delegate=True,
+            heuristic_delegate_max_training_score_margin=0.25,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=0.1,
+        )
+
+        decision = policy.decide(observation, {"stay": True, "move_north": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn(
+            "observation_heuristic_confidence_delegate_v1",
+            decision.source,
+        )
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        self.assertTrue(decision.diagnostics["heuristic_delegate_used"])
+        self.assertEqual(
+            decision.diagnostics["heuristic_delegate_reason"],
+            "low_confidence_action_prior",
+        )
+
     def test_heuristic_guard_preserves_explicit_conservation(self) -> None:
         observation = {
             "self": {
@@ -1122,6 +1215,7 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("guard_intervention_rate_delta", mode_delta)
         learned_diagnostics = report["learned"]["aggregate"]["policy_diagnostics"]
         self.assertIn("guard_intervention_rate", learned_diagnostics)
+        self.assertIn("heuristic_delegate_rate", learned_diagnostics)
         self.assertIn("action_source_counts", learned_diagnostics)
         self.assertIn("by_trophic_role", learned_diagnostics)
         self.assertIn("by_meat_mode", learned_diagnostics)
@@ -1162,6 +1256,40 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("feature_key", top_context)
         self.assertEqual(top_context["guard_intervention_count"], 1)
         self.assertIn("action_counts", top_context)
+
+    def test_policy_diagnostics_report_heuristic_delegate_share(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        record = dict(dataset.records[0])
+        record["action_source"] = (
+            "mind_v1_learned_policy:"
+            "observation_heuristic_confidence_delegate_v1"
+        )
+
+        diagnostics = build_policy_diagnostics(
+            [record],
+            decision_diagnostics=[
+                {
+                    "heuristic_delegate_used": True,
+                    "learned_action": "eat",
+                    "heuristic_action": record["requested_action"],
+                }
+            ],
+        )
+
+        requested_action = str(record["requested_action"])
+        self.assertEqual(diagnostics["guard_intervention_count"], 0)
+        self.assertEqual(diagnostics["heuristic_delegate_count"], 1)
+        self.assertEqual(diagnostics["heuristic_delegate_rate"], 1.0)
+        self.assertEqual(
+            diagnostics["heuristic_delegate_by_action"][requested_action][
+                "heuristic_delegate_count"
+            ],
+            1,
+        )
 
     def test_policy_evaluation_reports_guard_suppressed_learned_actions(self) -> None:
         class AlwaysGuardedPolicy:

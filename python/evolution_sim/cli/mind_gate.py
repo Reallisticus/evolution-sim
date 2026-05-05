@@ -415,6 +415,12 @@ def run_mind_gate(
             "heuristic_override_min_margin": artifact["model"].get(
                 "heuristic_override_min_margin"
             ),
+            "heuristic_delegate_policy": artifact["model"].get(
+                "heuristic_delegate_policy"
+            ),
+            "heuristic_delegate_max_training_score_margin": artifact["model"].get(
+                "heuristic_delegate_max_training_score_margin"
+            ),
             "heuristic_safe_local_eat_min_score": artifact["model"].get(
                 "heuristic_safe_local_eat_min_score"
             ),

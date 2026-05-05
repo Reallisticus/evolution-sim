@@ -9,6 +9,7 @@ from evolution_sim.mind.feature_policy import feature_keys_from_observation
 
 LEARNED_POLICY_ID = "mind_v1_learned_policy"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
+HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,8 @@ class LearnedPolicy:
     heuristic_guard: bool = False
     heuristic_confidence_threshold: float | None = None
     heuristic_override_min_margin: float | None = None
+    heuristic_delegate: bool = False
+    heuristic_delegate_max_training_score_margin: float | None = None
     heuristic_safe_local_eat_min_score: float | None = None
     heuristic_safe_local_eat_min_food: float | None = None
     heuristic_safe_local_eat_min_plant_ratio: float | None = None
@@ -54,6 +57,33 @@ class LearnedPolicy:
             heuristic_score = float(
                 score_match.scores.get(heuristic_action.requested_action, 0.0)
             )
+            heuristic_delegate_reason = _heuristic_delegate_reason(
+                score_match=score_match,
+                learned_action=learned_action,
+                heuristic_action=heuristic_action.requested_action,
+                max_training_score_margin=(
+                    self.heuristic_delegate_max_training_score_margin
+                    if self.heuristic_delegate
+                    else None
+                ),
+            )
+            if heuristic_delegate_reason is not None:
+                return self._decision(
+                    heuristic_action.requested_action,
+                    source=f"{self.policy_id}:{HEURISTIC_DELEGATE_POLICY}",
+                    diagnostics=_decision_diagnostics(
+                        score_match=score_match,
+                        guard_used=False,
+                        learned_action=learned_action,
+                        learned_score=learned_score,
+                        learned_runner_up_score=learned_runner_up_score,
+                        learned_score_margin=learned_score_margin,
+                        heuristic_action=heuristic_action.requested_action,
+                        heuristic_score=heuristic_score,
+                        heuristic_delegate_used=True,
+                        heuristic_delegate_reason=heuristic_delegate_reason,
+                    ),
+                )
             safe_deviation_reason = _safe_deviation_reason(
                 learned_action=learned_action,
                 learned_score=learned_score,
@@ -98,6 +128,7 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        heuristic_delegate_used=False,
                         safe_deviation_used=False,
                     ),
                 )
@@ -114,6 +145,7 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        heuristic_delegate_used=False,
                         safe_deviation_used=True,
                         safe_deviation_reason=safe_deviation_reason,
                     ),
@@ -128,6 +160,7 @@ class LearnedPolicy:
                 learned_score=learned_score,
                 learned_runner_up_score=learned_runner_up_score,
                 learned_score_margin=learned_score_margin,
+                heuristic_delegate_used=False,
             ),
         )
 
@@ -231,6 +264,10 @@ def load_learned_policy(
     heuristic_guard_policy = model.get("heuristic_guard_policy")
     heuristic_confidence_threshold = model.get("heuristic_confidence_threshold")
     heuristic_override_min_margin = model.get("heuristic_override_min_margin")
+    heuristic_delegate_policy = model.get("heuristic_delegate_policy")
+    heuristic_delegate_max_training_score_margin = model.get(
+        "heuristic_delegate_max_training_score_margin"
+    )
     heuristic_safe_local_eat_min_score = model.get(
         "heuristic_safe_local_eat_min_score"
     )
@@ -272,6 +309,10 @@ def load_learned_policy(
         ),
         heuristic_override_min_margin=_optional_float(
             heuristic_override_min_margin
+        ),
+        heuristic_delegate=heuristic_delegate_policy == HEURISTIC_DELEGATE_POLICY,
+        heuristic_delegate_max_training_score_margin=_optional_float(
+            heuristic_delegate_max_training_score_margin
         ),
         heuristic_safe_local_eat_min_score=_optional_float(
             heuristic_safe_local_eat_min_score
@@ -334,11 +375,14 @@ def _decision_diagnostics(
     learned_score_margin: float,
     heuristic_action: str | None = None,
     heuristic_score: float | None = None,
+    heuristic_delegate_used: bool = False,
+    heuristic_delegate_reason: str | None = None,
     safe_deviation_used: bool = False,
     safe_deviation_reason: str | None = None,
 ) -> dict[str, object]:
     diagnostics: dict[str, object] = {
         "guard_used": guard_used,
+        "heuristic_delegate_used": heuristic_delegate_used,
         "safe_deviation_used": safe_deviation_used,
         "learned_action": learned_action,
         "learned_score": learned_score,
@@ -358,6 +402,8 @@ def _decision_diagnostics(
         diagnostics["heuristic_action"] = heuristic_action
     if heuristic_score is not None:
         diagnostics["heuristic_score"] = heuristic_score
+    if heuristic_delegate_reason is not None:
+        diagnostics["heuristic_delegate_reason"] = heuristic_delegate_reason
     if safe_deviation_reason is not None:
         diagnostics["safe_deviation_reason"] = safe_deviation_reason
     return diagnostics
@@ -422,6 +468,21 @@ def _metadata_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _heuristic_delegate_reason(
+    *,
+    score_match: _ScoreMatch,
+    learned_action: str,
+    heuristic_action: str,
+    max_training_score_margin: float | None,
+) -> str | None:
+    if max_training_score_margin is None or learned_action == heuristic_action:
+        return None
+    training_margin = score_match.training_score_margin
+    if training_margin is None or training_margin < max_training_score_margin:
+        return "low_confidence_action_prior"
+    return None
 
 
 def _guard_should_use_heuristic(

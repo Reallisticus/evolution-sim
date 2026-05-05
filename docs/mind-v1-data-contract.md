@@ -2,9 +2,9 @@
 
 Current contract version: `mind_v1_data_contract_v1`
 
-Mind v1 is data tooling only at this stage. Runtime learned-policy inference is
-disabled by default and requires an explicit enable flag. Do not add Stage 2/3
-semantics on top of Mind tooling until Foundation release gates are clean.
+Mind v1 is still disabled by default. Runtime learned-policy inference requires
+an explicit enable flag, and Stage 2/3 policy changes remain offline-gated until
+they preserve Foundation release behavior and held-out Mind gates.
 
 ## Schemas
 
@@ -94,28 +94,36 @@ trajectories before runtime evaluation:
 
 Runtime evaluation diagnostics are computed from trajectory records without
 changing the trajectory schema. They report action-source counts, guard
-intervention share, and per-trophic-role/per-meat-mode mean reward, action
-counts, and guard intervention rates. They also report guard intervention
-breakdowns by final requested action plus the top policy-visible context
-buckets where the guard fired, using the vitals/role/action-mask feature depth
-from the contextual baseline. During in-process evaluation, learned policies may
-attach decision diagnostics that identify the learned action suppressed by the
-heuristic guard; these diagnostics are summarized in the report but are not
+intervention share, confidence-delegation share, per-trophic-role and
+per-meat-mode mean reward, action counts, and guard intervention rates. They also
+report guard intervention breakdowns by final requested action plus the top
+policy-visible context buckets where the guard fired, using the
+vitals/role/action-mask feature depth from the contextual baseline. During
+in-process evaluation, learned policies may attach decision diagnostics that
+identify the learned action suppressed by the heuristic guard or deferred by the
+confidence delegate; these diagnostics are summarized in the report but are not
 written into trajectory JSONL records and do not change `mind_trajectory_v1`.
 The same sidecar also carries the matched score source, feature-key depth,
-training support, and learned score margin so guard interventions can be grouped
-by calibration evidence.
+training support, and learned score margin so guard interventions and delegates
+can be grouped by calibration evidence.
 Paired evaluation reports compare heuristic and guarded learned outcomes by
 trophic role and meat mode, including terminal count deltas and role/mode policy
 diagnostic deltas, without changing trajectory records.
 
-The Stage 2 guarded baseline carries explicit artifact parameters for the
-safe-deviation policy. Local `eat` may bypass a movement heuristic only when the
-agent has safe vitality, low local hazard, and the current resource is not
-inferior to the plant navigation target for plant foragers. Plant movement may
-bypass an `eat` heuristic only for high-vitality plant foragers when the learned
-move targets a stronger nearby plant source. Both cases remain disabled unless
-the artifact contains the required finite thresholds.
+The current Stage 3 guarded baseline carries explicit artifact parameters for a
+confidence-delegation policy. If the learned action disagrees with the
+observation heuristic and the matched training action prior has score margin
+below `0.25`, runtime delegates to the heuristic before evaluating the hard
+safety guard. The resulting action source uses
+`observation_heuristic_confidence_delegate_v1`, and reports count this
+separately from `observation_heuristic_safety_floor_v1` guard interventions.
+This keeps low-confidence learned disagreements visible without treating them as
+learned-controller value.
+
+The artifact still carries nullable safe-deviation parameters for local eating
+and plant movement, but the current baseline writes them as `null`. Those
+bypasses remain disabled unless a future artifact explicitly supplies finite
+thresholds and passes the extended gate.
 
 The guarded contextual baseline only materializes conditional action priors once
 the feature context has at least 10 training records. Lower-support contexts
@@ -126,11 +134,12 @@ the extended 180-tick held-out boundary: support floors of 3, 6, and 8 improved
 offline imitation but regressed seed 5 at 180 ticks, while 10 preserved the
 extended gate and modestly reduced guard fallback share.
 
-The learned adapter also requires a decisive offline margin before overriding a
-different heuristic action: the learned action's score must exceed the
-heuristic action's score by `1.0`. Because scores are normalized action
-frequencies, this only permits unanimous contextual overrides; lower-confidence
-or ambiguous disagreements remain on the heuristic safety floor.
+The learned adapter also requires decisive evidence before overriding a
+different heuristic action. First, low-margin training contexts delegate to the
+heuristic. Then the hard guard requires the learned action's score to exceed the
+heuristic action's score by `1.0` unless a validated safe-deviation path exists.
+Because scores are normalized action frequencies and safe deviations are
+currently disabled, nearly all ambiguous disagreements remain heuristic-backed.
 
 Longer-horizon validation is supported through a validation matrix without
 changing the training horizon:

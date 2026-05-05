@@ -86,14 +86,16 @@ The default gate writes `output/mind/mind-v1-gate-report.json`, the trained
 artifact at `output/mind/mind-v1-gate-artifact.json`, and training trajectories
 under `output/trajectories/mind-v1-gate/`. The default train bank is
 `1,2,3,4,6,7,8,9,10,11,12,17,23,31`. The report includes explicit readiness
-criteria for terminal alive/birth regressions, invalid actions, and guard
-intervention share. The Stage 2 checkpoint keeps aggregate guard intervention
-below `0.45`, every role/mode below `0.50`, and blocks per-seed alive or birth
-regressions beyond the configured floor.
+criteria for terminal alive/birth regressions, invalid actions, guard
+intervention share, and the separate confidence-delegation share. The current
+Stage 3 checkpoint keeps aggregate guard intervention below `0.45`, every
+role/mode below `0.50`, blocks per-seed alive or birth regressions beyond the
+configured floor, and reports low-confidence learned disagreements as explicit
+heuristic delegation rather than learned value.
 Use `--fail-on-blockers` for CI-style failure on hard gate blockers, or
 `--fail-on-review` when review warnings should also fail the command.
 Use `--validation-ticks 120,240` for an opt-in longer-horizon validation matrix.
-Use `npm run sim:mind:gate:extended` for the next broader held-out seed matrix
+Use `npm run sim:mind:gate:extended` for the broader held-out seed matrix
 (`5,13,19,29,37,41`) at 120 and 180 ticks.
 See `docs/mind-v1-stage-plan.md` for the phase boundary before moving beyond
 the heuristic safety floor.

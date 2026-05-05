@@ -12,7 +12,10 @@ from evolution_sim.env.runtime.observations import (
 )
 from evolution_sim.mind.dataset import TrajectoryJsonlDataset
 from evolution_sim.mind.feature_policy import feature_keys_from_record
-from evolution_sim.mind.learned_policy import HEURISTIC_GUARD_POLICY
+from evolution_sim.mind.learned_policy import (
+    HEURISTIC_DELEGATE_POLICY,
+    HEURISTIC_GUARD_POLICY,
+)
 
 SELF_FIELD_INDEX = {field: index for index, field in enumerate(SELF_INPUT_FIELDS)}
 POLICY_DIAGNOSTIC_CONTEXT_DEPTH = 2
@@ -97,8 +100,10 @@ def build_policy_diagnostics(
 ) -> dict[str, object]:
     action_source_counts: Counter[str] = Counter()
     guard_intervention_count = 0
+    heuristic_delegate_count = 0
     safe_deviation_count = 0
     action_stats: dict[str, dict[str, object]] = {}
+    heuristic_delegate_action_stats: dict[str, dict[str, object]] = {}
     safe_deviation_action_stats: dict[str, dict[str, object]] = {}
     context_stats: dict[str, dict[str, object]] = {}
     suppressed_action_stats: dict[str, dict[str, object]] = {}
@@ -110,12 +115,24 @@ def build_policy_diagnostics(
     for index, record in enumerate(records):
         action_source = str(record.get("action_source", "unknown"))
         action_source_counts[action_source] += 1
+        decision_diagnostic = _decision_diagnostic_at(decision_diagnostics, index)
         guard_used = HEURISTIC_GUARD_POLICY in action_source
         if guard_used:
             guard_intervention_count += 1
+        heuristic_delegate_used = (
+            HEURISTIC_DELEGATE_POLICY in action_source
+            or _diagnostic_bool(decision_diagnostic, "heuristic_delegate_used")
+        )
+        if heuristic_delegate_used:
+            heuristic_delegate_count += 1
         reward = _reward_total(record)
         action = str(record.get("requested_action", "unknown"))
-        decision_diagnostic = _decision_diagnostic_at(decision_diagnostics, index)
+        if heuristic_delegate_used:
+            _update_heuristic_delegate_group_stats(
+                heuristic_delegate_action_stats,
+                action,
+                reward=reward,
+            )
         safe_deviation_used = _diagnostic_bool(
             decision_diagnostic,
             "safe_deviation_used",
@@ -212,6 +229,11 @@ def build_policy_diagnostics(
         "action_source_counts": _sorted_counts(action_source_counts),
         "guard_intervention_count": guard_intervention_count,
         "guard_intervention_rate": _rate(guard_intervention_count, record_count),
+        "heuristic_delegate_count": heuristic_delegate_count,
+        "heuristic_delegate_rate": _rate(heuristic_delegate_count, record_count),
+        "heuristic_delegate_by_action": _finalize_heuristic_delegate_group_stats(
+            heuristic_delegate_action_stats
+        ),
         "safe_deviation_count": safe_deviation_count,
         "safe_deviation_rate": _rate(safe_deviation_count, record_count),
         "safe_deviation_by_action": _finalize_safe_deviation_group_stats(
@@ -518,6 +540,27 @@ def _update_safe_deviation_group_stats(
     stats["total_reward"] = float(stats["total_reward"]) + reward
 
 
+def _update_heuristic_delegate_group_stats(
+    groups: dict[str, dict[str, object]],
+    group: str,
+    *,
+    reward: float,
+) -> None:
+    stats = groups.setdefault(
+        group,
+        {
+            "record_count": 0,
+            "total_reward": 0.0,
+            "heuristic_delegate_count": 0,
+        },
+    )
+    stats["record_count"] = int(stats["record_count"]) + 1
+    stats["heuristic_delegate_count"] = (
+        int(stats["heuristic_delegate_count"]) + 1
+    )
+    stats["total_reward"] = float(stats["total_reward"]) + reward
+
+
 def _finalize_group_stats(
     groups: Mapping[str, Mapping[str, object]],
 ) -> dict[str, dict[str, object]]:
@@ -534,6 +577,22 @@ def _finalize_group_stats(
             "guard_intervention_count": guard_count,
             "guard_intervention_rate": _rate(guard_count, record_count),
             "action_counts": _sorted_counts(action_counts),
+        }
+    return finalized
+
+
+def _finalize_heuristic_delegate_group_stats(
+    groups: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    finalized: dict[str, dict[str, object]] = {}
+    for group, stats in sorted(groups.items()):
+        record_count = int(stats["record_count"])
+        delegate_count = int(stats["heuristic_delegate_count"])
+        finalized[group] = {
+            "record_count": record_count,
+            "mean_reward": _rate(float(stats["total_reward"]), record_count),
+            "heuristic_delegate_count": delegate_count,
+            "heuristic_delegate_rate": _rate(delegate_count, record_count),
         }
     return finalized
 

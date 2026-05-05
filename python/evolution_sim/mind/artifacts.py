@@ -24,6 +24,7 @@ class MindArtifactError(ValueError):
 
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_action_prior_bc_v1"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
+HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
     {BEHAVIOR_CLONING_BASELINE_MODEL_TYPE}
 )
@@ -204,43 +205,57 @@ def _validate_behavior_cloning_model_payload(
         location="model",
         minimum=0.0,
     )
+    heuristic_delegate_policy = model.get("heuristic_delegate_policy")
+    if heuristic_delegate_policy != HEURISTIC_DELEGATE_POLICY:
+        raise MindArtifactError(
+            (
+                "model.heuristic_delegate_policy expected "
+                f"{HEURISTIC_DELEGATE_POLICY}, found {heuristic_delegate_policy!r}"
+            )
+        )
     _required_finite_number(
+        model,
+        "heuristic_delegate_max_training_score_margin",
+        location="model",
+        minimum=0.0,
+    )
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_local_eat_min_score",
         location="model",
         minimum=0.0,
     )
-    _required_finite_number(
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_local_eat_min_food",
         location="model",
         minimum=0.0,
     )
-    _required_finite_number(
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_local_eat_min_plant_ratio",
         location="model",
         minimum=0.0,
     )
-    _required_finite_number(
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_plant_move_min_score",
         location="model",
         minimum=0.0,
     )
-    _required_finite_number(
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_plant_move_min_strength",
         location="model",
         minimum=0.0,
     )
-    _required_finite_number(
+    _required_nullable_finite_number(
         model,
         "heuristic_safe_plant_move_max_local_food_ratio",
         location="model",
         minimum=0.0,
     )
-    _required_positive_int(
+    _required_nullable_positive_int(
         model,
         "heuristic_safe_plant_move_max_distance",
         location="model",
@@ -359,6 +374,24 @@ def _required_positive_int(
     return value
 
 
+def _required_nullable_positive_int(
+    payload: dict[str, object],
+    field: str,
+    *,
+    location: str,
+) -> int | None:
+    if field not in payload:
+        raise MindArtifactError(f"{location}.{field} is required")
+    value = payload.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MindArtifactError(f"{location}.{field} must be an integer or null")
+    if value <= 0:
+        raise MindArtifactError(f"{location}.{field} must be positive")
+    return value
+
+
 def _required_finite_number(
     payload: dict[str, object],
     field: str,
@@ -371,6 +404,21 @@ def _required_finite_number(
         f"{location}.{field}",
         minimum=minimum,
     )
+
+
+def _required_nullable_finite_number(
+    payload: dict[str, object],
+    field: str,
+    *,
+    location: str,
+    minimum: float | None = None,
+) -> float | None:
+    if field not in payload:
+        raise MindArtifactError(f"{location}.{field} is required")
+    value = payload.get(field)
+    if value is None:
+        return None
+    return _finite_number(value, f"{location}.{field}", minimum=minimum)
 
 
 def _finite_number(

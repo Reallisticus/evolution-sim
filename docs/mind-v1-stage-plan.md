@@ -19,8 +19,8 @@ The phase boundary is not "a model exists." The boundary is:
   role/mode caps plus optional reduction checks against a prior artifact;
 - guarded runtime experiments remain opt-in and cannot regress the heuristic
   baseline on held-out seeds;
-- a stronger offline baseline reduces guard fallback share while keeping the
-  extended gate green.
+- a stronger offline baseline reduces heuristic delegation and hard-guard
+  fallback while keeping the extended gate green.
 
 ## Stages
 
@@ -63,23 +63,35 @@ changes can be evaluated by evidence strength, not just by aggregate guard
 fallback share. The paired report slice adds heuristic-vs-learned role/mode
 comparisons, keeping Stage 2 model iteration grounded in outcome deltas rather
 than aggregate policy averages.
-The Stage 2 guard-reduction checkpoint now trains on the default multi-seed
-bank `[1,2,3,4,6,7,8,9,10,11,12,17,23,31]` and validates against the held-out
-seed bank `[5,13,19,29]` at 120 ticks. The guarded baseline includes two
-explicit, artifact-versioned safe deviation rules: local eat may bypass a
-movement heuristic only when the current resource is not inferior to the plant
-target for plant foragers, and plant movement may bypass an eat heuristic only
-when high-vitality plant foragers see a stronger nearby plant target. The
-latest default gate report passed with aggregate guard intervention `0.4365`,
-max role guard `0.4723`, max mode guard `0.4475`, and positive alive/birth
-deltas on every held-out seed.
+The Stage 2/3 checkpoint now trains on the default multi-seed bank
+`[1,2,3,4,6,7,8,9,10,11,12,17,23,31]` and validates against both the default
+held-out seed bank `[5,13,19,29]` at 120 ticks and the extended seed bank
+`[5,13,19,29,37,41]` at 120 and 180 ticks. Earlier safe-deviation bypasses for
+local eating and plant movement passed the default slice but regressed the
+extended matrix, so they are disabled in the current artifact. The active
+abstention mechanism is an artifact-versioned confidence delegate: when a
+learned action disagrees with the heuristic but the matched training action
+prior has score margin below `0.25`, runtime delegates to the heuristic before
+the hard safety guard and reports that delegation separately from guard
+intervention.
+
+The latest default gate passed with aggregate guard intervention `0.1255`,
+delegate rate `0.3580`, max role guard `0.2143`, max mode guard `0.1697`, and
+zero alive/birth deltas on every held-out seed. The latest extended gate passed
+with aggregate guard intervention `0.1253` at 120 ticks and `0.1281` at 180
+ticks, delegate rates `0.3567` and `0.3241`, max role guard `0.2008` and
+`0.2324`, max mode guard `0.1524` and `0.1889`, and zero alive/birth deltas on
+every seed at both horizons. This is not a learned-value milestone; it is a
+validated abstaining baseline and diagnostic floor for the next learner.
 
 Exit criteria:
 
-- Default Stage 2 gate remains green with no negative per-seed alive or birth
-  deltas.
+- Default and extended gates remain green with no negative per-seed alive or
+  birth deltas.
 - Guard fallback share stays below the aggregate `0.45` cap and per role/mode
   `0.50` caps.
+- Heuristic delegation share is reported separately and trends downward only
+  through genuine learned-policy improvements, not hidden guard reclassification.
 - Imitation accuracy and action-distribution drift are reported separately for
   train and held-out artifact datasets.
 - Any new trainer remains deterministic under fixed seed and writes a versioned
@@ -87,12 +99,14 @@ Exit criteria:
 
 ### Stage 3: Offline Evaluation Hardening
 
-Status: next.
+Status: checkpoint complete; keep extending this matrix before runtime
+experiments.
 
-Broaden validation beyond the current extended matrix before using learned
-actions as a runtime behavior candidate. This stage should add longer horizons,
-more held-out seeds, and compact failure diagnostics that identify which
-contexts and roles caused a regression.
+Broaden validation beyond the default matrix before using learned actions as a
+runtime behavior candidate. This stage now has a documented extended seed
+matrix, a longer 180-tick horizon, and compact diagnostics for guarded and
+delegated contexts. Continue extending horizons and held-out seeds while the
+next learner tries to reduce delegation through real learned value.
 
 Exit criteria:
 
@@ -103,7 +117,8 @@ Exit criteria:
 
 ### Stage 4: Guarded Runtime Experiments
 
-Status: blocked until Stages 2 and 3 pass.
+Status: blocked until a stronger offline model reduces heuristic delegation
+while keeping Stages 2 and 3 green.
 
 Run learned-controller experiments only as opt-in probes. The heuristic remains
 the safety floor, and learned actions must not be used in release/default paths

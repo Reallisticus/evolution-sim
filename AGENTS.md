@@ -2,7 +2,7 @@
 
 This repo is a deterministic artificial-life simulator.
 
-Current phase: Mind v1 Stage 3 validation hardening. Stage 2 has a guarded, disabled-by-default baseline checkpoint, but learned-controller changes must keep the heuristic safety floor, held-out diagnostics, and Foundation release gates intact.
+Current phase: Mind v1 Stage 3 validation hardening toward a stronger offline model. The current disabled-by-default checkpoint is a validated abstaining baseline, not learned-controller value; learned-controller changes must reduce explicit heuristic delegation while keeping the heuristic safety floor, held-out diagnostics, and Foundation release gates intact.
 
 ## Environment
 
