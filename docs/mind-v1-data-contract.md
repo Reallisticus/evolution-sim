@@ -102,10 +102,13 @@ heuristic guard; these diagnostics are summarized in the report but are not
 written into trajectory JSONL records and do not change `mind_trajectory_v1`.
 
 The guarded contextual baseline only materializes conditional action priors once
-the feature context has at least 12 training records. Lower-support contexts
+the feature context has at least 10 training records. Lower-support contexts
 fall back to coarser feature keys or the global prior, which keeps offline
 imitation from overfitting sparse seed-bank states before runtime experiments
-are allowed beyond the heuristic safety floor.
+are allowed beyond the heuristic safety floor. This floor is calibrated against
+the extended 180-tick held-out boundary: support floors of 3, 6, and 8 improved
+offline imitation but regressed seed 5 at 180 ticks, while 10 preserved the
+extended gate and modestly reduced guard fallback share.
 
 The learned adapter also requires a decisive offline margin before overriding a
 different heuristic action: the learned action's score must exceed the

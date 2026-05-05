@@ -293,7 +293,7 @@ class MindV1Tests(unittest.TestCase):
                 report["artifact"]["trained_record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
-            self.assertEqual(report["artifact"]["conditional_min_records"], 12)
+            self.assertEqual(report["artifact"]["conditional_min_records"], 10)
             self.assertEqual(
                 report["artifact"]["heuristic_confidence_threshold"],
                 artifact["model"]["heuristic_confidence_threshold"],

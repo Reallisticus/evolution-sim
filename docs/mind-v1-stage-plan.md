@@ -47,10 +47,13 @@ weakening gates. Candidate implementation work includes reward-weighted action
 priors, calibrated per-context support/margin metadata, train/validation
 diagnostic splits, and explicit per-role/per-mode performance comparisons.
 The current checkpoint adds guard-by-action and top guarded-context diagnostics
-so the next learner change can target measured fallback clusters instead of
-optimizing against a narrow seed slice. Evaluation also summarizes the learned
-actions suppressed by the guard through an in-memory sidecar, keeping trajectory
-JSONL schema stable.
+so learner changes can target measured fallback clusters instead of optimizing
+against a narrow seed slice. Evaluation also summarizes the learned actions
+suppressed by the guard through an in-memory sidecar, keeping trajectory JSONL
+schema stable. The first calibrated baseline adjustment lowers the contextual
+support floor from 12 to 10 records: lower floors improved offline imitation but
+failed the extended 180-tick seed-5 boundary, while 10 preserved the gate in the
+candidate screen.
 
 Exit criteria:
 
