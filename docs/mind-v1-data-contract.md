@@ -88,7 +88,8 @@ trajectories before runtime evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
 - predicted versus label action distribution drift;
-- contextual feature coverage and fallback depth.
+- contextual feature coverage, fallback depth, support buckets, and score-margin
+  buckets.
 
 Runtime evaluation diagnostics are computed from trajectory records without
 changing the trajectory schema. They report action-source counts, guard
@@ -100,6 +101,9 @@ from the contextual baseline. During in-process evaluation, learned policies may
 attach decision diagnostics that identify the learned action suppressed by the
 heuristic guard; these diagnostics are summarized in the report but are not
 written into trajectory JSONL records and do not change `mind_trajectory_v1`.
+The same sidecar also carries the matched score source, feature-key depth,
+training support, and learned score margin so guard interventions can be grouped
+by calibration evidence.
 
 The guarded contextual baseline only materializes conditional action priors once
 the feature context has at least 10 training records. Lower-support contexts

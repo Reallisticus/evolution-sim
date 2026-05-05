@@ -180,6 +180,10 @@ class MindV1Tests(unittest.TestCase):
             )
             self.assertEqual(artifact["model"]["heuristic_override_min_margin"], 1.0)
             self.assertEqual(
+                artifact["model"]["action_score_metadata"]["record_count"],
+                artifact["manifest"]["trained_record_count"],
+            )
+            self.assertEqual(
                 artifact["manifest"]["provenance"]["record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
@@ -194,8 +198,15 @@ class MindV1Tests(unittest.TestCase):
                 provenance=dataset_provenance(dataset),
             )
 
-            diagnostics = build_artifact_diagnostics(baseline.to_artifact(), [dataset])
+            artifact = baseline.to_artifact()
+            diagnostics = build_artifact_diagnostics(artifact, [dataset])
 
+        self.assertIn("action_score_metadata", artifact["model"])
+        self.assertIn("conditional_action_metadata", artifact["model"])
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["record_count"],
+            dataset.record_count,
+        )
         self.assertEqual(diagnostics["record_count"], dataset.record_count)
         self.assertGreaterEqual(diagnostics["imitation"]["top1_accuracy"], 0.0)
         self.assertLessEqual(diagnostics["imitation"]["top1_accuracy"], 1.0)
@@ -216,6 +227,15 @@ class MindV1Tests(unittest.TestCase):
             1.0,
         )
         self.assertIn("match_depth_counts", diagnostics["contextual_coverage"])
+        self.assertEqual(
+            sum(diagnostics["contextual_coverage"]["match_depth_counts"].values()),
+            dataset.record_count,
+        )
+        self.assertIn("support_bucket_counts", diagnostics["contextual_coverage"])
+        self.assertIn(
+            "score_margin_bucket_counts",
+            diagnostics["contextual_coverage"],
+        )
         self.assertGreaterEqual(
             diagnostics["contextual_coverage"]["matched_record_rate"],
             0.0,
@@ -526,6 +546,55 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertEqual(decision.requested_action, "stay")
 
+    def test_learned_policy_reports_score_support_and_margin_diagnostics(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.9,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "food": 0.2,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                }
+            ],
+            "navigation": {},
+        }
+        action_mask = {"stay": True, "eat": True}
+        contextual_key = feature_keys_from_observation(observation, action_mask)[0]
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.2, "stay": 0.8},
+            action_score_metadata={
+                "record_count": 100,
+                "score_margin": 0.6,
+            },
+            conditional_action_scores={contextual_key: {"eat": 0.75, "stay": 0.25}},
+            conditional_action_metadata={
+                contextual_key: {
+                    "record_count": 14,
+                    "score_margin": 0.5,
+                }
+            },
+        )
+
+        decision = policy.decide(observation, action_mask)
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertEqual(diagnostics["score_source"], "conditional")
+        self.assertEqual(diagnostics["score_feature_key"], contextual_key)
+        self.assertEqual(diagnostics["score_match_depth"], 0)
+        self.assertEqual(diagnostics["score_support"], 14)
+        self.assertAlmostEqual(float(diagnostics["learned_score_margin"]), 0.5)
+        self.assertAlmostEqual(float(diagnostics["training_score_margin"]), 0.5)
+
     def test_heuristic_guard_conserves_low_energy_agent_before_learned_move(self) -> None:
         observation = {
             "self": {
@@ -786,6 +855,9 @@ class MindV1Tests(unittest.TestCase):
                         "guard_used": True,
                         "learned_action": "eat",
                         "heuristic_action": "stay",
+                        "score_source": "conditional",
+                        "score_support": 14,
+                        "learned_score_margin": 0.5,
                     },
                 )
 
@@ -799,6 +871,24 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("guard_suppressed_learned_action", diagnostics)
         self.assertEqual(
             diagnostics["guard_suppressed_learned_action"]["eat"][
+                "guard_intervention_count"
+            ],
+            diagnostics["guard_intervention_count"],
+        )
+        self.assertEqual(
+            diagnostics["guard_intervention_by_score_source"]["conditional"][
+                "guard_intervention_count"
+            ],
+            diagnostics["guard_intervention_count"],
+        )
+        self.assertEqual(
+            diagnostics["guard_intervention_by_support_bucket"]["10-31"][
+                "guard_intervention_count"
+            ],
+            diagnostics["guard_intervention_count"],
+        )
+        self.assertEqual(
+            diagnostics["guard_intervention_by_score_margin_bucket"]["0.50-0.99"][
                 "guard_intervention_count"
             ],
             diagnostics["guard_intervention_count"],

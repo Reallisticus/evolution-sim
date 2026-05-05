@@ -26,7 +26,9 @@ HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 @dataclass(frozen=True, slots=True)
 class BehaviorCloningBaseline:
     action_scores: dict[str, float]
+    action_score_metadata: dict[str, object]
     conditional_action_scores: dict[str, dict[str, float]]
+    conditional_action_metadata: dict[str, dict[str, object]]
     record_count: int
     provenance: dict[str, object]
 
@@ -45,9 +47,18 @@ class BehaviorCloningBaseline:
             },
             "model": {
                 "action_scores": dict(sorted(self.action_scores.items())),
+                "action_score_metadata": dict(
+                    sorted(self.action_score_metadata.items())
+                ),
                 "conditional_action_scores": {
                     key: dict(sorted(scores.items()))
                     for key, scores in sorted(self.conditional_action_scores.items())
+                },
+                "conditional_action_metadata": {
+                    key: dict(sorted(metadata.items()))
+                    for key, metadata in sorted(
+                        self.conditional_action_metadata.items()
+                    )
                 },
                 "fallback_action": "stay",
                 "feature_policy_version": FEATURE_POLICY_VERSION,
@@ -86,14 +97,22 @@ def train_behavior_cloning_baseline(
         action: counts.get(action, 0) / total
         for action in ACTION_NAMES
     }
+    action_score_metadata = _score_metadata(counts)
     conditional_action_scores = {
         key: _normalize_scores(action_counts)
         for key, action_counts in conditional_counts.items()
         if sum(action_counts.values()) >= CONDITIONAL_MIN_RECORDS
     }
+    conditional_action_metadata = {
+        key: _score_metadata(action_counts)
+        for key, action_counts in conditional_counts.items()
+        if key in conditional_action_scores
+    }
     return BehaviorCloningBaseline(
         action_scores=action_scores,
+        action_score_metadata=action_score_metadata,
         conditional_action_scores=conditional_action_scores,
+        conditional_action_metadata=conditional_action_metadata,
         record_count=record_count,
         provenance=provenance,
     )
@@ -106,4 +125,36 @@ def _normalize_scores(counts: Counter[str]) -> dict[str, float]:
     return {
         action: counts.get(action, 0) / total
         for action in ACTION_NAMES
+    }
+
+
+def _score_metadata(counts: Counter[str]) -> dict[str, object]:
+    total = sum(counts.values())
+    if total <= 0:
+        return {
+            "record_count": 0,
+            "top_action": "stay",
+            "top_score": 0.0,
+            "runner_up_action": "stay",
+            "runner_up_score": 0.0,
+            "score_margin": 0.0,
+        }
+    ranked = sorted(
+        (
+            (counts.get(action, 0) / total, action)
+            for action in sorted(ACTION_NAMES)
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    top_score, top_action = ranked[0]
+    runner_up_score, runner_up_action = (
+        ranked[1] if len(ranked) > 1 else (0.0, "stay")
+    )
+    return {
+        "record_count": total,
+        "top_action": top_action,
+        "top_score": top_score,
+        "runner_up_action": runner_up_action,
+        "runner_up_score": runner_up_score,
+        "score_margin": top_score - runner_up_score,
     }

@@ -29,10 +29,15 @@ def build_artifact_diagnostics(
     conditional_scores = _conditional_score_mapping(
         model.get("conditional_action_scores")
     )
+    conditional_metadata = _conditional_metadata_mapping(
+        model.get("conditional_action_metadata")
+    )
 
     label_counts: Counter[str] = Counter()
     predicted_counts: Counter[str] = Counter()
     match_depth_counts: Counter[str] = Counter()
+    support_bucket_counts: Counter[str] = Counter()
+    margin_bucket_counts: Counter[str] = Counter()
     correct = 0
     matched_records = 0
     for record in records:
@@ -51,6 +56,13 @@ def build_artifact_diagnostics(
         else:
             matched_records += 1
             match_depth_counts[str(match_depth)] += 1
+    for metadata in conditional_metadata.values():
+        support_bucket_counts[
+            _support_bucket(_metadata_number(metadata, "record_count"))
+        ] += 1
+        margin_bucket_counts[
+            _score_margin_bucket(_metadata_number(metadata, "score_margin"))
+        ] += 1
 
     record_count = len(records)
     return {
@@ -72,6 +84,8 @@ def build_artifact_diagnostics(
             "matched_records": matched_records,
             "matched_record_rate": _rate(matched_records, record_count),
             "match_depth_counts": _sorted_counts(match_depth_counts),
+            "support_bucket_counts": _sorted_counts(support_bucket_counts),
+            "score_margin_bucket_counts": _sorted_counts(margin_bucket_counts),
         },
     }
 
@@ -86,6 +100,9 @@ def build_policy_diagnostics(
     action_stats: dict[str, dict[str, object]] = {}
     context_stats: dict[str, dict[str, object]] = {}
     suppressed_action_stats: dict[str, dict[str, object]] = {}
+    score_source_stats: dict[str, dict[str, object]] = {}
+    support_bucket_stats: dict[str, dict[str, object]] = {}
+    score_margin_bucket_stats: dict[str, dict[str, object]] = {}
     role_stats: dict[str, dict[str, object]] = {}
     mode_stats: dict[str, dict[str, object]] = {}
     for index, record in enumerate(records):
@@ -101,6 +118,17 @@ def build_policy_diagnostics(
             decision_diagnostic,
             guard_used=guard_used,
         )
+        score_source = _diagnostic_label(
+            decision_diagnostic,
+            "score_source",
+            default="unknown",
+        )
+        support_bucket = _support_bucket(
+            _diagnostic_number(decision_diagnostic, "score_support")
+        )
+        score_margin_bucket = _score_margin_bucket(
+            _diagnostic_number(decision_diagnostic, "learned_score_margin")
+        )
         if suppressed_action is not None:
             _update_group_stats(
                 suppressed_action_stats,
@@ -109,6 +137,27 @@ def build_policy_diagnostics(
                 action=action,
                 guard_used=guard_used,
             )
+        _update_group_stats(
+            score_source_stats,
+            score_source,
+            reward=reward,
+            action=action,
+            guard_used=guard_used,
+        )
+        _update_group_stats(
+            support_bucket_stats,
+            support_bucket,
+            reward=reward,
+            action=action,
+            guard_used=guard_used,
+        )
+        _update_group_stats(
+            score_margin_bucket_stats,
+            score_margin_bucket,
+            reward=reward,
+            action=action,
+            guard_used=guard_used,
+        )
         _update_group_stats(
             action_stats,
             action,
@@ -149,6 +198,15 @@ def build_policy_diagnostics(
         "guard_intervention_by_action": _finalize_group_stats(action_stats),
         "guard_suppressed_learned_action": _finalize_group_stats(
             suppressed_action_stats
+        ),
+        "guard_intervention_by_score_source": _finalize_group_stats(
+            score_source_stats
+        ),
+        "guard_intervention_by_support_bucket": _finalize_group_stats(
+            support_bucket_stats
+        ),
+        "guard_intervention_by_score_margin_bucket": _finalize_group_stats(
+            score_margin_bucket_stats
         ),
         "top_guarded_contexts": _top_guarded_contexts(context_stats),
         "by_trophic_role": _finalize_group_stats(role_stats),
@@ -217,6 +275,16 @@ def _conditional_score_mapping(payload: object) -> dict[str, dict[str, float]]:
     parsed: dict[str, dict[str, float]] = {}
     for feature_key, scores in payload.items():
         parsed[str(feature_key)] = _score_mapping(scores)
+    return parsed
+
+
+def _conditional_metadata_mapping(payload: object) -> dict[str, dict[str, object]]:
+    if not isinstance(payload, Mapping):
+        return {}
+    parsed: dict[str, dict[str, object]] = {}
+    for feature_key, metadata in payload.items():
+        if isinstance(metadata, Mapping):
+            parsed[str(feature_key)] = dict(metadata)
     return parsed
 
 
@@ -306,6 +374,64 @@ def _guard_suppressed_action(
     if not isinstance(learned_action, str) or not learned_action:
         return None
     return learned_action
+
+
+def _diagnostic_label(
+    diagnostic: Mapping[str, object],
+    key: str,
+    *,
+    default: str,
+) -> str:
+    value = diagnostic.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return default
+
+
+def _diagnostic_number(
+    diagnostic: Mapping[str, object],
+    key: str,
+) -> float | None:
+    value = diagnostic.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _metadata_number(
+    metadata: Mapping[str, object],
+    key: str,
+) -> float | None:
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _support_bucket(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < 10:
+        return "1-9"
+    if value < 32:
+        return "10-31"
+    if value < 100:
+        return "32-99"
+    return "100+"
+
+
+def _score_margin_bucket(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < 0.1:
+        return "0.00-0.09"
+    if value < 0.25:
+        return "0.10-0.24"
+    if value < 0.5:
+        return "0.25-0.49"
+    if value < 1.0:
+        return "0.50-0.99"
+    return "1.00+"
 
 
 def _enum_label(value: float, vocab: tuple[str, ...]) -> str:
