@@ -26,6 +26,7 @@
     "sim:mind:train": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_train",
     "sim:mind:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_policy_eval",
     "sim:mind:gate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate",
+    "sim:mind:gate:extended": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate --reuse-trajectories --validation-seeds 1,2,4,5,6,8,9,10,12 --validation-ticks 120,180 --artifact-output output/mind/mind-v1-gate-extended-artifact.json --output output/mind/mind-v1-gate-extended-report.json",
     "viewer:serve": "python3 -m http.server 4173",
     "viewer:contracts:generate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs",
     "viewer:contracts:check": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs --check",

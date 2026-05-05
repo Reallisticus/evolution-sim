@@ -92,6 +92,10 @@ seed.
 Use `--fail-on-blockers` for CI-style failure on hard gate blockers, or
 `--fail-on-review` when review warnings should also fail the command.
 Use `--validation-ticks 120,240` for an opt-in longer-horizon validation matrix.
+Use `npm run sim:mind:gate:extended` for the broader held-out seed matrix
+(`1,2,4,5,6,8,9,10,12`) at 120 and 180 ticks.
+See `docs/mind-v1-stage-plan.md` for the phase boundary before moving beyond
+the heuristic safety floor.
 
 ## Foundation Gate
 

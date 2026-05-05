@@ -302,7 +302,16 @@ def run_mind_gate(
             "conditional_feature_count": len(
                 artifact["model"].get("conditional_action_scores", {})
             ),
+            "conditional_min_records": artifact["model"].get(
+                "conditional_min_records"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
+            "heuristic_confidence_threshold": artifact["model"].get(
+                "heuristic_confidence_threshold"
+            ),
+            "heuristic_override_min_margin": artifact["model"].get(
+                "heuristic_override_min_margin"
+            ),
         },
         "artifact_diagnostics": artifact_diagnostics,
         "evaluation": evaluation,

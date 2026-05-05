@@ -101,6 +101,12 @@ fall back to coarser feature keys or the global prior, which keeps offline
 imitation from overfitting sparse seed-bank states before runtime experiments
 are allowed beyond the heuristic safety floor.
 
+The learned adapter also requires a decisive offline margin before overriding a
+different heuristic action: the learned action's score must exceed the
+heuristic action's score by `1.0`. Because scores are normalized action
+frequencies, this only permits unanimous contextual overrides; lower-confidence
+or ambiguous disagreements remain on the heuristic safety floor.
+
 Longer-horizon validation is supported through a validation matrix without
 changing the training horizon:
 
@@ -111,3 +117,16 @@ npm run sim:mind:gate -- --reuse-trajectories --validation-ticks 120,240
 The first horizon remains available as `evaluation` for compatibility, and all
 horizons are listed under `evaluation_matrix`. Overall readiness fails or enters
 review if any validation horizon emits blockers or warnings.
+
+The broader opt-in entrypoint is:
+
+```bash
+npm run sim:mind:gate:extended
+```
+
+It evaluates held-out seeds `1,2,4,5,6,8,9,10,12` at 120 and 180 ticks, reusing
+the seed-bank training trajectories, and writes
+`output/mind/mind-v1-gate-extended-report.json`.
+
+The phase boundary and staged path beyond this guarded offline baseline are
+tracked in `docs/mind-v1-stage-plan.md`.

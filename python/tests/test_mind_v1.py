@@ -130,6 +130,7 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertEqual(policy.policy_id, "mind_v1_learned_policy")
         self.assertTrue(policy.heuristic_guard)
+        self.assertEqual(policy.heuristic_override_min_margin, 1.0)
 
     def test_behavior_cloning_artifact_manifest_requires_provenance(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -169,6 +170,11 @@ class MindV1Tests(unittest.TestCase):
 
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             validate_model_artifact_manifest(artifact)
+            self.assertIn(
+                "heuristic_override_min_margin",
+                artifact["model"],
+            )
+            self.assertEqual(artifact["model"]["heuristic_override_min_margin"], 1.0)
             self.assertEqual(
                 artifact["manifest"]["provenance"]["record_count"],
                 artifact["manifest"]["trained_record_count"],
@@ -283,6 +289,15 @@ class MindV1Tests(unittest.TestCase):
                 report["artifact"]["trained_record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
+            self.assertEqual(report["artifact"]["conditional_min_records"], 12)
+            self.assertEqual(
+                report["artifact"]["heuristic_confidence_threshold"],
+                artifact["model"]["heuristic_confidence_threshold"],
+            )
+            self.assertEqual(
+                report["artifact"]["heuristic_override_min_margin"],
+                artifact["model"]["heuristic_override_min_margin"],
+            )
             self.assertEqual(
                 report["artifact_diagnostics"]["record_count"],
                 report["artifact"]["trained_record_count"],
@@ -294,6 +309,15 @@ class MindV1Tests(unittest.TestCase):
 
     def test_mind_gate_default_validation_seeds_are_held_out_seed_bank(self) -> None:
         self.assertEqual(mind_gate.DEFAULT_VALIDATION_SEEDS, (5, 13, 19, 29))
+
+    def test_mind_extended_gate_has_npm_entrypoint(self) -> None:
+        package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+        script = package["scripts"]["sim:mind:gate:extended"]
+
+        self.assertIn("evolution_sim.cli.mind_gate", script)
+        self.assertIn("--validation-seeds 1,2,4,5,6,8,9,10,12", script)
+        self.assertIn("--validation-ticks 120,180", script)
+        self.assertIn("output/mind/mind-v1-gate-extended-report.json", script)
 
     def test_mind_gate_cli_fail_on_blockers_exits_nonzero(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -585,6 +609,53 @@ class MindV1Tests(unittest.TestCase):
             action_scores={"move_north": 0.42, "stay": 0.4},
             heuristic_guard=True,
             heuristic_confidence_threshold=0.5,
+        )
+
+        decision = policy.decide(observation, {"stay": True, "move_north": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn("observation_heuristic_safety_floor_v1", decision.source)
+
+    def test_heuristic_guard_defers_small_margin_learned_disagreement(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.9,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_north": 0.58, "stay": 0.52},
+            heuristic_guard=True,
+            heuristic_override_min_margin=0.1,
         )
 
         decision = policy.decide(observation, {"stay": True, "move_north": True})

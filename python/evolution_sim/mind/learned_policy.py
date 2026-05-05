@@ -20,6 +20,7 @@ class LearnedPolicy:
     fallback_action: str = "stay"
     heuristic_guard: bool = False
     heuristic_confidence_threshold: float | None = None
+    heuristic_override_min_margin: float | None = None
 
     def decide(
         self,
@@ -36,13 +37,18 @@ class LearnedPolicy:
                 observation,
                 action_mask,
             )
+            heuristic_score = float(
+                action_scores.get(heuristic_action.requested_action, 0.0)
+            )
             if _guard_should_use_heuristic(
                 learned_action=learned_action,
                 learned_score=learned_score,
                 heuristic_action=heuristic_action.requested_action,
+                heuristic_score=heuristic_score,
                 heuristic_source=heuristic_action.source,
                 observation=observation,
                 confidence_threshold=self.heuristic_confidence_threshold,
+                override_min_margin=self.heuristic_override_min_margin,
             ):
                 return self._decision(
                     heuristic_action.requested_action,
@@ -102,6 +108,7 @@ def load_learned_policy(
     conditional_action_scores = model.get("conditional_action_scores")
     heuristic_guard_policy = model.get("heuristic_guard_policy")
     heuristic_confidence_threshold = model.get("heuristic_confidence_threshold")
+    heuristic_override_min_margin = model.get("heuristic_override_min_margin")
     return LearnedPolicy(
         action_scores={
             str(action): float(score)
@@ -115,6 +122,9 @@ def load_learned_policy(
         heuristic_guard=heuristic_guard_policy == HEURISTIC_GUARD_POLICY,
         heuristic_confidence_threshold=_optional_float(
             heuristic_confidence_threshold
+        ),
+        heuristic_override_min_margin=_optional_float(
+            heuristic_override_min_margin
         ),
     )
 
@@ -141,15 +151,22 @@ def _guard_should_use_heuristic(
     learned_action: str,
     learned_score: float,
     heuristic_action: str,
+    heuristic_score: float,
     heuristic_source: str,
     observation: dict[str, object],
     confidence_threshold: float | None,
+    override_min_margin: float | None,
 ) -> bool:
     if learned_action == heuristic_action:
         return False
     if heuristic_source == "heuristic_observation_conserve":
         return True
     if confidence_threshold is not None and learned_score < confidence_threshold:
+        return True
+    if (
+        override_min_margin is not None
+        and learned_score - heuristic_score < override_min_margin
+    ):
         return True
     if heuristic_action != "stay":
         return True
