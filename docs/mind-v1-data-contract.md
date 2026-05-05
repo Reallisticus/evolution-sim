@@ -104,6 +104,9 @@ written into trajectory JSONL records and do not change `mind_trajectory_v1`.
 The same sidecar also carries the matched score source, feature-key depth,
 training support, and learned score margin so guard interventions can be grouped
 by calibration evidence.
+Paired evaluation reports compare heuristic and guarded learned outcomes by
+trophic role and meat mode, including terminal count deltas and role/mode policy
+diagnostic deltas, without changing trajectory records.
 
 The guarded contextual baseline only materializes conditional action priors once
 the feature context has at least 10 training records. Lower-support contexts

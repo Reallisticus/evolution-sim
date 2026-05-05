@@ -797,6 +797,28 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn(report["mind_v1_gates"]["status"], {"pass", "review", "fail"})
         self.assertIn("heuristic", report)
         self.assertIn("learned", report)
+        self.assertIn("by_trophic_role", report["comparison"])
+        self.assertIn("by_meat_mode", report["comparison"])
+        self.assertIn(
+            "policy_diagnostics_by_trophic_role",
+            report["comparison"],
+        )
+        self.assertIn(
+            "policy_diagnostics_by_meat_mode",
+            report["comparison"],
+        )
+        role_comparison = report["comparison"]["by_trophic_role"]
+        self.assertGreaterEqual(len(role_comparison), 1)
+        role_delta = next(iter(role_comparison.values()))
+        self.assertEqual(
+            role_delta["total_delta"],
+            role_delta["learned_total"] - role_delta["heuristic_total"],
+        )
+        mode_comparison = report["comparison"]["policy_diagnostics_by_meat_mode"]
+        self.assertGreaterEqual(len(mode_comparison), 1)
+        mode_delta = next(iter(mode_comparison.values()))
+        self.assertIn("mean_reward_delta", mode_delta)
+        self.assertIn("guard_intervention_rate_delta", mode_delta)
         learned_diagnostics = report["learned"]["aggregate"]["policy_diagnostics"]
         self.assertIn("guard_intervention_rate", learned_diagnostics)
         self.assertIn("action_source_counts", learned_diagnostics)

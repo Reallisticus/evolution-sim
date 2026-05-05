@@ -55,7 +55,9 @@ support floor from 12 to 10 records: lower floors improved offline imitation but
 failed the extended 180-tick seed-5 boundary, while 10 preserved the gate in the
 candidate screen. The next diagnostic slice adds artifact and runtime
 support/margin metadata so future learner changes can be evaluated by evidence
-strength, not just by aggregate guard fallback share.
+strength, not just by aggregate guard fallback share. The follow-up report slice
+adds paired heuristic-vs-learned role/mode comparisons, keeping Stage 2 model
+iteration grounded in outcome deltas rather than aggregate policy averages.
 
 Exit criteria:
 

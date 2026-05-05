@@ -203,6 +203,30 @@ def compare_heuristic_and_learned(
                 heuristic["aggregate"],
                 "births",
             ),
+            "by_trophic_role": _paired_count_totals_comparison(
+                heuristic["aggregate"],
+                learned["aggregate"],
+                "trophic_role_counts_at_end",
+            ),
+            "by_meat_mode": _paired_count_totals_comparison(
+                heuristic["aggregate"],
+                learned["aggregate"],
+                "meat_mode_counts_at_end",
+            ),
+            "policy_diagnostics_by_trophic_role": (
+                _paired_policy_diagnostic_group_comparison(
+                    heuristic["aggregate"],
+                    learned["aggregate"],
+                    "by_trophic_role",
+                )
+            ),
+            "policy_diagnostics_by_meat_mode": (
+                _paired_policy_diagnostic_group_comparison(
+                    heuristic["aggregate"],
+                    learned["aggregate"],
+                    "by_meat_mode",
+                )
+            ),
             "per_seed": _paired_seed_comparison(
                 heuristic["runs"],
                 learned["runs"],
@@ -230,6 +254,182 @@ def _metric_mean_delta(
     if not isinstance(left_mean, (int, float)) or not isinstance(right_mean, (int, float)):
         return None
     return _round_float(float(left_mean) - float(right_mean))
+
+
+def _paired_count_totals_comparison(
+    heuristic_aggregate: dict[str, object],
+    learned_aggregate: dict[str, object],
+    field: str,
+) -> dict[str, dict[str, object]]:
+    heuristic_total = _numeric_bucket(heuristic_aggregate.get(field), "total")
+    learned_total = _numeric_bucket(learned_aggregate.get(field), "total")
+    heuristic_mean = _numeric_bucket(heuristic_aggregate.get(field), "per_run_mean")
+    learned_mean = _numeric_bucket(learned_aggregate.get(field), "per_run_mean")
+    labels = sorted(
+        set(heuristic_total)
+        | set(learned_total)
+        | set(heuristic_mean)
+        | set(learned_mean)
+    )
+    comparison: dict[str, dict[str, object]] = {}
+    for label in labels:
+        heuristic_total_value = heuristic_total.get(label, 0.0)
+        learned_total_value = learned_total.get(label, 0.0)
+        heuristic_mean_value = heuristic_mean.get(label, 0.0)
+        learned_mean_value = learned_mean.get(label, 0.0)
+        comparison[label] = {
+            "heuristic_total": _whole_number_if_integral(heuristic_total_value),
+            "learned_total": _whole_number_if_integral(learned_total_value),
+            "total_delta": _whole_number_if_integral(
+                learned_total_value - heuristic_total_value
+            ),
+            "heuristic_per_run_mean": _round_float(heuristic_mean_value),
+            "learned_per_run_mean": _round_float(learned_mean_value),
+            "per_run_mean_delta": _round_float(
+                learned_mean_value - heuristic_mean_value
+            ),
+        }
+    return comparison
+
+
+def _paired_policy_diagnostic_group_comparison(
+    heuristic_aggregate: dict[str, object],
+    learned_aggregate: dict[str, object],
+    group_field: str,
+) -> dict[str, dict[str, object]]:
+    heuristic_groups = _policy_diagnostic_groups(heuristic_aggregate, group_field)
+    learned_groups = _policy_diagnostic_groups(learned_aggregate, group_field)
+    comparison: dict[str, dict[str, object]] = {}
+    for label in sorted(set(heuristic_groups) | set(learned_groups)):
+        heuristic_group = heuristic_groups.get(label, {})
+        learned_group = learned_groups.get(label, {})
+        heuristic_record_count = _group_number(heuristic_group, "record_count", 0.0)
+        learned_record_count = _group_number(learned_group, "record_count", 0.0)
+        heuristic_guard_count = _group_number(
+            heuristic_group,
+            "guard_intervention_count",
+            0.0,
+        )
+        learned_guard_count = _group_number(
+            learned_group,
+            "guard_intervention_count",
+            0.0,
+        )
+        comparison[label] = {
+            "heuristic_record_count": _whole_number_if_integral(
+                heuristic_record_count
+            ),
+            "learned_record_count": _whole_number_if_integral(learned_record_count),
+            "record_count_delta": _whole_number_if_integral(
+                learned_record_count - heuristic_record_count
+            ),
+            "heuristic_mean_reward": _optional_group_number(
+                heuristic_group,
+                "mean_reward",
+            ),
+            "learned_mean_reward": _optional_group_number(
+                learned_group,
+                "mean_reward",
+            ),
+            "mean_reward_delta": _optional_group_delta(
+                learned_group,
+                heuristic_group,
+                "mean_reward",
+            ),
+            "heuristic_guard_intervention_count": _whole_number_if_integral(
+                heuristic_guard_count
+            ),
+            "learned_guard_intervention_count": _whole_number_if_integral(
+                learned_guard_count
+            ),
+            "guard_intervention_count_delta": _whole_number_if_integral(
+                learned_guard_count - heuristic_guard_count
+            ),
+            "heuristic_guard_intervention_rate": _optional_group_number(
+                heuristic_group,
+                "guard_intervention_rate",
+            ),
+            "learned_guard_intervention_rate": _optional_group_number(
+                learned_group,
+                "guard_intervention_rate",
+            ),
+            "guard_intervention_rate_delta": _optional_group_delta(
+                learned_group,
+                heuristic_group,
+                "guard_intervention_rate",
+            ),
+        }
+    return comparison
+
+
+def _numeric_bucket(payload: object, bucket: str) -> dict[str, float]:
+    if not isinstance(payload, Mapping):
+        return {}
+    values = payload.get(bucket)
+    if not isinstance(values, Mapping):
+        return {}
+    parsed: dict[str, float] = {}
+    for key, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        parsed[str(key)] = float(value)
+    return parsed
+
+
+def _policy_diagnostic_groups(
+    aggregate: dict[str, object],
+    group_field: str,
+) -> dict[str, Mapping[str, object]]:
+    diagnostics = aggregate.get("policy_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return {}
+    groups = diagnostics.get(group_field)
+    if not isinstance(groups, Mapping):
+        return {}
+    return {
+        str(label): group
+        for label, group in groups.items()
+        if isinstance(group, Mapping)
+    }
+
+
+def _group_number(
+    group: Mapping[str, object],
+    field: str,
+    default: float,
+) -> float:
+    value = group.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value)
+
+
+def _optional_group_number(
+    group: Mapping[str, object],
+    field: str,
+) -> float | None:
+    value = group.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return _round_float(float(value))
+
+
+def _optional_group_delta(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+    field: str,
+) -> float | None:
+    left_value = _optional_group_number(left, field)
+    right_value = _optional_group_number(right, field)
+    if left_value is None or right_value is None:
+        return None
+    return _round_float(left_value - right_value)
+
+
+def _whole_number_if_integral(value: float) -> int | float:
+    if value.is_integer():
+        return int(value)
+    return _round_float(value)
 
 
 def _paired_seed_comparison(
