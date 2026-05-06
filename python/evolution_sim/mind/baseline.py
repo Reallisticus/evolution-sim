@@ -23,10 +23,14 @@ REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
 ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER = (
     "advantage-calibrated-contextual-prior"
 )
+ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER = (
+    "advantage-blended-contextual-prior"
+)
 TRAINER_CHOICES: tuple[str, ...] = (
     CONTEXTUAL_PRIOR_TRAINER,
     REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER,
     ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
+    ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER,
 )
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v2"
 REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
@@ -34,6 +38,9 @@ REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
 )
 ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE = (
     "guarded_advantage_calibrated_contextual_prior_bc_v1"
+)
+ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE = (
+    "guarded_advantage_blended_contextual_prior_bc_v1"
 )
 CONDITIONAL_MIN_RECORDS = 3
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
@@ -44,7 +51,13 @@ REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY = "reward_total_shifted_clamp_v1"
 CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY = (
     "contextual_reward_advantage_adjusted_counts_v1"
 )
+CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY = (
+    "contextual_reward_advantage_blended_counts_v1"
+)
 CONTEXTUAL_REWARD_ADVANTAGE_POLICY = "contextual_reward_advantage_lift_v1"
+CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY = (
+    "contextual_reward_advantage_score_blend_v1"
+)
 UNIFORM_SAMPLE_WEIGHT_BASE = 1.0
 UNIFORM_SAMPLE_WEIGHT_MIN = 1.0
 REWARD_TOTAL_SAMPLE_WEIGHT_BASE = 1.0
@@ -54,6 +67,7 @@ ADVANTAGE_SAMPLE_WEIGHT_MIN = 0.25
 ADVANTAGE_SAMPLE_WEIGHT_MAX = 2.0
 ADVANTAGE_REWARD_SCALE = 2.0
 ADVANTAGE_MIN_ACTION_SUPPORT = 2
+ADVANTAGE_BLEND_WEIGHT = 0.2
 HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_OVERRIDE_MIN_MARGIN = 1.0
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
@@ -86,6 +100,8 @@ class BehaviorCloningBaseline:
     reward_advantage_policy: str | None = None
     reward_advantage_scale: float | None = None
     reward_advantage_min_action_support: int | None = None
+    reward_advantage_blend_policy: str | None = None
+    reward_advantage_blend_weight: float | None = None
 
     def to_artifact(self) -> dict[str, object]:
         provenance = validate_dataset_provenance(self.provenance)
@@ -158,6 +174,14 @@ class BehaviorCloningBaseline:
             model["reward_advantage_min_action_support"] = (
                 self.reward_advantage_min_action_support
             )
+        if self.reward_advantage_blend_policy is not None:
+            model["reward_advantage_blend_policy"] = (
+                self.reward_advantage_blend_policy
+            )
+        if self.reward_advantage_blend_weight is not None:
+            model["reward_advantage_blend_weight"] = (
+                self.reward_advantage_blend_weight
+            )
         return {
             "manifest": {
                 "artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -218,6 +242,17 @@ def train_advantage_calibrated_behavior_cloning_baseline(
     )
 
 
+def train_advantage_blended_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_advantage_blended_contextual_prior_baseline(
+        records,
+        provenance=provenance,
+    )
+
+
 def train_baseline_with_trainer(
     records: Iterable[dict[str, object]],
     *,
@@ -233,6 +268,11 @@ def train_baseline_with_trainer(
         )
     if trainer == ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER:
         return train_advantage_calibrated_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER:
+        return train_advantage_blended_behavior_cloning_baseline(
             records,
             provenance=provenance,
         )
@@ -323,6 +363,40 @@ def _train_advantage_calibrated_contextual_prior_baseline(
     *,
     provenance: dict[str, object],
 ) -> BehaviorCloningBaseline:
+    return _train_reward_advantage_contextual_prior_baseline(
+        records,
+        provenance=provenance,
+        model_type=ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+        trainer=ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
+        sample_weight_policy=CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY,
+        advantage_blend_weight=None,
+    )
+
+
+def _train_advantage_blended_contextual_prior_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_reward_advantage_contextual_prior_baseline(
+        records,
+        provenance=provenance,
+        model_type=ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+        trainer=ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER,
+        sample_weight_policy=CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY,
+        advantage_blend_weight=ADVANTAGE_BLEND_WEIGHT,
+    )
+
+
+def _train_reward_advantage_contextual_prior_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+    model_type: str,
+    trainer: str,
+    sample_weight_policy: str,
+    advantage_blend_weight: float | None,
+) -> BehaviorCloningBaseline:
     support_counts: Counter[str] = Counter()
     reward_sums: Counter[str] = Counter()
     conditional_support_counts: dict[str, Counter[str]] = {}
@@ -353,13 +427,22 @@ def _train_advantage_calibrated_contextual_prior_baseline(
         support_counts,
         reward_sums=reward_sums,
     )
-    action_scores = _normalize_scores(weighted_counts)
     raw_action_scores = _normalize_scores(support_counts)
+    advantage_action_scores = _normalize_scores(weighted_counts)
+    action_scores = _blend_scores(
+        raw_action_scores,
+        advantage_action_scores,
+        advantage_blend_weight,
+    )
     action_score_metadata = _score_metadata(
         support_counts,
         scores=action_scores,
         delegate_scores=raw_action_scores,
-        weighted_record_count=sum(weighted_counts.values()),
+        weighted_record_count=_blended_weighted_count(
+            raw_record_count=sum(support_counts.values()),
+            advantage_record_count=sum(weighted_counts.values()),
+            advantage_blend_weight=advantage_blend_weight,
+        ),
     )
     conditional_weighted_counts = {
         key: _advantage_adjusted_counts(
@@ -368,27 +451,45 @@ def _train_advantage_calibrated_contextual_prior_baseline(
         )
         for key, action_counts in conditional_support_counts.items()
     }
-    conditional_action_scores = {
+    raw_conditional_action_scores = {
         key: _normalize_prior_corrected_scores(
-            conditional_weighted_counts[key],
-            global_counts=weighted_counts,
+            action_counts,
+            global_counts=support_counts,
             alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
             prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
         )
         for key, action_counts in conditional_support_counts.items()
         if sum(action_counts.values()) >= CONDITIONAL_MIN_RECORDS
     }
+    advantage_conditional_action_scores = {
+        key: _normalize_prior_corrected_scores(
+            conditional_weighted_counts[key],
+            global_counts=weighted_counts,
+            alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
+            prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
+        )
+        for key in raw_conditional_action_scores
+    }
+    conditional_action_scores = {
+        key: _blend_scores(
+            raw_conditional_action_scores[key],
+            advantage_conditional_action_scores[key],
+            advantage_blend_weight,
+        )
+        for key in raw_conditional_action_scores
+    }
     conditional_action_metadata = {
         key: _score_metadata(
             action_counts,
             scores=conditional_action_scores[key],
-            delegate_scores=_normalize_prior_corrected_scores(
-                action_counts,
-                global_counts=support_counts,
-                alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
-                prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
+            delegate_scores=raw_conditional_action_scores[key],
+            weighted_record_count=_blended_weighted_count(
+                raw_record_count=sum(action_counts.values()),
+                advantage_record_count=sum(
+                    conditional_weighted_counts[key].values()
+                ),
+                advantage_blend_weight=advantage_blend_weight,
             ),
-            weighted_record_count=sum(conditional_weighted_counts[key].values()),
         )
         for key, action_counts in conditional_support_counts.items()
         if key in conditional_action_scores
@@ -400,16 +501,26 @@ def _train_advantage_calibrated_contextual_prior_baseline(
         conditional_action_metadata=conditional_action_metadata,
         record_count=record_count,
         provenance=provenance,
-        model_type=ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
-        trainer=ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
-        sample_weight_policy=CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY,
+        model_type=model_type,
+        trainer=trainer,
+        sample_weight_policy=sample_weight_policy,
         sample_weight_base=ADVANTAGE_SAMPLE_WEIGHT_BASE,
         sample_weight_min=ADVANTAGE_SAMPLE_WEIGHT_MIN,
-        sample_weight_total=sum(weighted_counts.values()),
+        sample_weight_total=_blended_weighted_count(
+            raw_record_count=sum(support_counts.values()),
+            advantage_record_count=sum(weighted_counts.values()),
+            advantage_blend_weight=advantage_blend_weight,
+        ),
         sample_weight_max=ADVANTAGE_SAMPLE_WEIGHT_MAX,
         reward_advantage_policy=CONTEXTUAL_REWARD_ADVANTAGE_POLICY,
         reward_advantage_scale=ADVANTAGE_REWARD_SCALE,
         reward_advantage_min_action_support=ADVANTAGE_MIN_ACTION_SUPPORT,
+        reward_advantage_blend_policy=(
+            CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY
+            if advantage_blend_weight is not None
+            else None
+        ),
+        reward_advantage_blend_weight=advantage_blend_weight,
     )
 
 
@@ -495,6 +606,36 @@ def _advantage_adjusted_counts(
             )
         adjusted[action] = count_value * multiplier
     return adjusted
+
+
+def _blend_scores(
+    raw_scores: dict[str, float],
+    advantage_scores: dict[str, float],
+    advantage_blend_weight: float | None,
+) -> dict[str, float]:
+    if advantage_blend_weight is None:
+        return dict(advantage_scores)
+    return {
+        action: (
+            (1.0 - advantage_blend_weight) * float(raw_scores.get(action, 0.0))
+            + advantage_blend_weight * float(advantage_scores.get(action, 0.0))
+        )
+        for action in ACTION_NAMES
+    }
+
+
+def _blended_weighted_count(
+    *,
+    raw_record_count: float,
+    advantage_record_count: float,
+    advantage_blend_weight: float | None,
+) -> float:
+    if advantage_blend_weight is None:
+        return float(advantage_record_count)
+    return (
+        (1.0 - advantage_blend_weight) * float(raw_record_count)
+        + advantage_blend_weight * float(advantage_record_count)
+    )
 
 
 def _score_metadata(

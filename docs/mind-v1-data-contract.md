@@ -79,6 +79,18 @@ action scores from being treated as high-confidence evidence unless raw support
 also backs the learned top action. This path is not promoted by default; the
 same held-out gates decide whether it is better than the current control.
 
+The CLI also accepts `--trainer advantage-blended-contextual-prior`. This
+candidate keeps the same reward-advantage calculation but blends the normalized
+uniform contextual prior with the normalized advantage-calibrated prior at
+weight `0.2`. It writes model type
+`guarded_advantage_blended_contextual_prior_bc_v1`, sample-weight policy
+`contextual_reward_advantage_blended_counts_v1`,
+`contextual_reward_advantage_lift_v1`, and
+`contextual_reward_advantage_score_blend_v1` metadata. Runtime guard and
+delegate behavior is unchanged; the blend only changes learned action scores so
+advantage evidence is anchored to the behavior-cloning prior unless reward lift
+is strong enough to move the ranking.
+
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
 required; without the explicit flag, loading fails.
@@ -130,11 +142,11 @@ npm run sim:mind:gate -- \
   --fail-on-review
 ```
 
-The Mind gate accepts the same `--trainer` option and records the chosen trainer
-and sample-weight policy in both `protocol` and `artifact` report sections. The
-gate report also includes artifact diagnostics computed from both training
-trajectories and a held-out artifact-diagnostic seed bank before runtime
-evaluation:
+The Mind gate accepts the same `--trainer` option and records the chosen trainer,
+sample-weight policy, and any reward-advantage blend metadata in both
+`protocol` and `artifact` report sections. The gate report also includes
+artifact diagnostics computed from both training trajectories and a held-out
+artifact-diagnostic seed bank before runtime evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
 - predicted versus label action distribution drift, per-action precision/recall,

@@ -129,11 +129,27 @@ to `0.5038`, and reduced hard guard below the strict control target at
 `0.4779` cap.
 
 Follow-up probes show the remaining blocker is actual action disagreement, not
-confidence partitioning. Reward-scale sweeps from `0.75` through `4.0` did not
-beat the current `2.0` scale. Action-family floors for movement/attack actions
-reduced the candidate back near the control total but did not cross the strict
-fallback cap. Local-eat safe-deviation probes reduced fallback but changed
-per-seed alive/birth outcomes, so safe deviations remain disabled.
+confidence partitioning. Changing the delegate threshold only moved decisions
+between hard guard and confidence delegation while total fallback stayed near
+`0.4785`. Reward-scale sweeps from `0.75` through `4.0` did not beat the current
+`2.0` scale. Action-family floors for movement/attack actions reduced the
+candidate back near the control total but did not cross the strict fallback cap.
+Local-eat safe-deviation probes reduced fallback but changed per-seed
+alive/birth outcomes, so safe deviations remain disabled.
+
+The next opt-in trainer is `advantage-blended-contextual-prior`. It blends the
+uniform contextual prior with the advantage-calibrated prior at weight `0.2`,
+writing model type `guarded_advantage_blended_contextual_prior_bc_v1`,
+sample-weight policy `contextual_reward_advantage_blended_counts_v1`, and
+`contextual_reward_advantage_score_blend_v1` metadata. This is the first
+candidate to beat the strict local control target without relaxing runtime
+guards: on the default reused-trajectory gate it passed with zero per-seed
+alive/birth deltas, hard guard `0.1123`, confidence delegation `0.3650`, and
+total heuristic fallback `0.4773`. On the extended `5,13,19,29,37,41` seed
+matrix with `120,180` tick horizons and the same strict zero-delta/fallback caps,
+it also passed: at 120 ticks hard guard was `0.1123`, delegation `0.3630`, total
+fallback `0.4753`; at 180 ticks hard guard was `0.1163`, delegation `0.3243`,
+total fallback `0.4406`.
 
 The next viewer-visible checkpoint is implemented. `sim:run` accepts
 `--mind-artifact ... --enable-mind` for explicit full-replay Mind runs, and the

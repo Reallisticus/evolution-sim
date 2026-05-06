@@ -441,6 +441,76 @@ class MindV1Tests(unittest.TestCase):
             artifact["model"]["action_score_metadata"]["score_margin"],
         )
 
+    def test_advantage_blended_baseline_anchors_contextual_advantage(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        base_record = dict(dataset.records[0])
+
+        def training_record(action: str, reward_total: float) -> dict[str, object]:
+            record = dict(base_record)
+            record["requested_action"] = action
+            record["resolved_action"] = action
+            record["resolution_action_valid"] = True
+            reward = dict(record["reward"])
+            reward["total"] = reward_total
+            record["reward"] = reward
+            return record
+
+        records = [
+            *(training_record("eat", -0.5) for _ in range(6)),
+            *(training_record("stay", 1.0) for _ in range(2)),
+        ]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        uniform = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="contextual-prior",
+        ).to_artifact()
+        advantage = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-calibrated-contextual-prior",
+        ).to_artifact()
+
+        blended = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-blended-contextual-prior",
+        ).to_artifact()
+        validate_model_artifact_manifest(blended)
+
+        self.assertEqual(
+            blended["manifest"]["model_type"],
+            "guarded_advantage_blended_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            blended["model"]["trainer"],
+            "advantage-blended-contextual-prior",
+        )
+        self.assertEqual(
+            blended["model"]["sample_weight_policy"],
+            "contextual_reward_advantage_blended_counts_v1",
+        )
+        self.assertEqual(blended["model"]["reward_advantage_blend_weight"], 0.2)
+        self.assertGreater(
+            blended["model"]["action_scores"]["stay"],
+            uniform["model"]["action_scores"]["stay"],
+        )
+        self.assertLess(
+            blended["model"]["action_scores"]["stay"],
+            advantage["model"]["action_scores"]["stay"],
+        )
+        self.assertIn(
+            "delegate_score_margin",
+            blended["model"]["action_score_metadata"],
+        )
+
     def test_advantage_calibrated_artifact_requires_calibration_metadata(
         self,
     ) -> None:
@@ -463,6 +533,31 @@ class MindV1Tests(unittest.TestCase):
         with self.assertRaisesRegex(
             MindArtifactError,
             "reward_advantage_policy",
+        ):
+            validate_model_artifact_manifest(artifact)
+
+    def test_advantage_blended_artifact_requires_blend_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(record) for record in dataset.records[:4]]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-blended-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        del artifact["model"]["reward_advantage_blend_weight"]
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "reward_advantage_blend_weight",
         ):
             validate_model_artifact_manifest(artifact)
 
@@ -582,6 +677,51 @@ class MindV1Tests(unittest.TestCase):
             artifact["model"]["reward_advantage_policy"],
             "contextual_reward_advantage_lift_v1",
         )
+
+    def test_mind_train_cli_writes_advantage_blended_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            artifact_path = Path(tmpdir) / "advantage-blended-artifact.json"
+            self._write_tiny_trajectory(trajectory_path)
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                        "--trainer",
+                        "advantage-blended-contextual-prior",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+
+        self.assertIn(
+            "trainer=advantage-blended-contextual-prior",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "reward_advantage_blend_weight=0.2",
+            stdout.getvalue(),
+        )
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_advantage_blended_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "contextual_reward_advantage_blended_counts_v1",
+        )
+        self.assertEqual(artifact["model"]["reward_advantage_blend_weight"], 0.2)
 
     def test_run_headless_cli_writes_mind_viewer_replay(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -813,6 +953,14 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(
                 report["artifact"]["sample_weight_total"],
                 artifact["model"]["sample_weight_total"],
+            )
+            self.assertEqual(
+                report["artifact"]["reward_advantage_blend_policy"],
+                artifact["model"].get("reward_advantage_blend_policy"),
+            )
+            self.assertEqual(
+                report["artifact"]["reward_advantage_blend_weight"],
+                artifact["model"].get("reward_advantage_blend_weight"),
             )
             self.assertEqual(
                 report["artifact"]["heuristic_confidence_threshold"],

@@ -60,6 +60,13 @@ def main() -> None:
     print(f"trainer={args.trainer}")
     print(f"model_type={artifact['manifest']['model_type']}")
     print(f"sample_weight_policy={artifact['model']['sample_weight_policy']}")
+    blend_weight = artifact["model"].get("reward_advantage_blend_weight")
+    if blend_weight is not None:
+        print(
+            "reward_advantage_blend_policy="
+            f"{artifact['model'].get('reward_advantage_blend_policy')}"
+        )
+        print(f"reward_advantage_blend_weight={blend_weight}")
     print(f"trained_record_count={baseline.record_count}")
     print(f"source_records={sum(dataset.record_count for dataset in datasets)}")
     print(f"source_trajectories={len(datasets)}")

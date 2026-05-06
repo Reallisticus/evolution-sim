@@ -29,18 +29,30 @@ REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
 ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE = (
     "guarded_advantage_calibrated_contextual_prior_bc_v1"
 )
+ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE = (
+    "guarded_advantage_blended_contextual_prior_bc_v1"
+)
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
 CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
 REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
 ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER = (
     "advantage-calibrated-contextual-prior"
 )
+ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER = (
+    "advantage-blended-contextual-prior"
+)
 UNIFORM_SAMPLE_WEIGHT_POLICY = "uniform_v1"
 REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY = "reward_total_shifted_clamp_v1"
 CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY = (
     "contextual_reward_advantage_adjusted_counts_v1"
 )
+CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY = (
+    "contextual_reward_advantage_blended_counts_v1"
+)
 CONTEXTUAL_REWARD_ADVANTAGE_POLICY = "contextual_reward_advantage_lift_v1"
+CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY = (
+    "contextual_reward_advantage_score_blend_v1"
+)
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
@@ -48,6 +60,7 @@ SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
         BEHAVIOR_CLONING_BASELINE_MODEL_TYPE,
         REWARD_WEIGHTED_BASELINE_MODEL_TYPE,
         ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+        ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
     }
 )
 
@@ -148,7 +161,11 @@ def _validate_behavior_cloning_model_payload(
         max_record_count=trained_record_count,
         expected_record_count=trained_record_count,
         require_delegate_score_margin=(
-            model_type == ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE
+            model_type
+            in {
+                ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+                ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+            }
         ),
     )
     conditional_scores = _required_mapping(
@@ -231,7 +248,11 @@ def _validate_behavior_cloning_model_payload(
             max_record_count=trained_record_count,
             expected_record_count=None,
             require_delegate_score_margin=(
-                model_type == ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE
+                model_type
+                in {
+                    ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+                    ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+                }
             ),
         )
 
@@ -443,6 +464,11 @@ def _validate_training_weight_metadata(
         expected_sample_weight_policy = (
             CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY
         )
+    elif model_type == ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE:
+        expected_trainer = ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER
+        expected_sample_weight_policy = (
+            CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY
+        )
     else:
         raise MindArtifactError(
             f"model artifact manifest model_type is unsupported: {model_type!r}"
@@ -486,9 +512,13 @@ def _validate_training_weight_metadata(
         raise MindArtifactError(
             "uniform model.sample_weight_total must equal trained_record_count"
         )
-    if model_type == ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE:
+    if model_type in {
+        ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+        ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+    }:
         _validate_advantage_calibration_metadata(
             model,
+            model_type=model_type,
             sample_weight_base=sample_weight_base,
             sample_weight_min=sample_weight_min,
         )
@@ -497,6 +527,7 @@ def _validate_training_weight_metadata(
 def _validate_advantage_calibration_metadata(
     model: dict[str, object],
     *,
+    model_type: str,
     sample_weight_base: float,
     sample_weight_min: float,
 ) -> None:
@@ -530,6 +561,26 @@ def _validate_advantage_calibration_metadata(
         "reward_advantage_min_action_support",
         location="model",
     )
+    if model_type == ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE:
+        blend_policy = model.get("reward_advantage_blend_policy")
+        if blend_policy != CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY:
+            raise MindArtifactError(
+                (
+                    "model.reward_advantage_blend_policy expected "
+                    f"{CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY}, "
+                    f"found {blend_policy!r}"
+                )
+            )
+        blend_weight = _required_finite_number(
+            model,
+            "reward_advantage_blend_weight",
+            location="model",
+            minimum=0.0,
+        )
+        if blend_weight > 1.0:
+            raise MindArtifactError(
+                "model.reward_advantage_blend_weight must be <= 1.0"
+            )
 
 
 def _required_mapping(

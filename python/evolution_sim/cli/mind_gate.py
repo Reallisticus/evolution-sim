@@ -454,6 +454,12 @@ def run_mind_gate(
             "reward_advantage_min_action_support": artifact["model"].get(
                 "reward_advantage_min_action_support"
             ),
+            "reward_advantage_blend_policy": artifact["model"].get(
+                "reward_advantage_blend_policy"
+            ),
+            "reward_advantage_blend_weight": artifact["model"].get(
+                "reward_advantage_blend_weight"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"
