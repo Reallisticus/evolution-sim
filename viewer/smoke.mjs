@@ -203,18 +203,19 @@ try {
     const roles = [...document.querySelectorAll("#episode-inspector .episode-agent-pill span")].map((node) =>
       node.textContent.trim().toLowerCase(),
     );
+    const roleTokens = roles.flatMap((role) => role.split(" / ").map((token) => token.trim()));
     const ledgerTitles = [...document.querySelectorAll("#episode-inspector .episode-ledger-item span")].map((node) =>
       node.textContent.trim(),
     );
-    return { roles, ledgerTitles };
+    return { roles, roleTokens, ledgerTitles };
   });
-  if (!causalInspector.roles.includes("attacker")) {
+  if (!causalInspector.roleTokens.includes("attacker")) {
     throw new Error(`Expected attack episode roles to include attacker; saw ${causalInspector.roles.join(", ")}.`);
   }
-  if (!causalInspector.roles.some((role) => role === "target" || role === "killed")) {
+  if (!causalInspector.roleTokens.some((role) => role === "target" || role === "killed")) {
     throw new Error(`Expected attack episode roles to include target/killed; saw ${causalInspector.roles.join(", ")}.`);
   }
-  if (causalInspector.roles.some((role) => ["actor", "mover", "damaged", "healed", "drinker"].includes(role))) {
+  if (causalInspector.roleTokens.some((role) => ["actor", "mover", "damaged", "healed", "drinker"].includes(role))) {
     throw new Error(`Expected primary episode roles without support noise; saw ${causalInspector.roles.join(", ")}.`);
   }
   if (!causalInspector.ledgerTitles.includes("Support Events")) {

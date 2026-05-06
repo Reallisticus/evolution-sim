@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_gate, mind_train, run_headless
+from evolution_sim.cli import collect_trajectory, mind_gate, mind_train, run_headless
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.policy import ActionDecision
@@ -25,8 +25,10 @@ from evolution_sim.mind.baseline import (
 )
 from evolution_sim.mind.contracts import (
     MIND_MODEL_ARTIFACT_VERSION,
+    MIND_ONLINE_LEARNING_CONTRACT_VERSION,
     MIND_RUNTIME_ENABLED_DEFAULT,
     MIND_V1_DATA_CONTRACT_VERSION,
+    mind_online_learning_contract,
     mind_v1_data_contract,
 )
 from evolution_sim.mind.dataset import (
@@ -66,6 +68,32 @@ class MindV1Tests(unittest.TestCase):
         self.assertFalse(MIND_RUNTIME_ENABLED_DEFAULT)
         self.assertEqual(contract["model_artifact_version"], MIND_MODEL_ARTIFACT_VERSION)
         self.assertIn("trajectory_record_fields", contract)
+        json.dumps(contract)
+
+    def test_mind_online_learning_contract_declares_safe_ladder(self) -> None:
+        contract = mind_online_learning_contract()
+
+        self.assertEqual(
+            contract["contract_version"],
+            MIND_ONLINE_LEARNING_CONTRACT_VERSION,
+        )
+        self.assertFalse(contract["runtime_enabled_by_default"])
+        self.assertFalse(contract["online_weight_updates_enabled_by_default"])
+        self.assertFalse(contract["in_simulation_weight_updates_allowed"])
+        self.assertEqual(
+            contract["current_executable_slice"],
+            "learned_policy_trajectory_collection_v1",
+        )
+        self.assertTrue(
+            contract["trajectory_collection"]["requires_explicit_mind_enable"]
+        )
+        stages = {stage["stage"] for stage in contract["algorithm_ladder"]}
+        self.assertIn("neural_behavior_cloning_actor_critic", stages)
+        self.assertIn("conservative_offline_rl", stages)
+        self.assertIn("offline_to_online_finetuning", stages)
+        self.assertIn("open_ended_population_search", stages)
+        self.assertIn("world_model_control", stages)
+        self.assertTrue(contract["promotion_gates"]["zero_per_seed_alive_regression"])
         json.dumps(contract)
 
     def test_trajectory_jsonl_loader_validates_header_records_and_footer(self) -> None:
@@ -511,6 +539,145 @@ class MindV1Tests(unittest.TestCase):
             blended["model"]["action_score_metadata"],
         )
 
+    def test_value_calibrated_baseline_writes_value_head_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        base_record = dict(dataset.records[0])
+
+        def training_record(action: str, reward_total: float) -> dict[str, object]:
+            record = dict(base_record)
+            record["requested_action"] = action
+            record["resolved_action"] = action
+            record["resolution_action_valid"] = True
+            reward = dict(record["reward"])
+            reward["total"] = reward_total
+            record["reward"] = reward
+            return record
+
+        records = [
+            *(training_record("eat", -0.5) for _ in range(5)),
+            *(training_record("stay", 1.0) for _ in range(4)),
+        ]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="value-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        validate_model_artifact_manifest(artifact)
+
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_value_calibrated_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["trainer"],
+            "value-calibrated-contextual-prior",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "contextual_value_calibrated_score_blend_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["value_estimation_policy"],
+            "mean_reward_action_value_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["value_score_blend_policy"],
+            "prior_value_score_blend_v1",
+        )
+        self.assertAlmostEqual(artifact["model"]["value_score_blend_weight"], 0.05)
+        self.assertEqual(
+            artifact["model"]["value_supported_deviation_policy"],
+            "positive_value_safe_deviation_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["value_supported_deviation_min_support"],
+            32,
+        )
+        self.assertAlmostEqual(
+            artifact["model"]["value_supported_deviation_min_value_margin"],
+            0.04,
+        )
+        self.assertAlmostEqual(
+            artifact["model"]["value_supported_deviation_min_learned_value"],
+            0.02,
+        )
+        self.assertGreater(
+            artifact["model"]["action_value_estimates"]["stay"],
+            artifact["model"]["action_value_estimates"]["eat"],
+        )
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["top_action"],
+            "stay",
+        )
+        self.assertGreater(
+            artifact["model"]["action_scores"]["stay"],
+            artifact["model"]["action_scores"]["eat"],
+        )
+        self.assertIn(
+            "delegate_score_margin",
+            artifact["model"]["action_score_metadata"],
+        )
+
+    def test_value_calibrated_artifact_requires_value_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(record) for record in dataset.records[:4]]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="value-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        del artifact["model"]["action_value_estimates"]
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "action_value_estimates",
+        ):
+            validate_model_artifact_manifest(artifact)
+
+    def test_value_calibrated_artifact_requires_deviation_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(record) for record in dataset.records[:4]]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="value-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        del artifact["model"]["value_supported_deviation_policy"]
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "value_supported_deviation_policy",
+        ):
+            validate_model_artifact_manifest(artifact)
+
     def test_advantage_calibrated_artifact_requires_calibration_metadata(
         self,
     ) -> None:
@@ -723,6 +890,62 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertEqual(artifact["model"]["reward_advantage_blend_weight"], 0.2)
 
+    def test_mind_train_cli_writes_value_calibrated_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            artifact_path = Path(tmpdir) / "value-calibrated-artifact.json"
+            self._write_tiny_trajectory(trajectory_path)
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                        "--trainer",
+                        "value-calibrated-contextual-prior",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+
+        self.assertIn(
+            "trainer=value-calibrated-contextual-prior",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "value_score_blend_weight=0.05",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "value_supported_deviation_policy=positive_value_safe_deviation_v1",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "value_supported_deviation_min_support=32",
+            stdout.getvalue(),
+        )
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_value_calibrated_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "contextual_value_calibrated_score_blend_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["value_estimation_policy"],
+            "mean_reward_action_value_v1",
+        )
+
     def test_run_headless_cli_writes_mind_viewer_replay(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -787,6 +1010,74 @@ class MindV1Tests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "--mind-artifact requires --enable-mind"),
             ):
                 run_headless.main()
+
+    def test_collect_trajectory_cli_writes_learned_policy_dataset(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            training_path = tmp_path / "training.jsonl.gz"
+            artifact_path = tmp_path / "mind-artifact.json"
+            learned_path = tmp_path / "learned.jsonl.gz"
+            self._write_tiny_trajectory(training_path)
+            dataset = load_trajectory_jsonl(training_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            write_model_artifact(artifact_path, baseline.to_artifact())
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "collect_trajectory",
+                        "--seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--output",
+                        str(learned_path),
+                        "--split-id",
+                        "learned-online-probe",
+                        "--mind-artifact",
+                        str(artifact_path),
+                        "--enable-mind",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                collect_trajectory.main()
+
+            learned_dataset = load_trajectory_jsonl(learned_path)
+
+        self.assertIn("mind_policy=mind_v1_learned_policy", stdout.getvalue())
+        self.assertEqual(
+            learned_dataset.header["provenance"]["split_id"],
+            "learned-online-probe",
+        )
+        self.assertTrue(
+            any(
+                record["policy_id"] == "mind_v1_learned_policy"
+                for record in learned_dataset.records
+            )
+        )
+
+    def test_collect_trajectory_cli_requires_explicit_mind_enable(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "mind-artifact.json"
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "collect_trajectory",
+                        "--mind-artifact",
+                        str(artifact_path),
+                    ],
+                ),
+                self.assertRaisesRegex(SystemExit, "--mind-artifact requires --enable-mind"),
+            ):
+                collect_trajectory.main()
 
     def test_behavior_cloning_artifact_diagnostics_report_imitation_and_coverage(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -982,6 +1273,26 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(
                 report["artifact"]["reward_advantage_blend_weight"],
                 artifact["model"].get("reward_advantage_blend_weight"),
+            )
+            self.assertEqual(
+                report["artifact"]["value_estimation_policy"],
+                artifact["model"].get("value_estimation_policy"),
+            )
+            self.assertEqual(
+                report["artifact"]["value_score_blend_policy"],
+                artifact["model"].get("value_score_blend_policy"),
+            )
+            self.assertEqual(
+                report["artifact"]["value_score_blend_weight"],
+                artifact["model"].get("value_score_blend_weight"),
+            )
+            self.assertEqual(
+                report["artifact"]["value_supported_deviation_policy"],
+                artifact["model"].get("value_supported_deviation_policy"),
+            )
+            self.assertEqual(
+                report["artifact"]["value_supported_deviation_min_support"],
+                artifact["model"].get("value_supported_deviation_min_support"),
             )
             self.assertEqual(
                 report["artifact"]["heuristic_confidence_threshold"],
@@ -1627,6 +1938,284 @@ class MindV1Tests(unittest.TestCase):
             diagnostics["heuristic_delegate_reason"],
             "low_confidence_action_prior",
         )
+
+    def test_value_supported_deviation_bypasses_delegate_and_guard(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.32,
+                    "vegetation": 0.32,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.72, "stay": 0.01},
+            action_score_metadata={"record_count": 64, "delegate_score_margin": 0.04},
+            action_value_estimates={"eat": 0.12, "stay": 0.02},
+            heuristic_guard=True,
+            heuristic_delegate=True,
+            heuristic_delegate_max_training_score_margin=0.25,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            value_supported_deviation_policy="positive_value_safe_deviation_v1",
+            value_supported_deviation_min_support=32,
+            value_supported_deviation_min_value_margin=0.04,
+            value_supported_deviation_min_learned_value=0.02,
+        )
+
+        decision = policy.decide(observation, {"eat": True, "stay": True})
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertNotIn(
+            "observation_heuristic_confidence_delegate_v1",
+            decision.source,
+        )
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertFalse(diagnostics["heuristic_delegate_used"])
+        self.assertTrue(diagnostics["safe_deviation_used"])
+        self.assertEqual(
+            diagnostics["safe_deviation_reason"],
+            "value_supported_local_resource_eat",
+        )
+        self.assertAlmostEqual(float(diagnostics["learned_action_value"]), 0.12)
+        self.assertAlmostEqual(float(diagnostics["heuristic_action_value"]), 0.02)
+
+    def test_value_supported_deviation_requires_context_support(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.32,
+                    "vegetation": 0.32,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.72, "stay": 0.01},
+            action_score_metadata={"record_count": 12, "delegate_score_margin": 0.04},
+            action_value_estimates={"eat": 0.12, "stay": 0.02},
+            heuristic_guard=True,
+            heuristic_delegate=True,
+            heuristic_delegate_max_training_score_margin=0.25,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            value_supported_deviation_policy="positive_value_safe_deviation_v1",
+            value_supported_deviation_min_support=32,
+            value_supported_deviation_min_value_margin=0.04,
+            value_supported_deviation_min_learned_value=0.02,
+        )
+
+        decision = policy.decide(observation, {"eat": True, "stay": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn(
+            "observation_heuristic_confidence_delegate_v1",
+            decision.source,
+        )
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertTrue(diagnostics["heuristic_delegate_used"])
+        self.assertFalse(diagnostics["safe_deviation_used"])
+
+    def test_value_supported_deviation_rejects_local_eat_over_move(self) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.32,
+                    "vegetation": 0.32,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+                {
+                    "dx": 1,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "none",
+                    "water_access_reason": "none",
+                    "food": 0.5,
+                    "vegetation": 0.5,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                },
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 1, "dy": 0, "distance": 1, "strength": 0.5},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.72, "move_east": 0.2, "stay": 0.01},
+            action_score_metadata={"record_count": 64, "delegate_score_margin": 0.04},
+            action_value_estimates={"eat": 0.12, "move_east": 0.02, "stay": 0.01},
+            heuristic_guard=True,
+            heuristic_delegate=True,
+            heuristic_delegate_max_training_score_margin=0.25,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            value_supported_deviation_policy="positive_value_safe_deviation_v1",
+            value_supported_deviation_min_support=32,
+            value_supported_deviation_min_value_margin=0.04,
+            value_supported_deviation_min_learned_value=0.02,
+        )
+
+        decision = policy.decide(
+            observation,
+            {"eat": True, "move_east": True, "stay": True},
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+        self.assertIn("observation_heuristic_confidence_delegate_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertTrue(diagnostics["heuristic_delegate_used"])
+        self.assertFalse(diagnostics["safe_deviation_used"])
+        self.assertEqual(diagnostics["heuristic_action"], "move_east")
+
+    def test_value_supported_deviation_allows_local_eat_over_conservation(
+        self,
+    ) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.95,
+                "hydration_ratio": 0.86,
+                "health_ratio": 0.9,
+                "trophic_role": "carnivore",
+                "meat_mode": "hunter",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.2,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"eat": 0.72, "stay": 0.01},
+            action_score_metadata={"record_count": 64, "delegate_score_margin": 0.4},
+            action_value_estimates={"eat": 0.12, "stay": 0.02},
+            heuristic_guard=True,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=1.0,
+            value_supported_deviation_policy="positive_value_safe_deviation_v1",
+            value_supported_deviation_min_support=32,
+            value_supported_deviation_min_value_margin=0.04,
+            value_supported_deviation_min_learned_value=0.02,
+        )
+
+        decision = policy.decide(observation, {"eat": True, "stay": True})
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertTrue(diagnostics["safe_deviation_used"])
+        self.assertEqual(
+            diagnostics["safe_deviation_reason"],
+            "value_supported_local_resource_eat",
+        )
+        self.assertEqual(diagnostics["heuristic_action"], "stay")
 
     def test_heuristic_guard_preserves_explicit_conservation(self) -> None:
         observation = {

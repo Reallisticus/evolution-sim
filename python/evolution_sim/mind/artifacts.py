@@ -9,6 +9,7 @@ from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import OBSERVATION_SCHEMA_VERSION
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
+from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
 from evolution_sim.env.runtime.trajectory import TRAJECTORY_SCHEMA_VERSION
 from evolution_sim.mind.contracts import (
     MIND_MODEL_ARTIFACT_VERSION,
@@ -32,6 +33,9 @@ ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE = (
 ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE = (
     "guarded_advantage_blended_contextual_prior_bc_v1"
 )
+VALUE_CALIBRATED_BASELINE_MODEL_TYPE = (
+    "guarded_value_calibrated_contextual_prior_bc_v1"
+)
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
 CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
 REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
@@ -41,6 +45,9 @@ ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER = (
 ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER = (
     "advantage-blended-contextual-prior"
 )
+VALUE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER = (
+    "value-calibrated-contextual-prior"
+)
 UNIFORM_SAMPLE_WEIGHT_POLICY = "uniform_v1"
 REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY = "reward_total_shifted_clamp_v1"
 CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY = (
@@ -49,10 +56,16 @@ CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY = (
 CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY = (
     "contextual_reward_advantage_blended_counts_v1"
 )
+CONTEXTUAL_VALUE_CALIBRATED_SAMPLE_WEIGHT_POLICY = (
+    "contextual_value_calibrated_score_blend_v1"
+)
 CONTEXTUAL_REWARD_ADVANTAGE_POLICY = "contextual_reward_advantage_lift_v1"
 CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY = (
     "contextual_reward_advantage_score_blend_v1"
 )
+MEAN_REWARD_ACTION_VALUE_POLICY = "mean_reward_action_value_v1"
+PRIOR_VALUE_SCORE_BLEND_POLICY = "prior_value_score_blend_v1"
+VALUE_SUPPORTED_DEVIATION_POLICY = "positive_value_safe_deviation_v1"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
@@ -61,6 +74,7 @@ SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
         REWARD_WEIGHTED_BASELINE_MODEL_TYPE,
         ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
         ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+        VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
     }
 )
 
@@ -165,6 +179,7 @@ def _validate_behavior_cloning_model_payload(
             in {
                 ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
                 ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+                VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
             }
         ),
     )
@@ -252,8 +267,15 @@ def _validate_behavior_cloning_model_payload(
                 in {
                     ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
                     ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+                    VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
                 }
             ),
+        )
+
+    if model_type == VALUE_CALIBRATED_BASELINE_MODEL_TYPE:
+        _validate_value_calibration_metadata(
+            model,
+            conditional_score_keys=set(conditional_scores),
         )
 
     fallback_action = model.get("fallback_action")
@@ -469,6 +491,11 @@ def _validate_training_weight_metadata(
         expected_sample_weight_policy = (
             CONTEXTUAL_REWARD_ADVANTAGE_BLEND_SAMPLE_WEIGHT_POLICY
         )
+    elif model_type == VALUE_CALIBRATED_BASELINE_MODEL_TYPE:
+        expected_trainer = VALUE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER
+        expected_sample_weight_policy = (
+            CONTEXTUAL_VALUE_CALIBRATED_SAMPLE_WEIGHT_POLICY
+        )
     else:
         raise MindArtifactError(
             f"model artifact manifest model_type is unsupported: {model_type!r}"
@@ -515,6 +542,7 @@ def _validate_training_weight_metadata(
     if model_type in {
         ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
         ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+        VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
     }:
         _validate_advantage_calibration_metadata(
             model,
@@ -561,7 +589,10 @@ def _validate_advantage_calibration_metadata(
         "reward_advantage_min_action_support",
         location="model",
     )
-    if model_type == ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE:
+    if model_type in {
+        ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
+        VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
+    }:
         blend_policy = model.get("reward_advantage_blend_policy")
         if blend_policy != CONTEXTUAL_REWARD_ADVANTAGE_BLEND_POLICY:
             raise MindArtifactError(
@@ -580,6 +611,155 @@ def _validate_advantage_calibration_metadata(
         if blend_weight > 1.0:
             raise MindArtifactError(
                 "model.reward_advantage_blend_weight must be <= 1.0"
+            )
+
+
+def _validate_value_calibration_metadata(
+    model: dict[str, object],
+    *,
+    conditional_score_keys: set[object],
+) -> None:
+    value_estimation_policy = model.get("value_estimation_policy")
+    if value_estimation_policy != MEAN_REWARD_ACTION_VALUE_POLICY:
+        raise MindArtifactError(
+            (
+                "model.value_estimation_policy expected "
+                f"{MEAN_REWARD_ACTION_VALUE_POLICY}, "
+                f"found {value_estimation_policy!r}"
+            )
+        )
+    value_score_blend_policy = model.get("value_score_blend_policy")
+    if value_score_blend_policy != PRIOR_VALUE_SCORE_BLEND_POLICY:
+        raise MindArtifactError(
+            (
+                "model.value_score_blend_policy expected "
+                f"{PRIOR_VALUE_SCORE_BLEND_POLICY}, "
+                f"found {value_score_blend_policy!r}"
+            )
+        )
+    blend_weight = _required_finite_number(
+        model,
+        "value_score_blend_weight",
+        location="model",
+        minimum=0.0,
+    )
+    if blend_weight > 1.0:
+        raise MindArtifactError("model.value_score_blend_weight must be <= 1.0")
+    _required_positive_int(
+        model,
+        "value_min_action_support",
+        location="model",
+    )
+    value_score_epsilon = _required_finite_number(
+        model,
+        "value_score_epsilon",
+        location="model",
+        minimum=0.0,
+    )
+    if value_score_epsilon <= 0.0:
+        raise MindArtifactError("model.value_score_epsilon must be positive")
+    deviation_policy = model.get("value_supported_deviation_policy")
+    if deviation_policy != VALUE_SUPPORTED_DEVIATION_POLICY:
+        raise MindArtifactError(
+            (
+                "model.value_supported_deviation_policy expected "
+                f"{VALUE_SUPPORTED_DEVIATION_POLICY}, found {deviation_policy!r}"
+            )
+        )
+    _required_positive_int(
+        model,
+        "value_supported_deviation_min_support",
+        location="model",
+    )
+    deviation_margin = _required_finite_number(
+        model,
+        "value_supported_deviation_min_value_margin",
+        location="model",
+        minimum=0.0,
+    )
+    if deviation_margin <= 0.0:
+        raise MindArtifactError(
+            "model.value_supported_deviation_min_value_margin must be positive"
+        )
+    min_learned_value = _required_finite_number(
+        model,
+        "value_supported_deviation_min_learned_value",
+        location="model",
+        minimum=0.0,
+    )
+    if min_learned_value <= 0.0:
+        raise MindArtifactError(
+            "model.value_supported_deviation_min_learned_value must be positive"
+        )
+    action_value_estimates = _required_mapping(
+        model,
+        "action_value_estimates",
+        location="model",
+    )
+    _validate_action_value_map(
+        action_value_estimates,
+        location="model.action_value_estimates",
+    )
+    conditional_value_estimates = _required_mapping(
+        model,
+        "conditional_action_value_estimates",
+        location="model",
+    )
+    if set(conditional_value_estimates) != conditional_score_keys:
+        raise MindArtifactError(
+            (
+                "model.conditional_action_value_estimates keys must match "
+                "model.conditional_action_scores keys"
+            )
+        )
+    for feature_key, estimates in conditional_value_estimates.items():
+        if not isinstance(feature_key, str) or not feature_key:
+            raise MindArtifactError(
+                (
+                    "model.conditional_action_value_estimates keys must be "
+                    "non-empty strings"
+                )
+            )
+        if not isinstance(estimates, dict):
+            raise MindArtifactError(
+                (
+                    "model.conditional_action_value_estimates"
+                    f"[{feature_key!r}] must be an object"
+                )
+            )
+        _validate_action_value_map(
+            estimates,
+            location=f"model.conditional_action_value_estimates[{feature_key!r}]",
+        )
+
+
+def _validate_action_value_map(
+    estimates: dict[str, object],
+    *,
+    location: str,
+) -> None:
+    keys = set(estimates)
+    expected = set(ACTION_NAMES)
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MindArtifactError(
+            f"{location} must cover the full action vocabulary ({'; '.join(detail)})"
+        )
+    lower, upper = REWARD_TOTAL_BOUNDS
+    for action in ACTION_NAMES:
+        value = _finite_number(estimates.get(action), f"{location}.{action}")
+        if value < lower or value > upper:
+            raise MindArtifactError(
+                (
+                    f"{location}.{action} must be within reward total bounds "
+                    f"[{lower}, {upper}]"
+                )
             )
 
 

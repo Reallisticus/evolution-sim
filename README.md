@@ -14,14 +14,14 @@ For a senior-developer codebase walkthrough, start with
 ## Run
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 PYTHONPATH=python python3 -m evolution_sim.cli.run_headless --seed 7 --ticks 2000 --output output/sim-runs/seed7.json
 ```
 
 ## Inspect
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run output/sim-runs/seed7.json
 ```
 
@@ -30,7 +30,7 @@ PYTHONPATH=python python3 -m evolution_sim.cli.inspect_run output/sim-runs/seed7
 Compare multiple seeds without writing replay payloads:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:evaluate -- --seeds 1,2,3,4,5 --ticks 120 --output output/evaluations/foundation-120.json
 ```
 
@@ -44,19 +44,35 @@ taxonomy fields.
 Collect trainable trajectory rows without building full replay/viewer payloads:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:trajectory -- --seed 7 --ticks 400 --output output/trajectories/seed7.jsonl.gz
 ```
 
 The trajectory stream is gzip JSONL when the output path ends in `.gz`. It writes
 a header with the trajectory/observation/reward contract, one record per
 decision, and a footer with summary and trajectory statistics.
+Learned-policy trajectory collection is also available, but remains explicitly
+opt-in and disabled by default:
+
+```bash
+npm run sim:trajectory -- \
+  --seed 41 \
+  --ticks 120 \
+  --output output/trajectories/mind-v2-learned-seed41.jsonl.gz \
+  --split-id mind-v2-learned-rollout \
+  --mind-artifact output/mind/mind-v1-gate-value-deviation-artifact.json \
+  --enable-mind
+```
+
+This is the first offline-to-online data path: collect experience from a learned
+artifact in summary-only mode, retrain outside the simulation tick loop, then
+promote only through held-out gates.
 
 Train and evaluate the current disabled-by-default Mind v1 behavior-cloning
 baseline from one or more trajectory streams:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:mind:train -- \
   --trajectory output/trajectories/seed7.jsonl.gz \
   --output output/mind/seed7-bc-artifact.json
@@ -78,7 +94,7 @@ Run the reproducible Mind v1 gate to collect the default multi-seed bank, train
 the guarded baseline, and evaluate held-out seeds `5,13,19,29`:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:mind:gate
 ```
 
@@ -98,14 +114,15 @@ Use `--validation-ticks 120,240` for an opt-in longer-horizon validation matrix.
 Use `npm run sim:mind:gate:extended` for the broader held-out seed matrix
 (`5,13,19,29,37,41`) at 120 and 180 ticks.
 See `docs/mind-v1-stage-plan.md` for the phase boundary before moving beyond
-the heuristic safety floor.
+the heuristic safety floor, and `docs/mind-v2-online-neural-roadmap.md` for the
+neural/offline-to-online plan.
 
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:gate:quick
 ```
 
@@ -156,7 +173,7 @@ covered by tests; the default heuristic still never emits communication tokens.
 ## Test
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:test
 ```
 
@@ -169,14 +186,14 @@ focused local probes, and include both environment variables when doing so.
 Generate a small replay for the browser viewer:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json
 ```
 
 Serve the repo root:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run viewer:serve
 ```
 
@@ -211,7 +228,7 @@ The viewer shows:
 Smoke-check the viewer:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run viewer:validate
 npm run viewer:smoke:malformed
 npm run viewer:smoke
@@ -222,7 +239,7 @@ npm run viewer:smoke
 Run the regression and viewer checks for the current Foundation slice, including biotic pressure:
 
 ```bash
-cd /Users/njm/Projects/evolution-sim
+cd evolution-sim
 npm run sim:test
 npm run sim:gate:quick
 npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.json

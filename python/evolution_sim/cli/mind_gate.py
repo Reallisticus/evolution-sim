@@ -460,6 +460,33 @@ def run_mind_gate(
             "reward_advantage_blend_weight": artifact["model"].get(
                 "reward_advantage_blend_weight"
             ),
+            "value_estimation_policy": artifact["model"].get(
+                "value_estimation_policy"
+            ),
+            "value_score_blend_policy": artifact["model"].get(
+                "value_score_blend_policy"
+            ),
+            "value_score_blend_weight": artifact["model"].get(
+                "value_score_blend_weight"
+            ),
+            "value_min_action_support": artifact["model"].get(
+                "value_min_action_support"
+            ),
+            "value_score_epsilon": artifact["model"].get(
+                "value_score_epsilon"
+            ),
+            "value_supported_deviation_policy": artifact["model"].get(
+                "value_supported_deviation_policy"
+            ),
+            "value_supported_deviation_min_support": artifact["model"].get(
+                "value_supported_deviation_min_support"
+            ),
+            "value_supported_deviation_min_value_margin": artifact["model"].get(
+                "value_supported_deviation_min_value_margin"
+            ),
+            "value_supported_deviation_min_learned_value": artifact["model"].get(
+                "value_supported_deviation_min_learned_value"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"

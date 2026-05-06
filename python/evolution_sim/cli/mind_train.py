@@ -67,6 +67,25 @@ def main() -> None:
             f"{artifact['model'].get('reward_advantage_blend_policy')}"
         )
         print(f"reward_advantage_blend_weight={blend_weight}")
+    value_blend_weight = artifact["model"].get("value_score_blend_weight")
+    if value_blend_weight is not None:
+        print(
+            "value_estimation_policy="
+            f"{artifact['model'].get('value_estimation_policy')}"
+        )
+        print(
+            "value_score_blend_policy="
+            f"{artifact['model'].get('value_score_blend_policy')}"
+        )
+        print(f"value_score_blend_weight={value_blend_weight}")
+        print(
+            "value_supported_deviation_policy="
+            f"{artifact['model'].get('value_supported_deviation_policy')}"
+        )
+        print(
+            "value_supported_deviation_min_support="
+            f"{artifact['model'].get('value_supported_deviation_min_support')}"
+        )
     print(f"trained_record_count={baseline.record_count}")
     print(f"source_records={sum(dataset.record_count for dataset in datasets)}")
     print(f"source_trajectories={len(datasets)}")

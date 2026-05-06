@@ -91,6 +91,28 @@ delegate behavior is unchanged; the blend only changes learned action scores so
 advantage evidence is anchored to the behavior-cloning prior unless reward lift
 is strong enough to move the ranking.
 
+The CLI also accepts `--trainer value-calibrated-contextual-prior`. This
+opt-in learner adds a deterministic value head without changing the runtime
+policy boundary: it estimates mean `reward.total` per action for the global and
+matched contextual buckets, converts supported value differences into a
+normalized value preference, and blends that value preference at weight `0.05`
+on top of the current `0.2` advantage-blended prior. It writes model type
+`guarded_value_calibrated_contextual_prior_bc_v1`, sample-weight policy
+`contextual_value_calibrated_score_blend_v1`,
+`mean_reward_action_value_v1`, and `prior_value_score_blend_v1` metadata, plus
+full-vocabulary `action_value_estimates` and
+`conditional_action_value_estimates`. It also declares the opt-in
+`positive_value_safe_deviation_v1` runtime policy with support and value-margin
+thresholds. Runtime may bypass confidence delegation and the hard heuristic
+guard only for local-resource `eat` actions over heuristic `stay` decisions when
+the matched bucket has at least `32` records, the learned action value is at
+least `0.02`, the learned-over-heuristic value margin is at least `0.04`, vitals
+are safe, and the center tile has a compatible local resource. Artifact
+validation requires those value maps to cover the complete action vocabulary
+with finite values inside the declared reward-total bounds and requires the
+value-supported deviation thresholds to be explicit. This remains guarded and
+disabled by default.
+
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
 required; without the explicit flag, loading fails.
@@ -144,10 +166,10 @@ sim:mind:gate -- --trainer <candidate-trainer> ...` directly, but the strict
 script is the local promotion check.
 
 The Mind gate accepts the same `--trainer` option and records the chosen trainer,
-sample-weight policy, and any reward-advantage blend metadata in both
-`protocol` and `artifact` report sections. The gate report also includes
-artifact diagnostics computed from both training trajectories and a held-out
-artifact-diagnostic seed bank before runtime evaluation:
+sample-weight policy, any reward-advantage blend metadata, and any value-head
+metadata in both `protocol` and `artifact` report sections. The gate report
+also includes artifact diagnostics computed from both training trajectories and
+a held-out artifact-diagnostic seed bank before runtime evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
 - predicted versus label action distribution drift, per-action precision/recall,
@@ -194,6 +216,13 @@ and plant movement, but the current baseline writes them as `null`. Those
 bypasses remain disabled unless a future artifact explicitly supplies finite
 thresholds and passes the extended gate.
 
+Value-calibrated artifacts use a separate value-supported deviation policy
+instead of those nullable heuristic-safe fields. The value path is narrower:
+only high-support, positive-value local-resource `eat` actions over heuristic
+`stay` decisions can bypass confidence delegation, and the selected value
+estimates are surfaced in policy diagnostics as `learned_action_value` and
+`heuristic_action_value`.
+
 Full-replay runs can now opt into a Mind artifact for viewer inspection:
 
 ```bash
@@ -213,6 +242,24 @@ records. The viewer's Decision Layer includes a `Mind Fallback` mode that colors
 plain learned actions, confidence delegation, and hard-guard interventions
 separately so fallback clusters can be inspected on the map and in each agent
 dossier.
+
+Summary-only trajectory collection can also opt into a Mind artifact:
+
+```bash
+npm run sim:trajectory -- \
+  --seed 41 \
+  --ticks 120 \
+  --output output/trajectories/mind-v2-learned-seed41.jsonl.gz \
+  --split-id mind-v2-learned-rollout \
+  --mind-artifact output/mind/mind-v1-gate-value-deviation-artifact.json \
+  --enable-mind
+```
+
+This is the current online-learning boundary. The simulator may collect
+experience from a learned policy, but policy weights are still immutable during a
+run. In-simulation online updates remain disallowed until a future contract can
+make update logs replayable, deterministic, and gateable. The machine-readable
+online-learning ladder is exposed by `mind_online_learning_contract()`.
 
 The guarded contextual baseline uses feature policy `mind_feature_policy_v2`.
 It materializes conditional action priors once the feature context has at least

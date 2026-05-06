@@ -160,6 +160,51 @@ calibration-aware value/action model: it lets the trainer compare score
 confidence against realized reward while keeping the runtime policy boundary
 unchanged and unprivileged.
 
+The first opt-in value-calibrated trainer is implemented. It estimates mean
+reward per action for global and contextual buckets, writes full action-value
+maps into model artifacts, validates those maps against reward-total bounds,
+and blends a small `0.05` value preference on top of the current
+advantage-blended prior. The direct `0.2` value blend reduced hard guard but
+missed strict promotion because confidence delegation rose too far; the safer
+anchored value head passed the strict extended matrix with zero alive/birth
+deltas. At 120 ticks hard guard was `0.0966`, delegation `0.3807`, total
+fallback `0.4773`; at 180 ticks hard guard was `0.0989`, delegation `0.3488`,
+total fallback `0.4477`. This is real progress toward a value learner because
+hard guards drop materially, but it is not a heuristic replacement yet: total
+fallback is still constrained by confidence delegation and is not better than
+the current blended candidate on the extended matrix.
+
+The confidence-calibration slice is implemented for one narrow behavior class:
+`positive_value_safe_deviation_v1` lets high-support, positive-value local
+`eat` actions override heuristic `stay` decisions when the matched value head
+clears explicit artifact thresholds. The strict extended matrix still passes
+with zero alive/birth deltas. At 120 ticks hard guard is `0.0964`, delegation
+`0.3807`, safe value deviations `0.0002` (`3` actions), and total fallback
+`0.4771`; at 180 ticks hard guard is `0.0989`, delegation `0.3488`, safe value
+deviations `0.0001` (`3` actions), and total fallback `0.4477`. This is a real
+but small controller step: total fallback is now below the strict `0.4779` cap
+and the rounded `0.4780` control target, but the system is still mostly
+abstaining through confidence delegation.
+
+Rejected tuning remains important. Lowering the value-supported deviation
+thresholds to support `16`, value margin `0.02`, and learned value `0.01`
+reduced delegation more aggressively, but failed the 180-tick strict gate:
+alive mean delta was `-0.8334`, seed `5` alive delta was `-3`, seed `13` alive
+delta was `-4`, and seed `5` births delta was `-2`. Keep the accepted
+thresholds at support `32`, value margin `0.04`, and learned value `0.02` until
+a stronger learner can preserve per-seed outcomes while taking more actions.
+Broadening the accepted value path from heuristic `stay` to heuristic movement
+was also rejected: it cut total fallback to `0.3857` at 120 ticks and `0.3605`
+at 180 ticks, but seed `5` regressed by `-15` and `-33` alive agents and by
+`-16` and `-36` births. Immediate positive value is therefore not enough; the
+next learner has to model resource depletion and population-level effects.
+
+The next learner should target a richer value/calibration boundary rather than
+loosening thresholds: estimate action value under action-conditioned context,
+separate resource-consumption externalities from immediate reward, and add a
+candidate autonomous move/stay deviation only after it has an explicit gate
+target and failure diagnostics.
+
 The next viewer-visible checkpoint is implemented. `sim:run` accepts
 `--mind-artifact ... --enable-mind` for explicit full-replay Mind runs, and the
 viewer Decision Layer has a `Mind Fallback` mode that renders plain learned
@@ -170,12 +215,28 @@ confidence delegates, `358` hard guards, and `1` passive action. This makes the
 remaining fallback clusters inspectable in the browser instead of only in gate
 JSON.
 
+The value-head viewer checkpoint is
+`output/sim-runs/mind-value-viewer-check.json`. On the same seed and horizon it
+produced `4,204` trajectory decisions: `2,313` plain learned actions, `1,522`
+confidence delegates, `368` hard guards, and `1` passive action.
+
+The value-deviation gate artifacts are
+`output/mind/mind-v1-gate-value-deviation-artifact.json` and
+`output/mind/mind-v1-gate-value-deviation-report.json`. They are better suited
+for metrics than visual inspection because the accepted value-supported action
+count is intentionally tiny.
+A seed `41`, 120-tick full replay for this artifact is available at
+`output/sim-runs/mind-value-deviation-viewer-check.json`; it contains `1,064`
+plain learned actions, `768` confidence delegates, `198` hard guards, and `6`
+passive records.
+
 Rejected tuning paths are documented so they are not rediscovered as false
 progress: prior-corrected action-lift variants improved some offline metrics
-but raised confidence delegation, and safe local-eat/plant-move deviations
-caused alive-agent regressions on held-out seeds. Those paths should only be
-reopened with a stronger feature/model change and the extended gate as the
-arbiter.
+but raised confidence delegation, broad safe local-eat/plant-move deviations
+caused alive-agent regressions on held-out seeds, and loose value-supported
+local eating also regressed held-out alive/birth outcomes. Those paths should
+only be reopened with a stronger feature/model change and the extended gate as
+the arbiter.
 
 Exit criteria:
 
@@ -213,16 +274,38 @@ Exit criteria:
 
 ### Stage 4: Guarded Runtime Experiments
 
-Status: blocked until a stronger offline model reduces heuristic delegation
+Status: first data-collection slice available; still blocked for runtime
+replacement until a neural/offline-to-online model reduces heuristic delegation
 while keeping Stages 2 and 3 green.
 
 Run learned-controller experiments only as opt-in probes. The heuristic remains
 the safety floor, and learned actions must not be used in release/default paths
 until the runtime experiment gate clears.
 
+The first online-oriented boundary is implemented through summary-only learned
+trajectory collection:
+
+```bash
+npm run sim:trajectory -- \
+  --seed 41 \
+  --ticks 120 \
+  --output output/trajectories/mind-v2-learned-seed41.jsonl.gz \
+  --split-id mind-v2-learned-rollout \
+  --mind-artifact output/mind/mind-v1-gate-value-deviation-artifact.json \
+  --enable-mind
+```
+
+This does not train inside a live run. It collects experience from the learned
+policy so the next artifact can be trained from mixed heuristic and learned
+rollouts, then promoted through the same held-out gates. The neural and
+offline-to-online algorithm roadmap is in
+`docs/mind-v2-online-neural-roadmap.md`.
+
 Exit criteria:
 
 - Runtime experiment command is opt-in and documented.
+- Learned-policy summary-only trajectory collection remains opt-in and writes
+  the same `mind_trajectory_v1` contract as heuristic collection.
 - Learned policy stays disabled by default in normal simulator runs.
 - Runtime experiment reports compare heuristic, guarded learned, and any
   stronger offline model on the same seeds and horizons.

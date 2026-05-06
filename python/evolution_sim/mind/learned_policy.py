@@ -10,6 +10,7 @@ from evolution_sim.mind.feature_policy import feature_keys_from_observation
 LEARNED_POLICY_ID = "mind_v1_learned_policy"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
+VALUE_SUPPORTED_DEVIATION_POLICY = "positive_value_safe_deviation_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +19,8 @@ class LearnedPolicy:
     action_score_metadata: dict[str, object] | None = None
     conditional_action_scores: dict[str, dict[str, float]] | None = None
     conditional_action_metadata: dict[str, dict[str, object]] | None = None
+    action_value_estimates: dict[str, float] | None = None
+    conditional_action_value_estimates: dict[str, dict[str, float]] | None = None
     policy_id: str = LEARNED_POLICY_ID
     policy_version: str = "mind_v1_learned_policy_v1"
     fallback_action: str = "stay"
@@ -33,6 +36,10 @@ class LearnedPolicy:
     heuristic_safe_plant_move_min_strength: float | None = None
     heuristic_safe_plant_move_max_local_food_ratio: float | None = None
     heuristic_safe_plant_move_max_distance: int | None = None
+    value_supported_deviation_policy: str | None = None
+    value_supported_deviation_min_support: int | None = None
+    value_supported_deviation_min_value_margin: float | None = None
+    value_supported_deviation_min_learned_value: float | None = None
 
     def decide(
         self,
@@ -57,6 +64,25 @@ class LearnedPolicy:
             heuristic_score = float(
                 score_match.scores.get(heuristic_action.requested_action, 0.0)
             )
+            learned_action_value = _action_value(score_match, learned_action)
+            heuristic_action_value = _action_value(
+                score_match,
+                heuristic_action.requested_action,
+            )
+            value_supported_deviation_reason = _value_supported_deviation_reason(
+                score_match=score_match,
+                learned_action=learned_action,
+                heuristic_action=heuristic_action.requested_action,
+                observation=observation,
+                policy=self.value_supported_deviation_policy,
+                min_support=self.value_supported_deviation_min_support,
+                min_value_margin=(
+                    self.value_supported_deviation_min_value_margin
+                ),
+                min_learned_value=(
+                    self.value_supported_deviation_min_learned_value
+                ),
+            )
             heuristic_delegate_reason = _heuristic_delegate_reason(
                 score_match=score_match,
                 learned_action=learned_action,
@@ -67,7 +93,10 @@ class LearnedPolicy:
                     else None
                 ),
             )
-            if heuristic_delegate_reason is not None:
+            if (
+                heuristic_delegate_reason is not None
+                and value_supported_deviation_reason is None
+            ):
                 return self._decision(
                     heuristic_action.requested_action,
                     source=f"{self.policy_id}:{HEURISTIC_DELEGATE_POLICY}",
@@ -80,32 +109,36 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        learned_action_value=learned_action_value,
+                        heuristic_action_value=heuristic_action_value,
                         heuristic_delegate_used=True,
                         heuristic_delegate_reason=heuristic_delegate_reason,
                     ),
                 )
-            safe_deviation_reason = _safe_deviation_reason(
-                learned_action=learned_action,
-                learned_score=learned_score,
-                learned_score_margin=learned_score_margin,
-                heuristic_action=heuristic_action.requested_action,
-                observation=observation,
-                local_eat_min_score=self.heuristic_safe_local_eat_min_score,
-                local_eat_min_food=self.heuristic_safe_local_eat_min_food,
-                local_eat_min_plant_ratio=(
-                    self.heuristic_safe_local_eat_min_plant_ratio
-                ),
-                plant_move_min_score=self.heuristic_safe_plant_move_min_score,
-                plant_move_min_strength=(
-                    self.heuristic_safe_plant_move_min_strength
-                ),
-                plant_move_max_local_food_ratio=(
-                    self.heuristic_safe_plant_move_max_local_food_ratio
-                ),
-                plant_move_max_distance=(
-                    self.heuristic_safe_plant_move_max_distance
-                ),
-            )
+            safe_deviation_reason = value_supported_deviation_reason
+            if safe_deviation_reason is None:
+                safe_deviation_reason = _safe_deviation_reason(
+                    learned_action=learned_action,
+                    learned_score=learned_score,
+                    learned_score_margin=learned_score_margin,
+                    heuristic_action=heuristic_action.requested_action,
+                    observation=observation,
+                    local_eat_min_score=self.heuristic_safe_local_eat_min_score,
+                    local_eat_min_food=self.heuristic_safe_local_eat_min_food,
+                    local_eat_min_plant_ratio=(
+                        self.heuristic_safe_local_eat_min_plant_ratio
+                    ),
+                    plant_move_min_score=self.heuristic_safe_plant_move_min_score,
+                    plant_move_min_strength=(
+                        self.heuristic_safe_plant_move_min_strength
+                    ),
+                    plant_move_max_local_food_ratio=(
+                        self.heuristic_safe_plant_move_max_local_food_ratio
+                    ),
+                    plant_move_max_distance=(
+                        self.heuristic_safe_plant_move_max_distance
+                    ),
+                )
             if safe_deviation_reason is None and _guard_should_use_heuristic(
                 learned_action=learned_action,
                 learned_score=learned_score,
@@ -128,6 +161,8 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        learned_action_value=learned_action_value,
+                        heuristic_action_value=heuristic_action_value,
                         heuristic_delegate_used=False,
                         safe_deviation_used=False,
                     ),
@@ -145,6 +180,8 @@ class LearnedPolicy:
                         learned_score_margin=learned_score_margin,
                         heuristic_action=heuristic_action.requested_action,
                         heuristic_score=heuristic_score,
+                        learned_action_value=learned_action_value,
+                        heuristic_action_value=heuristic_action_value,
                         heuristic_delegate_used=False,
                         safe_deviation_used=True,
                         safe_deviation_reason=safe_deviation_reason,
@@ -229,6 +266,10 @@ class LearnedPolicy:
                         match_depth=depth,
                         support=_metadata_int(metadata, "record_count"),
                         training_score_margin=_training_score_margin(metadata),
+                        value_estimates=_values_for_key(
+                            self.conditional_action_value_estimates,
+                            feature_key,
+                        ),
                     )
         return _ScoreMatch(
             scores=self.action_scores,
@@ -239,6 +280,7 @@ class LearnedPolicy:
             training_score_margin=_training_score_margin(
                 self.action_score_metadata
             ),
+            value_estimates=self.action_value_estimates,
         )
 
 
@@ -257,6 +299,10 @@ def load_learned_policy(
     action_score_metadata = model.get("action_score_metadata")
     conditional_action_scores = model.get("conditional_action_scores")
     conditional_action_metadata = model.get("conditional_action_metadata")
+    action_value_estimates = model.get("action_value_estimates")
+    conditional_action_value_estimates = model.get(
+        "conditional_action_value_estimates"
+    )
     heuristic_guard_policy = model.get("heuristic_guard_policy")
     heuristic_confidence_threshold = model.get("heuristic_confidence_threshold")
     heuristic_override_min_margin = model.get("heuristic_override_min_margin")
@@ -285,6 +331,16 @@ def load_learned_policy(
     heuristic_safe_plant_move_max_distance = model.get(
         "heuristic_safe_plant_move_max_distance"
     )
+    value_supported_deviation_policy = model.get("value_supported_deviation_policy")
+    value_supported_deviation_min_support = model.get(
+        "value_supported_deviation_min_support"
+    )
+    value_supported_deviation_min_value_margin = model.get(
+        "value_supported_deviation_min_value_margin"
+    )
+    value_supported_deviation_min_learned_value = model.get(
+        "value_supported_deviation_min_learned_value"
+    )
     return LearnedPolicy(
         action_scores={
             str(action): float(score)
@@ -297,6 +353,10 @@ def load_learned_policy(
         ),
         conditional_action_metadata=_parse_conditional_action_metadata(
             conditional_action_metadata
+        ),
+        action_value_estimates=_parse_action_values(action_value_estimates),
+        conditional_action_value_estimates=_parse_conditional_action_values(
+            conditional_action_value_estimates
         ),
         fallback_action=str(fallback_action),
         heuristic_guard=heuristic_guard_policy == HEURISTIC_GUARD_POLICY,
@@ -331,6 +391,20 @@ def load_learned_policy(
         heuristic_safe_plant_move_max_distance=_optional_int(
             heuristic_safe_plant_move_max_distance
         ),
+        value_supported_deviation_policy=(
+            str(value_supported_deviation_policy)
+            if value_supported_deviation_policy is not None
+            else None
+        ),
+        value_supported_deviation_min_support=_optional_int(
+            value_supported_deviation_min_support
+        ),
+        value_supported_deviation_min_value_margin=_optional_float(
+            value_supported_deviation_min_value_margin
+        ),
+        value_supported_deviation_min_learned_value=_optional_float(
+            value_supported_deviation_min_learned_value
+        ),
     )
 
 
@@ -351,6 +425,29 @@ def _parse_conditional_action_scores(
     return parsed
 
 
+def _parse_action_values(payload: object) -> dict[str, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    return {
+        str(action): float(value)
+        for action, value in payload.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+
+
+def _parse_conditional_action_values(
+    payload: object,
+) -> dict[str, dict[str, float]] | None:
+    if not isinstance(payload, dict):
+        return None
+    parsed: dict[str, dict[str, float]] = {}
+    for feature_key, values in payload.items():
+        parsed_values = _parse_action_values(values)
+        if parsed_values is not None:
+            parsed[str(feature_key)] = parsed_values
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class _ScoreMatch:
     scores: dict[str, float]
@@ -359,6 +456,7 @@ class _ScoreMatch:
     match_depth: int | None
     support: int | None
     training_score_margin: float | None
+    value_estimates: dict[str, float] | None
 
 
 def _decision_diagnostics(
@@ -371,6 +469,8 @@ def _decision_diagnostics(
     learned_score_margin: float,
     heuristic_action: str | None = None,
     heuristic_score: float | None = None,
+    learned_action_value: float | None = None,
+    heuristic_action_value: float | None = None,
     heuristic_delegate_used: bool = False,
     heuristic_delegate_reason: str | None = None,
     safe_deviation_used: bool = False,
@@ -398,6 +498,10 @@ def _decision_diagnostics(
         diagnostics["heuristic_action"] = heuristic_action
     if heuristic_score is not None:
         diagnostics["heuristic_score"] = heuristic_score
+    if learned_action_value is not None:
+        diagnostics["learned_action_value"] = learned_action_value
+    if heuristic_action_value is not None:
+        diagnostics["heuristic_action_value"] = heuristic_action_value
     if heuristic_delegate_reason is not None:
         diagnostics["heuristic_delegate_reason"] = heuristic_delegate_reason
     if safe_deviation_reason is not None:
@@ -439,6 +543,18 @@ def _metadata_for_key(
     metadata = payload.get(key)
     if isinstance(metadata, dict):
         return metadata
+    return None
+
+
+def _values_for_key(
+    payload: dict[str, dict[str, float]] | None,
+    key: str,
+) -> dict[str, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    values = payload.get(key)
+    if isinstance(values, dict):
+        return values
     return None
 
 
@@ -488,6 +604,88 @@ def _heuristic_delegate_reason(
     if training_margin is None or training_margin < max_training_score_margin:
         return "low_confidence_action_prior"
     return None
+
+
+def _action_value(
+    score_match: _ScoreMatch,
+    action: str,
+) -> float | None:
+    if score_match.value_estimates is None:
+        return None
+    value = score_match.value_estimates.get(action)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _value_supported_deviation_reason(
+    *,
+    score_match: _ScoreMatch,
+    learned_action: str,
+    heuristic_action: str,
+    observation: dict[str, object],
+    policy: str | None,
+    min_support: int | None,
+    min_value_margin: float | None,
+    min_learned_value: float | None,
+) -> str | None:
+    if policy != VALUE_SUPPORTED_DEVIATION_POLICY:
+        return None
+    if learned_action == heuristic_action:
+        return None
+    if (
+        min_support is None
+        or min_value_margin is None
+        or min_learned_value is None
+        or score_match.support is None
+        or score_match.support < min_support
+    ):
+        return None
+    learned_value = _action_value(score_match, learned_action)
+    heuristic_value = _action_value(score_match, heuristic_action)
+    if learned_value is None or heuristic_value is None:
+        return None
+    if learned_value < min_learned_value:
+        return None
+    if learned_value - heuristic_value < min_value_margin:
+        return None
+    if _value_supported_local_resource_eat_allowed(
+        learned_action=learned_action,
+        heuristic_action=heuristic_action,
+        observation=observation,
+    ):
+        return "value_supported_local_resource_eat"
+    return None
+
+
+def _value_supported_local_resource_eat_allowed(
+    *,
+    learned_action: str,
+    heuristic_action: str,
+    observation: dict[str, object],
+) -> bool:
+    if learned_action != "eat":
+        return False
+    if heuristic_action != "stay":
+        return False
+    if not _has_safe_deviation_vitals(observation):
+        return False
+    center = _center_patch_cell(observation.get("local_patch"))
+    if not center:
+        return False
+    if _ratio(center.get("hazard_level"), default=1.0) > 0.4:
+        return False
+    center_food = _ratio(center.get("food"), default=0.0)
+    center_animal_food = max(
+        _ratio(center.get("fresh_kill_energy"), default=0.0),
+        _ratio(center.get("carcass_energy"), default=0.0),
+    )
+    meat_mode = _meat_mode(observation)
+    if meat_mode in {"hunter", "scavenger"}:
+        return center_animal_food > 0.0
+    if meat_mode == "mixed" and center_animal_food > 0.0:
+        return True
+    return center_food > 0.0
 
 
 def _guard_should_use_heuristic(
