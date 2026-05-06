@@ -11,7 +11,11 @@ from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.artifacts import write_model_artifact
-from evolution_sim.mind.baseline import train_behavior_cloning_baseline
+from evolution_sim.mind.baseline import (
+    CONTEXTUAL_PRIOR_TRAINER,
+    TRAINER_CHOICES,
+    train_baseline_with_trainer,
+)
 from evolution_sim.mind.dataset import combined_dataset_provenance, load_trajectory_jsonl
 from evolution_sim.mind.diagnostics import build_artifact_diagnostics
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
@@ -111,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--reuse-trajectories",
         action="store_true",
         help="Reuse existing trajectory files instead of regenerating them.",
+    )
+    parser.add_argument(
+        "--trainer",
+        choices=TRAINER_CHOICES,
+        default=CONTEXTUAL_PRIOR_TRAINER,
+        help="Offline baseline trainer to use.",
     )
     parser.add_argument(
         "--max-alive-agents-mean-regression",
@@ -230,6 +240,7 @@ def main() -> None:
         reuse_trajectories=args.reuse_trajectories,
         gate_criteria=gate_criteria,
         reference_guard_intervention_rate=args.reference_guard_intervention_rate,
+        trainer=args.trainer,
     )
     print(json.dumps(report, indent=2))
     status = report["readiness"]["status"]
@@ -251,6 +262,7 @@ def run_mind_gate(
     reuse_trajectories: bool = False,
     gate_criteria: Mapping[str, object] | None = None,
     reference_guard_intervention_rate: float | None = None,
+    trainer: str = CONTEXTUAL_PRIOR_TRAINER,
 ) -> dict[str, object]:
     if not train_seeds:
         raise ValueError("at least one training seed is required")
@@ -303,9 +315,10 @@ def run_mind_gate(
         for seed, path in zip(train_seeds, trajectory_paths, strict=True)
     ]
     records = (record for dataset in datasets for record in dataset.records)
-    baseline = train_behavior_cloning_baseline(
+    baseline = train_baseline_with_trainer(
         records,
         provenance=combined_dataset_provenance(datasets),
+        trainer=trainer,
     )
     artifact = baseline.to_artifact()
 
@@ -391,6 +404,7 @@ def run_mind_gate(
             "artifact_output": str(artifact_output),
             "report_output": str(report_output) if report_output else None,
             "reuse_trajectories": reuse_trajectories,
+            "trainer": trainer,
             "criteria": resolved_gate_criteria,
             "reference_guard_intervention_rate": reference_guard_intervention_rate,
         },
@@ -417,6 +431,11 @@ def run_mind_gate(
             "conditional_score_smoothing_alpha": artifact["model"].get(
                 "conditional_score_smoothing_alpha"
             ),
+            "trainer": artifact["model"].get("trainer"),
+            "sample_weight_policy": artifact["model"].get("sample_weight_policy"),
+            "sample_weight_base": artifact["model"].get("sample_weight_base"),
+            "sample_weight_min": artifact["model"].get("sample_weight_min"),
+            "sample_weight_total": artifact["model"].get("sample_weight_total"),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"

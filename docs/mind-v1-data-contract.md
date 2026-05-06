@@ -42,7 +42,9 @@ records. It buckets policy-visible vitals, trophic mode, local resource hints,
 navigation hints, and action masks. Runtime loading enables a heuristic safety
 floor for survival/navigation conflicts, so this baseline proves dataset,
 artifact, adapter, and gate plumbing without claiming learned-controller
-quality.
+quality. The default trainer is `contextual-prior`; it writes model type
+`guarded_contextual_local_prior_bc_v2`, uses `uniform_v1` sample weighting, and
+requires `sample_weight_total == trained_record_count` in artifact validation.
 
 `npm run sim:mind:train -- --trajectory <path> --output <artifact>` validates
 the trajectory file before writing an artifact. Repeat `--trajectory` to train a
@@ -50,6 +52,16 @@ single seed-bank baseline from multiple JSONL/JSONL.GZ streams. Combined
 artifacts preserve first-seen source seed order, source trajectory paths, total
 record count, source dataset count, and a combined config digest; all sources
 must share the same data-contract digest.
+
+The training CLI also accepts
+`--trainer reward-weighted-contextual-prior`. This opt-in trainer keeps the same
+contextual prior structure but weights each record by
+`max(0.05, 1.0 + reward.total)` before normalizing action scores. It writes
+model type `guarded_reward_weighted_contextual_prior_bc_v1`, records
+`reward_total_shifted_clamp_v1` sample-weight metadata, and keeps unweighted
+support counts separate from weighted counts so diagnostics still expose how
+much raw data backed each decision. This path is experimental until it reduces
+guard/delegate fallback on held-out gates without alive or birth regressions.
 
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
@@ -84,7 +96,9 @@ review warnings should also produce a non-zero exit. Evaluation reports include
 paired per-seed heuristic versus learned deltas for alive agents, births, and
 deaths so aggregate regressions can be traced to individual validation seeds.
 
-The gate report also includes artifact diagnostics computed from both training
+The Mind gate accepts the same `--trainer` option and records the chosen trainer
+and sample-weight policy in both `protocol` and `artifact` report sections. The
+gate report also includes artifact diagnostics computed from both training
 trajectories and a held-out artifact-diagnostic seed bank before runtime
 evaluation:
 

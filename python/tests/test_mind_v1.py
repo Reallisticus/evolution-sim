@@ -18,7 +18,10 @@ from evolution_sim.mind.artifacts import (
     validate_model_artifact_manifest,
     write_model_artifact,
 )
-from evolution_sim.mind.baseline import train_behavior_cloning_baseline
+from evolution_sim.mind.baseline import (
+    train_behavior_cloning_baseline,
+    train_reward_weighted_behavior_cloning_baseline,
+)
 from evolution_sim.mind.contracts import (
     MIND_MODEL_ARTIFACT_VERSION,
     MIND_RUNTIME_ENABLED_DEFAULT,
@@ -213,6 +216,26 @@ class MindV1Tests(unittest.TestCase):
             ):
                 validate_model_artifact_manifest(artifact)
 
+    def test_behavior_cloning_artifact_requires_training_weight_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            artifact = baseline.to_artifact()
+            del artifact["model"]["sample_weight_policy"]
+
+            with self.assertRaisesRegex(
+                MindArtifactError,
+                "sample_weight_policy",
+            ):
+                validate_model_artifact_manifest(artifact)
+
     def test_mind_train_cli_writes_valid_bc_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
@@ -236,6 +259,10 @@ class MindV1Tests(unittest.TestCase):
 
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             validate_model_artifact_manifest(artifact)
+            self.assertEqual(
+                artifact["manifest"]["model_type"],
+                "guarded_contextual_local_prior_bc_v2",
+            )
             self.assertIn(
                 "heuristic_override_min_margin",
                 artifact["model"],
@@ -252,6 +279,12 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(
                 artifact["model"]["conditional_score_policy"],
                 "smoothed_contextual_action_prior_v1",
+            )
+            self.assertEqual(artifact["model"]["trainer"], "contextual-prior")
+            self.assertEqual(artifact["model"]["sample_weight_policy"], "uniform_v1")
+            self.assertAlmostEqual(
+                artifact["model"]["sample_weight_total"],
+                artifact["manifest"]["trained_record_count"],
             )
             self.assertAlmostEqual(
                 artifact["model"]["conditional_prior_correction_exponent"],
@@ -271,6 +304,102 @@ class MindV1Tests(unittest.TestCase):
                 artifact["manifest"]["provenance"]["record_count"],
                 artifact["manifest"]["trained_record_count"],
             )
+
+    def test_reward_weighted_baseline_prefers_higher_reward_labels(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        base_record = dict(dataset.records[0])
+
+        def training_record(action: str, reward_total: float) -> dict[str, object]:
+            record = dict(base_record)
+            record["requested_action"] = action
+            record["resolved_action"] = action
+            record["resolution_action_valid"] = True
+            reward = dict(record["reward"])
+            reward["total"] = reward_total
+            record["reward"] = reward
+            return record
+
+        records = [
+            training_record("eat", -0.5),
+            training_record("eat", -0.5),
+            training_record("stay", 1.0),
+        ]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+
+        baseline = train_reward_weighted_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+        artifact = baseline.to_artifact()
+        validate_model_artifact_manifest(artifact)
+
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_reward_weighted_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["trainer"],
+            "reward-weighted-contextual-prior",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "reward_total_shifted_clamp_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["top_action"],
+            "stay",
+        )
+        self.assertGreater(
+            artifact["model"]["action_scores"]["stay"],
+            artifact["model"]["action_scores"]["eat"],
+        )
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["record_count"],
+            len(records),
+        )
+        self.assertAlmostEqual(artifact["model"]["sample_weight_total"], 3.0)
+
+    def test_mind_train_cli_writes_reward_weighted_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            artifact_path = Path(tmpdir) / "reward-artifact.json"
+            self._write_tiny_trajectory(trajectory_path)
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                        "--trainer",
+                        "reward-weighted-contextual-prior",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+
+        self.assertIn("trainer=reward-weighted-contextual-prior", stdout.getvalue())
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_reward_weighted_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "reward_total_shifted_clamp_v1",
+        )
 
     def test_behavior_cloning_artifact_diagnostics_report_imitation_and_coverage(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -426,6 +555,16 @@ class MindV1Tests(unittest.TestCase):
             self.assertEqual(
                 report["artifact"]["conditional_score_smoothing_alpha"],
                 artifact["model"]["conditional_score_smoothing_alpha"],
+            )
+            self.assertEqual(report["protocol"]["trainer"], "contextual-prior")
+            self.assertEqual(report["artifact"]["trainer"], "contextual-prior")
+            self.assertEqual(
+                report["artifact"]["sample_weight_policy"],
+                artifact["model"]["sample_weight_policy"],
+            )
+            self.assertEqual(
+                report["artifact"]["sample_weight_total"],
+                artifact["model"]["sample_weight_total"],
             )
             self.assertEqual(
                 report["artifact"]["heuristic_confidence_threshold"],

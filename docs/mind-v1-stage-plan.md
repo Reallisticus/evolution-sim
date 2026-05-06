@@ -93,6 +93,20 @@ aggregate guard intervention `0.1187` and `0.1228`, delegate rates `0.3562` and
 not a learned-value milestone; it is a stronger abstaining baseline and
 diagnostic floor for the next learner.
 
+The first opt-in reward-weighted trainer is implemented but not promoted. It
+uses the same contextual-prior structure and weights records by
+`max(0.05, 1.0 + reward.total)`, writing model type
+`guarded_reward_weighted_contextual_prior_bc_v1` with explicit
+`reward_total_shifted_clamp_v1` metadata. On the default reused-trajectory gate
+it passed safety with zero alive/birth deltas, held-out artifact top-1 accuracy
+`0.5006`, and held-out action-distribution drift `0.2149`. It reduced
+confidence delegation from `0.3590` to `0.3242`, but hard guard intervention
+rose from `0.1190` to `0.1563` and total heuristic fallback rose from `0.4780`
+to `0.4805`. Treat this as an experiment harness, not learned value. The next
+learner should use advantage/calibration-aware weighting or per-context action
+selection that reduces total fallback, especially hard guards, rather than
+merely shifting disagreements from delegate to guard.
+
 Rejected tuning paths are documented so they are not rediscovered as false
 progress: prior-corrected action-lift variants improved some offline metrics
 but raised confidence delegation, and safe local-eat/plant-move deviations

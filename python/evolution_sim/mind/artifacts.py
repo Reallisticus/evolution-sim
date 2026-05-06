@@ -22,12 +22,22 @@ class MindArtifactError(ValueError):
     pass
 
 
-BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v1"
+BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v2"
+REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
+    "guarded_reward_weighted_contextual_prior_bc_v1"
+)
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
+CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
+REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
+UNIFORM_SAMPLE_WEIGHT_POLICY = "uniform_v1"
+REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY = "reward_total_shifted_clamp_v1"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
-    {BEHAVIOR_CLONING_BASELINE_MODEL_TYPE}
+    {
+        BEHAVIOR_CLONING_BASELINE_MODEL_TYPE,
+        REWARD_WEIGHTED_BASELINE_MODEL_TYPE,
+    }
 )
 
 
@@ -99,6 +109,7 @@ def validate_model_artifact_manifest(artifact: dict[str, object]) -> None:
     )
     _validate_behavior_cloning_model_payload(
         model,
+        model_type=model_type,
         trained_record_count=trained_record_count,
     )
 
@@ -106,6 +117,7 @@ def validate_model_artifact_manifest(artifact: dict[str, object]) -> None:
 def _validate_behavior_cloning_model_payload(
     model: dict[str, object],
     *,
+    model_type: str,
     trained_record_count: int,
 ) -> None:
     action_scores = _required_mapping(model, "action_scores", location="model")
@@ -175,6 +187,11 @@ def _validate_behavior_cloning_model_payload(
         raise MindArtifactError(
             "model.conditional_score_smoothing_alpha must be positive"
         )
+    _validate_training_weight_metadata(
+        model,
+        model_type=model_type,
+        trained_record_count=trained_record_count,
+    )
     for feature_key, scores in conditional_scores.items():
         if not isinstance(feature_key, str) or not feature_key:
             raise MindArtifactError(
@@ -365,6 +382,72 @@ def _validate_score_metadata(
     if not math.isclose(score_margin, top_score - runner_up_score, abs_tol=1e-9):
         raise MindArtifactError(
             f"{location}.score_margin must equal top_score - runner_up_score"
+        )
+    if "weighted_record_count" in metadata:
+        _required_finite_number(
+            metadata,
+            "weighted_record_count",
+            location=location,
+            minimum=0.0,
+        )
+
+
+def _validate_training_weight_metadata(
+    model: dict[str, object],
+    *,
+    model_type: str,
+    trained_record_count: int,
+) -> None:
+    trainer = model.get("trainer")
+    sample_weight_policy = model.get("sample_weight_policy")
+    if model_type == BEHAVIOR_CLONING_BASELINE_MODEL_TYPE:
+        expected_trainer = CONTEXTUAL_PRIOR_TRAINER
+        expected_sample_weight_policy = UNIFORM_SAMPLE_WEIGHT_POLICY
+    elif model_type == REWARD_WEIGHTED_BASELINE_MODEL_TYPE:
+        expected_trainer = REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER
+        expected_sample_weight_policy = REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY
+    else:
+        raise MindArtifactError(
+            f"model artifact manifest model_type is unsupported: {model_type!r}"
+        )
+    if trainer != expected_trainer:
+        raise MindArtifactError(
+            f"model.trainer expected {expected_trainer}, found {trainer!r}"
+        )
+    if sample_weight_policy != expected_sample_weight_policy:
+        raise MindArtifactError(
+            (
+                "model.sample_weight_policy expected "
+                f"{expected_sample_weight_policy}, found {sample_weight_policy!r}"
+            )
+        )
+    sample_weight_base = _required_finite_number(
+        model,
+        "sample_weight_base",
+        location="model",
+        minimum=0.0,
+    )
+    sample_weight_min = _required_finite_number(
+        model,
+        "sample_weight_min",
+        location="model",
+        minimum=0.0,
+    )
+    sample_weight_total = _required_finite_number(
+        model,
+        "sample_weight_total",
+        location="model",
+        minimum=0.0,
+    )
+    if sample_weight_min > sample_weight_base:
+        raise MindArtifactError("model.sample_weight_min must be <= sample_weight_base")
+    if model_type == BEHAVIOR_CLONING_BASELINE_MODEL_TYPE and not math.isclose(
+        sample_weight_total,
+        float(trained_record_count),
+        abs_tol=1e-9,
+    ):
+        raise MindArtifactError(
+            "uniform model.sample_weight_total must equal trained_record_count"
         )
 
 
