@@ -850,6 +850,27 @@ class MindV1Tests(unittest.TestCase):
             "score_margin_bucket_counts",
             diagnostics["contextual_coverage"],
         )
+        self.assertIn("reward_calibration", diagnostics)
+        self.assertIn(
+            "by_predicted_action",
+            diagnostics["reward_calibration"],
+        )
+        self.assertIn(
+            "by_label_action",
+            diagnostics["reward_calibration"],
+        )
+        self.assertIn(
+            "by_score_margin_bucket",
+            diagnostics["reward_calibration"],
+        )
+        self.assertIn(
+            "eat",
+            diagnostics["reward_calibration"]["by_label_action"],
+        )
+        self.assertIn(
+            "mean_reward",
+            diagnostics["reward_calibration"]["by_label_action"]["eat"],
+        )
         self.assertGreaterEqual(
             diagnostics["contextual_coverage"]["matched_record_rate"],
             0.0,
@@ -1040,6 +1061,21 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn("--validation-seeds 5,13,19,29,37,41", script)
         self.assertIn("--validation-ticks 120,180", script)
         self.assertIn("output/mind/mind-v1-gate-extended-report.json", script)
+
+    def test_mind_strict_promotion_gate_has_npm_entrypoint(self) -> None:
+        package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+        script = package["scripts"]["sim:mind:gate:strict"]
+
+        self.assertIn("evolution_sim.cli.mind_gate", script)
+        self.assertIn("--reuse-trajectories", script)
+        self.assertIn("--trainer advantage-blended-contextual-prior", script)
+        self.assertIn("--validation-seeds 5,13,19,29,37,41", script)
+        self.assertIn("--validation-ticks 120,180", script)
+        self.assertIn("--max-alive-agents-per-seed-regression 0", script)
+        self.assertIn("--max-births-per-seed-regression 0", script)
+        self.assertIn("--max-guard-intervention-rate 0.1189", script)
+        self.assertIn("--max-total-heuristic-fallback-rate 0.4779", script)
+        self.assertIn("--fail-on-blockers", script)
 
     def test_mind_gate_cli_fail_on_blockers_exits_nonzero(self) -> None:
         with TemporaryDirectory() as tmpdir:

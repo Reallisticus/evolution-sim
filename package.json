@@ -26,6 +26,7 @@
     "sim:mind:train": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_train",
     "sim:mind:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_policy_eval",
     "sim:mind:gate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate",
+    "sim:mind:gate:strict": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate --reuse-trajectories --trainer advantage-blended-contextual-prior --validation-seeds 5,13,19,29,37,41 --validation-ticks 120,180 --artifact-output output/mind/mind-v1-gate-strict-artifact.json --output output/mind/mind-v1-gate-strict-report.json --max-alive-agents-mean-regression 0 --max-alive-agents-per-seed-regression 0 --max-births-mean-regression 0 --max-births-per-seed-regression 0 --max-guard-intervention-rate 0.1189 --max-total-heuristic-fallback-rate 0.4779 --fail-on-blockers",
     "sim:mind:gate:extended": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_gate --reuse-trajectories --validation-seeds 5,13,19,29,37,41 --validation-ticks 120,180 --artifact-output output/mind/mind-v1-gate-extended-artifact.json --output output/mind/mind-v1-gate-extended-report.json",
     "viewer:serve": "python3 -m http.server 4173",
     "viewer:contracts:generate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.viewer_contracts --output viewer/contracts.generated.mjs",

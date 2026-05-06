@@ -43,18 +43,29 @@ def build_artifact_diagnostics(
     match_depth_counts: Counter[str] = Counter()
     support_bucket_counts: Counter[str] = Counter()
     margin_bucket_counts: Counter[str] = Counter()
+    label_reward_stats: dict[str, dict[str, object]] = {}
+    predicted_reward_stats: dict[str, dict[str, object]] = {}
+    score_margin_reward_stats: dict[str, dict[str, object]] = {}
     correct = 0
     matched_records = 0
     for record in records:
         label = _training_label(record)
-        prediction, match_depth = _predict_record_action(
+        prediction, match_depth, prediction_margin = _predict_record_action(
             record,
             action_scores=action_scores,
             conditional_scores=conditional_scores,
         )
+        reward = _reward_total(record)
         label_counts[label] += 1
         predicted_counts[prediction] += 1
         confusion_counts[(label, prediction)] += 1
+        _update_reward_stats(label_reward_stats, label, reward=reward)
+        _update_reward_stats(predicted_reward_stats, prediction, reward=reward)
+        _update_reward_stats(
+            score_margin_reward_stats,
+            _score_margin_bucket(prediction_margin),
+            reward=reward,
+        )
         if prediction == label:
             correct += 1
             true_positive_counts[label] += 1
@@ -104,6 +115,13 @@ def build_artifact_diagnostics(
             "match_depth_counts": _sorted_counts(match_depth_counts),
             "support_bucket_counts": _sorted_counts(support_bucket_counts),
             "score_margin_bucket_counts": _sorted_counts(margin_bucket_counts),
+        },
+        "reward_calibration": {
+            "by_label_action": _finalize_reward_stats(label_reward_stats),
+            "by_predicted_action": _finalize_reward_stats(predicted_reward_stats),
+            "by_score_margin_bucket": _finalize_reward_stats(
+                score_margin_reward_stats
+            ),
         },
     }
 
@@ -313,7 +331,7 @@ def _predict_record_action(
     *,
     action_scores: Mapping[str, float],
     conditional_scores: Mapping[str, Mapping[str, float]],
-) -> tuple[str, int | None]:
+) -> tuple[str, int | None, float]:
     scores: Mapping[str, float] = action_scores
     match_depth: int | None = None
     for depth, feature_key in enumerate(feature_keys_from_record(record)):
@@ -322,23 +340,46 @@ def _predict_record_action(
             scores = conditional
             match_depth = depth
             break
-    return _best_scored_action(scores, _bool_mapping(record.get("action_mask"))), match_depth
+    prediction, score_margin = _best_scored_action_with_margin(
+        scores,
+        _bool_mapping(record.get("action_mask")),
+    )
+    return prediction, match_depth, score_margin
 
 
 def _best_scored_action(
     scores: Mapping[str, float],
     action_mask: Mapping[str, bool],
 ) -> str:
+    prediction, _score_margin = _best_scored_action_with_margin(
+        scores,
+        action_mask,
+    )
+    return prediction
+
+
+def _best_scored_action_with_margin(
+    scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> tuple[str, float]:
     best_action = "stay"
     best_score = float("-inf")
+    runner_up_score = float("-inf")
     for action in sorted(action_mask):
         if not action_mask[action]:
             continue
         score = float(scores.get(action, 0.0))
         if score > best_score:
+            runner_up_score = best_score
             best_action = action
             best_score = score
-    return best_action
+        elif score > runner_up_score:
+            runner_up_score = score
+    if best_score == float("-inf"):
+        best_score = 0.0
+    if runner_up_score == float("-inf"):
+        runner_up_score = 0.0
+    return best_action, best_score - runner_up_score
 
 
 def _training_label(record: Mapping[str, object]) -> str:
@@ -646,6 +687,36 @@ def _update_group_stats(
     action_counts = stats["action_counts"]
     if isinstance(action_counts, Counter):
         action_counts[action] += 1
+
+
+def _update_reward_stats(
+    groups: dict[str, dict[str, object]],
+    group: str,
+    *,
+    reward: float,
+) -> None:
+    stats = groups.setdefault(
+        group,
+        {
+            "record_count": 0,
+            "total_reward": 0.0,
+        },
+    )
+    stats["record_count"] = int(stats["record_count"]) + 1
+    stats["total_reward"] = float(stats["total_reward"]) + reward
+
+
+def _finalize_reward_stats(
+    groups: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    finalized: dict[str, dict[str, object]] = {}
+    for group, stats in sorted(groups.items()):
+        record_count = int(stats["record_count"])
+        finalized[group] = {
+            "record_count": record_count,
+            "mean_reward": _rate(float(stats["total_reward"]), record_count),
+        }
+    return finalized
 
 
 def _update_safe_deviation_group_stats(

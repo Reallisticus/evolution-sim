@@ -132,15 +132,16 @@ rounded default fallback metrics, run the gate with zero per-seed regression
 allowance and inclusive caps just below the documented control values:
 
 ```bash
-npm run sim:mind:gate -- \
-  --reuse-trajectories \
-  --trainer <candidate-trainer> \
-  --max-alive-agents-per-seed-regression 0 \
-  --max-births-per-seed-regression 0 \
-  --max-guard-intervention-rate 0.1189 \
-  --max-total-heuristic-fallback-rate 0.4779 \
-  --fail-on-review
+npm run sim:mind:gate:strict
 ```
+
+The strict entrypoint is pinned to the current candidate trainer
+`advantage-blended-contextual-prior`, the extended validation seed matrix
+`5,13,19,29,37,41`, the `120,180` tick horizons, zero alive/birth regression,
+hard-guard cap `0.1189`, total fallback cap `0.4779`, and
+`--fail-on-blockers`. Candidate experiments can still use `npm run
+sim:mind:gate -- --trainer <candidate-trainer> ...` directly, but the strict
+script is the local promotion check.
 
 The Mind gate accepts the same `--trainer` option and records the chosen trainer,
 sample-weight policy, and any reward-advantage blend metadata in both
@@ -153,6 +154,9 @@ artifact-diagnostic seed bank before runtime evaluation:
   and top action-confusion pairs;
 - contextual feature coverage, fallback depth, support buckets, and score-margin
   buckets.
+- reward calibration by behavior-cloning label action, predicted action, and
+  predicted score-margin bucket so value-aware learners can compare confidence
+  against realized reward without reading runtime-private state.
 
 Runtime evaluation diagnostics are computed from trajectory records without
 changing the trajectory schema. They report action-source counts, guard

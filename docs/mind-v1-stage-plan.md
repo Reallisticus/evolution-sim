@@ -113,6 +113,8 @@ below the current rounded control value `0.1190`, and total heuristic fallback
 below the current rounded control value `0.4780`. Because gate caps are
 inclusive, use `--max-guard-intervention-rate 0.1189` and
 `--max-total-heuristic-fallback-rate 0.4779` for a strict local promotion run.
+`npm run sim:mind:gate:strict` pins those caps to the current blended candidate
+and the extended `5,13,19,29,37,41` seed matrix over `120,180` tick horizons.
 
 The first opt-in advantage-calibrated trainer is implemented but not promoted.
 It adjusts contextual action support by within-context reward advantage, writes
@@ -150,6 +152,13 @@ matrix with `120,180` tick horizons and the same strict zero-delta/fallback caps
 it also passed: at 120 ticks hard guard was `0.1123`, delegation `0.3630`, total
 fallback `0.4753`; at 180 ticks hard guard was `0.1163`, delegation `0.3243`,
 total fallback `0.4406`.
+
+The next learner step is now contract-visible through artifact diagnostics:
+reports include reward calibration by label action, predicted action, and
+predicted score-margin bucket. This is the audit surface for a future
+calibration-aware value/action model: it lets the trainer compare score
+confidence against realized reward while keeping the runtime policy boundary
+unchanged and unprivileged.
 
 The next viewer-visible checkpoint is implemented. `sim:run` accepts
 `--mind-artifact ... --enable-mind` for explicit full-replay Mind runs, and the
