@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   EVENT_MARKER_STYLES,
   countChangedTileDeltas,
+  decisionOverlayStyleForRecord,
   renderAgentLayer,
   renderDecisionOverlayLayer,
   renderTerrainLayer,
@@ -206,5 +207,40 @@ const decisionStats = renderDecisionOverlayLayer({
 });
 assert.equal(decisionStats.decisionOverlays, 2);
 assert.equal(decisionLayer.children.length, 1);
+assert.equal(
+  decisionOverlayStyleForRecord(
+    {
+      action_valid: true,
+      resolution_action_valid: true,
+      action_source:
+        "mind_v1_learned_policy:observation_heuristic_confidence_delegate_v1",
+    },
+    { mind: true },
+  ).label,
+  "confidence_delegate",
+);
+assert.equal(
+  decisionOverlayStyleForRecord(
+    {
+      action_valid: true,
+      resolution_action_valid: true,
+      action_source:
+        "mind_v1_learned_policy:observation_heuristic_safety_floor_v1",
+    },
+    { mind: true },
+  ).label,
+  "hard_guard",
+);
+assert.equal(
+  decisionOverlayStyleForRecord(
+    {
+      action_valid: true,
+      resolution_action_valid: true,
+      action_source: "mind_v1_learned_policy",
+    },
+    { mind: true },
+  ).label,
+  "learned",
+);
 
 console.log("map_layers_test_ok");

@@ -225,7 +225,7 @@ export function serializeViewerPreferences(state) {
     overlayOpacity: opacityByMode[overlayMode],
     overlayOpacityByMode: opacityByMode,
     blendTerrain: Boolean(state.blendTerrain),
-    decisionOverlayMode: validChoice(state.decisionOverlayMode, ["selected", "recent", "reward", "off"], "selected"),
+    decisionOverlayMode: validChoice(state.decisionOverlayMode, ["selected", "recent", "reward", "mind", "off"], "selected"),
     eventLensMode: validChoice(state.eventLensMode, ["current", "causal", "births", "deaths", "combat", "carcass", "delta"], "current"),
     activeDetailView: validChoice(state.activeDetailView, ["overview", "agent", "species", "events"], "overview"),
     activeCameraPreset: validChoice(state.activeCameraPreset, ["world", "selected", "episode", "pressure", "custom"], "world"),

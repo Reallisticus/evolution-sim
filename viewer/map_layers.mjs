@@ -282,6 +282,7 @@ export function renderDecisionOverlayLayer(options) {
           selected,
           compact: true,
           reward: mode === "reward",
+          mind: mode === "mind",
           isPointOnMap,
         })
       ) {
@@ -630,21 +631,18 @@ function drawDecisionRecordOverlay(graphics, record, tileSize, offset, options =
 
   const start = tileCenter(before.x, before.y, tileSize, offset);
   const end = tileCenter(after.x, after.y, tileSize, offset);
-  const valid = record.action_valid && record.resolution_action_valid;
   const rewardTotal = Number(record.reward?.total ?? 0);
-  const rewardMagnitude = clamp(Math.abs(rewardTotal) / 2.5, 0.18, 1);
-  const color = options.reward
-    ? rewardColor(rewardTotal)
-    : valid
-      ? options.selected
-        ? 0xf8fafc
-        : 0xbae6fd
-      : 0xfb7185;
-  const alpha = options.reward ? 0.36 + rewardMagnitude * 0.5 : valid ? 0.58 : 0.92;
+  const style = decisionOverlayStyleForRecord(record, {
+    reward: options.reward,
+    mind: options.mind,
+    selected: options.selected,
+  });
+  const color = style.color;
+  const alpha = style.alpha;
   const lineWidth = options.compact ? Math.max(1, tileSize * 0.08) : Math.max(1.4, tileSize * 0.13);
   const dotRadius = options.compact ? Math.max(tileSize * 0.14, 2.4) : Math.max(tileSize * 0.2, 3);
-  const endRadius = options.reward
-    ? Math.max(tileSize * (0.18 + rewardMagnitude * 0.18), 3)
+  const endRadius = options.reward || options.mind
+    ? Math.max(tileSize * (0.18 + style.magnitude * 0.18), 3)
     : Math.max(tileSize * 0.28, 4);
 
   graphics.circle(start.x, start.y, dotRadius).fill({ color, alpha: options.compact ? 0.25 : 0.42 });
@@ -653,10 +651,10 @@ function drawDecisionRecordOverlay(graphics, record, tileSize, offset, options =
     width: options.selected ? 2 : 1.35,
     alpha,
   });
-  if (options.reward) {
+  if (options.reward || options.mind) {
     graphics.circle(end.x, end.y, endRadius * 0.58).fill({
       color,
-      alpha: 0.16 + rewardMagnitude * 0.18,
+      alpha: 0.16 + style.magnitude * 0.18,
     });
   }
   if (before.x !== after.x || before.y !== after.y) {
@@ -669,7 +667,7 @@ function drawDecisionRecordOverlay(graphics, record, tileSize, offset, options =
       drawArrowHead(graphics, start, end, color, alpha, tileSize);
     }
   }
-  if (!valid) {
+  if (!style.valid) {
     const radius = Math.max(tileSize * 0.3, 4);
     graphics.moveTo(end.x - radius, end.y - radius).lineTo(end.x + radius, end.y + radius).stroke({
       color: 0xfb7185,
@@ -683,6 +681,83 @@ function drawDecisionRecordOverlay(graphics, record, tileSize, offset, options =
     });
   }
   return true;
+}
+
+export function decisionOverlayStyleForRecord(record, options = {}) {
+  const valid = Boolean(record?.action_valid) && Boolean(record?.resolution_action_valid);
+  const rewardTotal = Number(record?.reward?.total ?? 0);
+  const rewardMagnitude = clamp(Math.abs(rewardTotal) / 2.5, 0.18, 1);
+  if (!valid) {
+    return {
+      color: 0xfb7185,
+      alpha: 0.92,
+      magnitude: rewardMagnitude,
+      valid,
+      label: "invalid",
+    };
+  }
+  if (options.reward) {
+    return {
+      color: rewardColor(rewardTotal),
+      alpha: 0.36 + rewardMagnitude * 0.5,
+      magnitude: rewardMagnitude,
+      valid,
+      label: "reward",
+    };
+  }
+  if (options.mind) {
+    const source = String(record?.action_source ?? "");
+    if (source.includes("observation_heuristic_safety_floor_v1")) {
+      return {
+        color: 0xfb7185,
+        alpha: 0.9,
+        magnitude: 0.95,
+        valid,
+        label: "hard_guard",
+      };
+    }
+    if (source.includes("observation_heuristic_confidence_delegate_v1")) {
+      return {
+        color: 0xfbbf24,
+        alpha: 0.88,
+        magnitude: 0.82,
+        valid,
+        label: "confidence_delegate",
+      };
+    }
+    if (source.includes("mind_v1_learned_policy")) {
+      return {
+        color: 0x4ade80,
+        alpha: 0.78,
+        magnitude: 0.68,
+        valid,
+        label: "learned",
+      };
+    }
+    if (source === "passive") {
+      return {
+        color: 0x94a3b8,
+        alpha: 0.42,
+        magnitude: 0.3,
+        valid,
+        label: "passive",
+      };
+    }
+    return {
+      color: 0x38bdf8,
+      alpha: 0.64,
+      magnitude: 0.5,
+      valid,
+      label: "heuristic",
+    };
+  }
+  return {
+    color: options.selected ? 0xf8fafc : 0xbae6fd,
+    alpha: 0.58,
+    magnitude: 0.5,
+    valid,
+    label: "action",
+  };
 }
 
 function rewardColor(total) {

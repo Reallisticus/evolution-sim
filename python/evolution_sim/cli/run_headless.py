@@ -7,6 +7,7 @@ import sys
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import SimulationWorld
 from evolution_sim.io import write_json_replay
+from evolution_sim.mind.learned_policy import load_learned_policy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,13 +20,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("output/sim-runs/latest-run.json"),
         help="Replay JSON destination. Existing files are replaced atomically.",
     )
+    parser.add_argument(
+        "--mind-artifact",
+        type=Path,
+        help="Optional Mind model artifact to use as the replay policy.",
+    )
+    parser.add_argument(
+        "--enable-mind",
+        action="store_true",
+        help="Required with --mind-artifact to enable learned-policy inference.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.enable_mind and args.mind_artifact is None:
+        raise SystemExit("--enable-mind requires --mind-artifact")
+    if args.mind_artifact is not None and not args.enable_mind:
+        raise SystemExit("--mind-artifact requires --enable-mind")
+    policy = (
+        load_learned_policy(args.mind_artifact, enable_mind=args.enable_mind)
+        if args.mind_artifact is not None
+        else None
+    )
     config = WorldConfig(seed=args.seed, max_ticks=args.ticks)
-    result = SimulationWorld(config).run()
+    result = SimulationWorld(config, policy=policy).run()
     if args.output.exists():
         print(f"warning: overwriting existing replay {args.output}", file=sys.stderr)
     try:
@@ -43,6 +63,9 @@ def main() -> None:
     print(f"species_created={summary['species_created']}")
     print(f"alive_species_count={summary['alive_species_count']}")
     print(f"total_agents_seen={summary['total_agents_seen']}")
+    if policy is not None:
+        print(f"mind_policy={policy.policy_id}")
+        print(f"mind_policy_version={policy.policy_version}")
     print(
         "climate_end="
         f"{summary['disturbance_at_end']}:{summary['disturbance_strength_at_end']}"

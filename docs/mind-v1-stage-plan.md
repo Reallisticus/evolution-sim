@@ -135,6 +135,16 @@ reduced the candidate back near the control total but did not cross the strict
 fallback cap. Local-eat safe-deviation probes reduced fallback but changed
 per-seed alive/birth outcomes, so safe deviations remain disabled.
 
+The next viewer-visible checkpoint is implemented. `sim:run` accepts
+`--mind-artifact ... --enable-mind` for explicit full-replay Mind runs, and the
+viewer Decision Layer has a `Mind Fallback` mode that renders plain learned
+actions, confidence delegation, and hard-guard interventions as distinct map
+cues. A seed `5`, 120-tick replay from the calibrated advantage artifact
+produced `4,204` trajectory decisions: `2,303` plain learned actions, `1,542`
+confidence delegates, `358` hard guards, and `1` passive action. This makes the
+remaining fallback clusters inspectable in the browser instead of only in gate
+JSON.
+
 Rejected tuning paths are documented so they are not rediscovered as false
 progress: prior-corrected action-lift variants improved some offline metrics
 but raised confidence delegation, and safe local-eat/plant-move deviations

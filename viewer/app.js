@@ -2417,6 +2417,15 @@ function actionLabel(value) {
 function policyLabel(record) {
   const sourceKey = record?.action_source ?? "unknown_source";
   const policyKey = record?.policy_id ?? null;
+  if (String(sourceKey).includes("observation_heuristic_confidence_delegate_v1")) {
+    return "Mind confidence delegate";
+  }
+  if (String(sourceKey).includes("observation_heuristic_safety_floor_v1")) {
+    return "Mind hard guard";
+  }
+  if (String(sourceKey).includes("mind_v1_learned_policy")) {
+    return "Mind learned";
+  }
   const source = titleCase(sourceKey);
   const policy = policyKey ? titleCase(policyKey) : null;
   if (policyKey && normalizedLabelKey(sourceKey) === normalizedLabelKey(policyKey)) {

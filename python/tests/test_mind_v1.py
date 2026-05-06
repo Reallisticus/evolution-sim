@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_gate, mind_train
+from evolution_sim.cli import mind_gate, mind_train, run_headless
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.policy import ActionDecision
@@ -582,6 +582,71 @@ class MindV1Tests(unittest.TestCase):
             artifact["model"]["reward_advantage_policy"],
             "contextual_reward_advantage_lift_v1",
         )
+
+    def test_run_headless_cli_writes_mind_viewer_replay(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            artifact_path = tmp_path / "mind-artifact.json"
+            replay_path = tmp_path / "mind-replay.json"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            baseline = train_behavior_cloning_baseline(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+            )
+            write_model_artifact(artifact_path, baseline.to_artifact())
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "run_headless",
+                        "--seed",
+                        "8",
+                        "--ticks",
+                        "2",
+                        "--output",
+                        str(replay_path),
+                        "--mind-artifact",
+                        str(artifact_path),
+                        "--enable-mind",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                run_headless.main()
+
+            replay = json.loads(replay_path.read_text(encoding="utf-8"))
+
+        self.assertIn("mind_policy=mind_v1_learned_policy", stdout.getvalue())
+        records = replay["viewer"]["trajectory"]["records"]
+        self.assertGreater(len(records), 0)
+        self.assertTrue(
+            any(record["policy_id"] == "mind_v1_learned_policy" for record in records)
+        )
+        self.assertEqual(
+            replay["viewer"]["trajectory"]["policy_interface_version"],
+            "mind_policy_interface_v1",
+        )
+
+    def test_run_headless_cli_requires_explicit_mind_enable(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "mind-artifact.json"
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "run_headless",
+                        "--mind-artifact",
+                        str(artifact_path),
+                    ],
+                ),
+                self.assertRaisesRegex(SystemExit, "--mind-artifact requires --enable-mind"),
+            ):
+                run_headless.main()
 
     def test_behavior_cloning_artifact_diagnostics_report_imitation_and_coverage(self) -> None:
         with TemporaryDirectory() as tmpdir:

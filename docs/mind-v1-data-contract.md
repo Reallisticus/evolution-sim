@@ -178,6 +178,26 @@ and plant movement, but the current baseline writes them as `null`. Those
 bypasses remain disabled unless a future artifact explicitly supplies finite
 thresholds and passes the extended gate.
 
+Full-replay runs can now opt into a Mind artifact for viewer inspection:
+
+```bash
+npm run sim:run -- \
+  --seed 5 \
+  --ticks 120 \
+  --output output/sim-runs/mind-viewer-check.json \
+  --mind-artifact output/mind/mind-v1-gate-advantage-artifact.json \
+  --enable-mind
+```
+
+The explicit `--enable-mind` flag is required here for the same reason it is
+required during evaluation: learned-policy inference remains disabled unless a
+caller deliberately opts in. The resulting full replay keeps the existing
+`mind_trajectory_v1` payload and records Mind action sources in trajectory
+records. The viewer's Decision Layer includes a `Mind Fallback` mode that colors
+plain learned actions, confidence delegation, and hard-guard interventions
+separately so fallback clusters can be inspected on the map and in each agent
+dossier.
+
 The guarded contextual baseline uses feature policy `mind_feature_policy_v2`.
 It materializes conditional action priors once the feature context has at least
 3 training records, then falls back through coarser feature keys or the global

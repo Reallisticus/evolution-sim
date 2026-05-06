@@ -99,6 +99,10 @@ assert.equal(prefs.version, VIEWER_STATE_STORAGE_VERSION);
 saveViewerPreferences(storageAdapter, prefs);
 assert(storage.get(VIEWER_STATE_STORAGE_KEY).includes('"overlayMode":"hazard"'));
 assert.deepEqual(loadViewerPreferences(storageAdapter), prefs);
+assert.equal(
+  serializeViewerPreferences({ decisionOverlayMode: "mind" }).decisionOverlayMode,
+  "mind",
+);
 
 const urlState = serializeViewerUrlState({
   payload: { viewer: { frames: [{ tick: 0 }, { tick: 5 }, { tick: 10 }] } },
