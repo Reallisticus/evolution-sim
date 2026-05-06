@@ -55,15 +55,12 @@ per-role/per-mode guard caps so learner changes can target measured fallback
 clusters instead of optimizing against a narrow seed slice. Evaluation also
 summarizes the learned actions suppressed by the guard through an in-memory
 sidecar, keeping trajectory JSONL schema stable. The first calibrated baseline
-adjustment lowers the contextual support floor from 12 to 10 records: lower
-floors improved offline imitation but failed the extended 180-tick seed-5
-boundary, while 10 preserved the gate in the candidate screen. The diagnostic
 slice adds artifact/runtime support and margin metadata so future learner
 changes can be evaluated by evidence strength, not just by aggregate guard
 fallback share. The paired report slice adds heuristic-vs-learned role/mode
 comparisons, keeping Stage 2 model iteration grounded in outcome deltas rather
 than aggregate policy averages.
-The Stage 2/3 checkpoint now trains on the default multi-seed bank
+The Stage 2 checkpoint now trains on the default multi-seed bank
 `[1,2,3,4,6,7,8,9,10,11,12,17,23,31]` and validates against both the default
 held-out seed bank `[5,13,19,29]` at 120 ticks and the extended seed bank
 `[5,13,19,29,37,41]` at 120 and 180 ticks. Earlier safe-deviation bypasses for
@@ -71,7 +68,7 @@ local eating and plant movement passed the default slice but regressed the
 extended matrix, so they are disabled in the current artifact. The active
 abstention mechanism is an artifact-versioned confidence delegate: when a
 learned action disagrees with the heuristic but the matched training action
-prior has score margin below `0.25`, runtime delegates to the heuristic before
+prior has score margin below `0.221`, runtime delegates to the heuristic before
 the hard safety guard and reports that delegation separately from guard
 intervention.
 The current observability checkpoint extends the same breakdowns to confidence
@@ -82,14 +79,26 @@ Artifact diagnostics also expose action-confusion pairs and per-action
 precision/recall, which keeps future learner changes honest about whether they
 reduce the broad `eat` prior or merely shift mistakes between movement actions.
 
-The latest default gate passed with aggregate guard intervention `0.1255`,
-delegate rate `0.3580`, max role guard `0.2143`, max mode guard `0.1697`, and
-zero alive/birth deltas on every held-out seed. The latest extended gate passed
-with aggregate guard intervention `0.1253` at 120 ticks and `0.1281` at 180
-ticks, delegate rates `0.3567` and `0.3241`, max role guard `0.2008` and
-`0.2324`, max mode guard `0.1524` and `0.1889`, and zero alive/birth deltas on
-every seed at both horizons. This is not a learned-value milestone; it is a
-validated abstaining baseline and diagnostic floor for the next learner.
+The latest calibrated baseline uses feature policy `mind_feature_policy_v2`,
+conditional support floor `3`, `smoothed_contextual_action_prior_v1` with
+smoothing `0.1`, no prior correction, and safe-deviation bypasses disabled.
+It passed the default gate with held-out artifact top-1 accuracy `0.4976`,
+held-out action-distribution drift `0.1599`, aggregate guard intervention
+`0.1190`, delegate rate `0.3590`, max role guard `0.2166`, max mode guard
+`0.1560`, and zero alive/birth deltas on every held-out seed. It passed the
+extended gate with held-out top-1 accuracy `0.5002`, held-out drift `0.1683`,
+aggregate guard intervention `0.1187` and `0.1228`, delegate rates `0.3562` and
+`0.3181`, max role guard `0.2046` and `0.2241`, max mode guard `0.1553` and
+`0.1951`, and zero alive/birth deltas at both 120 and 180 ticks. This is still
+not a learned-value milestone; it is a stronger abstaining baseline and
+diagnostic floor for the next learner.
+
+Rejected tuning paths are documented so they are not rediscovered as false
+progress: prior-corrected action-lift variants improved some offline metrics
+but raised confidence delegation, and safe local-eat/plant-move deviations
+caused alive-agent regressions on held-out seeds. Those paths should only be
+reopened with a stronger feature/model change and the extended gate as the
+arbiter.
 
 Exit criteria:
 

@@ -3,7 +3,7 @@
 Current contract version: `mind_v1_data_contract_v1`
 
 Mind v1 is still disabled by default. Runtime learned-policy inference requires
-an explicit enable flag, and Stage 2/3 policy changes remain offline-gated until
+an explicit enable flag, and Stage 2+ policy changes remain offline-gated until
 they preserve Foundation release behavior and held-out Mind gates.
 
 ## Schemas
@@ -84,8 +84,9 @@ review warnings should also produce a non-zero exit. Evaluation reports include
 paired per-seed heuristic versus learned deltas for alive agents, births, and
 deaths so aggregate regressions can be traced to individual validation seeds.
 
-The gate report also includes artifact diagnostics computed from the training
-trajectories before runtime evaluation:
+The gate report also includes artifact diagnostics computed from both training
+trajectories and a held-out artifact-diagnostic seed bank before runtime
+evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
 - predicted versus label action distribution drift, per-action precision/recall,
@@ -111,10 +112,10 @@ Paired evaluation reports compare heuristic and guarded learned outcomes by
 trophic role and meat mode, including terminal count deltas and role/mode policy
 diagnostic deltas, without changing trajectory records.
 
-The current Stage 3 guarded baseline carries explicit artifact parameters for a
+The current Stage 2 guarded baseline carries explicit artifact parameters for a
 confidence-delegation policy. If the learned action disagrees with the
 observation heuristic and the matched training action prior has score margin
-below `0.25`, runtime delegates to the heuristic before evaluating the hard
+below `0.221`, runtime delegates to the heuristic before evaluating the hard
 safety guard. The resulting action source uses
 `observation_heuristic_confidence_delegate_v1`, and reports count this
 separately from `observation_heuristic_safety_floor_v1` guard interventions.
@@ -126,14 +127,16 @@ and plant movement, but the current baseline writes them as `null`. Those
 bypasses remain disabled unless a future artifact explicitly supplies finite
 thresholds and passes the extended gate.
 
-The guarded contextual baseline only materializes conditional action priors once
-the feature context has at least 10 training records. Lower-support contexts
-fall back to coarser feature keys or the global prior, which keeps offline
-imitation from overfitting sparse seed-bank states before runtime experiments
-are allowed beyond the heuristic safety floor. This floor is calibrated against
-the extended 180-tick held-out boundary: support floors of 3, 6, and 8 improved
-offline imitation but regressed seed 5 at 180 ticks, while 10 preserved the
-extended gate and modestly reduced guard fallback share.
+The guarded contextual baseline uses feature policy `mind_feature_policy_v2`.
+It materializes conditional action priors once the feature context has at least
+3 training records, then falls back through coarser feature keys or the global
+prior. Conditional scores use `smoothed_contextual_action_prior_v1` with
+additive smoothing `0.1`; the artifact also records the prior-correction
+exponent, currently `0.0`, to make this a plain smoothed local prior rather than
+a hidden action-lift model. This checkpoint improves held-out action drift and
+guard fallback while preserving zero alive/birth deltas on the extended matrix.
+Global-prior correction and safe-deviation runtime bypasses were tested but
+left disabled because they did not preserve the gates.
 
 The learned adapter also requires decisive evidence before overriding a
 different heuristic action. First, low-margin training contexts delegate to the

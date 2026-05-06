@@ -18,7 +18,7 @@ from evolution_sim.env.runtime.observations import (
     decode_observation_input,
 )
 
-FEATURE_POLICY_VERSION = "mind_feature_policy_v1"
+FEATURE_POLICY_VERSION = "mind_feature_policy_v2"
 MOVE_ACTIONS: tuple[str, ...] = (
     "move_north",
     "move_south",
@@ -66,6 +66,7 @@ def feature_keys_from_record(record: Mapping[str, object]) -> tuple[str, ...]:
         center_food=_center_patch_value(values, "food"),
         center_fresh_kill=_center_patch_value(values, "fresh_kill_energy"),
         center_carcass=_center_patch_value(values, "carcass_energy"),
+        local_patch=_local_patch_tokens_from_values(values),
         navigation=_navigation_tokens_from_values(values),
         action_mask=action_mask,
     )
@@ -89,6 +90,7 @@ def feature_keys_from_observation(
         center_food=_number(center.get("food"), 0.0),
         center_fresh_kill=_number(center.get("fresh_kill_energy"), 0.0),
         center_carcass=_number(center.get("carcass_energy"), 0.0),
+        local_patch=_local_patch_tokens_from_observation(observation.get("local_patch")),
         navigation=_navigation_tokens_from_observation(observation.get("navigation")),
         action_mask=action_mask,
     )
@@ -104,6 +106,7 @@ def _feature_keys(
     center_food: float,
     center_fresh_kill: float,
     center_carcass: float,
+    local_patch: dict[str, str],
     navigation: dict[str, str],
     action_mask: Mapping[str, bool],
 ) -> tuple[str, ...]:
@@ -118,10 +121,16 @@ def _feature_keys(
         f":fk{_signal_bucket(center_fresh_kill)}"
         f":ca{_signal_bucket(center_carcass)}"
     )
+    local = ":".join(
+        f"{name}{local_patch.get(name, 'c0')}"
+        for name in ("food", "water", "carrion", "prey", "risk")
+    )
     nav = ":".join(f"{target}{navigation.get(target, '0_0_0')}" for target in NAVIGATION_TARGETS)
     mask = _action_mask_token(action_mask)
     return (
+        f"{FEATURE_POLICY_VERSION}|{vitals}|{role}|{resources}|{local}|{nav}|{mask}",
         f"{FEATURE_POLICY_VERSION}|{vitals}|{role}|{resources}|{nav}|{mask}",
+        f"{FEATURE_POLICY_VERSION}|{vitals}|{role}|{resources}|{local}|{mask}",
         f"{FEATURE_POLICY_VERSION}|{vitals}|{role}|{resources}|{mask}",
         f"{FEATURE_POLICY_VERSION}|{vitals}|{role}|{mask}",
         f"{FEATURE_POLICY_VERSION}|{vitals}|{mask}",
@@ -178,6 +187,150 @@ def _navigation_token(*, dx: float, dy: float, distance: float, strength: float)
 def _center_patch_value(values: list[float], field: str) -> float:
     center_base = PATCH_INPUT_START + CENTER_PATCH_INDEX * len(PATCH_INPUT_FIELDS)
     return values[center_base + PATCH_FIELD_INDEX[field]]
+
+
+def _local_patch_tokens_from_values(values: list[float]) -> dict[str, str]:
+    tokens = {
+        "food": ("c", 0.0),
+        "water": ("c", 0.0),
+        "carrion": ("c", 0.0),
+        "prey": ("c", 0.0),
+        "risk": ("c", 0.0),
+    }
+    stride = len(PATCH_INPUT_FIELDS)
+    for cell_index in range(PATCH_CELL_COUNT):
+        base = PATCH_INPUT_START + cell_index * stride
+        dx = values[base + PATCH_FIELD_INDEX["dx"]]
+        dy = values[base + PATCH_FIELD_INDEX["dy"]]
+        if abs(dx) + abs(dy) > 1.01:
+            continue
+        direction = _local_direction_token(dx=dx, dy=dy)
+        _update_patch_token(
+            tokens,
+            "food",
+            direction,
+            values[base + PATCH_FIELD_INDEX["food"]],
+        )
+        water_strength = max(
+            values[base + PATCH_FIELD_INDEX["water_access_reason_code"]],
+            1.0 if values[base + PATCH_FIELD_INDEX["terrain_code"]] >= 0.99 else 0.0,
+        )
+        _update_patch_token(tokens, "water", direction, water_strength)
+        _update_patch_token(
+            tokens,
+            "carrion",
+            direction,
+            max(
+                values[base + PATCH_FIELD_INDEX["fresh_kill_energy"]],
+                values[base + PATCH_FIELD_INDEX["carcass_energy"]],
+                values[base + PATCH_FIELD_INDEX["carrion_signal"]],
+            ),
+        )
+        _update_patch_token(
+            tokens,
+            "prey",
+            direction,
+            values[base + PATCH_FIELD_INDEX["prey_biomass"]],
+        )
+        _update_patch_token(
+            tokens,
+            "risk",
+            direction,
+            max(
+                values[base + PATCH_FIELD_INDEX["hazard_level"]],
+                values[base + PATCH_FIELD_INDEX["predator_risk"]],
+            ),
+        )
+    return {
+        name: f"{direction}{_signal_bucket(value)}"
+        for name, (direction, value) in tokens.items()
+    }
+
+
+def _local_patch_tokens_from_observation(payload: object) -> dict[str, str]:
+    tokens = {
+        "food": ("c", 0.0),
+        "water": ("c", 0.0),
+        "carrion": ("c", 0.0),
+        "prey": ("c", 0.0),
+        "risk": ("c", 0.0),
+    }
+    if not isinstance(payload, list):
+        return {
+            name: f"{direction}{_signal_bucket(value)}"
+            for name, (direction, value) in tokens.items()
+        }
+    for cell in payload:
+        if not isinstance(cell, Mapping):
+            continue
+        dx = _number(cell.get("dx"), 0.0)
+        dy = _number(cell.get("dy"), 0.0)
+        if abs(dx) + abs(dy) > 1.01:
+            continue
+        direction = _local_direction_token(dx=dx, dy=dy)
+        _update_patch_token(tokens, "food", direction, _number(cell.get("food"), 0.0))
+        water_reason = str(cell.get("water_access_reason", "none"))
+        water_strength = 1.0 if water_reason != "none" else 0.0
+        if str(cell.get("terrain", "plain")) == "water":
+            water_strength = 1.0
+        _update_patch_token(tokens, "water", direction, water_strength)
+        _update_patch_token(
+            tokens,
+            "carrion",
+            direction,
+            max(
+                _number(cell.get("fresh_kill_energy"), 0.0),
+                _number(cell.get("carcass_energy"), 0.0),
+                _number(cell.get("carrion_signal"), 0.0),
+            ),
+        )
+        _update_patch_token(
+            tokens,
+            "prey",
+            direction,
+            _number(cell.get("prey_biomass"), 0.0),
+        )
+        _update_patch_token(
+            tokens,
+            "risk",
+            direction,
+            max(
+                _number(cell.get("hazard_level"), 0.0),
+                _number(cell.get("predator_risk"), 0.0),
+            ),
+        )
+    return {
+        name: f"{direction}{_signal_bucket(value)}"
+        for name, (direction, value) in tokens.items()
+    }
+
+
+def _update_patch_token(
+    tokens: dict[str, tuple[str, float]],
+    name: str,
+    direction: str,
+    value: float,
+) -> None:
+    current_direction, current_value = tokens[name]
+    if value <= 0.0 and current_value <= 0.0:
+        return
+    if (value, _direction_rank(direction)) > (
+        current_value,
+        _direction_rank(current_direction),
+    ):
+        tokens[name] = (direction, value)
+
+
+def _local_direction_token(*, dx: float, dy: float) -> str:
+    if abs(dx) <= 0.05 and abs(dy) <= 0.05:
+        return "c"
+    if abs(dx) >= abs(dy):
+        return "e" if dx > 0.0 else "w"
+    return "s" if dy > 0.0 else "n"
+
+
+def _direction_rank(direction: str) -> int:
+    return {"c": 0, "n": 1, "s": 2, "e": 3, "w": 4}.get(direction, 0)
 
 
 def _center_patch_cell(payload: object) -> Mapping[str, object]:

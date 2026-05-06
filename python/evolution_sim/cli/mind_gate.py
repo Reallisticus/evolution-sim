@@ -408,6 +408,15 @@ def run_mind_gate(
             "conditional_min_records": artifact["model"].get(
                 "conditional_min_records"
             ),
+            "conditional_score_policy": artifact["model"].get(
+                "conditional_score_policy"
+            ),
+            "conditional_prior_correction_exponent": artifact["model"].get(
+                "conditional_prior_correction_exponent"
+            ),
+            "conditional_score_smoothing_alpha": artifact["model"].get(
+                "conditional_score_smoothing_alpha"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"

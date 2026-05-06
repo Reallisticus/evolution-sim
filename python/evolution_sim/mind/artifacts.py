@@ -22,7 +22,8 @@ class MindArtifactError(ValueError):
     pass
 
 
-BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_action_prior_bc_v1"
+BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v1"
+CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
 HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
@@ -146,6 +147,34 @@ def _validate_behavior_cloning_model_payload(
         "conditional_min_records",
         location="model",
     )
+    conditional_score_policy = model.get("conditional_score_policy")
+    if conditional_score_policy != CONDITIONAL_SCORE_POLICY:
+        raise MindArtifactError(
+            (
+                "model.conditional_score_policy expected "
+                f"{CONDITIONAL_SCORE_POLICY}, found {conditional_score_policy!r}"
+            )
+        )
+    prior_exponent = _required_finite_number(
+        model,
+        "conditional_prior_correction_exponent",
+        location="model",
+        minimum=0.0,
+    )
+    if prior_exponent > 1.0:
+        raise MindArtifactError(
+            "model.conditional_prior_correction_exponent must be <= 1.0"
+        )
+    smoothing_alpha = _required_finite_number(
+        model,
+        "conditional_score_smoothing_alpha",
+        location="model",
+        minimum=0.0,
+    )
+    if smoothing_alpha <= 0.0:
+        raise MindArtifactError(
+            "model.conditional_score_smoothing_alpha must be positive"
+        )
     for feature_key, scores in conditional_scores.items():
         if not isinstance(feature_key, str) or not feature_key:
             raise MindArtifactError(
@@ -282,6 +311,9 @@ def _validate_action_score_map(
         )
     for action in ACTION_NAMES:
         _finite_number(scores.get(action), f"{location}.{action}")
+    total = sum(float(scores[action]) for action in ACTION_NAMES)
+    if not math.isclose(total, 1.0, abs_tol=1e-9):
+        raise MindArtifactError(f"{location} scores must sum to 1.0")
 
 
 def _validate_score_metadata(

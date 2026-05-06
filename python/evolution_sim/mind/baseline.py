@@ -16,12 +16,15 @@ from evolution_sim.mind.feature_policy import (
 )
 from evolution_sim.mind.provenance import validate_dataset_provenance
 
-BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_action_prior_bc_v1"
-CONDITIONAL_MIN_RECORDS = 10
+BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v1"
+CONDITIONAL_MIN_RECORDS = 3
+CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
+CONDITIONAL_PRIOR_CORRECTION_EXPONENT = 0.0
+CONDITIONAL_SCORE_SMOOTHING_ALPHA = 0.1
 HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_OVERRIDE_MIN_MARGIN = 1.0
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
-HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN = 0.25
+HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN = 0.221
 HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE = None
 HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD = None
 HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO = None
@@ -72,6 +75,13 @@ class BehaviorCloningBaseline:
                 "fallback_action": "stay",
                 "feature_policy_version": FEATURE_POLICY_VERSION,
                 "conditional_min_records": CONDITIONAL_MIN_RECORDS,
+                "conditional_score_policy": CONDITIONAL_SCORE_POLICY,
+                "conditional_prior_correction_exponent": (
+                    CONDITIONAL_PRIOR_CORRECTION_EXPONENT
+                ),
+                "conditional_score_smoothing_alpha": (
+                    CONDITIONAL_SCORE_SMOOTHING_ALPHA
+                ),
                 "heuristic_guard_policy": HEURISTIC_GUARD_POLICY,
                 "heuristic_confidence_threshold": HEURISTIC_CONFIDENCE_THRESHOLD,
                 "heuristic_override_min_margin": HEURISTIC_OVERRIDE_MIN_MARGIN,
@@ -127,18 +137,20 @@ def train_behavior_cloning_baseline(
     total = sum(counts.values())
     if total <= 0:
         raise ValueError("behavior-cloning baseline requires at least one record")
-    action_scores = {
-        action: counts.get(action, 0) / total
-        for action in ACTION_NAMES
-    }
-    action_score_metadata = _score_metadata(counts)
+    action_scores = _normalize_scores(counts)
+    action_score_metadata = _score_metadata(counts, scores=action_scores)
     conditional_action_scores = {
-        key: _normalize_scores(action_counts)
+        key: _normalize_prior_corrected_scores(
+            action_counts,
+            global_counts=counts,
+            alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
+            prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
+        )
         for key, action_counts in conditional_counts.items()
         if sum(action_counts.values()) >= CONDITIONAL_MIN_RECORDS
     }
     conditional_action_metadata = {
-        key: _score_metadata(action_counts)
+        key: _score_metadata(action_counts, scores=conditional_action_scores[key])
         for key, action_counts in conditional_counts.items()
         if key in conditional_action_scores
     }
@@ -162,7 +174,45 @@ def _normalize_scores(counts: Counter[str]) -> dict[str, float]:
     }
 
 
-def _score_metadata(counts: Counter[str]) -> dict[str, object]:
+def _normalize_prior_corrected_scores(
+    counts: Counter[str],
+    *,
+    global_counts: Counter[str],
+    alpha: float,
+    prior_exponent: float,
+) -> dict[str, float]:
+    total = sum(counts.values())
+    global_total = sum(global_counts.values())
+    if total <= 0 or global_total <= 0:
+        return {action: 0.0 for action in ACTION_NAMES}
+    action_count = len(ACTION_NAMES)
+    raw_scores = {
+        action: (counts.get(action, 0) + alpha) / (total + alpha * action_count)
+        for action in ACTION_NAMES
+    }
+    global_priors = {
+        action: (global_counts.get(action, 0) + alpha)
+        / (global_total + alpha * action_count)
+        for action in ACTION_NAMES
+    }
+    corrected_scores = {
+        action: raw_scores[action] / (global_priors[action] ** prior_exponent)
+        for action in ACTION_NAMES
+    }
+    corrected_total = sum(corrected_scores.values())
+    if corrected_total <= 0:
+        return {action: 0.0 for action in ACTION_NAMES}
+    return {
+        action: corrected_scores[action] / corrected_total
+        for action in ACTION_NAMES
+    }
+
+
+def _score_metadata(
+    counts: Counter[str],
+    *,
+    scores: dict[str, float] | None = None,
+) -> dict[str, object]:
     total = sum(counts.values())
     if total <= 0:
         return {
@@ -173,9 +223,10 @@ def _score_metadata(counts: Counter[str]) -> dict[str, object]:
             "runner_up_score": 0.0,
             "score_margin": 0.0,
         }
+    ranking_scores = scores if scores is not None else _normalize_scores(counts)
     ranked = sorted(
         (
-            (counts.get(action, 0) / total, action)
+            (float(ranking_scores.get(action, 0.0)), action)
             for action in sorted(ACTION_NAMES)
         ),
         key=lambda item: (-item[0], item[1]),

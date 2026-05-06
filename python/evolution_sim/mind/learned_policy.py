@@ -620,7 +620,14 @@ def _safe_local_eat_deviation_allowed(
     )
     if not has_local_resource:
         return False
-    if _meat_mode(observation) != "none":
+    meat_mode = _meat_mode(observation)
+    center_animal_food = max(
+        _ratio(center.get("fresh_kill_energy"), default=0.0),
+        _ratio(center.get("carcass_energy"), default=0.0),
+    )
+    if meat_mode in {"scavenger", "hunter"}:
+        return center_animal_food > 0.0
+    if meat_mode == "mixed" and center_animal_food > 0.0:
         return True
     return center_food >= max(
         min_food,
