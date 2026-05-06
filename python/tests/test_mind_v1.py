@@ -273,6 +273,20 @@ class MindV1Tests(unittest.TestCase):
             diagnostics["action_distribution"]["prediction_label_tvd"],
             1.0,
         )
+        confusion = diagnostics["action_distribution"]["confusion"]
+        self.assertIn("matrix", confusion)
+        self.assertIn("top_misclassifications", confusion)
+        self.assertIn("per_action", confusion)
+        self.assertEqual(
+            sum(
+                sum(row.values())
+                for row in confusion["matrix"].values()
+            ),
+            dataset.record_count,
+        )
+        self.assertIn("eat", confusion["per_action"])
+        self.assertIn("precision", confusion["per_action"]["eat"])
+        self.assertIn("recall", confusion["per_action"]["eat"])
         self.assertIn("match_depth_counts", diagnostics["contextual_coverage"])
         self.assertEqual(
             sum(diagnostics["contextual_coverage"]["match_depth_counts"].values()),

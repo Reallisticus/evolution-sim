@@ -38,6 +38,8 @@ def build_artifact_diagnostics(
 
     label_counts: Counter[str] = Counter()
     predicted_counts: Counter[str] = Counter()
+    true_positive_counts: Counter[str] = Counter()
+    confusion_counts: Counter[tuple[str, str]] = Counter()
     match_depth_counts: Counter[str] = Counter()
     support_bucket_counts: Counter[str] = Counter()
     margin_bucket_counts: Counter[str] = Counter()
@@ -52,8 +54,10 @@ def build_artifact_diagnostics(
         )
         label_counts[label] += 1
         predicted_counts[prediction] += 1
+        confusion_counts[(label, prediction)] += 1
         if prediction == label:
             correct += 1
+            true_positive_counts[label] += 1
         if match_depth is None:
             match_depth_counts["fallback"] += 1
         else:
@@ -81,6 +85,17 @@ def build_artifact_diagnostics(
                 label_counts,
                 predicted_counts,
             ),
+            "confusion": {
+                "matrix": _confusion_matrix(confusion_counts),
+                "top_misclassifications": _top_misclassifications(
+                    confusion_counts
+                ),
+                "per_action": _per_action_confusion(
+                    label_counts,
+                    predicted_counts,
+                    true_positive_counts,
+                ),
+            },
         },
         "contextual_coverage": {
             "conditional_feature_count": len(conditional_scores),
@@ -388,6 +403,64 @@ def _total_variation_distance(
         right_share = right[action] / right_total if right_total else 0.0
         drift += abs(left_share - right_share)
     return round(drift / 2.0, 4)
+
+
+def _confusion_matrix(
+    confusion_counts: Counter[tuple[str, str]],
+) -> dict[str, dict[str, int]]:
+    matrix: dict[str, dict[str, int]] = {}
+    for label in ACTION_NAMES:
+        row = {
+            prediction: confusion_counts[(label, prediction)]
+            for prediction in ACTION_NAMES
+            if confusion_counts[(label, prediction)] > 0
+        }
+        matrix[label] = row
+    return matrix
+
+
+def _top_misclassifications(
+    confusion_counts: Counter[tuple[str, str]],
+) -> list[dict[str, object]]:
+    confusions: list[dict[str, object]] = []
+    for (label, prediction), count in confusion_counts.items():
+        if label == prediction or count <= 0:
+            continue
+        confusions.append(
+            {
+                "label": label,
+                "prediction": prediction,
+                "count": count,
+            }
+        )
+    confusions.sort(
+        key=lambda item: (
+            -int(item["count"]),
+            str(item["label"]),
+            str(item["prediction"]),
+        )
+    )
+    return confusions[:POLICY_DIAGNOSTIC_TOP_CONTEXT_LIMIT]
+
+
+def _per_action_confusion(
+    label_counts: Counter[str],
+    predicted_counts: Counter[str],
+    true_positive_counts: Counter[str],
+) -> dict[str, dict[str, object]]:
+    per_action: dict[str, dict[str, object]] = {}
+    for action in ACTION_NAMES:
+        label_count = label_counts[action]
+        predicted_count = predicted_counts[action]
+        true_positive_count = true_positive_counts[action]
+        per_action[action] = {
+            "label_count": label_count,
+            "predicted_count": predicted_count,
+            "true_positive_count": true_positive_count,
+            "recall": _rate(true_positive_count, label_count),
+            "precision": _rate(true_positive_count, predicted_count),
+        }
+    return per_action
 
 
 def _reward_total(record: Mapping[str, object]) -> float:

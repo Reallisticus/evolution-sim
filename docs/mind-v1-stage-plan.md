@@ -78,6 +78,9 @@ The current observability checkpoint extends the same breakdowns to confidence
 delegation: reports now include deferred learned actions, support and margin
 buckets, score source, role/mode delegate rates, and top delegated contexts so
 the next learner can target high-frequency abstention clusters directly.
+Artifact diagnostics also expose action-confusion pairs and per-action
+precision/recall, which keeps future learner changes honest about whether they
+reduce the broad `eat` prior or merely shift mistakes between movement actions.
 
 The latest default gate passed with aggregate guard intervention `0.1255`,
 delegate rate `0.3580`, max role guard `0.2143`, max mode guard `0.1697`, and

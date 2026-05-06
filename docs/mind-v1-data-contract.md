@@ -88,7 +88,8 @@ The gate report also includes artifact diagnostics computed from the training
 trajectories before runtime evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
-- predicted versus label action distribution drift;
+- predicted versus label action distribution drift, per-action precision/recall,
+  and top action-confusion pairs;
 - contextual feature coverage, fallback depth, support buckets, and score-margin
   buckets.
 
