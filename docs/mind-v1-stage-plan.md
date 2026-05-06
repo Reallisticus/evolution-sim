@@ -107,6 +107,34 @@ learner should use advantage/calibration-aware weighting or per-context action
 selection that reduces total fallback, especially hard guards, rather than
 merely shifting disagreements from delegate to guard.
 
+The next strict promotion target is now executable through the Mind gate:
+candidate models must keep zero per-seed alive and birth deltas, hard guard
+below the current rounded control value `0.1190`, and total heuristic fallback
+below the current rounded control value `0.4780`. Because gate caps are
+inclusive, use `--max-guard-intervention-rate 0.1189` and
+`--max-total-heuristic-fallback-rate 0.4779` for a strict local promotion run.
+
+The first opt-in advantage-calibrated trainer is implemented but not promoted.
+It adjusts contextual action support by within-context reward advantage, writes
+model type `guarded_advantage_calibrated_contextual_prior_bc_v1`, and records
+`contextual_reward_advantage_adjusted_counts_v1` plus
+`contextual_reward_advantage_lift_v1` metadata. The calibration slice added
+per-context `delegate_score_margin` metadata so runtime confidence delegation
+uses unadjusted support for the learned top action while action ranking can
+still use reward-adjusted scores. On the default reused-trajectory strict target
+it preserved zero alive/birth deltas, improved held-out artifact top-1 accuracy
+to `0.5038`, and reduced hard guard below the strict control target at
+`0.0929`. It is still not promoted because confidence delegation rose to
+`0.3856` and total heuristic fallback remained `0.4785`, above the strict
+`0.4779` cap.
+
+Follow-up probes show the remaining blocker is actual action disagreement, not
+confidence partitioning. Reward-scale sweeps from `0.75` through `4.0` did not
+beat the current `2.0` scale. Action-family floors for movement/attack actions
+reduced the candidate back near the control total but did not cross the strict
+fallback cap. Local-eat safe-deviation probes reduced fallback but changed
+per-seed alive/birth outcomes, so safe deviations remain disabled.
+
 Rejected tuning paths are documented so they are not rediscovered as false
 progress: prior-corrected action-lift variants improved some offline metrics
 but raised confidence delegation, and safe local-eat/plant-move deviations
@@ -118,8 +146,11 @@ Exit criteria:
 
 - Default and extended gates remain green with no negative per-seed alive or
   birth deltas.
-- Guard fallback share stays below the aggregate `0.45` cap and per role/mode
-  `0.50` caps.
+- Guard fallback share stays below the aggregate `0.45` broad cap, below the
+  strict `0.1190` control target for promotion, and below per role/mode `0.50`
+  caps.
+- Total heuristic fallback is gated explicitly and must fall below the current
+  rounded control value `0.4780` before promotion.
 - Heuristic delegation share is reported separately and trends downward only
   through genuine learned-policy improvements, not hidden guard reclassification.
 - Imitation accuracy and action-distribution drift are reported separately for

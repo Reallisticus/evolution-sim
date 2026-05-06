@@ -20,13 +20,20 @@ from evolution_sim.mind.provenance import validate_dataset_provenance
 
 CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
 REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
+ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER = (
+    "advantage-calibrated-contextual-prior"
+)
 TRAINER_CHOICES: tuple[str, ...] = (
     CONTEXTUAL_PRIOR_TRAINER,
     REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER,
+    ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
 )
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v2"
 REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
     "guarded_reward_weighted_contextual_prior_bc_v1"
+)
+ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE = (
+    "guarded_advantage_calibrated_contextual_prior_bc_v1"
 )
 CONDITIONAL_MIN_RECORDS = 3
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
@@ -34,10 +41,19 @@ CONDITIONAL_PRIOR_CORRECTION_EXPONENT = 0.0
 CONDITIONAL_SCORE_SMOOTHING_ALPHA = 0.1
 UNIFORM_SAMPLE_WEIGHT_POLICY = "uniform_v1"
 REWARD_TOTAL_SHIFTED_SAMPLE_WEIGHT_POLICY = "reward_total_shifted_clamp_v1"
+CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY = (
+    "contextual_reward_advantage_adjusted_counts_v1"
+)
+CONTEXTUAL_REWARD_ADVANTAGE_POLICY = "contextual_reward_advantage_lift_v1"
 UNIFORM_SAMPLE_WEIGHT_BASE = 1.0
 UNIFORM_SAMPLE_WEIGHT_MIN = 1.0
 REWARD_TOTAL_SAMPLE_WEIGHT_BASE = 1.0
 REWARD_TOTAL_SAMPLE_WEIGHT_MIN = 0.05
+ADVANTAGE_SAMPLE_WEIGHT_BASE = 1.0
+ADVANTAGE_SAMPLE_WEIGHT_MIN = 0.25
+ADVANTAGE_SAMPLE_WEIGHT_MAX = 2.0
+ADVANTAGE_REWARD_SCALE = 2.0
+ADVANTAGE_MIN_ACTION_SUPPORT = 2
 HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_OVERRIDE_MIN_MARGIN = 1.0
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
@@ -66,9 +82,82 @@ class BehaviorCloningBaseline:
     sample_weight_base: float = UNIFORM_SAMPLE_WEIGHT_BASE
     sample_weight_min: float = UNIFORM_SAMPLE_WEIGHT_MIN
     sample_weight_total: float = 0.0
+    sample_weight_max: float | None = None
+    reward_advantage_policy: str | None = None
+    reward_advantage_scale: float | None = None
+    reward_advantage_min_action_support: int | None = None
 
     def to_artifact(self) -> dict[str, object]:
         provenance = validate_dataset_provenance(self.provenance)
+        model = {
+            "action_scores": dict(sorted(self.action_scores.items())),
+            "action_score_metadata": dict(
+                sorted(self.action_score_metadata.items())
+            ),
+            "conditional_action_scores": {
+                key: dict(sorted(scores.items()))
+                for key, scores in sorted(self.conditional_action_scores.items())
+            },
+            "conditional_action_metadata": {
+                key: dict(sorted(metadata.items()))
+                for key, metadata in sorted(
+                    self.conditional_action_metadata.items()
+                )
+            },
+            "fallback_action": "stay",
+            "feature_policy_version": FEATURE_POLICY_VERSION,
+            "conditional_min_records": CONDITIONAL_MIN_RECORDS,
+            "conditional_score_policy": CONDITIONAL_SCORE_POLICY,
+            "conditional_prior_correction_exponent": (
+                CONDITIONAL_PRIOR_CORRECTION_EXPONENT
+            ),
+            "conditional_score_smoothing_alpha": (
+                CONDITIONAL_SCORE_SMOOTHING_ALPHA
+            ),
+            "trainer": self.trainer,
+            "sample_weight_policy": self.sample_weight_policy,
+            "sample_weight_base": self.sample_weight_base,
+            "sample_weight_min": self.sample_weight_min,
+            "sample_weight_total": round(self.sample_weight_total, 4),
+            "heuristic_guard_policy": HEURISTIC_GUARD_POLICY,
+            "heuristic_confidence_threshold": HEURISTIC_CONFIDENCE_THRESHOLD,
+            "heuristic_override_min_margin": HEURISTIC_OVERRIDE_MIN_MARGIN,
+            "heuristic_delegate_policy": HEURISTIC_DELEGATE_POLICY,
+            "heuristic_delegate_max_training_score_margin": (
+                HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
+            ),
+            "heuristic_safe_local_eat_min_score": (
+                HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE
+            ),
+            "heuristic_safe_local_eat_min_food": (
+                HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD
+            ),
+            "heuristic_safe_local_eat_min_plant_ratio": (
+                HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO
+            ),
+            "heuristic_safe_plant_move_min_score": (
+                HEURISTIC_SAFE_PLANT_MOVE_MIN_SCORE
+            ),
+            "heuristic_safe_plant_move_min_strength": (
+                HEURISTIC_SAFE_PLANT_MOVE_MIN_STRENGTH
+            ),
+            "heuristic_safe_plant_move_max_local_food_ratio": (
+                HEURISTIC_SAFE_PLANT_MOVE_MAX_LOCAL_FOOD_RATIO
+            ),
+            "heuristic_safe_plant_move_max_distance": (
+                HEURISTIC_SAFE_PLANT_MOVE_MAX_DISTANCE
+            ),
+        }
+        if self.sample_weight_max is not None:
+            model["sample_weight_max"] = self.sample_weight_max
+        if self.reward_advantage_policy is not None:
+            model["reward_advantage_policy"] = self.reward_advantage_policy
+        if self.reward_advantage_scale is not None:
+            model["reward_advantage_scale"] = self.reward_advantage_scale
+        if self.reward_advantage_min_action_support is not None:
+            model["reward_advantage_min_action_support"] = (
+                self.reward_advantage_min_action_support
+            )
         return {
             "manifest": {
                 "artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -80,65 +169,7 @@ class BehaviorCloningBaseline:
                 "trained_record_count": self.record_count,
                 "provenance": provenance,
             },
-            "model": {
-                "action_scores": dict(sorted(self.action_scores.items())),
-                "action_score_metadata": dict(
-                    sorted(self.action_score_metadata.items())
-                ),
-                "conditional_action_scores": {
-                    key: dict(sorted(scores.items()))
-                    for key, scores in sorted(self.conditional_action_scores.items())
-                },
-                "conditional_action_metadata": {
-                    key: dict(sorted(metadata.items()))
-                    for key, metadata in sorted(
-                        self.conditional_action_metadata.items()
-                    )
-                },
-                "fallback_action": "stay",
-                "feature_policy_version": FEATURE_POLICY_VERSION,
-                "conditional_min_records": CONDITIONAL_MIN_RECORDS,
-                "conditional_score_policy": CONDITIONAL_SCORE_POLICY,
-                "conditional_prior_correction_exponent": (
-                    CONDITIONAL_PRIOR_CORRECTION_EXPONENT
-                ),
-                "conditional_score_smoothing_alpha": (
-                    CONDITIONAL_SCORE_SMOOTHING_ALPHA
-                ),
-                "trainer": self.trainer,
-                "sample_weight_policy": self.sample_weight_policy,
-                "sample_weight_base": self.sample_weight_base,
-                "sample_weight_min": self.sample_weight_min,
-                "sample_weight_total": round(self.sample_weight_total, 4),
-                "heuristic_guard_policy": HEURISTIC_GUARD_POLICY,
-                "heuristic_confidence_threshold": HEURISTIC_CONFIDENCE_THRESHOLD,
-                "heuristic_override_min_margin": HEURISTIC_OVERRIDE_MIN_MARGIN,
-                "heuristic_delegate_policy": HEURISTIC_DELEGATE_POLICY,
-                "heuristic_delegate_max_training_score_margin": (
-                    HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
-                ),
-                "heuristic_safe_local_eat_min_score": (
-                    HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE
-                ),
-                "heuristic_safe_local_eat_min_food": (
-                    HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD
-                ),
-                "heuristic_safe_local_eat_min_plant_ratio": (
-                    HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO
-                ),
-                "heuristic_safe_plant_move_min_score": (
-                    HEURISTIC_SAFE_PLANT_MOVE_MIN_SCORE
-                ),
-                "heuristic_safe_plant_move_min_strength": (
-                    HEURISTIC_SAFE_PLANT_MOVE_MIN_STRENGTH
-                ),
-                "heuristic_safe_plant_move_max_local_food_ratio": (
-                    HEURISTIC_SAFE_PLANT_MOVE_MAX_LOCAL_FOOD_RATIO
-                ),
-                "heuristic_safe_plant_move_max_distance": (
-                    HEURISTIC_SAFE_PLANT_MOVE_MAX_DISTANCE
-                ),
-            },
+            "model": model,
         }
 
 
@@ -176,6 +207,17 @@ def train_reward_weighted_behavior_cloning_baseline(
     )
 
 
+def train_advantage_calibrated_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_advantage_calibrated_contextual_prior_baseline(
+        records,
+        provenance=provenance,
+    )
+
+
 def train_baseline_with_trainer(
     records: Iterable[dict[str, object]],
     *,
@@ -186,6 +228,11 @@ def train_baseline_with_trainer(
         return train_behavior_cloning_baseline(records, provenance=provenance)
     if trainer == REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER:
         return train_reward_weighted_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER:
+        return train_advantage_calibrated_behavior_cloning_baseline(
             records,
             provenance=provenance,
         )
@@ -271,6 +318,101 @@ def _train_contextual_prior_baseline(
     )
 
 
+def _train_advantage_calibrated_contextual_prior_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    support_counts: Counter[str] = Counter()
+    reward_sums: Counter[str] = Counter()
+    conditional_support_counts: dict[str, Counter[str]] = {}
+    conditional_reward_sums: dict[str, Counter[str]] = {}
+    record_count = 0
+    for record in records:
+        record_count += 1
+        requested_action = str(record["requested_action"])
+        resolved_action = str(record["resolved_action"])
+        label = (
+            requested_action
+            if bool(record.get("resolution_action_valid", False))
+            else resolved_action
+        )
+        reward_total = _record_reward_total(record)
+        support_counts[label] += 1
+        reward_sums[label] += reward_total
+        for feature_key in feature_keys_from_record(record):
+            conditional_support_counts.setdefault(feature_key, Counter())[label] += 1
+            conditional_reward_sums.setdefault(feature_key, Counter())[label] += (
+                reward_total
+            )
+    total = sum(support_counts.values())
+    if total <= 0:
+        raise ValueError("behavior-cloning baseline requires at least one record")
+
+    weighted_counts = _advantage_adjusted_counts(
+        support_counts,
+        reward_sums=reward_sums,
+    )
+    action_scores = _normalize_scores(weighted_counts)
+    raw_action_scores = _normalize_scores(support_counts)
+    action_score_metadata = _score_metadata(
+        support_counts,
+        scores=action_scores,
+        delegate_scores=raw_action_scores,
+        weighted_record_count=sum(weighted_counts.values()),
+    )
+    conditional_weighted_counts = {
+        key: _advantage_adjusted_counts(
+            action_counts,
+            reward_sums=conditional_reward_sums[key],
+        )
+        for key, action_counts in conditional_support_counts.items()
+    }
+    conditional_action_scores = {
+        key: _normalize_prior_corrected_scores(
+            conditional_weighted_counts[key],
+            global_counts=weighted_counts,
+            alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
+            prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
+        )
+        for key, action_counts in conditional_support_counts.items()
+        if sum(action_counts.values()) >= CONDITIONAL_MIN_RECORDS
+    }
+    conditional_action_metadata = {
+        key: _score_metadata(
+            action_counts,
+            scores=conditional_action_scores[key],
+            delegate_scores=_normalize_prior_corrected_scores(
+                action_counts,
+                global_counts=support_counts,
+                alpha=CONDITIONAL_SCORE_SMOOTHING_ALPHA,
+                prior_exponent=CONDITIONAL_PRIOR_CORRECTION_EXPONENT,
+            ),
+            weighted_record_count=sum(conditional_weighted_counts[key].values()),
+        )
+        for key, action_counts in conditional_support_counts.items()
+        if key in conditional_action_scores
+    }
+    return BehaviorCloningBaseline(
+        action_scores=action_scores,
+        action_score_metadata=action_score_metadata,
+        conditional_action_scores=conditional_action_scores,
+        conditional_action_metadata=conditional_action_metadata,
+        record_count=record_count,
+        provenance=provenance,
+        model_type=ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
+        trainer=ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
+        sample_weight_policy=CONTEXTUAL_REWARD_ADVANTAGE_SAMPLE_WEIGHT_POLICY,
+        sample_weight_base=ADVANTAGE_SAMPLE_WEIGHT_BASE,
+        sample_weight_min=ADVANTAGE_SAMPLE_WEIGHT_MIN,
+        sample_weight_total=sum(weighted_counts.values()),
+        sample_weight_max=ADVANTAGE_SAMPLE_WEIGHT_MAX,
+        reward_advantage_policy=CONTEXTUAL_REWARD_ADVANTAGE_POLICY,
+        reward_advantage_scale=ADVANTAGE_REWARD_SCALE,
+        reward_advantage_min_action_support=ADVANTAGE_MIN_ACTION_SUPPORT,
+    )
+
+
 def _normalize_scores(counts: Counter[str]) -> dict[str, float]:
     total = sum(float(value) for value in counts.values())
     if total <= 0:
@@ -316,10 +458,50 @@ def _normalize_prior_corrected_scores(
     }
 
 
+def _advantage_adjusted_counts(
+    counts: Counter[str],
+    *,
+    reward_sums: Counter[str],
+) -> Counter[str]:
+    total = sum(counts.values())
+    if total <= 0:
+        return Counter()
+    supported_actions = [
+        action
+        for action, count in counts.items()
+        if count >= ADVANTAGE_MIN_ACTION_SUPPORT
+    ]
+    if len(supported_actions) < 2:
+        return Counter({action: float(count) for action, count in counts.items()})
+    context_mean_reward = (
+        sum(float(value) for value in reward_sums.values()) / float(total)
+    )
+    adjusted: Counter[str] = Counter()
+    for action, count in counts.items():
+        count_value = float(count)
+        if count_value <= 0.0:
+            continue
+        if count < ADVANTAGE_MIN_ACTION_SUPPORT:
+            multiplier = ADVANTAGE_SAMPLE_WEIGHT_BASE
+        else:
+            action_mean_reward = float(reward_sums.get(action, 0.0)) / count_value
+            advantage = action_mean_reward - context_mean_reward
+            multiplier = ADVANTAGE_SAMPLE_WEIGHT_BASE + (
+                ADVANTAGE_REWARD_SCALE * advantage
+            )
+            multiplier = max(
+                ADVANTAGE_SAMPLE_WEIGHT_MIN,
+                min(ADVANTAGE_SAMPLE_WEIGHT_MAX, multiplier),
+            )
+        adjusted[action] = count_value * multiplier
+    return adjusted
+
+
 def _score_metadata(
     counts: Counter[str],
     *,
     scores: dict[str, float] | None = None,
+    delegate_scores: dict[str, float] | None = None,
     weighted_record_count: float | None = None,
 ) -> dict[str, object]:
     total = int(sum(counts.values()))
@@ -332,6 +514,8 @@ def _score_metadata(
             "runner_up_score": 0.0,
             "score_margin": 0.0,
         }
+        if delegate_scores is not None:
+            metadata["delegate_score_margin"] = 0.0
         if weighted_record_count is not None:
             metadata["weighted_record_count"] = round(weighted_record_count, 4)
         return metadata
@@ -347,17 +531,42 @@ def _score_metadata(
     runner_up_score, runner_up_action = (
         ranked[1] if len(ranked) > 1 else (0.0, "stay")
     )
+    score_margin = top_score - runner_up_score
     metadata = {
         "record_count": total,
         "top_action": top_action,
         "top_score": top_score,
         "runner_up_action": runner_up_action,
         "runner_up_score": runner_up_score,
-        "score_margin": top_score - runner_up_score,
+        "score_margin": score_margin,
     }
+    if delegate_scores is not None:
+        metadata["delegate_score_margin"] = _delegate_score_margin(
+            delegate_scores,
+            top_action,
+            max_margin=score_margin,
+        )
     if weighted_record_count is not None:
         metadata["weighted_record_count"] = round(weighted_record_count, 4)
     return metadata
+
+
+def _delegate_score_margin(
+    scores: dict[str, float],
+    top_action: str,
+    *,
+    max_margin: float,
+) -> float:
+    target_score = float(scores.get(top_action, 0.0))
+    runner_up_score = max(
+        (
+            float(scores.get(action, 0.0))
+            for action in ACTION_NAMES
+            if action != top_action
+        ),
+        default=0.0,
+    )
+    return max(0.0, min(max_margin, target_score - runner_up_score))
 
 
 def _uniform_sample_weight(record: dict[str, object]) -> float:

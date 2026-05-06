@@ -10,6 +10,7 @@ MIND_V1_GATE_CRITERIA_DEFAULTS: dict[str, float] = {
     "max_births_per_seed_regression": 1.0,
     "max_invalid_action_rate": 0.02,
     "max_guard_intervention_rate": 0.45,
+    "max_total_heuristic_fallback_rate": 1.0,
     "max_guard_intervention_rate_by_group": 0.5,
     "min_guard_intervention_rate_reduction": 0.0,
     "min_viable_run_share": 1.0,
@@ -54,6 +55,9 @@ def build_mind_v1_gate_report(
     ],
     max_guard_intervention_rate: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
         "max_guard_intervention_rate"
+    ],
+    max_total_heuristic_fallback_rate: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
+        "max_total_heuristic_fallback_rate"
     ],
     max_guard_intervention_rate_by_group: float = MIND_V1_GATE_CRITERIA_DEFAULTS[
         "max_guard_intervention_rate_by_group"
@@ -106,6 +110,7 @@ def build_mind_v1_gate_report(
         flags,
         aggregate=aggregate,
         max_guard_intervention_rate=max_guard_intervention_rate,
+        max_total_heuristic_fallback_rate=max_total_heuristic_fallback_rate,
         max_guard_intervention_rate_by_group=max_guard_intervention_rate_by_group,
         min_guard_intervention_rate_reduction=min_guard_intervention_rate_reduction,
         reference_guard_intervention_rate=reference_guard_intervention_rate,
@@ -283,6 +288,7 @@ def _append_guard_intervention_flags(
     *,
     aggregate: Mapping[str, object],
     max_guard_intervention_rate: float,
+    max_total_heuristic_fallback_rate: float,
     max_guard_intervention_rate_by_group: float,
     min_guard_intervention_rate_reduction: float,
     reference_guard_intervention_rate: float | None,
@@ -318,6 +324,34 @@ def _append_guard_intervention_flags(
                 (
                     f"Guard intervention rate {guard_rate:.4f} exceeds "
                     f"{max_guard_intervention_rate:.4f}."
+                ),
+            )
+        )
+    delegate_rate = _mapping_number(diagnostics, "heuristic_delegate_rate")
+    if delegate_rate is None:
+        if max_total_heuristic_fallback_rate < 1.0:
+            flags.append(
+                _flag(
+                    "error",
+                    "policy",
+                    "policy_diagnostics.heuristic_delegate_rate",
+                    (
+                        "Policy diagnostics are missing heuristic delegate rate "
+                        "required for total fallback gating."
+                    ),
+                )
+            )
+        delegate_rate = 0.0
+    total_fallback_rate = guard_rate + delegate_rate
+    if total_fallback_rate > max_total_heuristic_fallback_rate:
+        flags.append(
+            _flag(
+                "error",
+                "policy",
+                "policy_diagnostics.total_heuristic_fallback_rate",
+                (
+                    f"Total heuristic fallback rate {total_fallback_rate:.4f} "
+                    f"exceeds {max_total_heuristic_fallback_rate:.4f}."
                 ),
             )
         )

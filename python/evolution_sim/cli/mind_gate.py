@@ -159,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum aggregate learned-policy guard intervention rate.",
     )
     parser.add_argument(
+        "--max-total-heuristic-fallback-rate",
+        type=float,
+        default=DEFAULT_GATE_CRITERIA["max_total_heuristic_fallback_rate"],
+        help=(
+            "Maximum aggregate guard plus confidence-delegation fallback rate."
+        ),
+    )
+    parser.add_argument(
         "--max-guard-intervention-rate-by-group",
         type=float,
         default=DEFAULT_GATE_CRITERIA["max_guard_intervention_rate_by_group"],
@@ -435,7 +443,17 @@ def run_mind_gate(
             "sample_weight_policy": artifact["model"].get("sample_weight_policy"),
             "sample_weight_base": artifact["model"].get("sample_weight_base"),
             "sample_weight_min": artifact["model"].get("sample_weight_min"),
+            "sample_weight_max": artifact["model"].get("sample_weight_max"),
             "sample_weight_total": artifact["model"].get("sample_weight_total"),
+            "reward_advantage_policy": artifact["model"].get(
+                "reward_advantage_policy"
+            ),
+            "reward_advantage_scale": artifact["model"].get(
+                "reward_advantage_scale"
+            ),
+            "reward_advantage_min_action_support": artifact["model"].get(
+                "reward_advantage_min_action_support"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"
@@ -710,6 +728,9 @@ def _gate_criteria_from_args(args: argparse.Namespace) -> dict[str, float]:
             "max_births_per_seed_regression": args.max_births_per_seed_regression,
             "max_invalid_action_rate": args.max_invalid_action_rate,
             "max_guard_intervention_rate": args.max_guard_intervention_rate,
+            "max_total_heuristic_fallback_rate": (
+                args.max_total_heuristic_fallback_rate
+            ),
             "max_guard_intervention_rate_by_group": (
                 args.max_guard_intervention_rate_by_group
             ),

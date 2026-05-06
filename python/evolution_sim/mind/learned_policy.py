@@ -228,10 +228,7 @@ class LearnedPolicy:
                         feature_key=feature_key,
                         match_depth=depth,
                         support=_metadata_int(metadata, "record_count"),
-                        training_score_margin=_metadata_float(
-                            metadata,
-                            "score_margin",
-                        ),
+                        training_score_margin=_training_score_margin(metadata),
                     )
         return _ScoreMatch(
             scores=self.action_scores,
@@ -239,9 +236,8 @@ class LearnedPolicy:
             feature_key=None,
             match_depth=None,
             support=_metadata_int(self.action_score_metadata, "record_count"),
-            training_score_margin=_metadata_float(
-                self.action_score_metadata,
-                "score_margin",
+            training_score_margin=_training_score_margin(
+                self.action_score_metadata
             ),
         )
 
@@ -468,6 +464,15 @@ def _metadata_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _training_score_margin(
+    metadata: dict[str, object] | None,
+) -> float | None:
+    delegate_score_margin = _metadata_float(metadata, "delegate_score_margin")
+    if delegate_score_margin is not None:
+        return delegate_score_margin
+    return _metadata_float(metadata, "score_margin")
 
 
 def _heuristic_delegate_reason(

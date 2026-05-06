@@ -19,6 +19,7 @@ from evolution_sim.mind.artifacts import (
     write_model_artifact,
 )
 from evolution_sim.mind.baseline import (
+    train_baseline_with_trainer,
     train_behavior_cloning_baseline,
     train_reward_weighted_behavior_cloning_baseline,
 )
@@ -364,6 +365,143 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(artifact["model"]["sample_weight_total"], 3.0)
 
+    def test_advantage_calibrated_baseline_prefers_contextual_advantage(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        base_record = dict(dataset.records[0])
+
+        def training_record(action: str, reward_total: float) -> dict[str, object]:
+            record = dict(base_record)
+            record["requested_action"] = action
+            record["resolved_action"] = action
+            record["resolution_action_valid"] = True
+            reward = dict(record["reward"])
+            reward["total"] = reward_total
+            record["reward"] = reward
+            return record
+
+        records = [
+            *(training_record("eat", -0.1) for _ in range(6)),
+            *(training_record("stay", 0.6) for _ in range(2)),
+        ]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        validate_model_artifact_manifest(artifact)
+
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_advantage_calibrated_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["trainer"],
+            "advantage-calibrated-contextual-prior",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "contextual_reward_advantage_adjusted_counts_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["reward_advantage_policy"],
+            "contextual_reward_advantage_lift_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["top_action"],
+            "stay",
+        )
+        self.assertGreater(
+            artifact["model"]["action_scores"]["stay"],
+            artifact["model"]["action_scores"]["eat"],
+        )
+        self.assertEqual(
+            artifact["model"]["action_score_metadata"]["record_count"],
+            len(records),
+        )
+        self.assertGreater(
+            artifact["model"]["action_score_metadata"]["weighted_record_count"],
+            0.0,
+        )
+        self.assertIn(
+            "delegate_score_margin",
+            artifact["model"]["action_score_metadata"],
+        )
+        self.assertLess(
+            artifact["model"]["action_score_metadata"]["delegate_score_margin"],
+            artifact["model"]["action_score_metadata"]["score_margin"],
+        )
+
+    def test_advantage_calibrated_artifact_requires_calibration_metadata(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(record) for record in dataset.records[:4]]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        del artifact["model"]["reward_advantage_policy"]
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "reward_advantage_policy",
+        ):
+            validate_model_artifact_manifest(artifact)
+
+    def test_advantage_calibrated_artifact_rejects_invalid_delegate_margin(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+        records = [dict(record) for record in dataset.records[:4]]
+        provenance = dict(dataset_provenance(dataset))
+        provenance["record_count"] = len(records)
+        baseline = train_baseline_with_trainer(
+            records,
+            provenance=provenance,
+            trainer="advantage-calibrated-contextual-prior",
+        )
+        artifact = baseline.to_artifact()
+        del artifact["model"]["action_score_metadata"]["delegate_score_margin"]
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "delegate_score_margin",
+        ):
+            validate_model_artifact_manifest(artifact)
+
+        artifact = baseline.to_artifact()
+        artifact["model"]["action_score_metadata"]["delegate_score_margin"] = (
+            artifact["model"]["action_score_metadata"]["score_margin"] + 0.1
+        )
+
+        with self.assertRaisesRegex(
+            MindArtifactError,
+            "delegate_score_margin",
+        ):
+            validate_model_artifact_manifest(artifact)
+
     def test_mind_train_cli_writes_reward_weighted_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
@@ -399,6 +537,50 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             artifact["model"]["sample_weight_policy"],
             "reward_total_shifted_clamp_v1",
+        )
+
+    def test_mind_train_cli_writes_advantage_calibrated_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            artifact_path = Path(tmpdir) / "advantage-artifact.json"
+            self._write_tiny_trajectory(trajectory_path)
+
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_train",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(artifact_path),
+                        "--trainer",
+                        "advantage-calibrated-contextual-prior",
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_train.main()
+
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            validate_model_artifact_manifest(artifact)
+
+        self.assertIn(
+            "trainer=advantage-calibrated-contextual-prior",
+            stdout.getvalue(),
+        )
+        self.assertEqual(
+            artifact["manifest"]["model_type"],
+            "guarded_advantage_calibrated_contextual_prior_bc_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["sample_weight_policy"],
+            "contextual_reward_advantage_adjusted_counts_v1",
+        )
+        self.assertEqual(
+            artifact["model"]["reward_advantage_policy"],
+            "contextual_reward_advantage_lift_v1",
         )
 
     def test_behavior_cloning_artifact_diagnostics_report_imitation_and_coverage(self) -> None:
@@ -526,6 +708,7 @@ class MindV1Tests(unittest.TestCase):
                     "max_births_per_seed_regression": 1.0,
                     "max_invalid_action_rate": 0.03,
                     "max_guard_intervention_rate": 0.45,
+                    "max_total_heuristic_fallback_rate": 1.0,
                     "max_guard_intervention_rate_by_group": 0.5,
                     "min_guard_intervention_rate_reduction": 0.0,
                     "min_viable_run_share": 0.5,
@@ -1124,6 +1307,75 @@ class MindV1Tests(unittest.TestCase):
         self.assertTrue(decision.diagnostics["heuristic_delegate_used"])
         self.assertEqual(
             decision.diagnostics["heuristic_delegate_reason"],
+            "low_confidence_action_prior",
+        )
+
+    def test_heuristic_delegate_uses_conservative_delegate_margin(
+        self,
+    ) -> None:
+        observation = {
+            "self": {
+                "energy_ratio": 0.9,
+                "hydration_ratio": 0.9,
+                "health_ratio": 1.0,
+                "trophic_role": "herbivore",
+                "meat_mode": "none",
+                "matched_diet_ratio": 1.0,
+            },
+            "local_patch": [
+                {
+                    "dx": 0,
+                    "dy": 0,
+                    "in_bounds": True,
+                    "terrain": "plain",
+                    "occupant": "self",
+                    "water_access_reason": "none",
+                    "food": 0.0,
+                    "vegetation": 0.0,
+                    "recovery_debt": 0.0,
+                    "fresh_kill_energy": 0.0,
+                    "carcass_energy": 0.0,
+                    "hazard_level": 0.0,
+                    "prey_biomass": 0.0,
+                    "carrion_signal": 0.0,
+                    "predator_risk": 0.0,
+                }
+            ],
+            "navigation": {
+                "water": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "plant": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "carrion": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+                "prey": {"dx": 0, "dy": 0, "distance": 0, "strength": 0.0},
+            },
+        }
+        policy = LearnedPolicy(
+            action_scores={"move_north": 0.7, "stay": 0.3},
+            action_score_metadata={
+                "record_count": 20,
+                "score_margin": 0.4,
+                "delegate_score_margin": 0.05,
+            },
+            heuristic_guard=True,
+            heuristic_delegate=True,
+            heuristic_delegate_max_training_score_margin=0.25,
+            heuristic_confidence_threshold=0.5,
+            heuristic_override_min_margin=0.1,
+        )
+
+        decision = policy.decide(observation, {"stay": True, "move_north": True})
+
+        self.assertEqual(decision.requested_action, "stay")
+        self.assertIn(
+            "observation_heuristic_confidence_delegate_v1",
+            decision.source,
+        )
+        self.assertNotIn("observation_heuristic_safety_floor_v1", decision.source)
+        self.assertIsNotNone(decision.diagnostics)
+        diagnostics = decision.diagnostics or {}
+        self.assertTrue(diagnostics["heuristic_delegate_used"])
+        self.assertAlmostEqual(float(diagnostics["training_score_margin"]), 0.05)
+        self.assertEqual(
+            diagnostics["heuristic_delegate_reason"],
             "low_confidence_action_prior",
         )
 
@@ -1946,6 +2198,46 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             gate["blockers"][0]["field"],
             "policy_diagnostics.guard_intervention_rate",
+        )
+
+    def test_mind_gate_blocks_total_heuristic_fallback_rate(self) -> None:
+        report = {
+            "runs": [
+                {
+                    "alive_agents": 1,
+                    "resource_pressure": {
+                        "plant_budget": {"energy_available_at_end": 1.0},
+                    },
+                    "land_tile_count": 1,
+                }
+            ],
+            "aggregate": {
+                "births": {"mean": 1.0},
+                "trajectory": {"invalid_observation_action_rate": 0.0},
+                "policy_diagnostics": {
+                    "guard_intervention_rate": 0.2,
+                    "heuristic_delegate_rate": 0.35,
+                    "by_trophic_role": {
+                        "herbivore": {"guard_intervention_rate": 0.2}
+                    },
+                    "by_meat_mode": {
+                        "none": {"guard_intervention_rate": 0.2}
+                    },
+                },
+            },
+        }
+
+        gate = build_mind_v1_gate_report(
+            report,
+            max_guard_intervention_rate=1.0,
+            max_guard_intervention_rate_by_group=1.0,
+            max_total_heuristic_fallback_rate=0.5,
+        )
+
+        self.assertEqual(gate["status"], "fail")
+        self.assertEqual(
+            gate["blockers"][0]["field"],
+            "policy_diagnostics.total_heuristic_fallback_rate",
         )
 
     def test_mind_gate_blocks_guard_group_cap(self) -> None:

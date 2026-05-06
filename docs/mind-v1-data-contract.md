@@ -63,6 +63,22 @@ support counts separate from weighted counts so diagnostics still expose how
 much raw data backed each decision. This path is experimental until it reduces
 guard/delegate fallback on held-out gates without alive or birth regressions.
 
+The CLI also accepts `--trainer advantage-calibrated-contextual-prior`. This
+trainer is an opt-in experiment harness that keeps the contextual-prior model
+shape but adjusts per-action support by reward advantage inside the matched
+context: action mean reward minus context mean reward. The adjustment is
+clamped to `[0.25, 2.0]`, uses scale `2.0`, and only applies when at least two
+actions have support `>= 2` in that context. It writes model type
+`guarded_advantage_calibrated_contextual_prior_bc_v1`, sample-weight policy
+`contextual_reward_advantage_adjusted_counts_v1`, and explicit
+`contextual_reward_advantage_lift_v1` metadata. Each advantage-calibrated score
+metadata block must also carry `delegate_score_margin`: a conservative runtime
+confidence margin for the learned top action, bounded by the adjusted
+`score_margin` and computed from unadjusted support. This keeps reward-lifted
+action scores from being treated as high-confidence evidence unless raw support
+also backs the learned top action. This path is not promoted by default; the
+same held-out gates decide whether it is better than the current control.
+
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
 required; without the explicit flag, loading fails.
@@ -90,11 +106,29 @@ regression versus the heuristic over the held-out seed bank, at most `2.0`
 alive-agent regression on any single validation seed, and at most `1.0` births
 regression before review on any single validation seed. Policy-visible invalid
 action rate is capped at `0.02`, aggregate guard intervention is capped at
-`0.45`, and each role/mode guard intervention rate is capped at `0.50`. The CLI
-supports `--fail-on-blockers` for hard gate failures and `--fail-on-review` when
-review warnings should also produce a non-zero exit. Evaluation reports include
-paired per-seed heuristic versus learned deltas for alive agents, births, and
-deaths so aggregate regressions can be traced to individual validation seeds.
+`0.45`, total heuristic fallback (`guard_intervention_rate +
+heuristic_delegate_rate`) defaults to the broad cap `1.0`, and each role/mode
+guard intervention rate is capped at `0.50`. The CLI supports
+`--fail-on-blockers` for hard gate failures and `--fail-on-review` when review
+warnings should also produce a non-zero exit. Evaluation reports include paired
+per-seed heuristic versus learned deltas for alive agents, births, and deaths so
+aggregate regressions can be traced to individual validation seeds.
+
+The current strict promotion target for the next learner is intentionally tighter
+than the default broad gate. To require a model to beat the current control's
+rounded default fallback metrics, run the gate with zero per-seed regression
+allowance and inclusive caps just below the documented control values:
+
+```bash
+npm run sim:mind:gate -- \
+  --reuse-trajectories \
+  --trainer <candidate-trainer> \
+  --max-alive-agents-per-seed-regression 0 \
+  --max-births-per-seed-regression 0 \
+  --max-guard-intervention-rate 0.1189 \
+  --max-total-heuristic-fallback-rate 0.4779 \
+  --fail-on-review
+```
 
 The Mind gate accepts the same `--trainer` option and records the chosen trainer
 and sample-weight policy in both `protocol` and `artifact` report sections. The
@@ -134,7 +168,10 @@ safety guard. The resulting action source uses
 `observation_heuristic_confidence_delegate_v1`, and reports count this
 separately from `observation_heuristic_safety_floor_v1` guard interventions.
 This keeps low-confidence learned disagreements visible without treating them as
-learned-controller value.
+learned-controller value. Artifacts may provide a conservative
+`delegate_score_margin` beside `score_margin`; when present, runtime uses that
+margin for confidence delegation while leaving learned action ranking based on
+the artifact action scores.
 
 The artifact still carries nullable safe-deviation parameters for local eating
 and plant movement, but the current baseline writes them as `null`. Those
