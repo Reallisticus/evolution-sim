@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence, TextIO
@@ -27,6 +28,7 @@ from evolution_sim.mind.provenance import (
 )
 
 TRAJECTORY_JSONL_FORMAT = "evolution_sim_trajectory_jsonl_v1"
+TRAJECTORY_EPISODE_ID_FIELD = "__trajectory_episode_id"
 
 
 class TrajectoryDatasetError(ValueError):
@@ -43,6 +45,20 @@ class TrajectoryJsonlDataset:
     @property
     def record_count(self) -> int:
         return len(self.records)
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryTransition:
+    episode_id: str
+    tick: int
+    agent_id: int
+    observation_input: dict[str, object]
+    action_mask: dict[str, bool]
+    action: str
+    reward_total: float
+    next_observation_input: dict[str, object] | None
+    next_action_mask: dict[str, bool] | None
+    done: bool
 
 
 def load_trajectory_jsonl(path: str | Path) -> TrajectoryJsonlDataset:
@@ -65,6 +81,186 @@ def load_trajectory_jsonl(path: str | Path) -> TrajectoryJsonlDataset:
         records=tuple(parsed_records),
         footer=footer,
     )
+
+
+def build_trajectory_transitions(
+    records: Sequence[dict[str, object]],
+) -> tuple[TrajectoryTransition, ...]:
+    transitions: list[TrajectoryTransition] = []
+    for episode_index, segment in enumerate(_transition_episode_segments(records)):
+        episode_id = _transition_episode_id(segment[0], episode_index=episode_index)
+        next_record_by_agent: dict[int, dict[str, object]] = {}
+        transitions_reversed: list[TrajectoryTransition] = []
+        for record in reversed(segment):
+            agent_id = _transition_agent_id(record)
+            next_record = next_record_by_agent.get(agent_id)
+            done = _transition_done(record, next_record=next_record)
+            transitions_reversed.append(
+                TrajectoryTransition(
+                    episode_id=episode_id,
+                    tick=_transition_tick(record),
+                    agent_id=agent_id,
+                    observation_input=_transition_observation_input(record),
+                    action_mask=_transition_action_mask(record),
+                    action=_transition_action(record),
+                    reward_total=_transition_reward_total(record),
+                    next_observation_input=(
+                        None
+                        if done or next_record is None
+                        else _transition_observation_input(next_record)
+                    ),
+                    next_action_mask=(
+                        None
+                        if done or next_record is None
+                        else _transition_action_mask(next_record)
+                    ),
+                    done=done,
+                )
+            )
+            next_record_by_agent[agent_id] = record
+        transitions.extend(reversed(transitions_reversed))
+    return tuple(transitions)
+
+
+def records_with_trajectory_context(
+    datasets: Sequence[TrajectoryJsonlDataset],
+) -> Iterator[dict[str, object]]:
+    for dataset_index, dataset in enumerate(datasets):
+        episode_id = _dataset_episode_id(dataset, dataset_index=dataset_index)
+        for record in dataset.records:
+            contextual_record = dict(record)
+            contextual_record[TRAJECTORY_EPISODE_ID_FIELD] = episode_id
+            yield contextual_record
+
+
+def _transition_episode_segments(
+    records: Sequence[dict[str, object]],
+) -> tuple[tuple[dict[str, object], ...], ...]:
+    segments: list[tuple[dict[str, object], ...]] = []
+    current: list[dict[str, object]] = []
+    previous_tick: int | None = None
+    previous_episode_id: str | None = None
+    for record in records:
+        tick = _transition_tick(record)
+        episode_id = _explicit_transition_episode_id(record)
+        if current and _starts_new_transition_episode(
+            tick=tick,
+            episode_id=episode_id,
+            previous_tick=previous_tick,
+            previous_episode_id=previous_episode_id,
+        ):
+            segments.append(tuple(current))
+            current = []
+        current.append(record)
+        previous_tick = tick
+        previous_episode_id = episode_id
+    if current:
+        segments.append(tuple(current))
+    return tuple(segments)
+
+
+def _starts_new_transition_episode(
+    *,
+    tick: int,
+    episode_id: str | None,
+    previous_tick: int | None,
+    previous_episode_id: str | None,
+) -> bool:
+    if episode_id is not None or previous_episode_id is not None:
+        return episode_id != previous_episode_id
+    return previous_tick is not None and tick < previous_tick
+
+
+def _transition_episode_id(
+    record: dict[str, object],
+    *,
+    episode_index: int,
+) -> str:
+    return _explicit_transition_episode_id(record) or f"inferred-episode-{episode_index}"
+
+
+def _explicit_transition_episode_id(record: dict[str, object]) -> str | None:
+    episode_id = record.get(TRAJECTORY_EPISODE_ID_FIELD)
+    if episode_id is None:
+        return None
+    if not isinstance(episode_id, str) or not episode_id:
+        raise TrajectoryDatasetError(
+            f"trajectory record {TRAJECTORY_EPISODE_ID_FIELD} must be a non-empty string"
+        )
+    return episode_id
+
+
+def _dataset_episode_id(
+    dataset: TrajectoryJsonlDataset,
+    *,
+    dataset_index: int,
+) -> str:
+    provenance = validate_dataset_provenance(dataset.footer.get("provenance"))
+    source_seeds = ",".join(str(seed) for seed in provenance["source_seeds"])
+    split_id = str(provenance["split_id"])
+    return f"{dataset_index}:{split_id}:seed={source_seeds}:path={dataset.path}"
+
+
+def _transition_tick(record: dict[str, object]) -> int:
+    tick = record.get("tick")
+    if isinstance(tick, bool) or not isinstance(tick, int):
+        raise TrajectoryDatasetError("trajectory record tick must be an integer")
+    return tick
+
+
+def _transition_agent_id(record: dict[str, object]) -> int:
+    agent_id = record.get("agent_id")
+    if isinstance(agent_id, bool) or not isinstance(agent_id, int):
+        raise TrajectoryDatasetError("trajectory record agent_id must be an integer")
+    return agent_id
+
+
+def _transition_observation_input(record: dict[str, object]) -> dict[str, object]:
+    observation_input = record.get("observation_input")
+    if not isinstance(observation_input, dict):
+        raise TrajectoryDatasetError(
+            "trajectory record observation_input must be an object"
+        )
+    return dict(observation_input)
+
+
+def _transition_action_mask(record: dict[str, object]) -> dict[str, bool]:
+    action_mask = record.get("action_mask")
+    if not isinstance(action_mask, dict):
+        raise TrajectoryDatasetError("trajectory record action_mask must be an object")
+    return {str(action): bool(available) for action, available in action_mask.items()}
+
+
+def _transition_action(record: dict[str, object]) -> str:
+    requested_action = str(record.get("requested_action"))
+    resolved_action = str(record.get("resolved_action"))
+    return (
+        requested_action
+        if bool(record.get("resolution_action_valid", False))
+        else resolved_action
+    )
+
+
+def _transition_reward_total(record: dict[str, object]) -> float:
+    reward = record.get("reward")
+    if not isinstance(reward, dict):
+        return 0.0
+    total = reward.get("total")
+    if isinstance(total, bool) or not isinstance(total, (int, float)):
+        return 0.0
+    parsed = float(total)
+    return parsed if math.isfinite(parsed) else 0.0
+
+
+def _transition_done(
+    record: dict[str, object],
+    *,
+    next_record: dict[str, object] | None,
+) -> bool:
+    after = record.get("after")
+    if isinstance(after, dict) and after.get("alive") is False:
+        return True
+    return next_record is None
 
 
 def _read_jsonl_payloads(path: Path) -> Iterator[dict[str, object]]:

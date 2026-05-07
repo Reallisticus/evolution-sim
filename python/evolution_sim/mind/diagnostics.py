@@ -15,6 +15,11 @@ from evolution_sim.mind.feature_policy import feature_keys_from_record
 from evolution_sim.mind.learned_policy import (
     HEURISTIC_DELEGATE_POLICY,
     HEURISTIC_GUARD_POLICY,
+    NEURAL_SCORE_NORMALIZATION_POLICY,
+)
+from evolution_sim.mind.neural import (
+    compile_neural_actor_critic_network,
+    score_neural_actor_critic_values,
 )
 
 SELF_FIELD_INDEX = {field: index for index, field in enumerate(SELF_INPUT_FIELDS)}
@@ -83,7 +88,7 @@ def build_artifact_diagnostics(
         ] += 1
 
     record_count = len(records)
-    return {
+    diagnostics = {
         "record_count": record_count,
         "imitation": {
             "top1_correct": correct,
@@ -123,6 +128,144 @@ def build_artifact_diagnostics(
                 score_margin_reward_stats
             ),
         },
+    }
+    neural_diagnostics = _build_neural_calibration_diagnostics(model, records)
+    if neural_diagnostics is not None:
+        diagnostics["neural_calibration"] = neural_diagnostics
+    return diagnostics
+
+
+def _build_neural_calibration_diagnostics(
+    model: Mapping[str, object],
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    network = model.get("neural_network")
+    if not isinstance(network, Mapping):
+        return None
+    compiled_network = compile_neural_actor_critic_network(network)
+
+    correct = 0
+    scored_count = 0
+    action_value_abs_error_total = 0.0
+    state_value_abs_error_total = 0.0
+    action_value_margin_total = 0.0
+    predicted_advantage_total = 0.0
+    label_counts: Counter[str] = Counter()
+    predicted_counts: Counter[str] = Counter()
+    value_margin_bucket_stats: dict[str, dict[str, object]] = {}
+    score_margin_bucket_stats: dict[str, dict[str, object]] = {}
+    predicted_advantage_bucket_stats: dict[str, dict[str, object]] = {}
+    label_action_stats: dict[str, dict[str, object]] = {}
+    predicted_action_stats: dict[str, dict[str, object]] = {}
+
+    for record in records:
+        observation_input = record.get("observation_input")
+        if not isinstance(observation_input, dict):
+            continue
+        values = decode_observation_input(observation_input)
+        actor_scores, action_values, state_value = score_neural_actor_critic_values(
+            network=compiled_network,
+            values=values,
+        )
+        action_mask = _bool_mapping(record.get("action_mask"))
+        actor_scores = _mask_renormalized_scores(actor_scores, action_mask)
+        prediction, score_margin = _best_scored_action_with_margin(
+            actor_scores,
+            action_mask,
+        )
+        label = _training_label(record)
+        reward = _reward_total(record)
+        label_action_value = float(action_values.get(label, state_value))
+        predicted_action_value = float(action_values.get(prediction, state_value))
+        action_value_abs_error = abs(label_action_value - reward)
+        state_value_abs_error = abs(float(state_value) - reward)
+        action_value_margin = _action_value_margin_for_action(
+            action_values,
+            action_mask,
+            prediction,
+        )
+        predicted_advantage = predicted_action_value - float(state_value)
+
+        scored_count += 1
+        label_counts[label] += 1
+        predicted_counts[prediction] += 1
+        action_value_abs_error_total += action_value_abs_error
+        state_value_abs_error_total += state_value_abs_error
+        action_value_margin_total += action_value_margin
+        predicted_advantage_total += predicted_advantage
+        if prediction == label:
+            correct += 1
+
+        _update_calibration_group_stats(
+            score_margin_bucket_stats,
+            _score_margin_bucket(score_margin),
+            reward=reward,
+            correct=prediction == label,
+            action_value_abs_error=action_value_abs_error,
+            state_value_abs_error=state_value_abs_error,
+        )
+        _update_calibration_group_stats(
+            value_margin_bucket_stats,
+            _signed_value_bucket(action_value_margin),
+            reward=reward,
+            correct=prediction == label,
+            action_value_abs_error=action_value_abs_error,
+            state_value_abs_error=state_value_abs_error,
+        )
+        _update_calibration_group_stats(
+            predicted_advantage_bucket_stats,
+            _signed_value_bucket(predicted_advantage),
+            reward=reward,
+            correct=prediction == label,
+            action_value_abs_error=action_value_abs_error,
+            state_value_abs_error=state_value_abs_error,
+        )
+        _update_calibration_group_stats(
+            label_action_stats,
+            label,
+            reward=reward,
+            correct=prediction == label,
+            action_value_abs_error=action_value_abs_error,
+            state_value_abs_error=state_value_abs_error,
+        )
+        _update_calibration_group_stats(
+            predicted_action_stats,
+            prediction,
+            reward=reward,
+            correct=prediction == label,
+            action_value_abs_error=action_value_abs_error,
+            state_value_abs_error=state_value_abs_error,
+        )
+
+    return {
+        "record_count": scored_count,
+        "score_normalization_policy": NEURAL_SCORE_NORMALIZATION_POLICY,
+        "actor_top1_accuracy": _rate(correct, scored_count),
+        "action_value_mean_abs_error": _rate(
+            action_value_abs_error_total,
+            scored_count,
+        ),
+        "state_value_mean_abs_error": _rate(
+            state_value_abs_error_total,
+            scored_count,
+        ),
+        "action_value_margin_mean": _rate(action_value_margin_total, scored_count),
+        "predicted_advantage_mean": _rate(predicted_advantage_total, scored_count),
+        "label_counts": _sorted_counts(label_counts),
+        "predicted_counts": _sorted_counts(predicted_counts),
+        "by_score_margin_bucket": _finalize_calibration_group_stats(
+            score_margin_bucket_stats
+        ),
+        "by_action_value_margin_bucket": _finalize_calibration_group_stats(
+            value_margin_bucket_stats
+        ),
+        "by_predicted_advantage_bucket": _finalize_calibration_group_stats(
+            predicted_advantage_bucket_stats
+        ),
+        "by_label_action": _finalize_calibration_group_stats(label_action_stats),
+        "by_predicted_action": _finalize_calibration_group_stats(
+            predicted_action_stats
+        ),
     }
 
 
@@ -380,6 +523,40 @@ def _best_scored_action_with_margin(
     if runner_up_score == float("-inf"):
         runner_up_score = 0.0
     return best_action, best_score - runner_up_score
+
+
+def _mask_renormalized_scores(
+    scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    available_actions = [
+        action
+        for action, available in action_mask.items()
+        if bool(available)
+    ]
+    total = sum(max(0.0, float(scores.get(action, 0.0))) for action in available_actions)
+    if total <= 0.0:
+        return {str(action): float(score) for action, score in scores.items()}
+    normalized = {str(action): 0.0 for action in scores}
+    for action in available_actions:
+        normalized[str(action)] = max(0.0, float(scores.get(action, 0.0))) / total
+    return normalized
+
+
+def _action_value_margin_for_action(
+    action_values: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+    action: str,
+) -> float:
+    action_value = float(action_values.get(action, 0.0))
+    best_other = float("-inf")
+    for candidate in sorted(action_mask):
+        if candidate == action or not action_mask[candidate]:
+            continue
+        best_other = max(best_other, float(action_values.get(candidate, 0.0)))
+    if best_other == float("-inf"):
+        best_other = 0.0
+    return action_value - best_other
 
 
 def _training_label(record: Mapping[str, object]) -> str:
@@ -649,6 +826,20 @@ def _score_margin_bucket(value: float | None) -> str:
     return "1.00+"
 
 
+def _signed_value_bucket(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < -0.1:
+        return "<-0.10"
+    if value < -0.02:
+        return "-0.10--0.02"
+    if value < 0.02:
+        return "-0.02-0.02"
+    if value < 0.1:
+        return "0.02-0.09"
+    return "0.10+"
+
+
 def _enum_label(value: float, vocab: tuple[str, ...]) -> str:
     if not vocab:
         return "unknown"
@@ -704,6 +895,62 @@ def _update_reward_stats(
     )
     stats["record_count"] = int(stats["record_count"]) + 1
     stats["total_reward"] = float(stats["total_reward"]) + reward
+
+
+def _update_calibration_group_stats(
+    groups: dict[str, dict[str, object]],
+    group: str,
+    *,
+    reward: float,
+    correct: bool,
+    action_value_abs_error: float,
+    state_value_abs_error: float,
+) -> None:
+    stats = groups.setdefault(
+        group,
+        {
+            "record_count": 0,
+            "correct_count": 0,
+            "total_reward": 0.0,
+            "action_value_abs_error_total": 0.0,
+            "state_value_abs_error_total": 0.0,
+        },
+    )
+    stats["record_count"] = int(stats["record_count"]) + 1
+    if correct:
+        stats["correct_count"] = int(stats["correct_count"]) + 1
+    stats["total_reward"] = float(stats["total_reward"]) + reward
+    stats["action_value_abs_error_total"] = (
+        float(stats["action_value_abs_error_total"]) + action_value_abs_error
+    )
+    stats["state_value_abs_error_total"] = (
+        float(stats["state_value_abs_error_total"]) + state_value_abs_error
+    )
+
+
+def _finalize_calibration_group_stats(
+    groups: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    finalized: dict[str, dict[str, object]] = {}
+    for group, stats in sorted(groups.items()):
+        record_count = int(stats["record_count"])
+        finalized[group] = {
+            "record_count": record_count,
+            "actor_top1_accuracy": _rate(
+                int(stats["correct_count"]),
+                record_count,
+            ),
+            "mean_reward": _rate(float(stats["total_reward"]), record_count),
+            "action_value_mean_abs_error": _rate(
+                float(stats["action_value_abs_error_total"]),
+                record_count,
+            ),
+            "state_value_mean_abs_error": _rate(
+                float(stats["state_value_abs_error_total"]),
+                record_count,
+            ),
+        }
+    return finalized
 
 
 def _finalize_reward_stats(

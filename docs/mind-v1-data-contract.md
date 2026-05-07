@@ -113,6 +113,97 @@ with finite values inside the declared reward-total bounds and requires the
 value-supported deviation thresholds to be explicit. This remains guarded and
 disabled by default.
 
+The CLI also accepts `--trainer neural-actor-critic-bc`. This is the first
+neural artifact path. It writes model type
+`guarded_neural_actor_critic_bc_v1`, sample-weight policy
+`neural_actor_critic_bc_uniform_v1`, backend
+`pure_python_deterministic_v1`, architecture
+`fixed_random_feature_mlp_actor_critic_v1`, and training policy
+`one_pass_hidden_prototype_actor_critic_bc_v1`. The model payload includes a
+fixed 8-unit `tanh` hidden layer over the current policy input vector, actor
+output weights/biases for every action, action-value output weights/biases for
+every action, and a state-value head. Artifact validation requires all neural
+weight matrices to match the declared observation size, hidden width, and full
+action vocabulary with finite values. Runtime inference re-encodes the live
+policy-visible observation through the public observation encoder before
+feeding the neural network, so it does not receive privileged world state. The
+artifact remains guarded, immutable during a run, and disabled by default.
+
+The CLI also accepts `--trainer torch-actor-critic-bc` after installing
+`requirements-mind-ml.txt`. This writes model type
+`guarded_torch_actor_critic_bc_v1`, sample-weight policy
+`torch_actor_critic_bc_uniform_v1`, backend `pytorch_optional_v1`,
+architecture `torch_mlp_actor_critic_v1`, and training policy
+`adamw_balanced_cross_entropy_td0_actor_critic_v1`. Training uses PyTorch with
+AdamW, class-balanced cross-entropy actor loss, TD(0)-style selected-action
+value regression, and state-value regression. Artifact inference does not
+import PyTorch: the trained weights are serialized into the same finite
+actor/action-value/state-value schema and validated against the declared hidden
+width and action vocabulary. Torch artifacts include train-set actor accuracy,
+confidence margin, action-value/state-value absolute error, Python version, and
+installed optional ML package versions for reproducibility. This is the first
+real ML-backed Mind trainer, but it remains guarded, immutable during a run, and
+disabled by default until strict gates beat the control.
+
+The CLI also accepts `--trainer torch-advantage-actor-critic-bc` after
+installing `requirements-mind-ml.txt`. This writes model type
+`guarded_torch_advantage_actor_critic_bc_v1`, sample-weight policy
+`torch_advantage_actor_critic_bc_contextual_advantage_weighted_v1`, backend
+`pytorch_optional_v1`, architecture `torch_mlp_actor_critic_v1`, and training
+policy `adamw_contextual_advantage_weighted_actor_critic_v1`. The actor loss is
+class-balanced cross entropy multiplied by conservative contextual
+advantage weights and blended back toward uniform behavior cloning. The value
+heads, runtime inference path, artifact immutability, and disabled-by-default
+guarding remain the same as the PyTorch behavior-cloning trainer.
+
+The CLI also accepts `--trainer torch-discrete-iql` after installing
+`requirements-mind-ml.txt`. This writes model type
+`guarded_torch_discrete_iql_v1`, sample-weight policy
+`torch_discrete_iql_transition_expectile_awbc_v1`, backend
+`pytorch_optional_v1`, architecture `torch_mlp_actor_critic_v1`, and training
+policy `adamw_discrete_iql_expectile_advantage_weighted_v1`. Training uses an
+episode-aware trajectory-to-transition adapter with
+`observation_input`, `action`, `reward_total`, `next_observation_input`,
+`done`, `action_mask`, `next_action_mask`, and `episode_id`. The critic trains
+a selected-action Q head against a TD(0) target, trains the V head with
+expectile regression, and extracts a masked discrete actor with
+advantage-weighted behavior cloning. Runtime inference still imports no
+PyTorch and remains artifact-loaded, guarded, immutable, and disabled by
+default. Neural actor scores are renormalized over the current legal action
+mask before runtime confidence delegation and neural calibration score-margin
+buckets. The current IQL artifact also declares
+`neural_actor_prior_policy=contextual_prior_score_anchor_v1` and
+`neural_actor_prior_blend_weight=0.9`; runtime blends the mask-renormalized
+neural actor distribution with the matched contextual/global action prior before
+ranking learned actions. IQL artifacts use an explicit trainer-scoped
+`heuristic_delegate_max_training_score_margin` of `0.25`, leaving the promoted
+contextual-prior baseline at `0.221`. Because held-out Q/V calibration is not
+yet trustworthy enough for runtime bypass decisions, `torch-discrete-iql`
+artifacts must not declare `positive_value_safe_deviation_v1` or any
+value-supported deviation thresholds; artifact validation rejects those fields
+for IQL until a future calibration contract explicitly enables them.
+
+For neural artifacts, `mind_gate` now reports `neural_calibration` in both
+train and held-out artifact diagnostics. These diagnostics include actor
+top-1 accuracy, action-value and state-value absolute error, score-margin
+buckets, action-value-margin buckets, and predicted-advantage buckets. They are
+diagnostic only; promotion is still decided by held-out policy rollouts and
+Mind gates. Neural calibration reports declare
+`score_normalization_policy=mask_renormalized_neural_actor_scores_v1` so
+confidence buckets match the same legal-action scoring used by runtime
+delegation.
+
+Neural and value-calibrated artifacts that enable
+`positive_value_safe_deviation_v1` must also declare
+`value_supported_deviation_min_score_margin` and
+`value_supported_deviation_min_predicted_advantage`. Runtime uses these fields
+as an explicit calibration contract before any neural value-supported local
+resource action can bypass the heuristic floor. The current neural path is
+limited to high-margin local `eat` actions with safe vitals and local food; it
+does not authorize broad movement, attack, or drink deviations. The
+`torch-discrete-iql` model type is explicitly excluded from this runtime
+deviation path for now.
+
 Artifacts must include a manifest with the current schema versions before
 runtime inference is allowed. `load_learned_policy(..., enable_mind=True)` is
 required; without the explicit flag, loading fails.
@@ -167,9 +258,17 @@ script is the local promotion check.
 
 The Mind gate accepts the same `--trainer` option and records the chosen trainer,
 sample-weight policy, any reward-advantage blend metadata, and any value-head
-metadata in both `protocol` and `artifact` report sections. The gate report
-also includes artifact diagnostics computed from both training trajectories and
-a held-out artifact-diagnostic seed bank before runtime evaluation:
+metadata, including value-supported deviation score-margin and
+predicted-advantage thresholds, in both `protocol` and `artifact` report
+sections. It also appends a compact JSONL experiment ledger entry by default to
+`output/mind/mind-experiment-ledger.jsonl`; use
+`--experiment-ledger-output <path>` to redirect it or pass no path from the
+Python API to skip ledger writes. Ledger entries include broad gate status,
+strict control-target pass/fail, minimum per-seed alive/birth deltas, fallback
+rates, and a decision label so rejected probes are searchable later. The gate
+report also includes artifact diagnostics computed from both training
+trajectories and a held-out artifact-diagnostic seed bank before runtime
+evaluation:
 
 - imitation top-1 accuracy against the behavior-cloning label;
 - predicted versus label action distribution drift, per-action precision/recall,

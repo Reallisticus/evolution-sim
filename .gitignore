@@ -5,3 +5,11 @@ __pycache__/
 .cursor/
 node_modules/
 output/
+.env
+.env.*
+!.env.example
+.npmrc
+.pypirc
+.netrc
+*.pem
+*.key

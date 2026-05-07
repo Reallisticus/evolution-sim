@@ -2,7 +2,7 @@
 
 This document freezes the first implementation target. It is intentionally narrow.
 
-It is a baseline document, not the active project queue. After the MVP, execution is governed by the `Foundation -> Mind -> Culture -> Capability` model in [evolution-simulator-blueprint.md](/Users/njm/Projects/evolution-sim/docs/evolution-simulator-blueprint.md).
+It is a baseline document, not the active project queue. After the MVP, execution is governed by the `Foundation -> Mind -> Culture -> Capability` model in [evolution-simulator-blueprint.md](evolution-simulator-blueprint.md).
 
 ## Post-MVP Semantic Contract
 

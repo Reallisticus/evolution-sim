@@ -12,6 +12,7 @@ from evolution_sim.mind.baseline import (
 from evolution_sim.mind.dataset import (
     combined_dataset_provenance,
     load_trajectory_jsonl,
+    records_with_trajectory_context,
 )
 
 
@@ -44,11 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     datasets = [load_trajectory_jsonl(path) for path in args.trajectory]
-    records = (
-        record
-        for dataset in datasets
-        for record in dataset.records
-    )
+    records = records_with_trajectory_context(datasets)
     baseline = train_baseline_with_trainer(
         records,
         provenance=combined_dataset_provenance(datasets),
@@ -86,6 +83,15 @@ def main() -> None:
             "value_supported_deviation_min_support="
             f"{artifact['model'].get('value_supported_deviation_min_support')}"
         )
+    neural_backend = artifact["model"].get("neural_backend")
+    if neural_backend is not None:
+        print(f"neural_backend={neural_backend}")
+        print(f"neural_architecture={artifact['model'].get('neural_architecture')}")
+        print(
+            "neural_training_policy="
+            f"{artifact['model'].get('neural_training_policy')}"
+        )
+        print(f"neural_hidden_units={artifact['model'].get('neural_hidden_units')}")
     print(f"trained_record_count={baseline.record_count}")
     print(f"source_records={sum(dataset.record_count for dataset in datasets)}")
     print(f"source_trajectories={len(datasets)}")

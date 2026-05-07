@@ -90,6 +90,84 @@ baseline is intentionally small and guarded by the existing observation
 heuristic for survival/navigation conflicts; use evaluation gates as an honest
 readiness report, not as a learned-controller quality claim.
 
+The first neural policy artifact path is also available as an opt-in trainer:
+
+```bash
+npm run sim:mind:train -- \
+  --trajectory output/trajectories/seed7.jsonl.gz \
+  --trainer neural-actor-critic-bc \
+  --output output/mind/seed7-neural-artifact.json
+```
+
+This writes `guarded_neural_actor_critic_bc_v1`, a deterministic pure-Python
+actor-critic MLP artifact. It is a schema/runtime milestone, not a promoted
+replacement for the heuristic.
+
+The real ML trainer is separate and opt-in. Install the Mind ML stack, then
+train a PyTorch-backed artifact:
+
+```bash
+python3 -m pip install -r requirements-mind-ml.txt
+npm run sim:mind:train -- \
+  --trajectory output/trajectories/seed7.jsonl.gz \
+  --trainer torch-actor-critic-bc \
+  --output output/mind/seed7-torch-artifact.json
+```
+
+This writes `guarded_torch_actor_critic_bc_v1`. Training uses PyTorch/AdamW for
+the actor and value heads, while runtime inference still uses the serialized
+artifact weights through the deterministic simulator policy boundary. The torch
+artifact also records train-set actor/value diagnostics, and the Mind gate
+reports held-out neural calibration diagnostics for neural artifacts.
+
+There is also an opt-in conservative offline-RL bridge trainer:
+
+```bash
+npm run sim:mind:train -- \
+  --trajectory output/trajectories/seed7.jsonl.gz \
+  --trainer torch-advantage-actor-critic-bc \
+  --output output/mind/seed7-torch-advantage-artifact.json
+```
+
+This writes `guarded_torch_advantage_actor_critic_bc_v1`. It uses contextual
+advantage-weighted actor loss blended back toward behavior cloning; it is an
+experiment harness, not a promoted controller. Neural artifacts also carry
+explicit score-margin and predicted-advantage thresholds for the narrow
+calibrated local-`eat` acceptance path; this is gate-measured and remains
+opt-in.
+
+The first transition-based discrete offline-RL trainer is also available:
+
+```bash
+npm run sim:mind:train -- \
+  --trajectory output/trajectories/seed7.jsonl.gz \
+  --trainer torch-discrete-iql \
+  --output output/mind/seed7-torch-iql-artifact.json
+```
+
+This writes `guarded_torch_discrete_iql_v1`. It trains Q and expectile V heads
+from episode-aware trajectory transitions and extracts a masked
+advantage-weighted actor. The current default-gate candidate uses
+mask-renormalized neural actor scores, a `0.9` contextual-prior actor anchor,
+and an IQL-only confidence-delegate margin of `0.25`. On the default held-out
+gate it is the first neural/RL strict-control candidate: hard guard `0.1041`,
+total fallback `0.4748`, safe deviation `0.0`, and zero per-seed alive/birth
+deltas. The same candidate passes the extended strict matrix with hard guard
+`0.1054`, total fallback `0.4715`, and zero per-seed alive/birth deltas. It is
+not a final autonomous controller: heuristic delegation is still `0.3661`,
+held-out Q/V calibration remains weak, and the artifact remains opt-in pending
+promotion review. IQL artifacts currently forbid runtime value-supported
+deviation metadata, so the learner must earn lower fallback through better
+actor/critic calibration rather than broader heuristic bypasses.
+
+Check the optional stack against PyPI with:
+
+```bash
+for package in torch torchrl tensordict gymnasium pettingzoo minari d3rlpy; do
+  .venv/bin/python -m pip index versions "$package"
+done
+```
+
 Run the reproducible Mind v1 gate to collect the default multi-seed bank, train
 the guarded baseline, and evaluate held-out seeds `5,13,19,29`:
 

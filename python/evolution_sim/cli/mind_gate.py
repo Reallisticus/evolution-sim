@@ -16,7 +16,11 @@ from evolution_sim.mind.baseline import (
     TRAINER_CHOICES,
     train_baseline_with_trainer,
 )
-from evolution_sim.mind.dataset import combined_dataset_provenance, load_trajectory_jsonl
+from evolution_sim.mind.dataset import (
+    combined_dataset_provenance,
+    load_trajectory_jsonl,
+    records_with_trajectory_context,
+)
 from evolution_sim.mind.diagnostics import build_artifact_diagnostics
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.gates import normalize_mind_v1_gate_criteria
@@ -45,6 +49,9 @@ DEFAULT_ARTIFACT_DIAGNOSTIC_SPLIT_ID = "mind-v1-gate-artifact-diagnostic"
 DEFAULT_TRAJECTORY_DIR = Path("output/trajectories/mind-v1-gate")
 DEFAULT_ARTIFACT_OUTPUT = Path("output/mind/mind-v1-gate-artifact.json")
 DEFAULT_REPORT_OUTPUT = Path("output/mind/mind-v1-gate-report.json")
+DEFAULT_EXPERIMENT_LEDGER_OUTPUT = Path("output/mind/mind-experiment-ledger.jsonl")
+STRICT_CONTROL_HARD_GUARD_RATE = 0.1190
+STRICT_CONTROL_TOTAL_FALLBACK_RATE = 0.4780
 DEFAULT_GATE_CRITERIA = normalize_mind_v1_gate_criteria(
     {"max_alive_agents_mean_regression": 0.5}
 )
@@ -110,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_REPORT_OUTPUT,
         help="Path for the Mind gate JSON report.",
+    )
+    parser.add_argument(
+        "--experiment-ledger-output",
+        type=Path,
+        default=DEFAULT_EXPERIMENT_LEDGER_OUTPUT,
+        help="Append a compact Mind experiment ledger entry to this JSONL file.",
     )
     parser.add_argument(
         "--reuse-trajectories",
@@ -245,6 +258,7 @@ def main() -> None:
         trajectory_dir=args.trajectory_dir,
         artifact_output=args.artifact_output,
         report_output=args.output,
+        experiment_ledger_output=args.experiment_ledger_output,
         reuse_trajectories=args.reuse_trajectories,
         gate_criteria=gate_criteria,
         reference_guard_intervention_rate=args.reference_guard_intervention_rate,
@@ -266,6 +280,7 @@ def run_mind_gate(
     trajectory_dir: Path,
     artifact_output: Path,
     report_output: Path | None,
+    experiment_ledger_output: Path | None = DEFAULT_EXPERIMENT_LEDGER_OUTPUT,
     validation_ticks: Sequence[int] | None = None,
     reuse_trajectories: bool = False,
     gate_criteria: Mapping[str, object] | None = None,
@@ -322,7 +337,7 @@ def run_mind_gate(
         )
         for seed, path in zip(train_seeds, trajectory_paths, strict=True)
     ]
-    records = (record for dataset in datasets for record in dataset.records)
+    records = records_with_trajectory_context(datasets)
     baseline = train_baseline_with_trainer(
         records,
         provenance=combined_dataset_provenance(datasets),
@@ -411,6 +426,9 @@ def run_mind_gate(
             "trajectory_dir": str(trajectory_dir),
             "artifact_output": str(artifact_output),
             "report_output": str(report_output) if report_output else None,
+            "experiment_ledger_output": (
+                str(experiment_ledger_output) if experiment_ledger_output else None
+            ),
             "reuse_trajectories": reuse_trajectories,
             "trainer": trainer,
             "criteria": resolved_gate_criteria,
@@ -487,6 +505,34 @@ def run_mind_gate(
             "value_supported_deviation_min_learned_value": artifact["model"].get(
                 "value_supported_deviation_min_learned_value"
             ),
+            "value_supported_deviation_min_score_margin": artifact["model"].get(
+                "value_supported_deviation_min_score_margin"
+            ),
+            "value_supported_deviation_min_predicted_advantage": artifact[
+                "model"
+            ].get("value_supported_deviation_min_predicted_advantage"),
+            "neural_backend": artifact["model"].get("neural_backend"),
+            "neural_architecture": artifact["model"].get("neural_architecture"),
+            "neural_training_policy": artifact["model"].get(
+                "neural_training_policy"
+            ),
+            "neural_input_size": artifact["model"].get("neural_input_size"),
+            "neural_hidden_units": artifact["model"].get("neural_hidden_units"),
+            "neural_hidden_activation": artifact["model"].get(
+                "neural_hidden_activation"
+            ),
+            "neural_input_normalization": artifact["model"].get(
+                "neural_input_normalization"
+            ),
+            "neural_state_value_policy": artifact["model"].get(
+                "neural_state_value_policy"
+            ),
+            "neural_actor_prior_policy": artifact["model"].get(
+                "neural_actor_prior_policy"
+            ),
+            "neural_actor_prior_blend_weight": artifact["model"].get(
+                "neural_actor_prior_blend_weight"
+            ),
             "heuristic_guard_policy": artifact["model"].get("heuristic_guard_policy"),
             "heuristic_confidence_threshold": artifact["model"].get(
                 "heuristic_confidence_threshold"
@@ -530,6 +576,10 @@ def run_mind_gate(
             "total_wall_seconds": round(time.perf_counter() - started, 4),
         },
     }
+    ledger_entry = _build_experiment_ledger_entry(report)
+    report["experiment_ledger_entry"] = ledger_entry
+    if experiment_ledger_output is not None:
+        _append_experiment_ledger_entry(experiment_ledger_output, ledger_entry)
     if report_output is not None:
         report_output.parent.mkdir(parents=True, exist_ok=True)
         report_output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -786,6 +836,153 @@ def _gate_criteria_from_args(args: argparse.Namespace) -> dict[str, float]:
             + ", ".join(sorted(negative_criteria))
         )
     return criteria
+
+
+def _build_experiment_ledger_entry(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    protocol = _mapping(report.get("protocol"))
+    artifact = _mapping(report.get("artifact"))
+    readiness = _mapping(report.get("readiness"))
+    evaluation = _mapping(report.get("evaluation"))
+    learned = _mapping(evaluation.get("learned"))
+    learned_aggregate = _mapping(learned.get("aggregate"))
+    policy_diagnostics = _mapping(
+        learned_aggregate.get("policy_diagnostics")
+    )
+    comparison = _mapping(evaluation.get("comparison"))
+    guard_rate = _float_or_none(
+        policy_diagnostics.get("guard_intervention_rate")
+    )
+    delegate_rate = _float_or_none(
+        policy_diagnostics.get("heuristic_delegate_rate")
+    )
+    total_fallback = (
+        round(guard_rate + delegate_rate, 4)
+        if guard_rate is not None and delegate_rate is not None
+        else None
+    )
+    min_alive_delta = _per_seed_min_delta(
+        comparison,
+        field="alive_agents_delta",
+        fallback=comparison.get("alive_agents_mean_delta"),
+    )
+    min_births_delta = _per_seed_min_delta(
+        comparison,
+        field="births_delta",
+        fallback=comparison.get("births_mean_delta"),
+    )
+    strict_control_target_passed = _strict_control_target_passed(
+        status=readiness.get("status"),
+        guard_rate=guard_rate,
+        total_fallback=total_fallback,
+        min_alive_delta=min_alive_delta,
+        min_births_delta=min_births_delta,
+    )
+    return {
+        "schema_version": "mind_experiment_ledger_v1",
+        "trainer": artifact.get("trainer"),
+        "model_type": artifact.get("model_type"),
+        "artifact_path": artifact.get("path"),
+        "report_path": protocol.get("report_output"),
+        "train_seeds": protocol.get("train_seeds"),
+        "validation_seeds": protocol.get("validation_seeds"),
+        "ticks": protocol.get("ticks"),
+        "validation_ticks": protocol.get("validation_ticks"),
+        "status": readiness.get("status"),
+        "decision": _ledger_decision(
+            readiness.get("status"),
+            strict_control_target_passed=strict_control_target_passed,
+        ),
+        "strict_control_target_passed": strict_control_target_passed,
+        "hard_guard": guard_rate,
+        "heuristic_delegate": delegate_rate,
+        "total_fallback": total_fallback,
+        "safe_deviation": _float_or_none(
+            policy_diagnostics.get("safe_deviation_rate")
+        ),
+        "alive_delta": _float_or_none(
+            comparison.get("alive_agents_mean_delta")
+        ),
+        "births_delta": _float_or_none(comparison.get("births_mean_delta")),
+        "min_alive_delta": min_alive_delta,
+        "min_births_delta": min_births_delta,
+    }
+
+
+def _append_experiment_ledger_entry(
+    path: Path,
+    entry: Mapping[str, object],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(dict(entry), sort_keys=True) + "\n")
+
+
+def _ledger_decision(
+    status: object,
+    *,
+    strict_control_target_passed: bool,
+) -> str:
+    if status == "pass":
+        return (
+            "strict_control_candidate"
+            if strict_control_target_passed
+            else "gate_pass_not_promoted"
+        )
+    if status == "review":
+        return "review_probe"
+    return "reject_probe"
+
+
+def _strict_control_target_passed(
+    *,
+    status: object,
+    guard_rate: float | None,
+    total_fallback: float | None,
+    min_alive_delta: float | None,
+    min_births_delta: float | None,
+) -> bool:
+    return (
+        status == "pass"
+        and guard_rate is not None
+        and total_fallback is not None
+        and min_alive_delta is not None
+        and min_births_delta is not None
+        and guard_rate < STRICT_CONTROL_HARD_GUARD_RATE
+        and total_fallback < STRICT_CONTROL_TOTAL_FALLBACK_RATE
+        and min_alive_delta >= 0.0
+        and min_births_delta >= 0.0
+    )
+
+
+def _per_seed_min_delta(
+    comparison: Mapping[str, object],
+    *,
+    field: str,
+    fallback: object,
+) -> float | None:
+    per_seed = comparison.get("per_seed")
+    if isinstance(per_seed, list):
+        values = [
+            _float_or_none(row.get(field))
+            for row in per_seed
+            if isinstance(row, Mapping)
+        ]
+        parsed_values = [value for value in values if value is not None]
+        if parsed_values:
+            return round(min(parsed_values), 4)
+    return _float_or_none(fallback)
+
+
+def _mapping(payload: object) -> Mapping[str, object]:
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _float_or_none(payload: object) -> float | None:
+    if isinstance(payload, bool) or not isinstance(payload, (int, float)):
+        return None
+    return round(float(payload), 4)
 
 
 def _log(message: str) -> None:

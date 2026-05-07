@@ -3,12 +3,15 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
 from evolution_sim.env.runtime.action_space import ACTION_NAMES
-from evolution_sim.env.runtime.observations import OBSERVATION_SCHEMA_VERSION
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_SCHEMA_VERSION,
+)
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.trajectory import TRAJECTORY_SCHEMA_VERSION
 from evolution_sim.mind.contracts import MIND_MODEL_ARTIFACT_VERSION
@@ -16,7 +19,46 @@ from evolution_sim.mind.feature_policy import (
     FEATURE_POLICY_VERSION,
     feature_keys_from_record,
 )
+from evolution_sim.mind.neural import (
+    NEURAL_ACTION_VALUE_POLICY,
+    NEURAL_ADVANTAGE_BLENDED_ACTOR_PRIOR_POLICY,
+    NEURAL_ACTOR_CRITIC_MODEL_TYPE,
+    NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    NEURAL_ACTOR_CRITIC_TRAINER,
+    NEURAL_ARCHITECTURE,
+    NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+    NEURAL_ACTOR_PRIOR_POLICY,
+    NEURAL_BACKEND,
+    NEURAL_HIDDEN_ACTIVATION,
+    NEURAL_HIDDEN_UNITS,
+    NEURAL_INPUT_NORMALIZATION,
+    NEURAL_SEED,
+    NEURAL_STATE_VALUE_POLICY,
+    NEURAL_TRAINING_POLICY,
+    TORCH_NEURAL_ACTOR_CRITIC_MODEL_TYPE,
+    TORCH_NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    TORCH_NEURAL_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_MODEL_TYPE,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_TRAINING_POLICY,
+    TORCH_DISCRETE_IQL_MODEL_TYPE,
+    TORCH_DISCRETE_IQL_SAMPLE_WEIGHT_POLICY,
+    TORCH_DISCRETE_IQL_TRAINER,
+    TORCH_DISCRETE_IQL_TRAINING_POLICY,
+    TORCH_NEURAL_ARCHITECTURE,
+    TORCH_NEURAL_BACKEND,
+    TORCH_NEURAL_HIDDEN_UNITS,
+    TORCH_NEURAL_SEED,
+    TORCH_NEURAL_TRAINING_POLICY,
+    train_neural_actor_critic_network,
+)
 from evolution_sim.mind.provenance import validate_dataset_provenance
+from evolution_sim.mind.torch_trainer import (
+    train_torch_actor_critic_network,
+    train_torch_advantage_actor_critic_network,
+    train_torch_discrete_iql_network,
+)
 
 CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
 REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
@@ -35,6 +77,10 @@ TRAINER_CHOICES: tuple[str, ...] = (
     ADVANTAGE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
     ADVANTAGE_BLENDED_CONTEXTUAL_PRIOR_TRAINER,
     VALUE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER,
+    NEURAL_ACTOR_CRITIC_TRAINER,
+    TORCH_NEURAL_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
+    TORCH_DISCRETE_IQL_TRAINER,
 )
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v2"
 REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
@@ -49,6 +95,14 @@ ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE = (
 VALUE_CALIBRATED_BASELINE_MODEL_TYPE = (
     "guarded_value_calibrated_contextual_prior_bc_v1"
 )
+NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE = NEURAL_ACTOR_CRITIC_MODEL_TYPE
+TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE = (
+    TORCH_NEURAL_ACTOR_CRITIC_MODEL_TYPE
+)
+TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE = (
+    TORCH_ADVANTAGE_ACTOR_CRITIC_MODEL_TYPE
+)
+TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE = TORCH_DISCRETE_IQL_MODEL_TYPE
 CONDITIONAL_MIN_RECORDS = 3
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
 CONDITIONAL_PRIOR_CORRECTION_EXPONENT = 0.0
@@ -87,10 +141,13 @@ VALUE_SCORE_EPSILON = 0.001
 VALUE_SUPPORTED_DEVIATION_MIN_SUPPORT = 32
 VALUE_SUPPORTED_DEVIATION_MIN_VALUE_MARGIN = 0.04
 VALUE_SUPPORTED_DEVIATION_MIN_LEARNED_VALUE = 0.02
+VALUE_SUPPORTED_DEVIATION_MIN_SCORE_MARGIN = 0.25
+VALUE_SUPPORTED_DEVIATION_MIN_PREDICTED_ADVANTAGE = 0.24
 HEURISTIC_CONFIDENCE_THRESHOLD = 0.5
 HEURISTIC_OVERRIDE_MIN_MARGIN = 1.0
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN = 0.221
+IQL_HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN = 0.25
 HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE = None
 HEURISTIC_SAFE_LOCAL_EAT_MIN_FOOD = None
 HEURISTIC_SAFE_LOCAL_EAT_MIN_PLANT_RATIO = None
@@ -132,6 +189,23 @@ class BehaviorCloningBaseline:
     value_supported_deviation_min_support: int | None = None
     value_supported_deviation_min_value_margin: float | None = None
     value_supported_deviation_min_learned_value: float | None = None
+    value_supported_deviation_min_score_margin: float | None = None
+    value_supported_deviation_min_predicted_advantage: float | None = None
+    neural_network: dict[str, object] | None = None
+    neural_backend: str | None = None
+    neural_architecture: str | None = None
+    neural_training_policy: str | None = None
+    neural_input_size: int | None = None
+    neural_hidden_units: int | None = None
+    neural_hidden_activation: str | None = None
+    neural_input_normalization: str | None = None
+    neural_seed: int | None = None
+    neural_state_value_policy: str | None = None
+    neural_actor_prior_policy: str | None = None
+    neural_actor_prior_blend_weight: float | None = None
+    heuristic_delegate_max_training_score_margin: float = (
+        HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
+    )
 
     def to_artifact(self) -> dict[str, object]:
         provenance = validate_dataset_provenance(self.provenance)
@@ -170,7 +244,7 @@ class BehaviorCloningBaseline:
             "heuristic_override_min_margin": HEURISTIC_OVERRIDE_MIN_MARGIN,
             "heuristic_delegate_policy": HEURISTIC_DELEGATE_POLICY,
             "heuristic_delegate_max_training_score_margin": (
-                HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
+                self.heuristic_delegate_max_training_score_margin
             ),
             "heuristic_safe_local_eat_min_score": (
                 HEURISTIC_SAFE_LOCAL_EAT_MIN_SCORE
@@ -249,6 +323,29 @@ class BehaviorCloningBaseline:
             model["value_supported_deviation_min_learned_value"] = (
                 self.value_supported_deviation_min_learned_value
             )
+        if self.value_supported_deviation_min_score_margin is not None:
+            model["value_supported_deviation_min_score_margin"] = (
+                self.value_supported_deviation_min_score_margin
+            )
+        if self.value_supported_deviation_min_predicted_advantage is not None:
+            model["value_supported_deviation_min_predicted_advantage"] = (
+                self.value_supported_deviation_min_predicted_advantage
+            )
+        if self.neural_network is not None:
+            model["neural_backend"] = self.neural_backend
+            model["neural_architecture"] = self.neural_architecture
+            model["neural_training_policy"] = self.neural_training_policy
+            model["neural_input_size"] = self.neural_input_size
+            model["neural_hidden_units"] = self.neural_hidden_units
+            model["neural_hidden_activation"] = self.neural_hidden_activation
+            model["neural_input_normalization"] = self.neural_input_normalization
+            model["neural_seed"] = self.neural_seed
+            model["neural_state_value_policy"] = self.neural_state_value_policy
+            model["neural_actor_prior_policy"] = self.neural_actor_prior_policy
+            model["neural_actor_prior_blend_weight"] = (
+                self.neural_actor_prior_blend_weight
+            )
+            model["neural_network"] = self.neural_network
         return {
             "manifest": {
                 "artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -331,6 +428,251 @@ def train_value_calibrated_behavior_cloning_baseline(
     )
 
 
+def train_neural_actor_critic_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_neural_actor_critic_behavior_cloning_baseline(
+        records,
+        provenance=provenance,
+        model_type=NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        trainer=NEURAL_ACTOR_CRITIC_TRAINER,
+        sample_weight_policy=NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+        neural_backend=NEURAL_BACKEND,
+        neural_architecture=NEURAL_ARCHITECTURE,
+        neural_training_policy=NEURAL_TRAINING_POLICY,
+        neural_hidden_units=NEURAL_HIDDEN_UNITS,
+        neural_seed=NEURAL_SEED,
+        train_network_fn=train_neural_actor_critic_network,
+    )
+
+
+def train_torch_neural_actor_critic_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_neural_actor_critic_behavior_cloning_baseline(
+        records,
+        provenance=provenance,
+        model_type=TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        trainer=TORCH_NEURAL_ACTOR_CRITIC_TRAINER,
+        sample_weight_policy=TORCH_NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+        neural_backend=TORCH_NEURAL_BACKEND,
+        neural_architecture=TORCH_NEURAL_ARCHITECTURE,
+        neural_training_policy=TORCH_NEURAL_TRAINING_POLICY,
+        neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
+        neural_seed=TORCH_NEURAL_SEED,
+        train_network_fn=train_torch_actor_critic_network,
+    )
+
+
+def train_torch_advantage_actor_critic_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_neural_actor_critic_behavior_cloning_baseline(
+        records,
+        provenance=provenance,
+        model_type=TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        trainer=TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
+        sample_weight_policy=TORCH_ADVANTAGE_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+        neural_backend=TORCH_NEURAL_BACKEND,
+        neural_architecture=TORCH_NEURAL_ARCHITECTURE,
+        neural_training_policy=TORCH_ADVANTAGE_TRAINING_POLICY,
+        neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
+        neural_seed=TORCH_NEURAL_SEED,
+        train_network_fn=train_torch_advantage_actor_critic_network,
+    )
+
+
+def train_torch_discrete_iql_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+) -> BehaviorCloningBaseline:
+    return _train_neural_actor_critic_behavior_cloning_baseline(
+        records,
+        provenance=provenance,
+        model_type=TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE,
+        trainer=TORCH_DISCRETE_IQL_TRAINER,
+        sample_weight_policy=TORCH_DISCRETE_IQL_SAMPLE_WEIGHT_POLICY,
+        neural_backend=TORCH_NEURAL_BACKEND,
+        neural_architecture=TORCH_NEURAL_ARCHITECTURE,
+        neural_training_policy=TORCH_DISCRETE_IQL_TRAINING_POLICY,
+        neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
+        neural_seed=TORCH_NEURAL_SEED,
+        train_network_fn=train_torch_discrete_iql_network,
+        enable_value_supported_deviation=False,
+        heuristic_delegate_max_training_score_margin=(
+            IQL_HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
+        ),
+    )
+
+
+def _train_neural_actor_critic_behavior_cloning_baseline(
+    records: Iterable[dict[str, object]],
+    *,
+    provenance: dict[str, object],
+    model_type: str,
+    trainer: str,
+    sample_weight_policy: str,
+    neural_backend: str,
+    neural_architecture: str,
+    neural_training_policy: str,
+    neural_hidden_units: int,
+    neural_seed: int,
+    train_network_fn: Callable[
+        [tuple[dict[str, object], ...]],
+        dict[str, object],
+    ],
+    enable_value_supported_deviation: bool = True,
+    neural_actor_prior_policy: str = NEURAL_ACTOR_PRIOR_POLICY,
+    heuristic_delegate_max_training_score_margin: float = (
+        HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
+    ),
+) -> BehaviorCloningBaseline:
+    materialized_records = tuple(records)
+    baseline = _train_neural_actor_prior_baseline(
+        materialized_records,
+        provenance=provenance,
+        model_type=model_type,
+        trainer=trainer,
+        sample_weight_policy=sample_weight_policy,
+        neural_actor_prior_policy=neural_actor_prior_policy,
+    )
+    neural_network = train_network_fn(materialized_records)
+    if not isinstance(neural_network, dict):
+        raise ValueError("neural trainer must return a network object")
+    action_value_output_bias = neural_network.get("action_value_output_bias")
+    if not isinstance(action_value_output_bias, dict):
+        raise ValueError(
+            "neural network action_value_output_bias must be an object"
+        )
+    action_value_estimates = {
+        action: _required_action_value_bias(action_value_output_bias, action)
+        for action in ACTION_NAMES
+    }
+    return replace(
+        baseline,
+        action_score_metadata=_with_delegate_score_margin(
+            baseline.action_score_metadata
+        ),
+        conditional_action_metadata={
+            key: _with_delegate_score_margin(metadata)
+            for key, metadata in baseline.conditional_action_metadata.items()
+        },
+        action_value_estimates=action_value_estimates,
+        value_estimation_policy=NEURAL_ACTION_VALUE_POLICY,
+        value_supported_deviation_policy=(
+            VALUE_SUPPORTED_DEVIATION_POLICY
+            if enable_value_supported_deviation
+            else None
+        ),
+        value_supported_deviation_min_support=(
+            VALUE_SUPPORTED_DEVIATION_MIN_SUPPORT
+            if enable_value_supported_deviation
+            else None
+        ),
+        value_supported_deviation_min_value_margin=(
+            VALUE_SUPPORTED_DEVIATION_MIN_VALUE_MARGIN
+            if enable_value_supported_deviation
+            else None
+        ),
+        value_supported_deviation_min_learned_value=(
+            VALUE_SUPPORTED_DEVIATION_MIN_LEARNED_VALUE
+            if enable_value_supported_deviation
+            else None
+        ),
+        value_supported_deviation_min_score_margin=(
+            VALUE_SUPPORTED_DEVIATION_MIN_SCORE_MARGIN
+            if enable_value_supported_deviation
+            else None
+        ),
+        value_supported_deviation_min_predicted_advantage=(
+            VALUE_SUPPORTED_DEVIATION_MIN_PREDICTED_ADVANTAGE
+            if enable_value_supported_deviation
+            else None
+        ),
+        neural_network=neural_network,
+        neural_backend=neural_backend,
+        neural_architecture=neural_architecture,
+        neural_training_policy=neural_training_policy,
+        neural_input_size=OBSERVATION_INPUT_VECTOR_SIZE,
+        neural_hidden_units=neural_hidden_units,
+        neural_hidden_activation=NEURAL_HIDDEN_ACTIVATION,
+        neural_input_normalization=NEURAL_INPUT_NORMALIZATION,
+        neural_seed=neural_seed,
+        neural_state_value_policy=NEURAL_STATE_VALUE_POLICY,
+        neural_actor_prior_policy=neural_actor_prior_policy,
+        neural_actor_prior_blend_weight=NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+        heuristic_delegate_max_training_score_margin=(
+            heuristic_delegate_max_training_score_margin
+        ),
+    )
+
+
+def _train_neural_actor_prior_baseline(
+    records: tuple[dict[str, object], ...],
+    *,
+    provenance: dict[str, object],
+    model_type: str,
+    trainer: str,
+    sample_weight_policy: str,
+    neural_actor_prior_policy: str,
+) -> BehaviorCloningBaseline:
+    if neural_actor_prior_policy == NEURAL_ADVANTAGE_BLENDED_ACTOR_PRIOR_POLICY:
+        baseline = _train_reward_advantage_contextual_prior_baseline(
+            records,
+            provenance=provenance,
+            model_type=model_type,
+            trainer=trainer,
+            sample_weight_policy=sample_weight_policy,
+            advantage_blend_weight=ADVANTAGE_BLEND_WEIGHT,
+        )
+        return replace(
+            baseline,
+            sample_weight_base=UNIFORM_SAMPLE_WEIGHT_BASE,
+            sample_weight_min=UNIFORM_SAMPLE_WEIGHT_MIN,
+            sample_weight_max=None,
+            sample_weight_total=float(baseline.record_count),
+        )
+    if neural_actor_prior_policy == NEURAL_ACTOR_PRIOR_POLICY:
+        return _train_contextual_prior_baseline(
+            records,
+            provenance=provenance,
+            model_type=model_type,
+            trainer=trainer,
+            sample_weight_policy=sample_weight_policy,
+            sample_weight_base=UNIFORM_SAMPLE_WEIGHT_BASE,
+            sample_weight_min=UNIFORM_SAMPLE_WEIGHT_MIN,
+            sample_weight_fn=_uniform_sample_weight,
+        )
+    raise ValueError(
+        f"unsupported neural actor prior policy: {neural_actor_prior_policy!r}"
+    )
+
+
+def _required_action_value_bias(
+    action_value_output_bias: dict[object, object],
+    action: str,
+) -> float:
+    value = action_value_output_bias.get(action)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(
+            "neural network action_value_output_bias must include finite "
+            f"numeric value for action {action!r}"
+        )
+    if not math.isfinite(float(value)):
+        raise ValueError(
+            "neural network action_value_output_bias must include finite "
+            f"numeric value for action {action!r}"
+        )
+    return float(value)
+
+
 def train_baseline_with_trainer(
     records: Iterable[dict[str, object]],
     *,
@@ -356,6 +698,26 @@ def train_baseline_with_trainer(
         )
     if trainer == VALUE_CALIBRATED_CONTEXTUAL_PRIOR_TRAINER:
         return train_value_calibrated_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == NEURAL_ACTOR_CRITIC_TRAINER:
+        return train_neural_actor_critic_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == TORCH_NEURAL_ACTOR_CRITIC_TRAINER:
+        return train_torch_neural_actor_critic_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER:
+        return train_torch_advantage_actor_critic_behavior_cloning_baseline(
+            records,
+            provenance=provenance,
+        )
+    if trainer == TORCH_DISCRETE_IQL_TRAINER:
+        return train_torch_discrete_iql_behavior_cloning_baseline(
             records,
             provenance=provenance,
         )
@@ -786,6 +1148,12 @@ def _train_value_calibrated_contextual_prior_baseline(
         value_supported_deviation_min_learned_value=(
             VALUE_SUPPORTED_DEVIATION_MIN_LEARNED_VALUE
         ),
+        value_supported_deviation_min_score_margin=(
+            VALUE_SUPPORTED_DEVIATION_MIN_SCORE_MARGIN
+        ),
+        value_supported_deviation_min_predicted_advantage=(
+            VALUE_SUPPORTED_DEVIATION_MIN_PREDICTED_ADVANTAGE
+        ),
     )
 
 
@@ -1030,6 +1398,23 @@ def _delegate_score_margin(
         default=0.0,
     )
     return max(0.0, min(max_margin, target_score - runner_up_score))
+
+
+def _with_delegate_score_margin(metadata: dict[str, object]) -> dict[str, object]:
+    updated = dict(metadata)
+    delegate_margin = updated.get("delegate_score_margin")
+    if isinstance(delegate_margin, (int, float)) and not isinstance(
+        delegate_margin,
+        bool,
+    ):
+        return updated
+    score_margin = updated.get("score_margin")
+    updated["delegate_score_margin"] = (
+        float(score_margin)
+        if isinstance(score_margin, (int, float)) and not isinstance(score_margin, bool)
+        else 0.0
+    )
+    return updated
 
 
 def _uniform_sample_weight(record: dict[str, object]) -> float:

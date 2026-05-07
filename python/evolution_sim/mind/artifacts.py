@@ -7,7 +7,10 @@ from typing import Any
 
 from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.observations import OBSERVATION_SCHEMA_VERSION
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_SCHEMA_VERSION,
+)
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
 from evolution_sim.env.runtime.trajectory import TRAJECTORY_SCHEMA_VERSION
@@ -16,6 +19,37 @@ from evolution_sim.mind.contracts import (
     MIND_RUNTIME_ENABLED_DEFAULT,
 )
 from evolution_sim.mind.feature_policy import FEATURE_POLICY_VERSION
+from evolution_sim.mind.neural import (
+    NEURAL_ACTION_VALUE_POLICY,
+    NEURAL_ACTOR_CRITIC_MODEL_TYPE,
+    NEURAL_ACTOR_CRITIC_MODEL_TYPES,
+    NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    NEURAL_ACTOR_CRITIC_TRAINER,
+    NEURAL_ARCHITECTURE,
+    NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+    NEURAL_ACTOR_PRIOR_POLICIES,
+    NEURAL_BACKEND,
+    NEURAL_HIDDEN_ACTIVATION,
+    NEURAL_HIDDEN_UNITS,
+    NEURAL_INPUT_NORMALIZATION,
+    NEURAL_STATE_VALUE_POLICY,
+    NEURAL_TRAINING_POLICY,
+    TORCH_NEURAL_ACTOR_CRITIC_MODEL_TYPE,
+    TORCH_NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    TORCH_NEURAL_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_MODEL_TYPE,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_TRAINING_POLICY,
+    TORCH_DISCRETE_IQL_MODEL_TYPE,
+    TORCH_DISCRETE_IQL_SAMPLE_WEIGHT_POLICY,
+    TORCH_DISCRETE_IQL_TRAINER,
+    TORCH_DISCRETE_IQL_TRAINING_POLICY,
+    TORCH_NEURAL_ARCHITECTURE,
+    TORCH_NEURAL_BACKEND,
+    TORCH_NEURAL_HIDDEN_UNITS,
+    TORCH_NEURAL_TRAINING_POLICY,
+)
 from evolution_sim.mind.provenance import validate_dataset_provenance
 
 
@@ -36,6 +70,14 @@ ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE = (
 VALUE_CALIBRATED_BASELINE_MODEL_TYPE = (
     "guarded_value_calibrated_contextual_prior_bc_v1"
 )
+NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE = NEURAL_ACTOR_CRITIC_MODEL_TYPE
+TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE = (
+    TORCH_NEURAL_ACTOR_CRITIC_MODEL_TYPE
+)
+TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE = (
+    TORCH_ADVANTAGE_ACTOR_CRITIC_MODEL_TYPE
+)
+TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE = TORCH_DISCRETE_IQL_MODEL_TYPE
 CONDITIONAL_SCORE_POLICY = "smoothed_contextual_action_prior_v1"
 CONTEXTUAL_PRIOR_TRAINER = "contextual-prior"
 REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER = "reward-weighted-contextual-prior"
@@ -75,6 +117,10 @@ SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
         ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
         ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
         VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
+        NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE,
     }
 )
 
@@ -180,6 +226,10 @@ def _validate_behavior_cloning_model_payload(
                 ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
                 ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
                 VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
+                NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE,
             }
         ),
     )
@@ -268,6 +318,10 @@ def _validate_behavior_cloning_model_payload(
                     ADVANTAGE_CALIBRATED_BASELINE_MODEL_TYPE,
                     ADVANTAGE_BLENDED_BASELINE_MODEL_TYPE,
                     VALUE_CALIBRATED_BASELINE_MODEL_TYPE,
+                    NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                    TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                    TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+                    TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE,
                 }
             ),
         )
@@ -277,6 +331,8 @@ def _validate_behavior_cloning_model_payload(
             model,
             conditional_score_keys=set(conditional_scores),
         )
+    if model_type in NEURAL_ACTOR_CRITIC_MODEL_TYPES:
+        _validate_neural_actor_critic_metadata(model, model_type=model_type)
 
     fallback_action = model.get("fallback_action")
     if fallback_action not in ACTION_NAMES:
@@ -496,6 +552,20 @@ def _validate_training_weight_metadata(
         expected_sample_weight_policy = (
             CONTEXTUAL_VALUE_CALIBRATED_SAMPLE_WEIGHT_POLICY
         )
+    elif model_type == NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE:
+        expected_trainer = NEURAL_ACTOR_CRITIC_TRAINER
+        expected_sample_weight_policy = NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY
+    elif model_type == TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE:
+        expected_trainer = TORCH_NEURAL_ACTOR_CRITIC_TRAINER
+        expected_sample_weight_policy = TORCH_NEURAL_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY
+    elif model_type == TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE:
+        expected_trainer = TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER
+        expected_sample_weight_policy = (
+            TORCH_ADVANTAGE_ACTOR_CRITIC_SAMPLE_WEIGHT_POLICY
+        )
+    elif model_type == TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE:
+        expected_trainer = TORCH_DISCRETE_IQL_TRAINER
+        expected_sample_weight_policy = TORCH_DISCRETE_IQL_SAMPLE_WEIGHT_POLICY
     else:
         raise MindArtifactError(
             f"model artifact manifest model_type is unsupported: {model_type!r}"
@@ -531,7 +601,13 @@ def _validate_training_weight_metadata(
     )
     if sample_weight_min > sample_weight_base:
         raise MindArtifactError("model.sample_weight_min must be <= sample_weight_base")
-    if model_type == BEHAVIOR_CLONING_BASELINE_MODEL_TYPE and not math.isclose(
+    if model_type in {
+        BEHAVIOR_CLONING_BASELINE_MODEL_TYPE,
+        NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE,
+        TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE,
+    } and not math.isclose(
         sample_weight_total,
         float(trained_record_count),
         abs_tol=1e-9,
@@ -658,39 +734,7 @@ def _validate_value_calibration_metadata(
     )
     if value_score_epsilon <= 0.0:
         raise MindArtifactError("model.value_score_epsilon must be positive")
-    deviation_policy = model.get("value_supported_deviation_policy")
-    if deviation_policy != VALUE_SUPPORTED_DEVIATION_POLICY:
-        raise MindArtifactError(
-            (
-                "model.value_supported_deviation_policy expected "
-                f"{VALUE_SUPPORTED_DEVIATION_POLICY}, found {deviation_policy!r}"
-            )
-        )
-    _required_positive_int(
-        model,
-        "value_supported_deviation_min_support",
-        location="model",
-    )
-    deviation_margin = _required_finite_number(
-        model,
-        "value_supported_deviation_min_value_margin",
-        location="model",
-        minimum=0.0,
-    )
-    if deviation_margin <= 0.0:
-        raise MindArtifactError(
-            "model.value_supported_deviation_min_value_margin must be positive"
-        )
-    min_learned_value = _required_finite_number(
-        model,
-        "value_supported_deviation_min_learned_value",
-        location="model",
-        minimum=0.0,
-    )
-    if min_learned_value <= 0.0:
-        raise MindArtifactError(
-            "model.value_supported_deviation_min_learned_value must be positive"
-        )
+    _validate_value_supported_deviation_metadata(model)
     action_value_estimates = _required_mapping(
         model,
         "action_value_estimates",
@@ -733,6 +777,278 @@ def _validate_value_calibration_metadata(
         )
 
 
+def _validate_neural_actor_critic_metadata(
+    model: dict[str, object],
+    *,
+    model_type: str,
+) -> None:
+    if model_type == TORCH_NEURAL_ACTOR_CRITIC_BASELINE_MODEL_TYPE:
+        expected_backend = TORCH_NEURAL_BACKEND
+        expected_architecture = TORCH_NEURAL_ARCHITECTURE
+        expected_training_policy = TORCH_NEURAL_TRAINING_POLICY
+        expected_hidden_units = TORCH_NEURAL_HIDDEN_UNITS
+    elif model_type == TORCH_ADVANTAGE_ACTOR_CRITIC_BASELINE_MODEL_TYPE:
+        expected_backend = TORCH_NEURAL_BACKEND
+        expected_architecture = TORCH_NEURAL_ARCHITECTURE
+        expected_training_policy = TORCH_ADVANTAGE_TRAINING_POLICY
+        expected_hidden_units = TORCH_NEURAL_HIDDEN_UNITS
+    elif model_type == TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE:
+        expected_backend = TORCH_NEURAL_BACKEND
+        expected_architecture = TORCH_NEURAL_ARCHITECTURE
+        expected_training_policy = TORCH_DISCRETE_IQL_TRAINING_POLICY
+        expected_hidden_units = TORCH_NEURAL_HIDDEN_UNITS
+    else:
+        expected_backend = NEURAL_BACKEND
+        expected_architecture = NEURAL_ARCHITECTURE
+        expected_training_policy = NEURAL_TRAINING_POLICY
+        expected_hidden_units = NEURAL_HIDDEN_UNITS
+
+    if model.get("neural_backend") != expected_backend:
+        raise MindArtifactError(
+            (
+                "model.neural_backend expected "
+                f"{expected_backend}, found {model.get('neural_backend')!r}"
+            )
+        )
+    if model.get("neural_architecture") != expected_architecture:
+        raise MindArtifactError(
+            (
+                "model.neural_architecture expected "
+                f"{expected_architecture}, "
+                f"found {model.get('neural_architecture')!r}"
+            )
+        )
+    if model.get("neural_training_policy") != expected_training_policy:
+        raise MindArtifactError(
+            (
+                "model.neural_training_policy expected "
+                f"{expected_training_policy}, "
+                f"found {model.get('neural_training_policy')!r}"
+            )
+        )
+    input_size = _required_positive_int(
+        model,
+        "neural_input_size",
+        location="model",
+    )
+    if input_size != OBSERVATION_INPUT_VECTOR_SIZE:
+        raise MindArtifactError(
+            (
+                "model.neural_input_size expected "
+                f"{OBSERVATION_INPUT_VECTOR_SIZE}, found {input_size}"
+            )
+        )
+    hidden_units = _required_positive_int(
+        model,
+        "neural_hidden_units",
+        location="model",
+    )
+    if hidden_units != expected_hidden_units:
+        raise MindArtifactError(
+            (
+                "model.neural_hidden_units expected "
+                f"{expected_hidden_units}, found {hidden_units}"
+            )
+        )
+    if model.get("neural_hidden_activation") != NEURAL_HIDDEN_ACTIVATION:
+        raise MindArtifactError(
+            (
+                "model.neural_hidden_activation expected "
+                f"{NEURAL_HIDDEN_ACTIVATION}, "
+                f"found {model.get('neural_hidden_activation')!r}"
+            )
+        )
+    if model.get("neural_input_normalization") != NEURAL_INPUT_NORMALIZATION:
+        raise MindArtifactError(
+            (
+                "model.neural_input_normalization expected "
+                f"{NEURAL_INPUT_NORMALIZATION}, "
+                f"found {model.get('neural_input_normalization')!r}"
+            )
+        )
+    _required_non_negative_int(model, "neural_seed", location="model")
+    if model.get("neural_state_value_policy") != NEURAL_STATE_VALUE_POLICY:
+        raise MindArtifactError(
+            (
+                "model.neural_state_value_policy expected "
+                f"{NEURAL_STATE_VALUE_POLICY}, "
+                f"found {model.get('neural_state_value_policy')!r}"
+            )
+        )
+    prior_policy = model.get("neural_actor_prior_policy")
+    if prior_policy not in NEURAL_ACTOR_PRIOR_POLICIES:
+        raise MindArtifactError(
+            (
+                "model.neural_actor_prior_policy expected one of "
+                f"{sorted(NEURAL_ACTOR_PRIOR_POLICIES)}, "
+                f"found {prior_policy!r}"
+            )
+        )
+    prior_blend_weight = _required_finite_number(
+        model,
+        "neural_actor_prior_blend_weight",
+        location="model",
+        minimum=0.0,
+    )
+    if prior_blend_weight > 1.0:
+        raise MindArtifactError(
+            "model.neural_actor_prior_blend_weight must be <= 1.0"
+        )
+    if not math.isclose(
+        prior_blend_weight,
+        NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+        abs_tol=1e-9,
+    ):
+        raise MindArtifactError(
+            (
+                "model.neural_actor_prior_blend_weight expected "
+                f"{NEURAL_ACTOR_PRIOR_BLEND_WEIGHT}, found {prior_blend_weight}"
+            )
+        )
+    if model.get("value_estimation_policy") != NEURAL_ACTION_VALUE_POLICY:
+        raise MindArtifactError(
+            (
+                "model.value_estimation_policy expected "
+                f"{NEURAL_ACTION_VALUE_POLICY}, "
+                f"found {model.get('value_estimation_policy')!r}"
+            )
+        )
+    if model_type == TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE:
+        _validate_torch_iql_value_supported_deviation_disabled(model)
+    else:
+        _validate_value_supported_deviation_metadata(model)
+    action_value_estimates = _required_mapping(
+        model,
+        "action_value_estimates",
+        location="model",
+    )
+    _validate_action_value_map(
+        action_value_estimates,
+        location="model.action_value_estimates",
+    )
+    network = _required_mapping(model, "neural_network", location="model")
+    _validate_numeric_matrix(
+        network.get("hidden_weights"),
+        location="model.neural_network.hidden_weights",
+        rows=hidden_units,
+        columns=input_size,
+    )
+    _validate_numeric_vector(
+        network.get("hidden_bias"),
+        location="model.neural_network.hidden_bias",
+        length=hidden_units,
+    )
+    _validate_action_vector_map(
+        network.get("actor_output_weights"),
+        location="model.neural_network.actor_output_weights",
+        vector_length=hidden_units,
+    )
+    _validate_action_bias_map(
+        network.get("actor_output_bias"),
+        location="model.neural_network.actor_output_bias",
+        bounded_by_reward=False,
+    )
+    _validate_action_vector_map(
+        network.get("action_value_output_weights"),
+        location="model.neural_network.action_value_output_weights",
+        vector_length=hidden_units,
+    )
+    _validate_action_bias_map(
+        network.get("action_value_output_bias"),
+        location="model.neural_network.action_value_output_bias",
+        bounded_by_reward=True,
+    )
+    _validate_numeric_vector(
+        network.get("state_value_weights"),
+        location="model.neural_network.state_value_weights",
+        length=hidden_units,
+    )
+    _finite_reward_value(
+        network.get("state_value_bias"),
+        "model.neural_network.state_value_bias",
+    )
+
+
+def _validate_value_supported_deviation_metadata(model: dict[str, object]) -> None:
+    deviation_policy = model.get("value_supported_deviation_policy")
+    if deviation_policy != VALUE_SUPPORTED_DEVIATION_POLICY:
+        raise MindArtifactError(
+            (
+                "model.value_supported_deviation_policy expected "
+                f"{VALUE_SUPPORTED_DEVIATION_POLICY}, found {deviation_policy!r}"
+            )
+        )
+    _required_positive_int(
+        model,
+        "value_supported_deviation_min_support",
+        location="model",
+    )
+    deviation_margin = _required_finite_number(
+        model,
+        "value_supported_deviation_min_value_margin",
+        location="model",
+        minimum=0.0,
+    )
+    if deviation_margin <= 0.0:
+        raise MindArtifactError(
+            "model.value_supported_deviation_min_value_margin must be positive"
+        )
+    min_learned_value = _required_finite_number(
+        model,
+        "value_supported_deviation_min_learned_value",
+        location="model",
+        minimum=0.0,
+    )
+    if min_learned_value <= 0.0:
+        raise MindArtifactError(
+            "model.value_supported_deviation_min_learned_value must be positive"
+        )
+    min_score_margin = _required_finite_number(
+        model,
+        "value_supported_deviation_min_score_margin",
+        location="model",
+        minimum=0.0,
+    )
+    if min_score_margin <= 0.0:
+        raise MindArtifactError(
+            "model.value_supported_deviation_min_score_margin must be positive"
+        )
+    min_predicted_advantage = _required_finite_number(
+        model,
+        "value_supported_deviation_min_predicted_advantage",
+        location="model",
+        minimum=0.0,
+    )
+    if min_predicted_advantage <= 0.0:
+        raise MindArtifactError(
+            (
+                "model.value_supported_deviation_min_predicted_advantage "
+                "must be positive"
+            )
+        )
+
+
+def _validate_torch_iql_value_supported_deviation_disabled(
+    model: dict[str, object],
+) -> None:
+    disabled_fields = (
+        "value_supported_deviation_policy",
+        "value_supported_deviation_min_support",
+        "value_supported_deviation_min_value_margin",
+        "value_supported_deviation_min_learned_value",
+        "value_supported_deviation_min_score_margin",
+        "value_supported_deviation_min_predicted_advantage",
+    )
+    present = [field for field in disabled_fields if field in model]
+    if present:
+        raise MindArtifactError(
+            (
+                "torch-discrete-iql artifacts must not enable runtime "
+                f"value-supported deviations before held-out calibration: {present}"
+            )
+        )
+
+
 def _validate_action_value_map(
     estimates: dict[str, object],
     *,
@@ -761,6 +1077,107 @@ def _validate_action_value_map(
                     f"[{lower}, {upper}]"
                 )
             )
+
+
+def _validate_numeric_matrix(
+    payload: object,
+    *,
+    location: str,
+    rows: int,
+    columns: int,
+) -> None:
+    if not isinstance(payload, list):
+        raise MindArtifactError(f"{location} must be a list")
+    if len(payload) != rows:
+        raise MindArtifactError(f"{location} must have {rows} rows")
+    for index, row in enumerate(payload):
+        _validate_numeric_vector(
+            row,
+            location=f"{location}[{index}]",
+            length=columns,
+        )
+
+
+def _validate_action_vector_map(
+    payload: object,
+    *,
+    location: str,
+    vector_length: int,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    keys = set(payload)
+    expected = set(ACTION_NAMES)
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MindArtifactError(
+            f"{location} must cover the full action vocabulary ({'; '.join(detail)})"
+        )
+    for action in ACTION_NAMES:
+        _validate_numeric_vector(
+            payload.get(action),
+            location=f"{location}.{action}",
+            length=vector_length,
+        )
+
+
+def _validate_action_bias_map(
+    payload: object,
+    *,
+    location: str,
+    bounded_by_reward: bool,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    keys = set(payload)
+    expected = set(ACTION_NAMES)
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MindArtifactError(
+            f"{location} must cover the full action vocabulary ({'; '.join(detail)})"
+        )
+    for action in ACTION_NAMES:
+        value_location = f"{location}.{action}"
+        if bounded_by_reward:
+            _finite_reward_value(payload.get(action), value_location)
+        else:
+            _finite_number(payload.get(action), value_location)
+
+
+def _validate_numeric_vector(
+    payload: object,
+    *,
+    location: str,
+    length: int,
+) -> None:
+    if not isinstance(payload, list):
+        raise MindArtifactError(f"{location} must be a list")
+    if len(payload) != length:
+        raise MindArtifactError(f"{location} must have length {length}")
+    for index, value in enumerate(payload):
+        _finite_number(value, f"{location}[{index}]")
+
+
+def _finite_reward_value(value: object, location: str) -> float:
+    parsed = _finite_number(value, location)
+    lower, upper = REWARD_TOTAL_BOUNDS
+    if parsed < lower or parsed > upper:
+        raise MindArtifactError(
+            f"{location} must be within reward total bounds [{lower}, {upper}]"
+        )
+    return parsed
 
 
 def _required_mapping(
