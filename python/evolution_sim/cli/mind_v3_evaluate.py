@@ -37,6 +37,9 @@ MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY = (
 MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY = (
     "mind_v3_controlled_fixture_hard_gate_v1"
 )
+MIND_V3_NEURAL_ANCHOR_DIAGNOSTICS_POLICY = (
+    "mind_v3_neural_anchor_diagnostics_v1"
+)
 CONTROLLED_FIXTURE_NAMES = (
     "plant_only",
     "carrion_only",
@@ -111,6 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated deterministic seed list for --fixture-suite. "
             "Defaults to --seeds."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-names",
+        help=(
+            "Optional comma-separated fixture subset for --fixture-suite. "
+            "Defaults to all fixtures in the selected suite."
         ),
     )
     parser.add_argument(
@@ -290,6 +300,10 @@ def main() -> None:
             if args.fixture_ticks is not None
             else int(args.ticks)
         )
+        fixture_names = _parse_fixture_names(
+            args.fixture_names,
+            suite=args.fixture_suite,
+        )
         fixture_config = mind_v3_fixture_gate_config(
             suite=args.fixture_suite,
             seeds=fixture_seeds,
@@ -305,6 +319,7 @@ def main() -> None:
         )
         report["fixture_suite"] = run_mind_v3_fixture_suite(
             suite=args.fixture_suite,
+            fixture_names=fixture_names,
             seeds=fixture_seeds,
             ticks=fixture_ticks,
             founder_template=founder_template,
@@ -317,6 +332,7 @@ def main() -> None:
         if args.compare_linear_baseline:
             report["linear_baseline_fixture_suite"] = run_mind_v3_fixture_suite(
                 suite=args.fixture_suite,
+                fixture_names=fixture_names,
                 seeds=fixture_seeds,
                 ticks=fixture_ticks,
                 founder_template=founder_template,
@@ -446,6 +462,9 @@ def _run_world(
         "temporal_readiness_attribution": _temporal_readiness_attribution(
             world.trajectory_records
         ),
+        "neural_anchor_diagnostics": _neural_anchor_diagnostics(
+            world.policy_decision_diagnostics_records
+        ),
         "trajectory_record_count": len(world.trajectory_records),
         "heuristic_action_source_count": _heuristic_action_source_count(
             action_source_counts
@@ -464,13 +483,17 @@ def _run_world(
 def run_mind_v3_fixture_suite(
     *,
     suite: str,
+    fixture_names: list[str] | None = None,
     seeds: list[int],
     ticks: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
 ) -> dict[str, object]:
     fixtures = []
-    for fixture_name in _fixture_names(suite):
+    selected_fixture_names = (
+        tuple(fixture_names) if fixture_names else _fixture_names(suite)
+    )
+    for fixture_name in selected_fixture_names:
         heuristic_runs = [
             _run_fixture_once(
                 fixture_name=fixture_name,
@@ -518,7 +541,7 @@ def run_mind_v3_fixture_suite(
     return {
         "policy": MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
         "suite": suite,
-        "fixture_names": list(_fixture_names(suite)),
+        "fixture_names": list(selected_fixture_names),
         "seeds": list(seeds),
         "ticks": int(ticks),
         "fixtures": fixtures,
@@ -620,6 +643,11 @@ def mind_v3_fixture_gate_status(
         "policy": MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY,
         "fixture_suite_policy": MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
         "suite": str(fixture_config["suite"]),
+        "fixture_names": [
+            str(name)
+            for name in fixture_suite.get("fixture_names", [])
+            if isinstance(name, str)
+        ],
         "seeds": [int(seed) for seed in list(fixture_config["seeds"])],
         "ticks": (
             fixture_config.get("ticks")
@@ -817,6 +845,22 @@ def _fixture_names(suite: str) -> tuple[str, ...]:
     if suite == "basic":
         return CONTROLLED_FIXTURE_NAMES
     raise SystemExit(f"unsupported fixture suite: {suite}")
+
+
+def _parse_fixture_names(raw: str | None, *, suite: str) -> list[str] | None:
+    if raw is None or not raw.strip():
+        return None
+    supported = set(_fixture_names(suite))
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    if not names:
+        raise SystemExit("--fixture-names must include at least one fixture name")
+    unsupported = sorted(name for name in names if name not in supported)
+    if unsupported:
+        raise SystemExit(
+            "--fixture-names includes unsupported fixture(s): "
+            + ", ".join(unsupported)
+        )
+    return list(dict.fromkeys(names))
 
 
 def _fixture_world(
@@ -1233,6 +1277,7 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
     dominant_action = _dominant_action_summary(requested_action_counts)
     reproduction_attribution = _aggregate_reproduction_failure_attribution(runs)
     temporal_readiness = _aggregate_temporal_readiness_attribution(runs)
+    neural_anchor_diagnostics = _aggregate_neural_anchor_diagnostics(runs)
     terminal_viability = reproduction_attribution[
         "terminal_viability_shares_mean"
     ]
@@ -1318,10 +1363,302 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         ),
         "reproduction_failure_attribution": reproduction_attribution,
         "temporal_readiness_attribution": temporal_readiness,
+        "neural_anchor_diagnostics": neural_anchor_diagnostics,
         "primary_temporal_readiness_blocker": temporal_readiness[
             "primary_temporal_readiness_blocker"
         ],
     }
+
+
+def _neural_anchor_diagnostics(
+    decision_diagnostics: list[dict[str, object] | None],
+) -> dict[str, object]:
+    stats = _empty_neural_anchor_diagnostic_stats()
+    stats["total_decision_count"] = len(decision_diagnostics)
+    for diagnostic in decision_diagnostics:
+        if not isinstance(diagnostic, Mapping):
+            continue
+        if not isinstance(diagnostic.get("neural_linear_anchor_policy"), str):
+            continue
+        _update_neural_anchor_diagnostic_stats(stats, diagnostic)
+    return _finalize_neural_anchor_diagnostic_stats(stats, run_count=1)
+
+
+def _aggregate_neural_anchor_diagnostics(
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    stats = _empty_neural_anchor_diagnostic_stats()
+    for run in runs:
+        diagnostics = run.get("neural_anchor_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        stats["total_decision_count"] = int(stats["total_decision_count"]) + int(
+            diagnostics.get("total_decision_count", 0)
+        )
+        stats["decision_count"] = int(stats["decision_count"]) + int(
+            diagnostics.get("decision_count", 0)
+        )
+        for target_key in (
+            "residual_applied_count",
+            "residual_shadowed_count",
+            "changed_linear_action_count",
+            "matched_linear_action_count",
+            "matched_neural_top_action_count",
+        ):
+            stats[target_key] = int(stats[target_key]) + int(
+                diagnostics.get(target_key, 0)
+            )
+        for target_key in (
+            "neural_score_margin_total",
+            "linear_anchor_score_margin_total",
+            "anchored_score_margin_total",
+            "changed_neural_score_margin_total",
+            "changed_linear_anchor_score_margin_total",
+        ):
+            mean_key = target_key.removesuffix("_total") + "_mean"
+            denominator_key = (
+                "changed_linear_action_count"
+                if target_key.startswith("changed_")
+                else "decision_count"
+            )
+            stats[target_key] = float(stats[target_key]) + (
+                float(diagnostics.get(mean_key, 0.0))
+                * float(diagnostics.get(denominator_key, 0))
+            )
+        for source_key, target_key in (
+            ("neural_top_action_counts", "neural_top_action_counts"),
+            ("linear_anchor_action_counts", "linear_anchor_action_counts"),
+            ("anchored_action_counts", "anchored_action_counts"),
+            (
+                "linear_to_anchored_action_counts",
+                "linear_to_anchored_action_counts",
+            ),
+            (
+                "neural_to_anchored_action_counts",
+                "neural_to_anchored_action_counts",
+            ),
+            ("shadow_reason_counts", "shadow_reason_counts"),
+        ):
+            counter = stats[target_key]
+            if isinstance(counter, Counter):
+                counter.update(_int_counter(diagnostics.get(source_key, {})))
+    return _finalize_neural_anchor_diagnostic_stats(
+        stats,
+        run_count=len(runs),
+    )
+
+
+def _empty_neural_anchor_diagnostic_stats() -> dict[str, object]:
+    return {
+        "total_decision_count": 0,
+        "decision_count": 0,
+        "residual_applied_count": 0,
+        "residual_shadowed_count": 0,
+        "changed_linear_action_count": 0,
+        "matched_linear_action_count": 0,
+        "matched_neural_top_action_count": 0,
+        "neural_top_action_counts": Counter(),
+        "linear_anchor_action_counts": Counter(),
+        "anchored_action_counts": Counter(),
+        "linear_to_anchored_action_counts": Counter(),
+        "neural_to_anchored_action_counts": Counter(),
+        "neural_score_margin_total": 0.0,
+        "linear_anchor_score_margin_total": 0.0,
+        "anchored_score_margin_total": 0.0,
+        "changed_neural_score_margin_total": 0.0,
+        "changed_linear_anchor_score_margin_total": 0.0,
+        "shadow_reason_counts": Counter(),
+    }
+
+
+def _update_neural_anchor_diagnostic_stats(
+    stats: dict[str, object],
+    diagnostic: Mapping[str, object],
+) -> None:
+    stats["decision_count"] = int(stats["decision_count"]) + 1
+    if diagnostic.get("neural_residual_applied") is True:
+        stats["residual_applied_count"] = int(stats["residual_applied_count"]) + 1
+    if diagnostic.get("neural_residual_shadowed") is True:
+        stats["residual_shadowed_count"] = int(stats["residual_shadowed_count"]) + 1
+    if diagnostic.get("neural_residual_changed_linear_action") is True:
+        stats["changed_linear_action_count"] = (
+            int(stats["changed_linear_action_count"]) + 1
+        )
+    anchored_action = _diagnostic_action(diagnostic, "anchored_action")
+    linear_action = _diagnostic_action(diagnostic, "linear_anchor_action")
+    neural_action = _diagnostic_action(diagnostic, "neural_top_action")
+    if anchored_action is not None and anchored_action == linear_action:
+        stats["matched_linear_action_count"] = (
+            int(stats["matched_linear_action_count"]) + 1
+        )
+    if anchored_action is not None and anchored_action == neural_action:
+        stats["matched_neural_top_action_count"] = (
+            int(stats["matched_neural_top_action_count"]) + 1
+        )
+    changed_linear_action = (
+        anchored_action is not None
+        and linear_action is not None
+        and anchored_action != linear_action
+    )
+    neural_margin = _diagnostic_float(diagnostic, "neural_score_margin")
+    linear_margin = _diagnostic_float(diagnostic, "linear_anchor_score_margin")
+    anchored_margin = _diagnostic_float(diagnostic, "anchored_score_margin")
+    stats["neural_score_margin_total"] = (
+        float(stats["neural_score_margin_total"]) + neural_margin
+    )
+    stats["linear_anchor_score_margin_total"] = (
+        float(stats["linear_anchor_score_margin_total"]) + linear_margin
+    )
+    stats["anchored_score_margin_total"] = (
+        float(stats["anchored_score_margin_total"]) + anchored_margin
+    )
+    if changed_linear_action:
+        stats["changed_neural_score_margin_total"] = (
+            float(stats["changed_neural_score_margin_total"]) + neural_margin
+        )
+        stats["changed_linear_anchor_score_margin_total"] = (
+            float(stats["changed_linear_anchor_score_margin_total"])
+            + linear_margin
+        )
+    for action, key in (
+        (neural_action, "neural_top_action_counts"),
+        (linear_action, "linear_anchor_action_counts"),
+        (anchored_action, "anchored_action_counts"),
+    ):
+        if action is None:
+            continue
+        counter = stats[key]
+        if isinstance(counter, Counter):
+            counter.update([action])
+    if linear_action is not None and anchored_action is not None:
+        counter = stats["linear_to_anchored_action_counts"]
+        if isinstance(counter, Counter):
+            counter.update([f"{linear_action}->{anchored_action}"])
+    if neural_action is not None and anchored_action is not None:
+        counter = stats["neural_to_anchored_action_counts"]
+        if isinstance(counter, Counter):
+            counter.update([f"{neural_action}->{anchored_action}"])
+    shadow_reason = diagnostic.get("neural_residual_shadow_reason")
+    if isinstance(shadow_reason, str) and shadow_reason:
+        counter = stats["shadow_reason_counts"]
+        if isinstance(counter, Counter):
+            counter.update([shadow_reason])
+
+
+def _finalize_neural_anchor_diagnostic_stats(
+    stats: Mapping[str, object],
+    *,
+    run_count: int,
+) -> dict[str, object]:
+    decision_count = int(stats.get("decision_count", 0))
+    residual_applied_count = int(stats.get("residual_applied_count", 0))
+    residual_shadowed_count = int(stats.get("residual_shadowed_count", 0))
+    changed_linear_action_count = int(
+        stats.get("changed_linear_action_count", 0)
+    )
+    matched_linear_action_count = int(
+        stats.get("matched_linear_action_count", 0)
+    )
+    matched_neural_top_action_count = int(
+        stats.get("matched_neural_top_action_count", 0)
+    )
+    return {
+        "policy": MIND_V3_NEURAL_ANCHOR_DIAGNOSTICS_POLICY,
+        "run_count": int(run_count),
+        "total_decision_count": int(stats.get("total_decision_count", 0)),
+        "decision_count": decision_count,
+        "residual_applied_count": residual_applied_count,
+        "residual_applied_share": _share(residual_applied_count, decision_count),
+        "residual_shadowed_count": residual_shadowed_count,
+        "residual_shadowed_share": _share(residual_shadowed_count, decision_count),
+        "changed_linear_action_count": changed_linear_action_count,
+        "changed_linear_action_share": _share(
+            changed_linear_action_count,
+            decision_count,
+        ),
+        "matched_linear_action_count": matched_linear_action_count,
+        "matched_linear_action_share": _share(
+            matched_linear_action_count,
+            decision_count,
+        ),
+        "matched_neural_top_action_count": matched_neural_top_action_count,
+        "matched_neural_top_action_share": _share(
+            matched_neural_top_action_count,
+            decision_count,
+        ),
+        "neural_score_margin_mean": _safe_mean_total(
+            stats.get("neural_score_margin_total"),
+            decision_count,
+        ),
+        "linear_anchor_score_margin_mean": _safe_mean_total(
+            stats.get("linear_anchor_score_margin_total"),
+            decision_count,
+        ),
+        "anchored_score_margin_mean": _safe_mean_total(
+            stats.get("anchored_score_margin_total"),
+            decision_count,
+        ),
+        "changed_neural_score_margin_mean": _safe_mean_total(
+            stats.get("changed_neural_score_margin_total"),
+            changed_linear_action_count,
+        ),
+        "changed_linear_anchor_score_margin_mean": _safe_mean_total(
+            stats.get("changed_linear_anchor_score_margin_total"),
+            changed_linear_action_count,
+        ),
+        "neural_top_action_counts": dict(
+            sorted(_int_counter(stats.get("neural_top_action_counts", {})).items())
+        ),
+        "linear_anchor_action_counts": dict(
+            sorted(_int_counter(stats.get("linear_anchor_action_counts", {})).items())
+        ),
+        "anchored_action_counts": dict(
+            sorted(_int_counter(stats.get("anchored_action_counts", {})).items())
+        ),
+        "linear_to_anchored_action_counts": dict(
+            sorted(
+                _int_counter(
+                    stats.get("linear_to_anchored_action_counts", {})
+                ).items()
+            )
+        ),
+        "neural_to_anchored_action_counts": dict(
+            sorted(
+                _int_counter(
+                    stats.get("neural_to_anchored_action_counts", {})
+                ).items()
+            )
+        ),
+        "shadow_reason_counts": dict(
+            sorted(_int_counter(stats.get("shadow_reason_counts", {})).items())
+        ),
+    }
+
+
+def _diagnostic_action(
+    diagnostic: Mapping[str, object],
+    key: str,
+) -> str | None:
+    value = diagnostic.get(key)
+    if not isinstance(value, str) or not value or value == "none":
+        return None
+    return value
+
+
+def _diagnostic_float(
+    diagnostic: Mapping[str, object],
+    key: str,
+) -> float:
+    value = diagnostic.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _safe_mean_total(value: object, count: int) -> float:
+    if count <= 0 or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return _round(float(value) / float(count))
 
 
 def _comparison_delta(

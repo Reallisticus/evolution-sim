@@ -1117,11 +1117,12 @@ Third implementation milestone:
   `pressure_weight` key, so `fixture_action_bias_delta` stayed zero even when
   the fixture label report contained carrion-only blockers.
 - The v3 runtime now uses
-  `linear_controller_guarded_neural_residual_v1` when a frozen neural artifact
-  is loaded. Neural weights remain immutable during a run, but the inherited
-  linear anchor controller keeps receiving the same bounded reward-modulated
-  updates as the linear baseline. The neural residual is bounded and shadowed
-  when the artifact's local top action is the known collapsed `eat` mode.
+  `linear_controller_margin_guarded_neural_residual_v2` when a frozen neural
+  artifact is loaded. Neural weights remain immutable during a run, but the
+  inherited linear anchor controller keeps receiving the same bounded
+  reward-modulated updates as the linear baseline. The neural residual is
+  bounded and shadowed when the artifact's local top action is the known
+  collapsed `eat` mode or would override a nontrivial linear-anchor margin.
 
 Measured on the v26 template/artifact slice:
 
@@ -1139,16 +1140,42 @@ Measured on the v26 template/artifact slice:
   reduced the hard fixture blockers to `5`, all in `carrion_only`, with
   `blocker_count_delta=0` versus the linear baseline.
 
+Fourth implementation milestone:
+
+- Runtime decision diagnostics now expose the neural top action, linear-anchor
+  action, anchored action, score margins, residual shadow reason, residual
+  applied/shadowed counts, and linear-to-anchored transition counts. The
+  evaluator aggregates these under `mind_v3_neural_anchor_diagnostics_v1` for
+  broad runs and controlled fixtures.
+- `sim:mind:v3:evaluate --fixture-names ...` can run a bounded fixture subset,
+  so carrion-only drilldowns do not require rerunning every controlled arena.
+
+Measured on the v26 template/artifact slice:
+
+- Drilldown:
+  `output/mind/mind-v3-v26-neural-margin-guard-carrion-120.json`
+- Broad `120`-tick comparison moved from the previous neural-anchor `16.0`
+  alive / `16.0` births to `19.0` / `16.0`; the linear baseline on the same
+  seeds remained better at `23.5` / `18.5`.
+- The margin guard reduced residual action changes from `12.08%` in the
+  prior diagnostic run to `8.69%` broad and `10.64%` on carrion-only. Most
+  residuals are now shadowed by the collapse guard or linear-margin guard.
+- Carrion-only did not improve: terminal alive stayed `0.0`, births were
+  `2.5` versus linear `3.0`, and the fixture gate still failed on alive,
+  energy, hydration, health, and matched-diet viability.
+
 This is not a promotion. It is a safety-ratchet milestone: the neural path no
-longer collapses broad action mix or fixture pressure beyond the linear floor,
-but it still depends heavily on the online linear anchor and still fails the
-carrion-only controlled fixture. The next v3 milestone is explicit: reduce
-anchor dependence only when the artifact is within `2` alive agents of the
-linear baseline at 120 ticks, matches or beats linear births, keeps dominant
-action share at or below `0.50`, and does not add fixture blockers. If two
-consecutive slices fail to reduce the carrion-only blocker set, stop tuning this
-pure-Python residual artifact and move to the torch/IQL or vectorized rollout
-training path with carrion fixture labels in the training loop.
+longer collapses broad action mix, and the margin guard limits cases where the
+neural residual harms a confident linear action. It still depends heavily on
+the online linear anchor and still fails the carrion-only controlled fixture.
+The next v3 milestone is explicit: reduce anchor dependence only when the
+artifact is within `2` alive agents of the linear baseline at 120 ticks, matches
+or beats linear births, keeps dominant action share at or below `0.50`, and
+does not add fixture blockers. Because this slice did not reduce the
+carrion-only blocker set, do not spend another iteration merely retuning the
+pure-Python residual scale; the next slice must either train against carrion
+fixture labels directly or move to the torch/IQL or vectorized rollout training
+path.
 
 ## Promotion Boundary
 

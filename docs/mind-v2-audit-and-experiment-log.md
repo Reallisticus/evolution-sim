@@ -1424,6 +1424,22 @@ should make the learner stronger and easier to evaluate.
     to `7.0` at `80` and `15.2` at `120`, with `16.4` alive at `120`, but the
     combined carrion fixture still fails. Next work should put fixture outcomes
     into parent selection rather than running another scalar-only search.
+43. The first v3 neural residual audit closed a different false-progress path.
+    The frozen pure-Python neural artifact now runs behind the live online
+    linear anchor instead of replacing it, and the residual policy is
+    `linear_controller_margin_guarded_neural_residual_v2`: collapsed `eat`
+    neural tops are shadowed, and nontrivial linear-anchor margins are not
+    overridden. Evaluator reports include
+    `mind_v3_neural_anchor_diagnostics_v1`, with neural/linear/anchored action
+    counts, score margins, shadow reasons, and transition pairs. Targeted v26
+    drilldown
+    `output/mind/mind-v3-v26-neural-margin-guard-carrion-120.json` improved
+    broad neural-anchor survival over the prior guarded residual from `16.0` to
+    `19.0` alive at `120` while births stayed `16.0`; linear still led at
+    `23.5` / `18.5`. The carrion-only fixture stayed blocked (`0.0` terminal
+    alive, five blockers), so this is diagnostic guardrail progress, not a path
+    to promotion. Stop spending iterations on residual-scale tuning unless a
+    new learner/training signal reduces the carrion blocker set.
 
 ### GPU / CUDA Boundary
 

@@ -945,9 +945,20 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertEqual(
             decision.diagnostics["neural_linear_anchor_policy"],
-            "linear_controller_guarded_neural_residual_v1",
+            "linear_controller_margin_guarded_neural_residual_v2",
         )
         self.assertEqual(decision.diagnostics["neural_residual_scale"], 0.05)
+        self.assertEqual(
+            decision.diagnostics["neural_residual_max_linear_override_margin"],
+            0.015,
+        )
+        self.assertIn(decision.diagnostics["neural_top_action"], ACTION_NAMES)
+        self.assertIn(decision.diagnostics["linear_anchor_action"], ACTION_NAMES)
+        self.assertIn(decision.diagnostics["anchored_action"], ACTION_NAMES)
+        self.assertIn(
+            decision.diagnostics["neural_residual_shadowed"],
+            {True, False},
+        )
         self.assertEqual(
             decision.diagnostics["neural_model_type"],
             "deterministic_ecological_mlp_policy_v1",
@@ -971,6 +982,21 @@ class MindV1Tests(unittest.TestCase):
         self.assertGreater(scores["drink"], scores["eat"])
         self.assertEqual(scores["drink"], 1.0)
         self.assertEqual(scores["eat"], 0.0)
+        margin_guard_scores = _blend_neural_with_linear_anchor(
+            neural_scores={"move_east": 10.0, "drink": 0.0},
+            linear_scores={"move_east": 0.0, "drink": 1.0},
+            action_mask={
+                action: action in {"move_east", "drink"}
+                for action in ACTION_NAMES
+            },
+        )
+
+        self.assertGreater(
+            margin_guard_scores["drink"],
+            margin_guard_scores["move_east"],
+        )
+        self.assertEqual(margin_guard_scores["drink"], 1.0)
+        self.assertEqual(margin_guard_scores["move_east"], 0.0)
 
     def test_mind_v3_neural_policy_updates_anchor_controller_only(
         self,
@@ -1124,6 +1150,17 @@ class MindV1Tests(unittest.TestCase):
         self.assertTrue(report["policy"]["linear_baseline_compared"])
         self.assertIn("mind_v3_linear", report["comparison"])
         self.assertIn("neural_vs_linear_delta", report["comparison"])
+        anchor_diagnostics = report["comparison"]["mind_v3"]["aggregate"][
+            "neural_anchor_diagnostics"
+        ]
+        self.assertEqual(
+            anchor_diagnostics["policy"],
+            "mind_v3_neural_anchor_diagnostics_v1",
+        )
+        self.assertGreater(anchor_diagnostics["decision_count"], 0)
+        self.assertIn("anchored_action_counts", anchor_diagnostics)
+        self.assertIn("linear_to_anchored_action_counts", anchor_diagnostics)
+        self.assertIn("linear_anchor_score_margin_mean", anchor_diagnostics)
 
     def test_mind_v3_child_metadata_mutates_from_parent(self) -> None:
         from random import Random
@@ -6608,6 +6645,53 @@ class MindV1Tests(unittest.TestCase):
                     "reproduction_failure_attribution"
                 ],
             )
+
+    def test_mind_v3_evaluate_cli_runs_controlled_fixture_subset(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evaluate
+
+        with TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "mind-v3-carrion-fixture-eval.json"
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_evaluate",
+                        "--seeds",
+                        "5",
+                        "--ticks",
+                        "2",
+                        "--fixture-suite",
+                        "basic",
+                        "--fixture-names",
+                        "carrion_only",
+                        "--fixture-ticks",
+                        "2",
+                        "--output",
+                        str(report_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                mind_v3_evaluate.main()
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertIn("mind_v3_fixture_count=1", stdout.getvalue())
+        fixture_suite = report["fixture_suite"]
+        self.assertEqual(fixture_suite["fixture_names"], ["carrion_only"])
+        self.assertEqual(len(fixture_suite["fixtures"]), 1)
+        self.assertEqual(
+            sorted(report["fixture_gate"]["per_fixture"]),
+            ["carrion_only"],
+        )
+        self.assertEqual(
+            report["fixture_gate"]["fixture_names"],
+            ["carrion_only"],
+        )
 
     def test_mind_v3_fixture_gate_blocks_mixed_stable_birth_floor(
         self,

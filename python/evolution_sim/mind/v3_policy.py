@@ -43,9 +43,10 @@ MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY = (
     "contextual_trophic_founder_template_assignment_v1"
 )
 MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY = (
-    "linear_controller_guarded_neural_residual_v1"
+    "linear_controller_margin_guarded_neural_residual_v2"
 )
 MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
+MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.015
 MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS = frozenset({"eat"})
 MIND_V3_REWARD_COMPONENT_SIGNAL_WEIGHTS = {
     "survival_continuation": 0.65,
@@ -291,6 +292,15 @@ class MindV3EvolutionPolicy:
             neural_anchor_diagnostics = {
                 "neural_linear_anchor_policy": MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY,
                 "neural_residual_scale": MIND_V3_NEURAL_RESIDUAL_SCALE,
+                "neural_residual_max_linear_override_margin": (
+                    MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+                ),
+                **_neural_anchor_diagnostics(
+                    neural_scores=neural_scores,
+                    linear_scores=linear_anchor_scores,
+                    final_scores=scores,
+                    action_mask=action_mask,
+                ),
             }
         requested_action, score = _best_action(scores, action_mask)
         diagnostics: dict[str, object] = {
@@ -1131,11 +1141,9 @@ def _blend_neural_with_linear_anchor(
         action for action in sorted(action_mask) if bool(action_mask[action])
     )
     neural_normalized = _normalized_legal_scores(neural_scores, legal_actions)
-    neural_top_action = _top_score_action(neural_normalized)
-    residual_scale = (
-        0.0
-        if neural_top_action in MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS
-        else MIND_V3_NEURAL_RESIDUAL_SCALE
+    residual_scale = _neural_residual_scale(
+        neural_normalized,
+        linear_scores=linear_scores,
     )
     return {
         action: _round(
@@ -1144,6 +1152,88 @@ def _blend_neural_with_linear_anchor(
         )
         for action in legal_actions
     }
+
+
+def _neural_anchor_diagnostics(
+    *,
+    neural_scores: Mapping[str, float],
+    linear_scores: Mapping[str, float],
+    final_scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, object]:
+    legal_actions = tuple(
+        action for action in sorted(action_mask) if bool(action_mask[action])
+    )
+    neural_normalized = _normalized_legal_scores(neural_scores, legal_actions)
+    residual_scale = _neural_residual_scale(
+        neural_normalized,
+        linear_scores=linear_scores,
+    )
+    shadow_reason = _neural_residual_shadow_reason(
+        neural_normalized,
+        linear_scores=linear_scores,
+    )
+    neural_top_action, neural_margin = _top_action_and_margin(neural_scores)
+    linear_action, linear_margin = _top_action_and_margin(linear_scores)
+    final_action, final_margin = _top_action_and_margin(final_scores)
+    residual_shadowed = residual_scale <= 0.0
+    return {
+        "neural_top_action": neural_top_action or "none",
+        "neural_score_margin": neural_margin,
+        "linear_anchor_action": linear_action or "none",
+        "linear_anchor_score_margin": linear_margin,
+        "anchored_action": final_action or "none",
+        "anchored_score_margin": final_margin,
+        "neural_residual_applied": residual_scale > 0.0,
+        "neural_residual_effective_scale": _round(residual_scale),
+        "neural_residual_shadowed": residual_shadowed,
+        "neural_residual_shadow_reason": shadow_reason,
+        "neural_residual_changed_linear_action": (
+            final_action is not None
+            and linear_action is not None
+            and final_action != linear_action
+        ),
+        "anchored_action_matches_neural_top": (
+            final_action is not None
+            and neural_top_action is not None
+            and final_action == neural_top_action
+        ),
+    }
+
+
+def _neural_residual_scale(
+    neural_normalized_scores: Mapping[str, float],
+    *,
+    linear_scores: Mapping[str, float],
+) -> float:
+    if (
+        _neural_residual_shadow_reason(
+            neural_normalized_scores,
+            linear_scores=linear_scores,
+        )
+        != "none"
+    ):
+        return 0.0
+    return MIND_V3_NEURAL_RESIDUAL_SCALE
+
+
+def _neural_residual_shadow_reason(
+    neural_normalized_scores: Mapping[str, float],
+    *,
+    linear_scores: Mapping[str, float],
+) -> str:
+    neural_top_action = _top_score_action(neural_normalized_scores)
+    if neural_top_action in MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS:
+        return f"collapse_guard:{neural_top_action}"
+    linear_top_action, linear_margin = _top_action_and_margin(linear_scores)
+    if (
+        neural_top_action is not None
+        and linear_top_action is not None
+        and neural_top_action != linear_top_action
+        and linear_margin > MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+    ):
+        return "linear_margin_guard"
+    return "none"
 
 
 def _normalized_legal_scores(
@@ -1173,11 +1263,23 @@ def _finite_score(value: object) -> float:
 
 
 def _top_score_action(scores: Mapping[str, float]) -> str | None:
+    return _top_action_and_margin(scores)[0]
+
+
+def _top_action_and_margin(scores: Mapping[str, float]) -> tuple[str | None, float]:
     best_action: str | None = None
     best_score = float("-inf")
+    runner_up_score = float("-inf")
     for action in sorted(scores):
         score = float(scores[action])
         if score > best_score:
+            runner_up_score = best_score
             best_action = action
             best_score = score
-    return best_action
+        elif score > runner_up_score:
+            runner_up_score = score
+    if best_action is None:
+        return None, 0.0
+    if runner_up_score == float("-inf"):
+        return best_action, 0.0
+    return best_action, _round(best_score - runner_up_score)

@@ -853,7 +853,18 @@ criteria before it can replace more heuristic behavior:
     policy-input/diagnostic split, and an opt-in deterministic neural or compact
     recurrent v3 artifact compared against the current linear controller on the
     same broad and controlled-fixture matrix.
-36. Add quality-diversity viewer diagnostics once policy lineages
+36. The first frozen v3 neural artifact is now evaluated as a guarded residual
+    against the live online linear anchor, not as a promoted controller. The
+    margin-guarded residual policy
+    `linear_controller_margin_guarded_neural_residual_v2` records neural,
+    linear-anchor, and anchored action diagnostics plus residual shadow reasons.
+    On the v26 two-seed `120` drilldown it reduced broad harm versus the
+    earlier residual (`19.0` alive / `16.0` births versus `16.0` / `16.0`),
+    but still trailed the linear baseline (`23.5` / `18.5`) and did not reduce
+    the carrion-only blocker set. Treat this as diagnostic closure: the next
+    useful neural slice needs carrion fixture labels in training or a stronger
+    torch/vectorized rollout learner, not more residual-scale tuning.
+37. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References
