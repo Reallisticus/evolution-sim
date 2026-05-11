@@ -1592,6 +1592,18 @@ should make the learner stronger and easier to evaluate.
     trained or evaluated in this slice. The next run should train one bounded
     candidate on broad trajectories plus the v33 hydration-cycle labels and
     accept it only if carrion-only blockers move without broad 120 regression.
+53. The labeled torch/IQL acceptance report surface is implemented.
+    `sim:mind:v3:labeled-iql-slice` evaluates a candidate learned artifact
+    beside the current Mind v3 linear default and optional anchored-neural
+    baseline on the same broad seeds and controlled fixtures. The report gate
+    enforces the current bounded milestone: broad `120` alive within `1.0` of
+    linear, births not worse than linear, dominant action share `<= 0.50`, zero
+    heuristic runtime actions, and carrion-only movement by either nonzero
+    terminal alive agents or fewer fixture blockers than linear. This closes
+    the previous tooling gap where torch/IQL could be trained and broad-evaled
+    without producing the carrion-only acceptance comparison in the same
+    artifact. No torch candidate result is claimed here; the next actual result
+    is the RTX v34 train-plus-slice run.
 
 ### GPU / CUDA Boundary
 

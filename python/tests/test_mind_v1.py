@@ -18,6 +18,7 @@ from evolution_sim.cli import (
     mind_artifact_diagnostics,
     mind_gate,
     mind_v3_evaluate,
+    mind_v3_labeled_iql_slice,
     mind_policy_eval,
     mind_train,
     run_headless,
@@ -7205,6 +7206,175 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             gate["blockers"][0]["reason"],
             "fixture_mixed_stable_birth_floor",
+        )
+
+    def test_mind_v3_fixture_gate_supports_named_evaluated_policy_key(
+        self,
+    ) -> None:
+        fixture_suite = {
+            "policy": mind_v3_evaluate.MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
+            "suite": "basic",
+            "fixture_names": ["carrion_only"],
+            "evaluated_policy_key": "candidate",
+            "evaluated_policy_name": "labeled_iql_candidate",
+            "seeds": [29],
+            "ticks": 120,
+            "fixtures": [
+                {
+                    "fixture": "carrion_only",
+                    "comparison": {
+                        "candidate": {
+                            "aggregate": {
+                                "alive_agents_mean": 1.0,
+                                "births_mean": 0.0,
+                                "reproduction_failure_attribution": {
+                                    "biologically_ready_agents_mean": 0.0,
+                                    "terminal_viability_shares_mean": {
+                                        "energy": 0.0,
+                                        "hydration": 0.0,
+                                        "health": 0.0,
+                                        "matched_diet": 0.0,
+                                    },
+                                },
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+        fixture_config = mind_v3_evaluate.mind_v3_fixture_gate_config(
+            suite="basic",
+            seeds=[29],
+            ticks=120,
+            min_alive=1.0,
+            min_births=0.0,
+            min_mixed_stable_births=0.0,
+            min_energy_viability=0.0,
+            min_hydration_viability=0.0,
+            min_health_viability=0.0,
+            min_matched_diet_viability=0.0,
+            min_biologically_ready=0.0,
+        )
+
+        gate = mind_v3_evaluate.mind_v3_fixture_gate_status(
+            fixture_suite=fixture_suite,
+            fixture_config=fixture_config,
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["evaluated_policy_key"], "candidate")
+        self.assertEqual(gate["evaluated_policy_name"], "labeled_iql_candidate")
+
+    def test_labeled_iql_acceptance_allows_carrion_blocker_reduction(
+        self,
+    ) -> None:
+        evaluations = {
+            "linear_default": {
+                "broad": {
+                    "aggregate": {
+                        "alive_agents_mean": 23.0,
+                        "births_mean": 17.5,
+                        "dominant_requested_action_share": 0.42,
+                        "heuristic_action_source_count": 0,
+                    }
+                },
+                "fixture_gate": {
+                    "blockers": [{}, {}, {}, {}, {}],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 0.0,
+                            }
+                        }
+                    },
+                },
+            },
+            "candidate": {
+                "broad": {
+                    "aggregate": {
+                        "alive_agents_mean": 22.2,
+                        "births_mean": 18.0,
+                        "dominant_requested_action_share": 0.49,
+                        "heuristic_action_source_count": 0,
+                    }
+                },
+                "fixture_gate": {
+                    "blockers": [{}, {}, {}, {}],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 0.0,
+                            }
+                        }
+                    },
+                },
+            },
+        }
+
+        gate = mind_v3_labeled_iql_slice.build_labeled_iql_acceptance_gate(
+            evaluations=evaluations,
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(
+            gate["metrics"]["candidate_fixture_blocker_count_delta_vs_linear"],
+            -1,
+        )
+
+    def test_labeled_iql_acceptance_blocks_broad_collapse(
+        self,
+    ) -> None:
+        evaluations = {
+            "linear_default": {
+                "broad": {
+                    "aggregate": {
+                        "alive_agents_mean": 23.0,
+                        "births_mean": 17.5,
+                        "dominant_requested_action_share": 0.42,
+                        "heuristic_action_source_count": 0,
+                    }
+                },
+                "fixture_gate": {
+                    "blockers": [{}, {}, {}, {}, {}],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 0.0,
+                            }
+                        }
+                    },
+                },
+            },
+            "candidate": {
+                "broad": {
+                    "aggregate": {
+                        "alive_agents_mean": 0.0,
+                        "births_mean": 0.0,
+                        "dominant_requested_action_share": 0.2,
+                        "heuristic_action_source_count": 0,
+                    }
+                },
+                "fixture_gate": {
+                    "blockers": [],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 1.0,
+                            }
+                        }
+                    },
+                },
+            },
+        }
+
+        gate = mind_v3_labeled_iql_slice.build_labeled_iql_acceptance_gate(
+            evaluations=evaluations,
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "broad_alive_regression_vs_linear",
+            {blocker["reason"] for blocker in gate["blockers"]},
         )
 
     def test_mind_v3_evolve_cli_writes_generation_report_without_heuristics(

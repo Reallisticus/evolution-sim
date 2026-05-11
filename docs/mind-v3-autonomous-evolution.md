@@ -1518,6 +1518,58 @@ Thirteenth implementation milestone:
   then evaluate broad `120` and carrion-only fixture gates beside linear and
   anchored neural.
 
+Fourteenth implementation milestone:
+
+- `sim:mind:v3:labeled-iql-slice` now provides the missing acceptance report
+  for the next torch run. It evaluates three policy surfaces under the same
+  broad and controlled-fixture horizons: the current Mind v3 linear default,
+  an optional anchored Mind v3 neural artifact, and a learned torch/IQL
+  candidate artifact loaded through the heuristic-free `autonomous` runtime.
+- The report writes a single acceptance gate:
+  broad `120` alive regression versus linear must be `<= 1.0`, broad births
+  must match or beat linear, candidate dominant requested-action share must be
+  `<= 0.50`, candidate heuristic runtime actions must be `0`, and the
+  carrion-only fixture must either produce nonzero terminal alive agents or
+  reduce blocker count versus the linear baseline.
+- This is still not a promotion or result claim. The local machine used for
+  this slice does not have torch installed, so the acceptance-bearing run
+  remains an RTX-host task. The value of this slice is that the next candidate
+  cannot hide behind a broad-only policy eval or a post-hoc fixture check.
+
+Concrete RTX sequence for v34:
+
+```bash
+npm run sim:mind:gate -- \
+  --reuse-trajectories \
+  --trainer torch-discrete-iql \
+  --torch-device cuda \
+  --extra-trajectory output/trajectories/mind-v3-carrion-counterfactual-v32/counterfactual-hydration_safe_carrion_cycle-seed-29.jsonl.gz \
+  --extra-trajectory output/trajectories/mind-v3-carrion-counterfactual-v32/counterfactual-hydration_safe_carrion_cycle-seed-37.jsonl.gz \
+  --torch-iql-counterfactual-labels output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json \
+  --artifact-output output/mind/mind-v3-v34-labeled-iql-artifact.json \
+  --output output/mind/mind-v3-v34-labeled-iql-train-gate.json
+
+npm run sim:mind:v3:labeled-iql-slice -- \
+  --candidate-artifact output/mind/mind-v3-v34-labeled-iql-artifact.json \
+  --enable-mind \
+  --mind-runtime-mode autonomous \
+  --founder-template output/mind/mind-v3-need-gated-v23-top8-80-120-search.json \
+  --anchored-neural-artifact output/mind/mind-v3-v29-source-balanced-neural-artifact.json \
+  --seeds 5,13,19,29,37 \
+  --ticks 120 \
+  --fixture-names carrion_only \
+  --fixture-seeds 29,37 \
+  --fixture-ticks 120 \
+  --output output/mind/mind-v3-v34-labeled-iql-slice-report.json \
+  --experiment-ledger-output output/mind/mind-v3-experiment-ledger.jsonl
+```
+
+Use the same founder template as the comparison lineage when making a strict
+apples-to-apples report. Omit `--founder-template` only when the goal is to
+evaluate against the current compiled linear default. Omit
+`--anchored-neural-artifact` only when the v29 anchored reference is not part of
+the question.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains

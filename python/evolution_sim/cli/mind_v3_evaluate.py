@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from random import Random
@@ -701,6 +701,39 @@ def run_mind_v3_fixture_suite(
     trajectory_output_dir: Path | None = None,
     trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
+    return run_controlled_fixture_policy_suite(
+        suite=suite,
+        fixture_names=fixture_names,
+        seeds=seeds,
+        ticks=ticks,
+        learned_policy_factory=(
+            lambda fixture_name, seed: _mind_v3_policy(
+                seed=seed,
+                founder_template=founder_template,
+                neural_artifact=neural_artifact,
+            )
+        ),
+        learned_policy_key="mind_v3",
+        learned_policy_name="mind_v3",
+        trajectory_output_dir=trajectory_output_dir,
+        trajectory_prefix=trajectory_prefix,
+    )
+
+
+def run_controlled_fixture_policy_suite(
+    *,
+    suite: str,
+    fixture_names: list[str] | None = None,
+    seeds: list[int],
+    ticks: int,
+    learned_policy_factory: Callable[[str, int], object | None],
+    learned_policy_key: str,
+    learned_policy_name: str | None = None,
+    trajectory_output_dir: Path | None = None,
+    trajectory_prefix: str = "fixture",
+) -> dict[str, object]:
+    if not learned_policy_key or not learned_policy_key.strip():
+        raise ValueError("learned_policy_key must be non-empty")
     fixtures = []
     selected_fixture_names = (
         tuple(fixture_names) if fixture_names else _fixture_names(suite)
@@ -726,32 +759,29 @@ def run_mind_v3_fixture_suite(
             )
             for seed in seeds
         ]
-        mind_v3_runs = [
+        learned_runs = [
             _run_fixture_once(
                 fixture_name=fixture_name,
                 seed=seed,
                 ticks=ticks,
-                policy=_mind_v3_policy(
-                    seed=seed,
-                    founder_template=founder_template,
-                    neural_artifact=neural_artifact,
-                ),
+                policy=learned_policy_factory(fixture_name, seed),
                 trajectory_output_path=_trajectory_output_path(
                     trajectory_output_dir,
                     trajectory_prefix,
                     fixture_name,
-                    "mind_v3",
+                    learned_policy_key,
                     seed,
                     ticks,
                 ),
                 trajectory_split_id=(
-                    f"mind_v3_evaluate_{trajectory_prefix}_{fixture_name}_mind_v3"
+                    "mind_v3_evaluate_"
+                    f"{trajectory_prefix}_{fixture_name}_{learned_policy_key}"
                 ),
             )
             for seed in seeds
         ]
         heuristic_aggregate = _aggregate_runs(heuristic_runs)
-        mind_v3_aggregate = _aggregate_runs(mind_v3_runs)
+        learned_aggregate = _aggregate_runs(learned_runs)
         fixtures.append(
             {
                 "fixture": fixture_name,
@@ -761,13 +791,13 @@ def run_mind_v3_fixture_suite(
                         "runs": heuristic_runs,
                         "aggregate": heuristic_aggregate,
                     },
-                    "mind_v3": {
-                        "runs": mind_v3_runs,
-                        "aggregate": mind_v3_aggregate,
+                    learned_policy_key: {
+                        "runs": learned_runs,
+                        "aggregate": learned_aggregate,
                     },
                     "delta": _comparison_delta(
                         heuristic=heuristic_aggregate,
-                        mind_v3=mind_v3_aggregate,
+                        mind_v3=learned_aggregate,
                     ),
                 },
             }
@@ -776,6 +806,8 @@ def run_mind_v3_fixture_suite(
         "policy": MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
         "suite": suite,
         "fixture_names": list(selected_fixture_names),
+        "evaluated_policy_key": learned_policy_key,
+        "evaluated_policy_name": learned_policy_name or learned_policy_key,
         "seeds": list(seeds),
         "ticks": int(ticks),
         "fixtures": fixtures,
@@ -831,6 +863,7 @@ def mind_v3_fixture_gate_status(
 ) -> dict[str, object]:
     blockers: list[dict[str, object]] = []
     per_fixture: dict[str, object] = {}
+    evaluated_policy_key = str(fixture_suite.get("evaluated_policy_key", "mind_v3"))
     fixtures = fixture_suite.get("fixtures")
     fixture_items = fixtures if isinstance(fixtures, list) else []
     for raw_fixture in fixture_items:
@@ -838,13 +871,21 @@ def mind_v3_fixture_gate_status(
             continue
         fixture_name = str(raw_fixture.get("fixture", "unknown"))
         comparison = raw_fixture.get("comparison")
-        mind_v3 = comparison.get("mind_v3") if isinstance(comparison, Mapping) else None
-        aggregate = mind_v3.get("aggregate") if isinstance(mind_v3, Mapping) else None
+        evaluated_policy = (
+            comparison.get(evaluated_policy_key)
+            if isinstance(comparison, Mapping)
+            else None
+        )
+        aggregate = (
+            evaluated_policy.get("aggregate")
+            if isinstance(evaluated_policy, Mapping)
+            else None
+        )
         if not isinstance(aggregate, Mapping):
             blockers.append(
                 _fixture_gate_blocker(
                     fixture=fixture_name,
-                    reason="fixture_mind_v3_aggregate_missing",
+                    reason="fixture_evaluated_policy_aggregate_missing",
                     metric="aggregate",
                     value=0.0,
                     floor=1.0,
@@ -876,6 +917,10 @@ def mind_v3_fixture_gate_status(
     return {
         "policy": MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY,
         "fixture_suite_policy": MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
+        "evaluated_policy_key": evaluated_policy_key,
+        "evaluated_policy_name": str(
+            fixture_suite.get("evaluated_policy_name", evaluated_policy_key)
+        ),
         "suite": str(fixture_config["suite"]),
         "fixture_names": [
             str(name)
