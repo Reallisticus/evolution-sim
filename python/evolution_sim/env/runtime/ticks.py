@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +12,8 @@ import evolution_sim.env.runtime.lifecycle as runtime_lifecycle
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
+
+TURN_ORDER_POLICY = "seed_tick_agent_hash_permutation_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +37,7 @@ class TickPhaseContext:
     kill_agent: Callable[..., None]
     finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
     record_animal_resource_opportunity_tick: Callable[
-        [dict[str, int], dict[str, dict[str, int]]],
+        [dict[str, int], dict[str, dict[str, int]], dict[str, bool]],
         None,
     ]
     begin_trajectory_decision: Callable[[Any, dict[str, object]], dict[str, object]]
@@ -75,11 +78,12 @@ def run_tick(
         agent_id: dict(observation["action_mask"])
         for agent_id, observation in observation_snapshots.items()
     }
+    opportunity_resource_presence = tick_context.animal_resource_presence_this_tick()
     opportunity_reachability_by_meat_mode = (
         tick_context.animal_resource_reachability_by_meat_mode(
             tick_start_alive,
             action_masks_by_agent=observation_action_masks,
-            resource_presence=tick_context.animal_resource_presence_this_tick(),
+            resource_presence=opportunity_resource_presence,
         )
     )
     trajectory_contexts = build_trajectory_contexts(
@@ -88,11 +92,17 @@ def run_tick(
         observation_snapshots,
         tick_context=tick_context,
     )
+    action_order = deterministic_agent_turn_order(
+        (agent.agent_id for agent in tick_start_alive),
+        seed=world.config.seed,
+        tick=world.tick,
+    )
+    world.tick_action_order = list(action_order)
     pending_trajectory_records: list[dict[str, object]] = []
     acted_trajectory_agent_ids: set[int] = set()
     lifecycle_context = tick_context.lifecycle_context
 
-    for agent_id in sorted(world.agents):
+    for agent_id in action_order:
         agent = world.agents[agent_id]
         if not agent.alive:
             continue
@@ -194,6 +204,7 @@ def run_tick(
     tick_context.record_animal_resource_opportunity_tick(
         opportunity_meat_mode_counts,
         opportunity_reachability_by_meat_mode,
+        opportunity_resource_presence,
     )
     tick_context.emit(
         EventType.TICK_COMPLETED,
@@ -215,7 +226,10 @@ def reset_tick_state(
     *,
     meat_mode_codes: dict[str, int],
 ) -> None:
+    world.tick_action_order = []
     world.tick_birth_pairs = []
+    world.tick_reproduction_parent_ids = set()
+    world.tick_reproduction_parent_child_groups = []
     world.tick_death_agent_ids = []
     world.tick_death_events = []
     world.tick_attack_events = []
@@ -297,3 +311,31 @@ def append_passive_trajectory_contexts(
             }
         )
         pending_trajectory_records.append(trajectory_context)
+
+
+def deterministic_agent_turn_order(
+    agent_ids: Sequence[int] | Any,
+    *,
+    seed: int,
+    tick: int,
+) -> tuple[int, ...]:
+    ordered_ids = tuple(sorted(int(agent_id) for agent_id in agent_ids))
+    return tuple(
+        sorted(
+            ordered_ids,
+            key=lambda agent_id: (
+                _turn_order_hash(seed=seed, tick=tick, agent_id=agent_id),
+                agent_id,
+            ),
+        )
+    )
+
+
+def _turn_order_hash(*, seed: int, tick: int, agent_id: int) -> int:
+    payload = f"{int(seed)}:{int(tick)}:{int(agent_id)}".encode("ascii")
+    digest = hashlib.blake2b(
+        payload,
+        digest_size=8,
+        person=b"turnorder",
+    ).digest()
+    return int.from_bytes(digest, byteorder="big")

@@ -26,6 +26,12 @@ def record_animal_resource_opportunity_tick_from_inputs(
         animal_consumed = tick_consumption["animal_resource_consumption_events"] > 0
         fresh_kill_consumed = tick_consumption["fresh_kill_consumption_events"] > 0
         carcass_consumed = tick_consumption["carcass_consumption_events"] > 0
+        if animal_consumed:
+            counts["animal_resource_consumed_ticks"] += 1
+        if fresh_kill_consumed:
+            counts["fresh_kill_consumed_ticks"] += 1
+        if carcass_consumed:
+            counts["carcass_consumed_ticks"] += 1
         if resource_presence["animal_resource"]:
             _record_resource_opportunity(
                 counts,
@@ -146,9 +152,7 @@ def _record_resource_opportunity(
 ) -> None:
     counts[f"{resource}_present_ticks"] += 1
     counts[f"{resource}_present_agent_ticks"] += agent_count
-    if consumed:
-        counts[f"{resource}_consumed_ticks"] += 1
-    else:
+    if not consumed:
         counts[f"{resource}_present_unconsumed_ticks"] += 1
         counts[f"{resource}_present_unconsumed_agent_ticks"] += agent_count
     if reachable_agents > 0:

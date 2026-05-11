@@ -7,7 +7,13 @@ import sys
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import SimulationWorld
 from evolution_sim.io import write_json_replay
-from evolution_sim.mind.learned_policy import load_learned_policy
+from evolution_sim.mind.learned_policy import (
+    MIND_RUNTIME_MODE_GUARDED,
+    MIND_RUNTIME_MODES,
+    load_learned_policy,
+)
+from evolution_sim.mind.evolution import load_mind_v3_founder_template
+from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,20 +36,74 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Required with --mind-artifact to enable learned-policy inference.",
     )
+    parser.add_argument(
+        "--mind-runtime-mode",
+        choices=sorted(MIND_RUNTIME_MODES),
+        default=MIND_RUNTIME_MODE_GUARDED,
+        help=(
+            "Mind runtime mode. The default guarded mode keeps heuristic safety "
+            "fallback active; autonomous modes are legacy learned-artifact "
+            "experiment surfaces."
+        ),
+    )
+    parser.add_argument(
+        "--mind-v3-autonomous-evolution",
+        action="store_true",
+        help=(
+            "Use the feature-gated Mind v3 inherited autonomous controller "
+            "without heuristic fallback."
+        ),
+    )
+    parser.add_argument(
+        "--mind-v3-founder-template",
+        type=Path,
+        help=(
+            "Optional raw Mind v3 controller metadata or evolution-search "
+            "report used by --mind-v3-autonomous-evolution."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.mind_v3_founder_template is not None and not args.mind_v3_autonomous_evolution:
+        raise SystemExit(
+            "--mind-v3-founder-template requires --mind-v3-autonomous-evolution"
+        )
+    if args.mind_v3_autonomous_evolution and (
+        args.mind_artifact is not None or args.enable_mind
+    ):
+        raise SystemExit(
+            "--mind-v3-autonomous-evolution cannot be combined with "
+            "--mind-artifact or --enable-mind"
+        )
     if args.enable_mind and args.mind_artifact is None:
         raise SystemExit("--enable-mind requires --mind-artifact")
     if args.mind_artifact is not None and not args.enable_mind:
         raise SystemExit("--mind-artifact requires --enable-mind")
-    policy = (
-        load_learned_policy(args.mind_artifact, enable_mind=args.enable_mind)
-        if args.mind_artifact is not None
-        else None
-    )
+    if args.mind_v3_autonomous_evolution:
+        founder_template = (
+            load_mind_v3_founder_template(args.mind_v3_founder_template)
+            if args.mind_v3_founder_template is not None
+            else None
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=args.seed,
+            founder_template_metadata=founder_template,
+        )
+        mind_runtime_mode = "mind-v3-autonomous-evolution"
+    else:
+        policy = (
+            load_learned_policy(
+                args.mind_artifact,
+                enable_mind=args.enable_mind,
+                runtime_mode=args.mind_runtime_mode,
+            )
+            if args.mind_artifact is not None
+            else None
+        )
+        mind_runtime_mode = args.mind_runtime_mode
     config = WorldConfig(seed=args.seed, max_ticks=args.ticks)
     result = SimulationWorld(config, policy=policy).run()
     if args.output.exists():
@@ -66,6 +126,9 @@ def main() -> None:
     if policy is not None:
         print(f"mind_policy={policy.policy_id}")
         print(f"mind_policy_version={policy.policy_version}")
+        print(f"mind_runtime_mode={mind_runtime_mode}")
+        if args.mind_v3_founder_template is not None:
+            print(f"mind_v3_founder_template={args.mind_v3_founder_template}")
     print(
         "climate_end="
         f"{summary['disturbance_at_end']}:{summary['disturbance_strength_at_end']}"

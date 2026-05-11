@@ -74,7 +74,7 @@ class ObservationHeuristicPolicyConfig:
     scavenger_carrion_seek_max_distance: int = 8
     hunter_carrion_seek_energy_threshold: float = 0.92
     hunter_carrion_seek_max_distance: int = 8
-    mixed_carrion_seek_energy_threshold: float = 0.94
+    mixed_carrion_seek_energy_threshold: float = 0.98
     mixed_carrion_seek_max_distance: int = 10
     animal_survival_forage_max_distance: int = 2
     local_patch_radius: int = LOCAL_PATCH_RADIUS
@@ -570,15 +570,6 @@ class ObservationHeuristicPolicy:
         )
         if general_move is not None:
             return self._decision(general_move, "heuristic_observation")
-
-        if not prefer_hunting:
-            attack = self._best_attack_action(
-                patch_cells,
-                action_mask,
-                energy_ratio=energy_ratio,
-            )
-            if attack is not None:
-                return self._decision(attack, "heuristic_observation")
 
         return self._fallback(action_mask)
 

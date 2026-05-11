@@ -12,6 +12,7 @@ FOOD_SOURCES = frozenset({"plant", "fresh_kill", "carcass"})
 ANIMAL_FOOD_SOURCES = frozenset({"fresh_kill", "carcass"})
 ANIMAL_RESOURCE_KINDS = feeding_opportunity.ANIMAL_RESOURCE_KINDS
 ANIMAL_RESOURCE_POLICY_BLOCKERS = feeding_opportunity.ANIMAL_RESOURCE_POLICY_BLOCKERS
+ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,20 +260,22 @@ def animal_resource_presence_this_tick(world: Any) -> dict[str, bool]:
         for counts in world.tick_animal_resource_consumption_by_meat_mode.values()
     )
     fresh_kill_present = (
-        world.tick_fresh_kill_deposited_energy > 0
+        world.tick_fresh_kill_deposited_energy
+        >= ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
         or fresh_kill_consumed
         or any(
-            tile.fresh_kill_energy > 1e-9
+            tile.fresh_kill_energy >= ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
             for row in world.grid
             for tile in row
             if tile.terrain != "water"
         )
     )
     carcass_present = (
-        world.tick_carcass_deposited_energy > 0
+        world.tick_carcass_deposited_energy
+        >= ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
         or carcass_consumed
         or any(
-            tile.carcass_energy > 1e-9
+            tile.carcass_energy >= ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
             for row in world.grid
             for tile in row
             if tile.terrain != "water"
@@ -347,6 +350,7 @@ def record_animal_resource_opportunity_tick(
     world: Any,
     meat_mode_counts: dict[str, int],
     reachability_by_meat_mode: dict[str, dict[str, int]],
+    resource_presence: dict[str, bool] | None = None,
 ) -> None:
     feeding_opportunity.record_animal_resource_opportunity_tick_from_inputs(
         world.run_animal_resource_opportunity_by_meat_mode,
@@ -355,7 +359,11 @@ def record_animal_resource_opportunity_tick(
             world.tick_animal_resource_consumption_by_meat_mode
         ),
         reachability_by_meat_mode=reachability_by_meat_mode,
-        resource_presence=animal_resource_presence_this_tick(world),
+        resource_presence=(
+            resource_presence
+            if resource_presence is not None
+            else animal_resource_presence_this_tick(world)
+        ),
     )
 
 

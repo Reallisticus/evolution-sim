@@ -168,7 +168,12 @@ class SimulationWorld:
         self.current_ecotype_records: list[SpeciesRecord] = []
         self.agent_last_species_map: dict[int, int] = {}
         self.agent_last_ecotype_map: dict[int, int] = {}
+        self.tick_action_order: list[int] = []
         self.tick_birth_pairs: list[tuple[int, int]] = []
+        self.tick_reproduction_parent_ids: set[int] = set()
+        self.tick_reproduction_parent_child_groups: list[
+            tuple[tuple[int, ...], int]
+        ] = []
         self.tick_death_agent_ids: list[int] = []
         self.tick_death_events: list[dict[str, object]] = []
         self.tick_attack_events: list[dict[str, object]] = []
@@ -185,6 +190,7 @@ class SimulationWorld:
         self.tick_trajectory_records: list[dict[str, object]] = []
         self.trajectory_records: list[dict[str, object]] = []
         self.policy_decision_diagnostics_records: list[dict[str, object] | None] = []
+        self.policy_update_trace_records: list[dict[str, object]] = []
         self.record_trajectory = True
         self.retain_trajectory_records = True
         self.trajectory_sink: runtime_trajectory.TrajectorySink | None = None
@@ -855,7 +861,10 @@ class SimulationWorld:
                 reproductive_group_id=reproductive_state.group_id,
                 reproductive_stage=reproductive_state.stage,
                 reproductive_expression=reproductive_state.expression,
-                mind_inheritance_metadata=empty_mind_inheritance_metadata(),
+                mind_inheritance_metadata=self._founder_mind_metadata(
+                    self.next_agent_id,
+                    genome=genome,
+                ),
             )
             self._place_agent(agent)
             runtime_reproduction.register_founder_group(
@@ -864,6 +873,50 @@ class SimulationWorld:
                 tick=0,
             )
             self.next_agent_id += 1
+
+    def _founder_mind_metadata(
+        self,
+        agent_id: int,
+        *,
+        genome: Genome | None = None,
+    ) -> dict[str, object]:
+        founder_metadata = getattr(self.policy, "contextual_founder_metadata", None)
+        if callable(founder_metadata):
+            kwargs: dict[str, object] = {"agent_id": agent_id}
+            if genome is not None:
+                profile = self._trophic_profile_for_genome(genome)
+                kwargs["trophic_role"] = profile.role
+                kwargs["meat_mode"] = profile.meat_mode
+            metadata = founder_metadata(**kwargs)
+            if isinstance(metadata, dict):
+                return dict(metadata)
+        founder_metadata = getattr(self.policy, "founder_metadata", None)
+        if callable(founder_metadata):
+            metadata = founder_metadata(agent_id=agent_id)
+            if isinstance(metadata, dict):
+                return dict(metadata)
+        return empty_mind_inheritance_metadata()
+
+    def _mind_inheritance_for_child(
+        self,
+        primary_parent: Agent,
+        secondary_parent: Agent | None,
+        child_agent_id: int,
+    ) -> dict[str, object]:
+        child_metadata = getattr(self.policy, "child_metadata", None)
+        if callable(child_metadata):
+            metadata = child_metadata(
+                child_agent_id=child_agent_id,
+                primary_parent_id=primary_parent.agent_id,
+                secondary_parent_id=(
+                    secondary_parent.agent_id
+                    if secondary_parent is not None
+                    else None
+                ),
+            )
+            if isinstance(metadata, dict):
+                return dict(metadata)
+        return empty_mind_inheritance_metadata()
 
     def _random_initial_spawn_tile(self) -> tuple[int, int]:
         viable_tiles: list[tuple[int, int]] = []
@@ -2215,9 +2268,17 @@ class SimulationWorld:
         while frontier:
             x, y, distance = frontier.popleft()
             tile = self.grid[y][x]
-            if can_consume_fresh_kill and tile.fresh_kill_energy > 1e-9:
+            if (
+                can_consume_fresh_kill
+                and tile.fresh_kill_energy
+                >= runtime_feeding.ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
+            ):
                 targets["fresh_kill"].append((distance, x, y))
-            if can_consume_carcass and tile.carcass_energy > 1e-9:
+            if (
+                can_consume_carcass
+                and tile.carcass_energy
+                >= runtime_feeding.ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY
+            ):
                 targets["carcass"].append((distance, x, y))
             if distance >= radius:
                 continue
@@ -2419,11 +2480,13 @@ class SimulationWorld:
         self,
         meat_mode_counts: dict[str, int],
         reachability_by_meat_mode: dict[str, dict[str, int]],
+        resource_presence: dict[str, bool],
     ) -> None:
         runtime_feeding.record_animal_resource_opportunity_tick(
             self,
             meat_mode_counts,
             reachability_by_meat_mode,
+            resource_presence,
         )
 
     def _agent_biomass(self, agent: Agent) -> float:
@@ -3259,11 +3322,44 @@ class SimulationWorld:
             is_reproduction_ready=self._is_reproduction_ready,
         )
         for pending, record in zip(pending_records, records):
+            diagnostics = pending.get("policy_decision_diagnostics")
+            if isinstance(diagnostics, dict):
+                feedback_record = dict(record)
+                feedback_record["policy_decision_diagnostics"] = dict(diagnostics)
+            else:
+                feedback_record = record
+            observe_transition = getattr(self.policy, "observe_transition", None)
+            update_trace = None
+            if callable(observe_transition):
+                update_trace = observe_transition(feedback_record)
+                if isinstance(update_trace, dict):
+                    self.policy_update_trace_records.append(dict(update_trace))
+            if (
+                self.trajectory_sink is not None
+                and getattr(
+                    self.trajectory_sink,
+                    "include_policy_decision_diagnostics",
+                    False,
+                )
+                and isinstance(diagnostics, dict)
+            ):
+                record = dict(record)
+                record["policy_decision_diagnostics"] = dict(diagnostics)
+            if (
+                self.trajectory_sink is not None
+                and getattr(
+                    self.trajectory_sink,
+                    "include_policy_update_trace",
+                    False,
+                )
+                and isinstance(update_trace, dict)
+            ):
+                record = dict(record)
+                record["policy_update_trace"] = dict(update_trace)
             self.tick_trajectory_records.append(record)
             if self.trajectory_sink is not None:
                 self.trajectory_sink.write_record(record)
             if self.retain_trajectory_records:
-                diagnostics = pending.get("policy_decision_diagnostics")
                 self.policy_decision_diagnostics_records.append(
                     dict(diagnostics) if isinstance(diagnostics, dict) else None
                 )
@@ -4203,30 +4299,36 @@ class SimulationWorld:
         self,
         base_fraction: float,
         multiplier: float,
+        parent: Agent | None,
         parent_profile: TrophicProfile,
     ) -> float:
         return runtime_reproduction.child_starting_fraction(
             base_fraction,
             multiplier,
+            parent,
             parent_profile,
         )
 
     def _reproduction_energy_cost(
         self,
+        parent: Agent | None,
         parent_profile: TrophicProfile,
     ) -> float:
         return runtime_reproduction.reproduction_energy_cost(
             self,
+            parent,
             parent_profile,
             context=self._reproduction_context(),
         )
 
     def _sexual_reproduction_energy_cost(
         self,
+        parent: Agent | None,
         parent_profile: TrophicProfile,
     ) -> float:
         return runtime_reproduction.sexual_reproduction_energy_cost(
             self,
+            parent,
             parent_profile,
             context=self._reproduction_context(),
         )
@@ -4279,6 +4381,7 @@ class SimulationWorld:
             health_ratio=self._health_ratio,
             emit=self._emit,
             signal_runtime_context=self._signal_runtime_context,
+            mind_inheritance_for_child=self._mind_inheritance_for_child,
         )
 
     def _reproduce(self, parent: Agent) -> bool:

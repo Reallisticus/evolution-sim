@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from evolution_sim.env.runtime.policy import ActionDecision, ObservationHeuristicPolicy
@@ -20,6 +22,19 @@ HEURISTIC_GUARD_POLICY = "observation_heuristic_safety_floor_v1"
 HEURISTIC_DELEGATE_POLICY = "observation_heuristic_confidence_delegate_v1"
 VALUE_SUPPORTED_DEVIATION_POLICY = "positive_value_safe_deviation_v1"
 NEURAL_SCORE_NORMALIZATION_POLICY = "mask_renormalized_neural_actor_scores_v1"
+MIND_RUNTIME_MODE_GUARDED = "guarded"
+MIND_RUNTIME_MODE_AUTONOMOUS = "autonomous"
+MIND_RUNTIME_MODE_AUTONOMOUS_ONLINE = "autonomous-online"
+MIND_RUNTIME_MODES = frozenset(
+    {
+        MIND_RUNTIME_MODE_GUARDED,
+        MIND_RUNTIME_MODE_AUTONOMOUS,
+        MIND_RUNTIME_MODE_AUTONOMOUS_ONLINE,
+    }
+)
+AUTONOMOUS_CONTROLLER_POLICY = "heuristic_free_autonomous_controller_v1"
+ONLINE_CONTEXTUAL_BANDIT_POLICY = "in_run_contextual_bandit_adapter_v1"
+ONLINE_UPDATE_TRACE_SCHEMA_VERSION = "mind_policy_update_trace_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,11 +388,139 @@ class LearnedPolicy:
         )
 
 
+@dataclass(slots=True)
+class OnlineAdaptiveMindPolicy:
+    base_policy: LearnedPolicy
+    learning_rate: float = 0.05
+    min_adjustment: float = -0.5
+    max_adjustment: float = 0.5
+    action_adjustments: dict[tuple[str, str], float] = field(default_factory=dict)
+    online_update_count: int = 0
+
+    @property
+    def policy_id(self) -> str:
+        return self.base_policy.policy_id
+
+    @property
+    def policy_version(self) -> str:
+        return f"{self.base_policy.policy_version}+{ONLINE_CONTEXTUAL_BANDIT_POLICY}"
+
+    def decide(
+        self,
+        observation: dict[str, object],
+        action_mask: dict[str, bool],
+    ) -> ActionDecision:
+        score_match = self.base_policy._score_match_for(observation, action_mask)
+        context_key = _online_context_key(score_match)
+        adjusted_scores = _adjusted_online_scores(
+            score_match.scores,
+            action_mask,
+            action_adjustments=self.action_adjustments,
+            context_key=context_key,
+        )
+        adjusted_score_match = _ScoreMatch(
+            scores=adjusted_scores,
+            score_source=f"{score_match.score_source}:{ONLINE_CONTEXTUAL_BANDIT_POLICY}",
+            feature_key=score_match.feature_key,
+            match_depth=score_match.match_depth,
+            support=score_match.support,
+            training_score_margin=_live_score_margin(
+                adjusted_scores,
+                action_mask,
+            ),
+            value_estimates=score_match.value_estimates,
+            state_value=score_match.state_value,
+        )
+        (
+            learned_action,
+            learned_score,
+            learned_runner_up_score,
+            learned_score_margin,
+        ) = self.base_policy._best_scored_action(adjusted_scores, action_mask)
+        diagnostics = _decision_diagnostics(
+            score_match=adjusted_score_match,
+            guard_used=False,
+            learned_action=learned_action,
+            learned_score=learned_score,
+            learned_runner_up_score=learned_runner_up_score,
+            learned_score_margin=learned_score_margin,
+            heuristic_delegate_used=False,
+        )
+        diagnostics.update(
+            {
+                "runtime_mode": MIND_RUNTIME_MODE_AUTONOMOUS_ONLINE,
+                "heuristic_free": True,
+                "online_learning_policy": ONLINE_CONTEXTUAL_BANDIT_POLICY,
+                "online_update_count": self.online_update_count,
+                "online_context_key": context_key,
+                "online_action_adjustment": float(
+                    self.action_adjustments.get((context_key, learned_action), 0.0)
+                ),
+            }
+        )
+        return ActionDecision(
+            requested_action=learned_action,
+            source=(
+                f"{self.policy_id}:{AUTONOMOUS_CONTROLLER_POLICY}:"
+                f"{ONLINE_CONTEXTUAL_BANDIT_POLICY}"
+            ),
+            policy_id=self.policy_id,
+            policy_version=self.policy_version,
+            diagnostics=diagnostics,
+        )
+
+    def observe_transition(self, record: dict[str, object]) -> dict[str, object] | None:
+        reward_total = _record_reward_total(record)
+        diagnostics = record.get("policy_decision_diagnostics")
+        if (
+            not isinstance(diagnostics, dict)
+            or diagnostics.get("online_learning_policy")
+            != ONLINE_CONTEXTUAL_BANDIT_POLICY
+        ):
+            return
+        action = _record_action(record, diagnostics)
+        if action is None:
+            return
+        context_key = (
+            _diagnostic_string(diagnostics, "online_context_key")
+            or _diagnostic_string(diagnostics, "score_feature_key")
+            or "global"
+        )
+        key = (context_key, action)
+        current = float(self.action_adjustments.get(key, 0.0))
+        reward_signal = _clamp(reward_total, -1.0, 1.0)
+        updated = _clamp(
+            current + self.learning_rate * reward_signal,
+            self.min_adjustment,
+            self.max_adjustment,
+        )
+        update_index = self.online_update_count + 1
+        self.action_adjustments[key] = updated
+        self.online_update_count = update_index
+        return {
+            "schema_version": ONLINE_UPDATE_TRACE_SCHEMA_VERSION,
+            "policy": ONLINE_CONTEXTUAL_BANDIT_POLICY,
+            "update_index": update_index,
+            "context_key": context_key,
+            "action": action,
+            "reward_total": reward_total,
+            "reward_signal": reward_signal,
+            "previous_adjustment": current,
+            "updated_adjustment": updated,
+            "learning_rate": float(self.learning_rate),
+            "min_adjustment": float(self.min_adjustment),
+            "max_adjustment": float(self.max_adjustment),
+        }
+
+
 def load_learned_policy(
     artifact_path: str | Path,
     *,
     enable_mind: bool = False,
-) -> LearnedPolicy:
+    runtime_mode: str = MIND_RUNTIME_MODE_GUARDED,
+) -> LearnedPolicy | OnlineAdaptiveMindPolicy:
+    if runtime_mode not in MIND_RUNTIME_MODES:
+        raise ValueError(f"unsupported Mind runtime mode: {runtime_mode!r}")
     artifact = load_model_artifact(artifact_path, enable_mind=enable_mind)
     manifest = artifact["manifest"]
     if not isinstance(manifest, dict):
@@ -445,7 +588,7 @@ def load_learned_policy(
     neural_actor_prior_blend_weight = model.get("neural_actor_prior_blend_weight")
     model_type = manifest.get("model_type")
     is_neural_policy = is_neural_actor_critic_model_type(model_type)
-    return LearnedPolicy(
+    policy = LearnedPolicy(
         action_scores={
             str(action): float(score)
             for action, score in action_scores.items()
@@ -535,6 +678,186 @@ def load_learned_policy(
             neural_actor_prior_blend_weight
         ),
     )
+    if runtime_mode == MIND_RUNTIME_MODE_GUARDED:
+        return policy
+    autonomous_policy = _autonomous_policy(policy)
+    if runtime_mode == MIND_RUNTIME_MODE_AUTONOMOUS:
+        return autonomous_policy
+    return OnlineAdaptiveMindPolicy(base_policy=autonomous_policy)
+
+
+def replay_online_update_traces(
+    traces: Iterable[Mapping[str, object]],
+) -> dict[tuple[str, str], float]:
+    adjustments: dict[tuple[str, str], float] = {}
+    for index, trace in enumerate(traces):
+        if not isinstance(trace, Mapping):
+            raise ValueError(f"online update trace {index} must be an object")
+        if trace.get("schema_version") != ONLINE_UPDATE_TRACE_SCHEMA_VERSION:
+            raise ValueError(f"online update trace {index} has unsupported schema")
+        if trace.get("policy") != ONLINE_CONTEXTUAL_BANDIT_POLICY:
+            raise ValueError(f"online update trace {index} has unsupported policy")
+        context_key = _trace_string(trace, "context_key", index=index)
+        action = _trace_string(trace, "action", index=index)
+        previous_adjustment = _trace_float(
+            trace,
+            "previous_adjustment",
+            index=index,
+        )
+        key = (context_key, action)
+        expected_previous = adjustments.get(key, 0.0)
+        if not math.isclose(
+            previous_adjustment,
+            expected_previous,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError(
+                f"online update trace {index} previous_adjustment is not replayable"
+            )
+        reward_signal = _trace_float(trace, "reward_signal", index=index)
+        learning_rate = _trace_float(trace, "learning_rate", index=index)
+        min_adjustment = _trace_float(trace, "min_adjustment", index=index)
+        max_adjustment = _trace_float(trace, "max_adjustment", index=index)
+        if min_adjustment > max_adjustment:
+            raise ValueError(
+                f"online update trace {index} adjustment bounds are invalid"
+            )
+        updated_adjustment = _trace_float(
+            trace,
+            "updated_adjustment",
+            index=index,
+        )
+        expected_updated = _clamp(
+            previous_adjustment + learning_rate * reward_signal,
+            min_adjustment,
+            max_adjustment,
+        )
+        if not math.isclose(
+            updated_adjustment,
+            expected_updated,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError(
+                f"online update trace {index} updated_adjustment is not replayable"
+            )
+        adjustments[key] = updated_adjustment
+    return adjustments
+
+
+def _autonomous_policy(policy: LearnedPolicy) -> LearnedPolicy:
+    return replace(
+        policy,
+        policy_version=f"{policy.policy_version}+{AUTONOMOUS_CONTROLLER_POLICY}",
+        heuristic_guard=False,
+        heuristic_confidence_threshold=None,
+        heuristic_override_min_margin=None,
+        heuristic_delegate=False,
+        heuristic_delegate_max_training_score_margin=None,
+        heuristic_safe_local_eat_min_score=None,
+        heuristic_safe_local_eat_min_food=None,
+        heuristic_safe_local_eat_min_plant_ratio=None,
+        heuristic_safe_plant_move_min_score=None,
+        heuristic_safe_plant_move_min_strength=None,
+        heuristic_safe_plant_move_max_local_food_ratio=None,
+        heuristic_safe_plant_move_max_distance=None,
+        value_supported_deviation_policy=None,
+        value_supported_deviation_min_support=None,
+        value_supported_deviation_min_value_margin=None,
+        value_supported_deviation_min_learned_value=None,
+        value_supported_deviation_min_score_margin=None,
+        value_supported_deviation_min_predicted_advantage=None,
+    )
+
+
+def _online_context_key(score_match: _ScoreMatch) -> str:
+    if score_match.feature_key is not None:
+        return score_match.feature_key
+    return "global"
+
+
+def _adjusted_online_scores(
+    scores: dict[str, float],
+    action_mask: dict[str, bool],
+    *,
+    action_adjustments: dict[tuple[str, str], float],
+    context_key: str,
+) -> dict[str, float]:
+    adjusted_scores = dict(scores)
+    for action, available in action_mask.items():
+        if bool(available):
+            adjusted_scores[action] = float(adjusted_scores.get(action, 0.0)) + float(
+                action_adjustments.get((context_key, action), 0.0)
+            )
+    return adjusted_scores
+
+
+def _record_reward_total(record: dict[str, object]) -> float:
+    reward = record.get("reward")
+    if not isinstance(reward, dict):
+        return 0.0
+    total = reward.get("total")
+    if isinstance(total, bool) or not isinstance(total, (int, float)):
+        return 0.0
+    reward_total = float(total)
+    if not math.isfinite(reward_total):
+        return 0.0
+    return reward_total
+
+
+def _record_action(
+    record: dict[str, object],
+    diagnostics: object,
+) -> str | None:
+    diagnostic_action = _diagnostic_string(diagnostics, "learned_action")
+    if diagnostic_action is not None:
+        return diagnostic_action
+    for key in ("resolved_action", "requested_action"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _diagnostic_string(diagnostics: object, key: str) -> str | None:
+    if not isinstance(diagnostics, dict):
+        return None
+    value = diagnostics.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, float(value)))
+
+
+def _trace_string(
+    trace: Mapping[str, object],
+    field: str,
+    *,
+    index: int,
+) -> str:
+    value = trace.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"online update trace {index} {field} must be a string")
+    return value
+
+
+def _trace_float(
+    trace: Mapping[str, object],
+    field: str,
+    *,
+    index: int,
+) -> float:
+    value = trace.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"online update trace {index} {field} must be finite")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"online update trace {index} {field} must be finite")
+    return parsed
 
 
 def _parse_conditional_action_scores(
@@ -920,7 +1243,7 @@ def _value_supported_neural_resource_action_allowed(
     min_score_margin: float | None,
     min_predicted_advantage: float | None,
 ) -> bool:
-    if score_match.score_source != "neural_actor_critic":
+    if not score_match.score_source.startswith("neural_actor_critic"):
         return False
     if min_score_margin is None or min_predicted_advantage is None:
         return False

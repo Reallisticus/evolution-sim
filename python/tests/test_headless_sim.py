@@ -15,6 +15,7 @@ from evolution_sim.config import (
     WorldConfig,
 )
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.env.runtime import feeding as runtime_feeding
 from evolution_sim.env.world import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
@@ -994,6 +995,47 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertEqual(counts["animal_resource_present_ticks"], 0)
         self.assertEqual(counts["animal_resource_consumption_events"], 0)
 
+    def test_animal_resource_opportunity_ignores_trace_residue(self) -> None:
+        genomes = self._archetype_genomes()
+        world = self._fixture_world(seed=507, max_ticks=1, width=8, height=6)
+        self._configure_uniform_arena(
+            world,
+            food=0.0,
+            vegetation=0.2,
+            shelter=0.1,
+            recovery_debt=0.0,
+            fertility=0.2,
+            moisture=0.8,
+            heat=0.3,
+        )
+        self._add_agent(
+            world,
+            genome=genomes["scavenger"],
+            x=2,
+            y=2,
+            lineage_id=303,
+            energy_ratio=0.45,
+        )
+        world._deposit_carcass(
+            world.grid[2][4],
+            x=4,
+            y=2,
+            energy=runtime_feeding.ANIMAL_RESOURCE_OPPORTUNITY_MIN_ENERGY / 2.0,
+            source_species=None,
+            source_agent_id=None,
+            cause="test",
+            killer_id=None,
+        )
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        counts = result.summary["animal_resource_opportunity_by_meat_mode_end"][
+            "scavenger"
+        ]
+        self.assertEqual(counts["animal_resource_absent_ticks"], 1)
+        self.assertEqual(counts["animal_resource_present_ticks"], 0)
+        self.assertEqual(counts["animal_resource_reachable_ticks"], 0)
+
     def test_animal_resource_opportunity_counts_present_unconsumed_by_mode(self) -> None:
         genomes = self._archetype_genomes()
         world = self._fixture_world(seed=502, max_ticks=1, width=8, height=6)
@@ -1743,7 +1785,9 @@ class HeadlessSimulationTests(unittest.TestCase):
         agent.recent_fresh_kill_energy = 0.0
         self.assertEqual(world._matched_diet_ratio(agent, profile), 0.0)
 
-    def test_animal_mode_reproduction_energy_requirement_uses_configured_multiplier(self) -> None:
+    def test_animal_mode_reproduction_energy_requirement_uses_recent_animal_diet(
+        self,
+    ) -> None:
         genomes = self._archetype_genomes()
         world = SimulationWorld(
             WorldConfig(
@@ -1792,6 +1836,11 @@ class HeadlessSimulationTests(unittest.TestCase):
         self.assertEqual(herbivore_profile.meat_mode, "none")
         self.assertAlmostEqual(
             world._reproduction_energy_requirement(hunter, hunter_profile),
+            hunter_base_requirement,
+        )
+        hunter.recent_fresh_kill_energy = 1.0
+        self.assertAlmostEqual(
+            world._reproduction_energy_requirement(hunter, hunter_profile),
             hunter_base_requirement * 0.75,
         )
         self.assertAlmostEqual(
@@ -1827,6 +1876,7 @@ class HeadlessSimulationTests(unittest.TestCase):
         parent = world.agents[parent_id]
         parent_profile = world._trophic_profile(parent)
         self.assertEqual(parent_profile.meat_mode, "hunter")
+        parent.recent_fresh_kill_energy = 1.0
 
         self.assertTrue(world._reproduce(parent))
 

@@ -27,10 +27,16 @@ class JsonlTrajectoryWriter:
         *,
         source_seeds: list[int] | None = None,
         split_id: str = DEFAULT_SPLIT_ID,
+        include_policy_decision_diagnostics: bool = False,
+        include_policy_update_trace: bool = False,
     ):
         self.output_path = Path(output_path)
         self.source_seeds = tuple(source_seeds or ())
         self.split_id = split_id
+        self.include_policy_decision_diagnostics = (
+            include_policy_decision_diagnostics
+        )
+        self.include_policy_update_trace = include_policy_update_trace
         self._temp_path: Path | None = None
         self._handle: TextIO | None = None
         self._stats = empty_trajectory_stats()
@@ -70,17 +76,23 @@ class JsonlTrajectoryWriter:
             self._handle = self._temp_path.open("w", encoding="utf-8")
         self._contract = contract
         self._config = config
-        self._write_line(
-            {
-                "type": "header",
-                "format": "evolution_sim_trajectory_jsonl_v1",
-                "compression": "gzip" if self.output_path.suffix == ".gz" else "none",
-                "run_id": run_id,
-                "config": config,
-                "trajectory_contract": contract,
-                "provenance": self._provenance_payload(record_count=None),
-            }
-        )
+        header: dict[str, object] = {
+            "type": "header",
+            "format": "evolution_sim_trajectory_jsonl_v1",
+            "compression": "gzip" if self.output_path.suffix == ".gz" else "none",
+            "run_id": run_id,
+            "config": config,
+            "trajectory_contract": contract,
+            "provenance": self._provenance_payload(record_count=None),
+        }
+        optional_record_fields: list[str] = []
+        if self.include_policy_decision_diagnostics:
+            optional_record_fields.append("policy_decision_diagnostics")
+        if self.include_policy_update_trace:
+            optional_record_fields.append("policy_update_trace")
+        if optional_record_fields:
+            header["optional_record_fields"] = optional_record_fields
+        self._write_line(header)
 
     def write_record(self, record: dict[str, object]) -> None:
         self._ensure_open()
@@ -152,7 +164,14 @@ class JsonlTrajectoryWriter:
     def _write_line(self, payload: dict[str, object]) -> None:
         self._ensure_open()
         assert self._handle is not None
-        self._handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        self._handle.write(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
         self._handle.write("\n")
 
     def _ensure_open(self) -> None:

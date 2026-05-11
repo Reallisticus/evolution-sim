@@ -183,6 +183,75 @@ artifacts must not declare `positive_value_safe_deviation_v1` or any
 value-supported deviation thresholds; artifact validation rejects those fields
 for IQL until a future calibration contract explicitly enables them.
 
+The IQL trainer now also records inactive conservative critic and actor-anchor
+diagnostics: `critic_regularization_policy` is
+`cql_masked_legal_logsumexp_selected_action_gap_head_only_v1`, and
+`behavior_anchor_policy` is
+`replay_weighted_behavior_cross_entropy_anchor_v1`. Their default loss weights
+are `0.0` after strict-gate probes showed that active CQL lowered hard guard but
+raised confidence delegation, while the active behavior anchor still missed the
+default total-fallback cap. These fields are artifact diagnostics and experiment
+harness hooks, not promoted runtime behavior.
+
+The IQL trainer also has opt-in actor-confidence and critic-scale controls for
+promotion probes. `--torch-iql-behavior-margin-anchor` adds the viability-safe logged
+action margin loss and records `behavior_margin_anchor_policy =
+viability_safe_logged_action_margin_anchor_v1`; it remains disabled by default.
+`--torch-iql-calibrated-actor-extraction` records `actor_weighting_policy =
+behavior_anchored_batch_standardized_iql_advantage_weighted_bc_v2` and uses
+batch-standardized IQL advantages only after clipping, normalizing, and blending
+the weights back toward behavior cloning. This is a learner-side extraction
+probe only; it does not change runtime thresholds or enable value-supported
+deviation.
+`--torch-iql-return-calibration` adds an opt-in discounted-return auxiliary
+loss for selected Q and state V. Artifacts always record discounted-return
+target statistics and Q/V return MAE diagnostics, but the loss remains disabled
+by default because the measured probe worsened guarded fallback.
+`--torch-iql-constraint-aware-actor-extraction` adds an opt-in actor weight
+filter that downweights logged actions with observed non-suppression viability
+risk. It records
+`actor_constraint_awareness_policy =
+observed_viability_safe_iql_actor_weight_filter_v1` and
+`actor_constraint_component_policy =
+logged_action_observed_non_suppression_components_v1`. This is an extraction
+experiment only; it does not use the viability head for runtime action
+selection.
+`--torch-iql-risk-adjusted-actor-extraction` adds an opt-in detached
+actor-distillation target that ranks current legal actions by Q advantage minus
+max non-suppression action-viability risk. It records
+`actor_risk_adjusted_extraction_policy =
+detached_q_minus_action_viability_risk_actor_distillation_v1` and
+`actor_risk_score_policy =
+detached_max_non_suppression_action_viability_risk_v1`. This is a learner-side
+extraction loss only; the runtime still consumes the serialized actor scores
+and does not directly query the viability head.
+`--torch-iql-neural-actor-prior-blend-weight` lowers or raises the runtime
+contextual-prior blend for `guarded_torch_discrete_iql_v1` artifacts only.
+Artifact validation still pins non-IQL neural artifacts to the default `0.9`
+blend, while IQL artifacts may serialize a finite blend in `[0.0, 1.0]` for
+gateable sweeps. The best measured behavior-margin plus anchored calibrated
+actor extraction probe so far used blend `0.75` and reached default guarded
+hard guard/delegation/total fallback `0.0568`/`0.4172`/`0.4740`, with zero
+alive/birth deltas. The extended guarded matrix reached
+`0.0582`/`0.4118`/`0.4700`, also with zero per-seed alive/birth deltas. It is a
+guarded strict-control candidate, not a heuristic-free controller:
+`autonomous-online` still fails outcome gates.
+The return-calibrated probe (`0.0598`/`0.4179`/`0.4777`), first
+constraint-aware actor probe (`0.0575`/`0.4192`/`0.4767`), and first
+risk-adjusted actor probe (`0.0572`/`0.4187`/`0.4759`) are recorded as rejected
+promotion paths; keep their metrics for diagnosis, not defaults.
+`--torch-iql-calibrated-supported-actor-extraction` adds Calibrated Supported
+Actor Extraction v1 for `torch-discrete-iql` only. It must be paired with one or
+more `--calibration-trajectory` inputs; those records are not mixed into the
+training or gate sets. The trainer serializes calibration-bank Brier/AUC/ECE and
+reliability buckets by action and component, per-action support counts, action
+component bias values, extracted target counts, and rejection reasons
+(`low_support`, `high_risk`, `negative_advantage`, `no_legal_candidate`). The
+first default-gate probe is rejected: hard guard/delegation/total fallback
+`0.1047`/`0.3712`/`0.4759` misses the current promotion-review control
+(`0.0568`/`0.4172`/`0.4740`) despite zero alive/birth deltas. The contract value
+is the durable calibration/extraction report, not promotion.
+
 For neural artifacts, `mind_gate` now reports `neural_calibration` in both
 train and held-out artifact diagnostics. These diagnostics include actor
 top-1 accuracy, action-value and state-value absolute error, score-margin
@@ -289,10 +358,14 @@ source, training-support bucket, score-margin bucket, and the top policy-visible
 context buckets where either safety floor took control. Context buckets use the
 vitals/role/action-mask feature depth from the contextual baseline. During
 in-process evaluation, learned policies may attach decision diagnostics that are
-summarized in the report but are not written into trajectory JSONL records and
-do not change `mind_trajectory_v1`. The same sidecar carries the matched score
-source, feature-key depth, training support, and learned score margin so guard
-interventions and delegates can be grouped by calibration evidence.
+summarized in the report. Trajectory JSONL still omits those diagnostics by
+default, but learned-policy collection can now opt in with
+`--include-policy-diagnostics`. Opt-in records may carry the optional scalar
+`policy_decision_diagnostics` payload without changing the required
+`mind_trajectory_v1` record fields or contract digest. The payload carries the
+matched score source, feature-key depth, training support, learned score margin,
+and suppressed learned action so guard interventions and delegates can be used
+as replay feedback during offline-to-online mixing.
 Paired evaluation reports compare heuristic and guarded learned outcomes by
 trophic role and meat mode, including terminal count deltas and role/mode policy
 diagnostic deltas, without changing trajectory records.
@@ -354,11 +427,87 @@ npm run sim:trajectory -- \
   --enable-mind
 ```
 
-This is the current online-learning boundary. The simulator may collect
-experience from a learned policy, but policy weights are still immutable during a
-run. In-simulation online updates remain disallowed until a future contract can
-make update logs replayable, deterministic, and gateable. The machine-readable
-online-learning ladder is exposed by `mind_online_learning_contract()`.
+This is the current offline-to-online collection boundary for promoted
+artifacts. The simulator may collect experience from a learned policy, but
+neural and torch policy weights are still immutable during a run. A separate
+opt-in runtime mode now exists for autonomy experiments:
+`--mind-runtime-mode autonomous` disables heuristic guard/delegation, and
+`--mind-runtime-mode autonomous-online` wraps that controller in
+`in_run_contextual_bandit_adapter_v1`. The online adapter only updates bounded
+context/action score offsets from finalized reward records; it does not mutate
+serialized neural weights. Its update logs are now replayable, but the first
+default held-out autonomous-online comparisons fail outcome safety, so it remains
+an observation/probe surface rather than a promotable controller. The
+machine-readable online-learning ladder is exposed by
+`mind_online_learning_contract()`.
+
+Online update traces are now an explicit opt-in trajectory field. Pass
+`--include-policy-update-trace` beside `--include-policy-diagnostics` to persist
+`policy_update_trace` records with schema `mind_policy_update_trace_v1`. Each
+trace carries the context key, action, reward signal, previous offset, updated
+offset, learning rate, and clamp bounds so the update stream can be replayed
+deterministically before a runtime mode is considered gateable.
+`torch-discrete-iql` can consume those traces during offline replay mixing as a
+signed actor-margin feedback signal, but this remains a retrain-time input. The
+simulator still does not mutate neural weights inside a live run, and the first
+default replay-mixed probe is not promoted because hard guard worsened.
+Extra trajectories used by `mind_gate --extra-trajectory` must now pass
+deterministic replay validation for any included update traces before their
+records can be mixed into training.
+
+Neural artifact diagnostics may include
+`mind_viability_critic_diagnostics_v0`. This is a diagnostics-only calibration
+surface over existing transition outcomes: short-horizon survival risk,
+death/near-death floor pressure, invalid action, reproduction viability, and
+heuristic suppression labels are reported against either the current value-risk
+proxy, a serialized `multi_component_constraint_viability_head_v1` state
+component head, or a serialized
+`action_conditioned_multi_component_constraint_viability_head_v1` component
+head. For learned-policy diagnostic trajectories, the action-conditioned
+suppression component scores the suppressed learned action from
+`policy_decision_diagnostics.learned_action`; the resolved heuristic action
+still carries the realized death/floor/invalid components. Reproduction
+viability is reported as a diagnostic count/rate, not as a trained component
+target. The suppression component is observed only for learned-policy decisions:
+positive on suppressed learned actions and negative on executed learned actions;
+heuristic-only rows are not treated as suppression negatives. `sim:mind:diagnostics`
+writes this calibration
+into a durable `mind_artifact_diagnostics_report_v1` JSON report, can score a
+separate `--calibration-trajectory` bank, and can append the compact probe result
+to the experiment ledger. The diagnostics are not a runtime decision policy, and
+heuristic-collected held-out banks do not contain positive hard-guard/delegate
+suppression labels. For action-conditioned heads, diagnostics mask the
+suppression component on heuristic-only rows and report component observed
+counts so calibration is not overinterpreted. The default torch-IQL trainer keeps
+the viability heads on the shared actor/Q/V hidden representation
+(`shared_hidden_auxiliary_heads_v1`); detached auxiliary heads are an explicit
+`--torch-iql-detach-viability-heads` experiment and are not the default because
+the measured probe worsened held-out, calibration, and policy-eval metrics.
+State viability supervision now masks the suppression component entirely; the
+action-conditioned head owns learned-policy suppression learning. Action-head
+positive weights are computed from observed labels per component, not from the
+global transition-row rate, so sparse suppression labels are balanced against
+only learned-policy observed negatives.
+
+Calibrated supported actor extraction remains opt-in. The v1 extractor fits
+action/component risk bias on `--calibration-trajectory`; the v2 contextual
+extractor additionally requires `--calibration-validation-trajectory` and
+serializes a separate validation calibration report. V2 support is
+context/action based: finer feature keys fall back to coarser keys only when the
+finer context itself is sparse, not merely when an action is uncommon in an
+otherwise supported context. V2 also records behavior-proximity caps for target
+action expansion, family conversion, movement/stay-to-resource conversion,
+target/logged TVD, and rejection reasons by logged action and context. These
+fields are diagnostic/training metadata only; they do not change the runtime
+artifact format or permit heuristic-free promotion without gate evidence.
+
+Device execution is intentionally not part of the Mind model contract yet. A
+future GPU/CUDA slice must be infra-only: add `--torch-device` with
+`cpu|cuda|mps|auto` choices defaulting to `cpu`, record requested/resolved device and
+torch/CUDA/MPS metadata in artifacts, serialize model weights back to plain CPU
+JSON, and require CPU/Mac gate validation before any trained artifact is
+promoted. Learner-behavior changes and backend/device changes should not ship in
+the same slice.
 
 The guarded contextual baseline uses feature policy `mind_feature_policy_v2`.
 It materializes conditional action priors once the feature context has at least

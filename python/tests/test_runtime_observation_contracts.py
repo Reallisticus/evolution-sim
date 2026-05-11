@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
+from evolution_sim.mind.feature_policy import feature_keys_from_observation
 
 
 class RuntimeObservationContractTests(RuntimeContractTestHelpers):
@@ -128,4 +129,36 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
         self.assertEqual(
             decode_observation_input(encode_observation_input(mutated)),
             decode_observation_input(baseline),
+        )
+
+    def test_policy_feature_keys_ignore_observation_metadata_payloads(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+        action_mask = dict(observation["action_mask"])
+        baseline_encoded = encode_observation_input(observation)
+        baseline_features = feature_keys_from_observation(observation, action_mask)
+
+        mutated = copy.deepcopy(observation)
+        mutated["metadata"] = {
+            "agent_id": agent.agent_id + 1000,
+            "x": agent.x,
+            "y": agent.y,
+            "energy": agent.energy,
+        }
+        mutated["action_mask"] = {
+            action: not bool(available)
+            for action, available in action_mask.items()
+        }
+        mutated["world"] = world.config.to_dict()
+        mutated["agents"] = list(world.agents)
+
+        self.assertEqual(encode_observation_input(mutated), baseline_encoded)
+        self.assertEqual(
+            feature_keys_from_observation(mutated, action_mask),
+            baseline_features,
         )

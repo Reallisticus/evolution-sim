@@ -422,10 +422,243 @@ and outcome gates for promotion review, but it should remain opt-in until the
 remaining heuristic delegation is explicitly accepted or reduced by the next
 learner slice.
 
+The next offline-to-online slice has started. Learned-policy trajectory
+collection can opt in to persisted `policy_decision_diagnostics`, and the
+transition adapter now carries `action_source` plus that optional diagnostic
+payload beside `next_observation`, `next_action_mask`, and `done`. The
+`torch-discrete-iql` trainer consumes those diagnostics as guard-aware actor
+feedback: when a learned action was suppressed by the hard safety floor or
+confidence delegate, training applies a masked margin penalty so the resolved
+action outranks the suppressed learned action in that context. This is still a
+frozen offline retrain, not in-run weight mutation. Gate probes can include
+learned rollout replay with `--extra-trajectory`, and those probes still append
+to `output/mind/mind-experiment-ledger.jsonl`. Learned rollout self-actions are
+downweighted during IQL replay so the current policy does not simply imitate its
+own unpromoted actions; guard/delegate records keep a stronger training weight
+because they carry explicit safety feedback. A stricter `0.221` delegate-margin
+sweep did reduce delegation below the current extended candidate, but hard guard
+exceeded the strict cap, so the retained replay path keeps the safer IQL `0.25`
+delegate margin until actor safety improves further.
+
+CQL-style critic regularization and a stronger replay-weighted behavior anchor
+were also added as measured trainer hooks. Active CQL variants reduced hard
+guard but increased heuristic delegation enough to miss the strict total
+fallback target. A behavior-anchor-only two-seed probe passed, but the default
+four-seed probe failed at total fallback `0.4794` against the `0.4779` cap.
+Both loss weights therefore remain `0.0` by default; do not promote this path
+until a later calibration slice lowers delegation and hard guard together.
+
+An opt-in heuristic-free runtime surface has started. `run_headless` and
+`collect_trajectory` accept `--mind-runtime-mode autonomous`, which strips the
+artifact's heuristic guard/delegate fields at load time, and
+`--mind-runtime-mode autonomous-online`, which adds
+`in_run_contextual_bandit_adapter_v1` on top. The adapter learns bounded
+context/action score offsets from finalized trajectory reward records via a
+policy feedback hook; it is useful for observation and replay collection, but it
+is not a promoted controller and does not update neural weights in place.
+That path is now gateable as an explicit experiment surface: trajectory
+collection can persist `policy_update_trace` with
+`--include-policy-update-trace`, and `mind_gate --compare-runtime-mode
+autonomous-online` evaluates the stateful runtime with a fresh policy instance
+per validation run. Gate reports and experiment ledger rows include runtime-mode
+comparison summaries so failed autonomy probes do not get repeated as if they
+were unmeasured. The first default comparisons reject the current contextual
+adapter: the default contextual prior reaches zero fallback in
+`autonomous-online` but regresses alive agents by `-28.5` and births by `-18.75`;
+the IQL strict candidate also reaches zero fallback in `autonomous-online` but
+regresses alive agents by `-30.25` and births by `-21.5` after `10501`
+replayable online updates. This is useful gate evidence, not promotion evidence.
+
+Those replayable updates now feed the offline trainer as a measured experiment:
+`torch-discrete-iql` reads `mind_policy_update_trace_v1` through the transition
+adapter and applies a signed actor-margin loss for the updated action. The first
+default replay-mixed probe lowered total fallback to `0.4729` but raised hard
+guard to `0.1405`, so it is explicitly not promoted. The next autonomy slice
+should add a stronger constraint/viability value signal before any further
+heuristic-free controller promotion attempt.
+
+The first viability slice is diagnostics-only. `mind_viability_critic_diagnostics_v0`
+labels existing transitions for short-horizon survival risk, floor-pressure
+risk, invalid actions, reproduction viability, and hard-guard/delegate
+suppression, then reports value-risk calibration by bucket, action, trophic
+role, and meat mode. On the strict IQL candidate, held-out constraint risk is
+`0.1143`, risk AUC is `0.6940`, and logged `stay` risk is underpredicted
+(`0.7361` realized versus `0.0487` mean risk score). The next slice added a
+serialized `multi_component_constraint_viability_head_v1` to the discrete IQL
+network and a standalone `sim:mind:diagnostics` report writer. On the same
+held-out bank, the trained state head improves risk AUC to `0.7697` and raises
+the logged `stay` mean score to `0.4320`, but worsens Brier to `0.1554`. The
+following slice adds an
+`action_conditioned_multi_component_constraint_viability_head_v1` component
+head. It improves held-out AUC to `0.9496`, Brier to `0.0572`, and `stay` mean
+risk score to `0.9515`, while a separate calibration bank reports weaker but
+usable AUC/Brier (`0.8709` / `0.1106`). The heuristic-collected diagnostic bank
+has no positive hard-guard/delegate suppression labels; the first learned-policy
+diagnostic probe supplies `1464` positives. The follow-up suppression-routed
+replay slice trains those positives on the suppressed learned action rather than
+the resolved fallback action, improving the suppression component to `0.6425`
+AUC and `0.2924` Brier, but the guarded policy eval still misses strict total
+fallback (`0.4800` versus `0.4780`). Actor extraction still must not use this
+signal until suppression calibration improves and strict gates pass. The next
+label-policy fix observes suppression only for learned-policy decisions and
+masks unobserved suppression components in diagnostics. That v2 artifact moves
+guarded total fallback closer to control (`0.4784`) with hard guard `0.0885`,
+but still misses the `0.4780` target; its learned-suppression probe remains
+overconfident (aggregate Brier/AUC `0.4175`/`0.5908`, suppression component
+`0.4776`/`0.6693`). A `0.245` delegate-margin probe is rejected because total
+fallback remains `0.4785` after hard guard rises. A detached
+viability-head representation probe is also rejected as a default: it worsened
+held-out Brier/AUC to `0.1590`/`0.8568`, calibration-bank Brier/AUC to
+`0.2036`/`0.7624`, learned-suppression Brier/AUC to `0.2778`/`0.5669`, and
+guarded total fallback to `0.4825`. The trainer default remains
+`shared_hidden_auxiliary_heads_v1`; detached heads are available only through
+the opt-in `--torch-iql-detach-viability-heads` experiment flag.
+The follow-up observed-mask action-viability weight fix is retained as a
+training correctness change: action-head positive weights are now computed only
+from observed labels, so learned suppression uses weight `1.0576` instead of the
+global `8.0`, and state-head suppression supervision is disabled. It improves
+held-out/calibration Brier/AUC to `0.0555`/`0.9426` and `0.1036`/`0.8542`, and
+learned-suppression component Brier/AUC to `0.3788`/`0.6789`. It is still not
+promotion progress because guarded fallback worsens to `0.4825` total
+(`0.0880` hard guard plus `0.3945` delegation) and `autonomous-online` still
+fails alive/birth deltas (`-28.25`/`-23.5`). The next learner slice should focus
+on reducing delegation without pushing decisions back into hard guard.
+
+The following actor-confidence slice added an opt-in viability-safe logged
+action margin anchor and a torch-IQL-only neural-prior blend override. This
+produced measurable guarded progress but not promotion. The best blend sweep
+candidate used `--torch-iql-behavior-margin-anchor` and
+`--torch-iql-neural-actor-prior-blend-weight 0.75`, reaching hard guard
+`0.0576`, delegation `0.4207`, total fallback `0.4783`, and zero guarded
+alive/birth deltas on the default held-out policy eval. The adjacent `0.70`
+blend worsened total fallback to `0.4785`, so further runtime-blend tuning is
+not enough. This line should now move back into actor/Q calibration and
+confidence extraction rather than runtime blend tuning.
+
+The follow-up actor/Q calibration slice replaced pure standardized actor
+weights with behavior-anchored standardized IQL advantage extraction. Pure
+batch standardization is recorded as rejected (`0.4835` total fallback and
+autonomous-online alive/birth deltas `-34.75`/`-27.75`). The anchored variant
+keeps training weights near behavior support (`0.7141` min, `1.9325` max,
+`1.0017` mean) and passes guarded strict-control targets on both default and
+extended gates: default hard guard/delegation/total fallback
+`0.0568`/`0.4172`/`0.4740`, extended `0.0582`/`0.4118`/`0.4700`, with zero
+min per-seed alive/birth deltas. This is the current guarded promotion-review
+candidate. It is not the autonomous Mind endpoint because `autonomous-online`
+still fails outcomes and held-out Q/V MAE remains high (`4.3502`/`4.7762`).
+
+The next hard-guard/delegation tradeoff batch did not beat that boundary.
+A delegate-margin actor finetune term worsened the risk-adjusted contextual
+prior candidate to `0.0577` hard guard and `0.4764` total fallback. Applying
+runtime-feedback finetune to the anchored calibrated actor control worsened it
+to `0.0589` hard guard and `0.4792` total fallback. A value-supported deviation
+probe verified a real source-handling bug for neural actor prior blends and
+retains that fix, but the strict thresholds were a no-op (`safe_deviation_count=0`)
+and the relaxed `-0.10` predicted-advantage floor regressed guarded outcomes
+(`-5.0` alive, `-5.0` births). The retained promotion-review control therefore
+remains the anchored calibrated actor artifact, and the next work should target
+critic/state-value calibration before any further safe-deviation or delegation
+bypass.
+The first suppression-aware critic calibration implementation is also rejected
+as a promotion path. It adds an opt-in Q/V margin loss on `1,459`
+runtime-suppressed learned-action rows, but the full risk-adjusted contextual
+prior gate worsened to `0.0576` hard guard and `0.4794` total fallback. Removing
+the detached risk-adjusted actor distillation did not rescue it (`0.0588` hard
+guard and `0.4783` total fallback). The useful signal is diagnostic: blunt
+suppressed-action Q/V margins improve some autonomous-online deltas but damage
+guarded fallback, so the next learner work should focus on calibrated critic
+ranking and constraint-aware offline-to-online actor extraction before another
+autonomy attempt.
+
+The first two follow-up probes are recorded and rejected. Discounted-return Q/V
+calibration added durable return-target and return-MAE diagnostics, but the
+auxiliary loss missed the guarded control (`0.4777` total fallback) and worsened
+autonomous-online deltas to `-35.5` alive and `-29.25` births. Observed
+viability-risk actor filtering touched `12.8%` of logged actions and improved
+autonomous-online deltas to `-27.0` alive and `-19.25` births, but guarded total
+fallback was still `0.4767`, above the current promotion-review artifact
+(`0.4740`). Keep both flags opt-in and continue with calibrated critic/actor
+quality, not threshold relaxation.
+The next risk-adjusted actor distillation probe used detached action viability
+risk to target `Q advantage - risk` over legal actions. It improved guarded
+fallback versus logged-risk filtering (`0.4759`) but still missed the
+promotion-review artifact and worsened autonomous-online outcomes to `-36.25`
+alive and `-29.0` births. This keeps the direction diagnostic-only: raw
+action-risk scores are useful for ranking pressure but not calibrated enough to
+drive actor targets directly.
+
+Calibrated Supported Actor Extraction v1 is now implemented as the bounded
+follow-up rather than another one-off probe flag. It requires a separate
+calibration bank via `--calibration-trajectory`, reports Brier/AUC/ECE and
+reliability buckets by action and component, applies per-action support
+constraints, and extracts actor targets only for legal actions with positive
+calibrated advantage, calibrated risk below threshold, and enough support. The
+default gate rejected the first artifact against the current promotion-review
+control: hard guard/delegation/total fallback
+`0.1047`/`0.3712`/`0.4759`, with zero alive/birth deltas. Calibration improved
+the risk probability signal (`0.054816` raw Brier and `0.088814` raw ECE to
+`0.035617` Brier and `0.032653` ECE), but the extracted targets still collapsed
+toward `eat` and `drink` (`42,150` of `42,685` selected targets), which reduced
+delegation by raising hard guard. The next learner slice should add contextual
+support or behavior-proximity constraints before letting Q/V advantage choose
+free legal actions.
+
+Contextual Behavior-Proximity Supported Extraction v2 is implemented and
+recorded as another rejected-but-useful actor extraction slice. It adds a
+separate `--calibration-validation-trajectory` bank, context/action support,
+sparse-context-only fallback to coarser feature keys, target action expansion
+caps, family conversion caps, and movement/stay-to-resource conversion
+diagnostics. After the final cap-enforcement fix, the gate artifact improves
+guarded total fallback to `0.4717` with zero alive/birth deltas and reduces
+target/logged TVD to `0.1800`, with movement/stay-to-resource conversion capped
+at `0.1800` (`2,489/13,830`). Hard guard is still `0.1167`, far above the
+current promotion-review control `0.0568`, and autonomous-online fails at
+`-37.0` alive / `-31.5` births. Keep it opt-in and rejected; the next actor
+slice should train contextual behavior proximity directly rather than relying on
+post-hoc target rejection.
+
+Contextual behavior-prior actor regularization is now implemented as that first
+trained behavior-proximity objective. The prior-only arm, which does not enable
+contextual supported target extraction, is useful but still rejected: guarded
+hard/delegate/total fallback is `0.0663` / `0.4037` / `0.4700` with zero
+guarded alive/birth deltas, while autonomous-online still fails at `-35.0`
+alive / `-28.5` births. The combined behavior-prior plus v2 target-extraction
+arm is worse than prior-only (`0.1031` / `0.3696` / `0.4727`) and leaves v2
+target diagnostics unchanged because targets are precomputed before actor
+finetune. The next actor-objective batch added finetune carryovers for the
+existing runtime-suppressed-action margin and viability-safe logged-action
+margin. The non-risk prior variant now beats total fallback but still misses
+hard guard (`0.0582` / `0.4155` / `0.4737`). Adding the existing detached
+Q-minus-risk actor loss is the closest result so far: hard guard clears the
+promotion-review control at `0.0567`, guarded alive/birth deltas stay at zero,
+but total fallback misses by `0.0006` (`0.4746` versus `0.4740`).
+Constraint-aware stacking, a stronger finetune margin-anchor weight, and
+hard-guard-only finetune carryover were all tested and rejected. Keep the prior
+objective and finetune carryovers opt-in; the remaining blocker is no longer
+target extraction caps but the hard-guard/delegation tradeoff in the actor
+objective.
+
+Keep GPU/CUDA as a separate infrastructure slice. Switch to NVIDIA CUDA only
+when repeated training grids, longer seed banks, or extended gates make CPU
+iteration the bottleneck. The GPU slice should add `--torch-device` with
+`cpu|cuda|mps|auto` choices, default to `cpu`, record requested/resolved device
+and torch/CUDA/MPS metadata in artifacts, serialize weights back to CPU JSON,
+and require CPU/Mac gate validation before promotion.
+
 The rejected advantage-blended neural anchor is also recorded. It kept total
 fallback below control at `0.4763`, but hard guard rose to `0.1459`; do not use
 that anchor as the IQL default unless a future actor-safety change fixes the
 hard-guard regression.
+
+The actor action-distribution objective is also recorded and rejected. The soft
+logged-action marginal KL variant corrected probability mass but not top-1
+policy behavior and failed the guarded gate at `0.0591` / `0.4156` / `0.4747`.
+The sharpened argmax-proxy KL variant worsened total fallback to `0.4841` and
+autonomous-online to `-33.0` alive / `-26.25` births. Keep the hook opt-in for
+diagnostics only. The next large actor milestone should stop treating the
+guarded fallback boundary as the main learning signal and instead add
+closed-loop survival or context-local sequence/navigation supervision that can
+survive without the heuristic safety floor.
 
 Exit criteria:
 
@@ -441,10 +674,20 @@ Exit criteria:
 - Discrete IQL training is optional, documented, transition-based, and gated as
   an experiment harness until strict fallback and zero per-seed outcome targets
   pass.
+- The torch-IQL behavior-margin anchor and neural actor prior blend override are
+  optional promotion-probe controls only. They are not release defaults because
+  the best measured candidate still misses total fallback by `0.0006`.
 - Neural actor confidence is mask-renormalized before runtime delegation, and
   diagnostics report that normalization policy.
 - The current IQL strict-control candidate has passed the extended strict
   matrix, but remains opt-in pending promotion review.
+- Heuristic-free and autonomous-online runtime modes are executable only as
+  opt-in observation/probe surfaces; they are not release defaults or promotion
+  proof.
+- Online update traces are serializable and replayable before any autonomous
+  runtime-mode comparison can be treated as gate evidence.
+- Runtime-mode ledger rows include fallback, alive/birth deltas, and update counts
+  so zero-fallback failures cannot be mistaken for progress.
 - Learned policy stays disabled by default in normal simulator runs.
 - Runtime experiment reports compare heuristic, guarded learned, and any
   stronger offline model on the same seeds and horizons.

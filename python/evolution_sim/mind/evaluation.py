@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Sequence
 
 from evolution_sim.evaluation.reporting import (
@@ -27,6 +27,7 @@ def evaluate_policy(
     *,
     policy_name: str,
     policy: Policy | None,
+    policy_factory: Callable[[], Policy] | None = None,
     seeds: Sequence[int],
     ticks: int,
 ) -> dict[str, object]:
@@ -38,15 +39,27 @@ def evaluate_policy(
     total_reward = 0.0
     all_records: list[dict[str, object]] = []
     all_decision_diagnostics: list[dict[str, object] | None] = []
+    update_trace_count = 0
+    max_online_update_count = 0
     for seed in seeds:
+        run_policy = (
+            policy_factory()
+            if policy_factory is not None
+            else policy or ObservationHeuristicPolicy()
+        )
         world = SimulationWorld(
             WorldConfig(seed=seed, max_ticks=ticks),
-            policy=policy or ObservationHeuristicPolicy(),
+            policy=run_policy,
         )
         result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
         summary = result.summary
         all_records.extend(world.trajectory_records)
         all_decision_diagnostics.extend(world.policy_decision_diagnostics_records)
+        update_trace_count += len(world.policy_update_trace_records)
+        for trace in world.policy_update_trace_records:
+            update_index = trace.get("update_index")
+            if isinstance(update_index, int) and not isinstance(update_index, bool):
+                max_online_update_count = max(max_online_update_count, update_index)
         trajectory_summary = build_trajectory_summary(
             world.trajectory_records,
             signal_config=world.config.signals,
@@ -96,6 +109,12 @@ def evaluate_policy(
         all_records,
         decision_diagnostics=all_decision_diagnostics,
     )
+    if update_trace_count:
+        aggregate["policy_update_trace"] = {
+            "schema_version": "mind_policy_update_trace_v1",
+            "record_count": update_trace_count,
+            "max_online_update_count": max_online_update_count,
+        }
     return {
         "policy": policy_name,
         "runs": runs,
@@ -168,12 +187,20 @@ def _policy_run_record(
 
 def compare_heuristic_and_learned(
     *,
-    learned_policy: Policy,
+    learned_policy: Policy | None = None,
+    learned_policy_factory: Callable[[], Policy] | None = None,
+    learned_policy_name: str | None = None,
     seeds: Sequence[int],
     ticks: int,
     gate_criteria: Mapping[str, object] | None = None,
     reference_guard_intervention_rate: float | None = None,
 ) -> dict[str, object]:
+    if learned_policy is None and learned_policy_factory is None:
+        raise ValueError("learned policy or learned policy factory is required")
+    policy_name = (
+        learned_policy_name
+        or (learned_policy.policy_id if learned_policy is not None else "learned_policy")
+    )
     resolved_gate_criteria = normalize_mind_v1_gate_criteria(gate_criteria)
     heuristic = evaluate_policy(
         policy_name=ObservationHeuristicPolicy().policy_id,
@@ -182,8 +209,9 @@ def compare_heuristic_and_learned(
         ticks=ticks,
     )
     learned = evaluate_policy(
-        policy_name=learned_policy.policy_id,
+        policy_name=policy_name,
         policy=learned_policy,
+        policy_factory=learned_policy_factory,
         seeds=seeds,
         ticks=ticks,
     )

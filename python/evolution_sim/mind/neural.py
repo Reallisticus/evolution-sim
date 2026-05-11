@@ -13,6 +13,7 @@ from evolution_sim.env.runtime.observations import (
     encode_observation_input,
 )
 from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
+from evolution_sim.mind.viability import VIABILITY_COMPONENT_NAMES
 
 NEURAL_ACTOR_CRITIC_TRAINER = "neural-actor-critic-bc"
 NEURAL_ACTOR_CRITIC_MODEL_TYPE = "guarded_neural_actor_critic_bc_v1"
@@ -88,6 +89,41 @@ TORCH_IQL_ADVANTAGE_WEIGHT_MAX = 5.0
 TORCH_IQL_Q_LOSS_WEIGHT = 1.0
 TORCH_IQL_VALUE_LOSS_WEIGHT = 1.0
 TORCH_IQL_ACTOR_LOSS_WEIGHT = 1.0
+TORCH_IQL_CQL_REGULARIZATION_POLICY = (
+    "cql_masked_legal_logsumexp_selected_action_gap_head_only_v1"
+)
+TORCH_IQL_CQL_TEMPERATURE = 1.0
+TORCH_IQL_CQL_LOSS_WEIGHT = 0.0
+TORCH_IQL_BEHAVIOR_ANCHOR_POLICY = (
+    "replay_weighted_behavior_cross_entropy_anchor_v1"
+)
+TORCH_IQL_BEHAVIOR_ANCHOR_LOSS_WEIGHT = 0.0
+TORCH_IQL_GUARD_FEEDBACK_POLICY = (
+    "runtime_suppressed_learned_action_margin_penalty_v1"
+)
+TORCH_IQL_GUARD_FEEDBACK_MARGIN = 0.05
+TORCH_IQL_GUARD_FEEDBACK_LOSS_WEIGHT = 0.35
+TORCH_IQL_HARD_GUARD_FEEDBACK_WEIGHT = 1.0
+TORCH_IQL_HEURISTIC_DELEGATE_FEEDBACK_WEIGHT = 0.5
+TORCH_IQL_LEARNED_REPLAY_WEIGHT_POLICY = (
+    "learned_rollout_self_action_downweighted_guard_feedback_v1"
+)
+TORCH_IQL_LEARNED_REPLAY_SELF_ACTION_WEIGHT = 0.05
+TORCH_IQL_LEARNED_REPLAY_GUARDED_ACTION_WEIGHT = 0.5
+TORCH_IQL_ONLINE_UPDATE_FEEDBACK_POLICY = (
+    "replayable_online_update_signed_actor_margin_v1"
+)
+TORCH_IQL_ONLINE_UPDATE_FEEDBACK_MARGIN = 0.05
+TORCH_IQL_ONLINE_UPDATE_FEEDBACK_LOSS_WEIGHT = 0.15
+TORCH_IQL_SHARED_VIABILITY_REPRESENTATION_POLICY = (
+    "shared_hidden_auxiliary_heads_v1"
+)
+TORCH_IQL_DETACHED_VIABILITY_REPRESENTATION_POLICY = (
+    "detached_shared_hidden_auxiliary_heads_v1"
+)
+TORCH_IQL_VIABILITY_REPRESENTATION_POLICY = (
+    TORCH_IQL_SHARED_VIABILITY_REPRESENTATION_POLICY
+)
 
 NEURAL_ACTOR_CRITIC_MODEL_TYPES: frozenset[str] = frozenset(
     {
@@ -109,6 +145,14 @@ class CompiledNeuralActorCriticNetwork:
     action_value_output_bias: dict[str, float]
     state_value_weights: list[float]
     state_value_bias: float
+    viability_component_output_weights: dict[str, list[float]] | None = None
+    viability_component_output_bias: dict[str, float] | None = None
+    action_viability_component_output_weights: (
+        dict[str, dict[str, list[float]]] | None
+    ) = None
+    action_viability_component_output_bias: (
+        dict[str, dict[str, float]] | None
+    ) = None
 
 
 NeuralActorCriticNetworkPayload = (
@@ -236,6 +280,26 @@ def compile_neural_actor_critic_network(
         ),
         state_value_weights=_vector(network["state_value_weights"]),
         state_value_bias=float(network["state_value_bias"]),
+        viability_component_output_weights=_named_matrix_or_none(
+            network.get("viability_component_output_weights"),
+            names=VIABILITY_COMPONENT_NAMES,
+        ),
+        viability_component_output_bias=_named_vector_or_none(
+            network.get("viability_component_output_bias"),
+            names=VIABILITY_COMPONENT_NAMES,
+        ),
+        action_viability_component_output_weights=(
+            _action_named_matrix_or_none(
+                network.get("action_viability_component_output_weights"),
+                names=VIABILITY_COMPONENT_NAMES,
+            )
+        ),
+        action_viability_component_output_bias=(
+            _action_named_vector_or_none(
+                network.get("action_viability_component_output_bias"),
+                names=VIABILITY_COMPONENT_NAMES,
+            )
+        ),
     )
 
 
@@ -277,6 +341,77 @@ def score_neural_actor_critic_values(
         upper,
     )
     return action_scores, action_values, state_value
+
+
+def score_neural_viability_components(
+    *,
+    network: NeuralActorCriticNetworkPayload,
+    values: Sequence[float],
+) -> dict[str, float] | None:
+    compiled_network = (
+        network
+        if isinstance(network, CompiledNeuralActorCriticNetwork)
+        else compile_neural_actor_critic_network(network)
+    )
+    if (
+        compiled_network.viability_component_output_weights is None
+        or compiled_network.viability_component_output_bias is None
+    ):
+        return None
+    hidden = _hidden_activations(
+        values,
+        compiled_network.hidden_weights,
+        compiled_network.hidden_bias,
+    )
+    return {
+        component: _sigmoid(
+            compiled_network.viability_component_output_bias[component]
+            + _dot(
+                compiled_network.viability_component_output_weights[component],
+                hidden,
+            )
+        )
+        for component in VIABILITY_COMPONENT_NAMES
+    }
+
+
+def score_neural_action_viability_components(
+    *,
+    network: NeuralActorCriticNetworkPayload,
+    values: Sequence[float],
+) -> dict[str, dict[str, float]] | None:
+    compiled_network = (
+        network
+        if isinstance(network, CompiledNeuralActorCriticNetwork)
+        else compile_neural_actor_critic_network(network)
+    )
+    if (
+        compiled_network.action_viability_component_output_weights is None
+        or compiled_network.action_viability_component_output_bias is None
+    ):
+        return None
+    hidden = _hidden_activations(
+        values,
+        compiled_network.hidden_weights,
+        compiled_network.hidden_bias,
+    )
+    return {
+        action: {
+            component: _sigmoid(
+                compiled_network.action_viability_component_output_bias[
+                    action
+                ][component]
+                + _dot(
+                    compiled_network.action_viability_component_output_weights[
+                        action
+                    ][component],
+                    hidden,
+                )
+            )
+            for component in VIABILITY_COMPONENT_NAMES
+        }
+        for action in ACTION_NAMES
+    }
 
 
 def _record_observation_values(record: dict[str, object]) -> list[float]:
@@ -401,6 +536,66 @@ def _action_vector(payload: object) -> dict[str, float]:
     return {action: float(payload[action]) for action in ACTION_NAMES}
 
 
+def _named_matrix_or_none(
+    payload: object,
+    *,
+    names: Sequence[str],
+) -> dict[str, list[float]] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("neural named matrix must be an object")
+    return {name: _vector(payload[name]) for name in names}
+
+
+def _named_vector_or_none(
+    payload: object,
+    *,
+    names: Sequence[str],
+) -> dict[str, float] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("neural named vector must be an object")
+    return {name: float(payload[name]) for name in names}
+
+
+def _action_named_matrix_or_none(
+    payload: object,
+    *,
+    names: Sequence[str],
+) -> dict[str, dict[str, list[float]]] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("neural action named matrix must be an object")
+    result: dict[str, dict[str, list[float]]] = {}
+    for action in ACTION_NAMES:
+        action_payload = payload[action]
+        if not isinstance(action_payload, dict):
+            raise ValueError("neural action named matrix action entry must be an object")
+        result[action] = {name: _vector(action_payload[name]) for name in names}
+    return result
+
+
+def _action_named_vector_or_none(
+    payload: object,
+    *,
+    names: Sequence[str],
+) -> dict[str, dict[str, float]] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("neural action named vector must be an object")
+    result: dict[str, dict[str, float]] = {}
+    for action in ACTION_NAMES:
+        action_payload = payload[action]
+        if not isinstance(action_payload, dict):
+            raise ValueError("neural action named vector action entry must be an object")
+        result[action] = {name: float(action_payload[name]) for name in names}
+    return result
+
+
 def _matrix(payload: object) -> list[list[float]]:
     if not isinstance(payload, list):
         raise ValueError("neural matrix must be a list")
@@ -419,6 +614,11 @@ def _dot(left: Sequence[float], right: Sequence[float]) -> float:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _sigmoid(value: float) -> float:
+    parsed = max(-60.0, min(60.0, float(value)))
+    return 1.0 / (1.0 + math.exp(-parsed))
 
 
 def _round(value: float) -> float:

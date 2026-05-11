@@ -1539,9 +1539,11 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             if agent.parent_id == parent.agent_id
         )
         parent_cost = world._sexual_reproduction_energy_cost(
+            parent,
             world._trophic_profile(parent)
         )
         partner_cost = world._sexual_reproduction_energy_cost(
+            partner,
             world._trophic_profile(partner)
         )
         event = world.events[-1].to_dict()
@@ -1598,6 +1600,261 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
             world.tick_reproduction_mate_search_events[0]["fallback_reason"]
         )
 
+    def test_sexual_reproduction_phase_locks_pair_for_current_tick(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.2,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        genome = self._sexualized_genome(self._mixed_genome())
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
+
+        reproduced_events = [
+            event.to_dict()
+            for event in world.events
+            if event.type == EventType.AGENT_REPRODUCED
+        ]
+        child_ids = [event["data"]["child_id"] for event in reproduced_events]
+
+        self.assertEqual(births, 1)
+        self.assertEqual(world.births, 1)
+        self.assertEqual(len(reproduced_events), 1)
+        self.assertEqual(
+            reproduced_events[0]["data"]["parent_ids"],
+            [parent.agent_id, partner.agent_id],
+        )
+        self.assertEqual(world.tick_birth_pairs, [(parent.agent_id, child_ids[0])])
+        self.assertEqual(
+            world.tick_reproduction_parent_child_groups,
+            [((parent.agent_id, partner.agent_id), child_ids[0])],
+        )
+        self.assertEqual(
+            world.tick_reproduction_parent_ids,
+            {parent.agent_id, partner.agent_id},
+        )
+
+    def test_reproduction_phase_uses_tick_action_order_for_parent_priority(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                seed=1,
+                width=3,
+                height=1,
+                max_agents=3,
+            )
+        )
+        left = self._place_ready_agent(
+            world,
+            x=0,
+            y=0,
+            lineage_id=1,
+            genome=self._mixed_genome(),
+        )
+        right = self._place_ready_agent(
+            world,
+            x=2,
+            y=0,
+            lineage_id=2,
+            genome=self._mixed_genome(),
+        )
+        world.tick_action_order = [right.agent_id, left.agent_id]
+
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
+
+        self.assertEqual(births, 1)
+        self.assertEqual(len(world.tick_birth_pairs), 1)
+        self.assertEqual(world.tick_birth_pairs[0][0], right.agent_id)
+        self.assertEqual(world.tick_reproduction_parent_ids, {right.agent_id})
+
+    def test_animal_mode_reproduction_resource_bonuses_require_recent_animal_diet(
+        self,
+    ) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.5,
+                    animal_mode_energy_requirement_multiplier=0.4,
+                    animal_mode_reproduction_cost_multiplier=0.6,
+                    animal_mode_child_energy_fraction_multiplier=1.5,
+                ),
+            )
+        )
+        parent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            genome=self._hunter_genome(),
+        )
+        profile = world._trophic_profile(parent)
+        base_requirement = parent.reproduction_threshold() * (
+            1.0 + profile.breadth * world.config.trophic.breadth_reproduction_penalty
+        )
+
+        self.assertNotEqual(profile.meat_mode, "none")
+        self.assertAlmostEqual(
+            runtime_reproduction.recent_animal_energy_share(parent),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_requirement(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            base_requirement,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_cost(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            0.5,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.child_starting_fraction(
+                0.3,
+                1.5,
+                parent,
+                profile,
+            ),
+            0.3,
+        )
+
+        parent.recent_plant_energy = 9.0
+        parent.recent_fresh_kill_energy = 1.0
+        self.assertAlmostEqual(
+            runtime_reproduction.recent_animal_energy_share(parent),
+            0.1,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_requirement(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            base_requirement * 0.7,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_cost(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            0.5 * 0.8,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.child_starting_fraction(
+                0.3,
+                1.5,
+                parent,
+                profile,
+            ),
+            0.3 * 1.25,
+        )
+
+        parent.recent_plant_energy = 3.0
+        parent.recent_fresh_kill_energy = 1.0
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_requirement(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            base_requirement * 0.4,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_cost(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            0.5 * 0.6,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.child_starting_fraction(
+                0.3,
+                1.5,
+                parent,
+                profile,
+            ),
+            0.3 * 1.5,
+        )
+
+        parent.recent_plant_energy = 0.0
+        parent.recent_fresh_kill_energy = 1.0
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_requirement(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            base_requirement * 0.4,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.reproduction_energy_cost(
+                world,
+                parent,
+                profile,
+                context=world._reproduction_context(),
+            ),
+            0.5 * 0.6,
+        )
+        self.assertAlmostEqual(
+            runtime_reproduction.child_starting_fraction(
+                0.3,
+                1.5,
+                parent,
+                profile,
+            ),
+            0.3 * 1.5,
+        )
+
     def test_gated_multi_offspring_sexual_reproduction_emits_sibling_births(self) -> None:
         reproduction = ReproductionConfig(
             min_age=1,
@@ -1648,9 +1905,11 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         parent_energy = parent.energy
         partner_energy = partner.energy
         parent_cost = world._sexual_reproduction_energy_cost(
+            parent,
             world._trophic_profile(parent)
         )
         partner_cost = world._sexual_reproduction_energy_cost(
+            partner,
             world._trophic_profile(partner)
         )
 
@@ -1969,19 +2228,39 @@ class RuntimeReproductionContractTests(RuntimeContractTestHelpers):
         self.assertNotIn("multi_offspring", event["data"])
 
     def test_sexual_child_starting_fraction_blends_parent_profiles(self) -> None:
+        world = SimulationWorld(self._ready_reproduction_config())
+        plant_parent = self._place_ready_agent(
+            world,
+            x=1,
+            y=1,
+            lineage_id=1,
+            genome=self._mixed_genome(),
+        )
+        hunter_parent = self._place_ready_agent(
+            world,
+            x=3,
+            y=3,
+            lineage_id=2,
+            genome=self._hunter_genome(),
+        )
+        hunter_parent.recent_fresh_kill_energy = 1.0
         plant_profile = self._test_trophic_profile("none")
         hunter_profile = self._test_trophic_profile("hunter")
 
         forward = runtime_reproduction.sexual_child_starting_fraction(
             0.4,
             1.5,
+            plant_parent,
             plant_profile,
+            hunter_parent,
             hunter_profile,
         )
         reverse = runtime_reproduction.sexual_child_starting_fraction(
             0.4,
             1.5,
+            hunter_parent,
             hunter_profile,
+            plant_parent,
             plant_profile,
         )
 

@@ -27,6 +27,8 @@ REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1"
 REPRODUCTION_EVENT_SCHEMA_VERSION = "reproduction_event_v1"
 STAGE0_ASEXUAL = "stage0_asexual"
 ASEXUAL_EXPRESSION = "asexual"
+ANIMAL_REPRODUCTION_DIET_EPSILON = 1e-12
+ANIMAL_REPRODUCTION_FULL_BONUS_SHARE = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +126,9 @@ class ReproductionContext:
     health_ratio: Callable[[Agent], float]
     emit: Callable[..., None]
     signal_runtime_context: Callable[[], runtime_signals.SignalRuntimeContext]
+    mind_inheritance_for_child: (
+        Callable[[Agent, Agent | None, int], dict[str, object]] | None
+    ) = None
 
 
 @dataclass(slots=True)
@@ -696,10 +701,34 @@ def reproduction_energy_requirement(
         * reproduction_context.config.trophic.breadth_reproduction_penalty
     )
     if profile.meat_mode != "none":
-        requirement *= (
-            reproduction_context.config.reproduction.animal_mode_energy_requirement_multiplier
+        requirement *= animal_mode_reproduction_resource_multiplier(
+            agent,
+            reproduction_context.config.reproduction.animal_mode_energy_requirement_multiplier,
         )
     return requirement
+
+
+def recent_animal_energy_share(agent: Agent) -> float:
+    animal_energy = max(0.0, agent.recent_fresh_kill_energy) + max(
+        0.0,
+        agent.recent_carcass_energy,
+    )
+    plant_energy = max(0.0, agent.recent_plant_energy)
+    total_energy = animal_energy + plant_energy
+    if total_energy <= ANIMAL_REPRODUCTION_DIET_EPSILON:
+        return 0.0
+    return max(0.0, min(1.0, animal_energy / total_energy))
+
+
+def animal_mode_reproduction_resource_multiplier(
+    agent: Agent,
+    configured_multiplier: float,
+) -> float:
+    bonus_share = min(
+        1.0,
+        recent_animal_energy_share(agent) / ANIMAL_REPRODUCTION_FULL_BONUS_SHARE,
+    )
+    return 1.0 + (configured_multiplier - 1.0) * bonus_share
 
 
 def biological_reproduction_block_reasons(
@@ -843,9 +872,11 @@ def run_reproduction_phase(
     )
     alive_count = len(alive_agents)
     births_this_tick = 0
-    for agent_id in sorted(world.agents):
+    for agent_id in reproduction_phase_agent_order(world):
         agent = world.agents[agent_id]
         if not agent.alive:
+            continue
+        if agent.agent_id in world.tick_reproduction_parent_ids:
             continue
         availability = reproduction_availability(
             world,
@@ -877,6 +908,17 @@ def run_reproduction_phase(
                 context=reproduction_context,
             )
     return births_this_tick
+
+
+def reproduction_phase_agent_order(world: Any) -> tuple[int, ...]:
+    tick_action_order = getattr(world, "tick_action_order", None)
+    if isinstance(tick_action_order, list) and tick_action_order:
+        return tuple(
+            int(agent_id)
+            for agent_id in tick_action_order
+            if int(agent_id) in world.agents
+        )
+    return tuple(sorted(world.agents))
 
 
 def record_reproduction_blocked(
@@ -1314,27 +1356,36 @@ def _sexual_child_stabilization_profile(
 def child_starting_fraction(
     base_fraction: float,
     multiplier: float,
+    parent: Agent | None,
     parent_profile: TrophicProfile,
 ) -> float:
-    if parent_profile.meat_mode == "none":
+    if parent_profile.meat_mode == "none" or parent is None:
         return base_fraction
-    return min(1.0, base_fraction * multiplier)
+    effective_multiplier = animal_mode_reproduction_resource_multiplier(
+        parent,
+        multiplier,
+    )
+    return min(1.0, base_fraction * effective_multiplier)
 
 
 def sexual_child_starting_fraction(
     base_fraction: float,
     multiplier: float,
+    primary_parent: Agent | None,
     primary_parent_profile: TrophicProfile,
+    secondary_parent: Agent | None,
     secondary_parent_profile: TrophicProfile,
 ) -> float:
     primary_fraction = child_starting_fraction(
         base_fraction,
         multiplier,
+        primary_parent,
         primary_parent_profile,
     )
     secondary_fraction = child_starting_fraction(
         base_fraction,
         multiplier,
+        secondary_parent,
         secondary_parent_profile,
     )
     return min(1.0, (primary_fraction + secondary_fraction) / 2.0)
@@ -1342,28 +1393,38 @@ def sexual_child_starting_fraction(
 
 def reproduction_energy_cost(
     world: Any | None,
+    parent: Agent | None,
     parent_profile: TrophicProfile,
     *,
     context: ReproductionContext | None = None,
 ) -> float:
     reproduction_context = _resolve_reproduction_context(world, context)
-    if parent_profile.meat_mode == "none":
+    if parent_profile.meat_mode == "none" or parent is None:
         return reproduction_context.config.reproduction.energy_cost
     return (
         reproduction_context.config.reproduction.energy_cost
-        * reproduction_context.config.reproduction.animal_mode_reproduction_cost_multiplier
+        * animal_mode_reproduction_resource_multiplier(
+            parent,
+            reproduction_context.config.reproduction.animal_mode_reproduction_cost_multiplier,
+        )
     )
 
 
 def sexual_reproduction_energy_cost(
     world: Any | None,
+    parent: Agent | None,
     parent_profile: TrophicProfile,
     *,
     context: ReproductionContext | None = None,
 ) -> float:
     reproduction_context = _resolve_reproduction_context(world, context)
     return (
-        reproduction_energy_cost(world, parent_profile, context=reproduction_context)
+        reproduction_energy_cost(
+            world,
+            parent,
+            parent_profile,
+            context=reproduction_context,
+        )
         * reproduction_context.config.reproduction.sexual_parent_cost_multiplier
     )
 
@@ -1437,6 +1498,11 @@ def sexual_partner_ready(
     context: ReproductionContext | None = None,
 ) -> bool:
     reproduction_context = _resolve_reproduction_context(world, context)
+    if (
+        world is not None
+        and agent.agent_id in getattr(world, "tick_reproduction_parent_ids", set())
+    ):
+        return False
     if not is_biologically_reproduction_ready(
         world,
         agent,
@@ -1445,6 +1511,7 @@ def sexual_partner_ready(
         return False
     return agent.energy >= sexual_reproduction_energy_cost(
         world,
+        agent,
         reproduction_context.trophic_profile(agent),
         context=reproduction_context,
     )
@@ -1642,6 +1709,8 @@ def reproduce_birth_count(
         context,
         placement_context=placement_context,
     )
+    if parent.agent_id in getattr(world, "tick_reproduction_parent_ids", set()):
+        return 0
     placement = reproduction_context.placement
     destination = placement.find_empty_neighbor(parent.x, parent.y)
     if destination is None:
@@ -1661,6 +1730,7 @@ def reproduce_birth_count(
     ):
         if parent.energy >= sexual_reproduction_energy_cost(
             world,
+            parent,
             parent_profile,
             context=reproduction_context,
         ):
@@ -1767,11 +1837,13 @@ def build_asexual_child_birth_plan(
     child_energy_fraction = child_starting_fraction(
         reproduction_context.config.reproduction.child_energy_fraction,
         reproduction_context.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+        parent,
         parent_profile,
     )
     child_hydration_fraction = child_starting_fraction(
         reproduction_context.config.reproduction.child_hydration_fraction,
         reproduction_context.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
+        parent,
         parent_profile,
     )
     reproductive_state = reproductive_state_for_child(
@@ -1780,8 +1852,9 @@ def build_asexual_child_birth_plan(
         child_genome,
         context=reproduction_context,
     )
+    child_agent_id = _next_agent_id(reproduction_context)
     child = build_child_agent(
-        agent_id=_next_agent_id(reproduction_context),
+        agent_id=child_agent_id,
         primary_parent=parent,
         secondary_parent=None,
         lineage_id=parent.lineage_id,
@@ -1792,10 +1865,19 @@ def build_asexual_child_birth_plan(
         hydration_fraction=child_hydration_fraction,
         health_fraction=reproduction_context.config.reproduction.child_health_fraction,
         reproductive_state=reproductive_state,
-        mind_inheritance_metadata=empty_mind_inheritance_metadata(),
+        mind_inheritance_metadata=(
+            reproduction_context.mind_inheritance_for_child(
+                parent,
+                None,
+                child_agent_id,
+            )
+            if reproduction_context.mind_inheritance_for_child is not None
+            else empty_mind_inheritance_metadata()
+        ),
     )
     parent_cost = reproduction_energy_cost(
         world,
+        parent,
         parent_profile,
         context=reproduction_context,
     )
@@ -1850,11 +1932,13 @@ def _reproduce_sexual_birth_count(
     partner_profile = reproduction_context.trophic_profile(partner)
     parent_cost = sexual_reproduction_energy_cost(
         world,
+        parent,
         parent_profile,
         context=reproduction_context,
     )
     partner_cost = sexual_reproduction_energy_cost(
         world,
+        partner,
         partner_profile,
         context=reproduction_context,
     )
@@ -1953,6 +2037,7 @@ def apply_birth_plan(
     offspring_count = birth_plan.offspring_count
     if offspring_count <= 0:
         return 0
+    parent_ids = tuple(parent.agent_id for parent in birth_plan.parents)
     total_energy_cost = 0.0
     for index, parent in enumerate(birth_plan.parents):
         parent_cost = birth_plan.parent_energy_costs[index]
@@ -1986,9 +2071,12 @@ def apply_birth_plan(
             raise ValueError(
                 f"Unsupported reproduction mode: {birth_plan.reproduction_mode}"
             )
+        world.tick_reproduction_parent_child_groups.append(
+            (parent_ids, child.agent_id)
+        )
         if world.record_tick_details:
             world.tick_birth_pairs.append(
-                (birth_plan.parents[0].agent_id, child.agent_id)
+                (parent_ids[0], child.agent_id)
             )
         emit_reproduction_event(
             world,
@@ -2011,6 +2099,7 @@ def apply_birth_plan(
             ),
             context=reproduction_context,
         )
+    world.tick_reproduction_parent_ids.update(parent_ids)
     world.next_agent_id += offspring_count
     world.births += offspring_count
     world.last_birth_tick = reproduction_context.tick
@@ -2035,13 +2124,17 @@ def build_sexual_child_birth_plan(
     child_energy_fraction = sexual_child_starting_fraction(
         reproduction_context.config.reproduction.child_energy_fraction,
         reproduction_context.config.reproduction.animal_mode_child_energy_fraction_multiplier,
+        parent,
         parent_profile,
+        partner,
         partner_profile,
     )
     child_hydration_fraction = sexual_child_starting_fraction(
         reproduction_context.config.reproduction.child_hydration_fraction,
         reproduction_context.config.reproduction.animal_mode_child_hydration_fraction_multiplier,
+        parent,
         parent_profile,
+        partner,
         partner_profile,
     )
     children: list[Agent] = []
@@ -2093,7 +2186,15 @@ def build_sexual_child_birth_plan(
                     reproduction_context.config.reproduction.child_health_fraction
                 ),
                 reproductive_state=reproductive_state,
-                mind_inheritance_metadata=empty_mind_inheritance_metadata(),
+                mind_inheritance_metadata=(
+                    reproduction_context.mind_inheritance_for_child(
+                        parent,
+                        partner,
+                        child_agent_id,
+                    )
+                    if reproduction_context.mind_inheritance_for_child is not None
+                    else empty_mind_inheritance_metadata()
+                ),
             )
         )
 

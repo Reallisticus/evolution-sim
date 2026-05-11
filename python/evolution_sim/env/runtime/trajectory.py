@@ -226,7 +226,7 @@ def finalize_trajectory_decision_records(
     passive_outcome_for_agent: Callable[..., dict[str, object]],
     is_reproduction_ready: Callable[[Agent], bool],
 ) -> list[dict[str, object]]:
-    reproduced_agents = {parent_id for parent_id, _ in world.tick_birth_pairs}
+    reproduced_agents = _tick_reproduced_agent_ids(world)
     resource_gain_by_agent: dict[int, float] = {}
     for event in world.tick_feeding_events:
         agent_id = int(event["agent_id"])
@@ -273,6 +273,13 @@ def finalize_trajectory_decision_records(
             )
         )
     return records
+
+
+def _tick_reproduced_agent_ids(world: Any) -> set[int]:
+    parent_ids = getattr(world, "tick_reproduction_parent_ids", None)
+    if isinstance(parent_ids, set):
+        return {int(parent_id) for parent_id in parent_ids}
+    return {int(parent_id) for parent_id, _ in world.tick_birth_pairs}
 
 
 def empty_action_outcome(

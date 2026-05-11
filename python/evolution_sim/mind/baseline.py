@@ -82,6 +82,11 @@ TRAINER_CHOICES: tuple[str, ...] = (
     TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
     TORCH_DISCRETE_IQL_TRAINER,
 )
+TORCH_TRAINER_CHOICES: tuple[str, ...] = (
+    TORCH_NEURAL_ACTOR_CRITIC_TRAINER,
+    TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER,
+    TORCH_DISCRETE_IQL_TRAINER,
+)
 BEHAVIOR_CLONING_BASELINE_MODEL_TYPE = "guarded_contextual_local_prior_bc_v2"
 REWARD_WEIGHTED_BASELINE_MODEL_TYPE = (
     "guarded_reward_weighted_contextual_prior_bc_v1"
@@ -203,6 +208,7 @@ class BehaviorCloningBaseline:
     neural_state_value_policy: str | None = None
     neural_actor_prior_policy: str | None = None
     neural_actor_prior_blend_weight: float | None = None
+    torch_device_metadata: dict[str, object] | None = None
     heuristic_delegate_max_training_score_margin: float = (
         HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
     )
@@ -346,6 +352,10 @@ class BehaviorCloningBaseline:
                 self.neural_actor_prior_blend_weight
             )
             model["neural_network"] = self.neural_network
+            if self.torch_device_metadata is not None:
+                model["torch_device_metadata"] = dict(
+                    self.torch_device_metadata
+                )
         return {
             "manifest": {
                 "artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -452,6 +462,7 @@ def train_torch_neural_actor_critic_behavior_cloning_baseline(
     records: Iterable[dict[str, object]],
     *,
     provenance: dict[str, object],
+    torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
     return _train_neural_actor_critic_behavior_cloning_baseline(
         records,
@@ -464,7 +475,12 @@ def train_torch_neural_actor_critic_behavior_cloning_baseline(
         neural_training_policy=TORCH_NEURAL_TRAINING_POLICY,
         neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
         neural_seed=TORCH_NEURAL_SEED,
-        train_network_fn=train_torch_actor_critic_network,
+        train_network_fn=lambda materialized_records: (
+            train_torch_actor_critic_network(
+                materialized_records,
+                torch_device=torch_device,
+            )
+        ),
     )
 
 
@@ -472,6 +488,7 @@ def train_torch_advantage_actor_critic_behavior_cloning_baseline(
     records: Iterable[dict[str, object]],
     *,
     provenance: dict[str, object],
+    torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
     return _train_neural_actor_critic_behavior_cloning_baseline(
         records,
@@ -484,7 +501,12 @@ def train_torch_advantage_actor_critic_behavior_cloning_baseline(
         neural_training_policy=TORCH_ADVANTAGE_TRAINING_POLICY,
         neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
         neural_seed=TORCH_NEURAL_SEED,
-        train_network_fn=train_torch_advantage_actor_critic_network,
+        train_network_fn=lambda materialized_records: (
+            train_torch_advantage_actor_critic_network(
+                materialized_records,
+                torch_device=torch_device,
+            )
+        ),
     )
 
 
@@ -492,7 +514,81 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
     records: Iterable[dict[str, object]],
     *,
     provenance: dict[str, object],
+    detach_viability_heads: bool = False,
+    behavior_margin_anchor: bool = False,
+    calibrated_actor_extraction: bool = False,
+    constraint_aware_actor_extraction: bool = False,
+    risk_adjusted_actor_extraction: bool = False,
+    calibrated_supported_actor_extraction: bool = False,
+    contextual_behavior_supported_actor_extraction: bool = False,
+    contextual_behavior_prior_regularization: bool = False,
+    action_distribution_regularization: bool = False,
+    calibration_records: Iterable[dict[str, object]] | None = None,
+    calibration_validation_records: Iterable[dict[str, object]] | None = None,
+    return_calibration: bool = False,
+    suppression_critic_calibration: bool = False,
+    neural_actor_prior_blend_weight: float = NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+    torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
+    _validate_neural_actor_prior_blend_weight(
+        neural_actor_prior_blend_weight,
+        option_name="neural_actor_prior_blend_weight",
+    )
+    materialized_calibration_records = tuple(calibration_records or ())
+    materialized_calibration_validation_records = tuple(
+        calibration_validation_records or ()
+    )
+    if (
+        calibrated_supported_actor_extraction
+        or contextual_behavior_supported_actor_extraction
+        or contextual_behavior_prior_regularization
+    ) and not materialized_calibration_records:
+        raise ValueError(
+            "torch_iql_calibrated_supported_actor_extraction requires "
+            "torch_iql_actor_calibration_records"
+        )
+    if (
+        contextual_behavior_supported_actor_extraction
+        and not materialized_calibration_validation_records
+    ):
+        raise ValueError(
+            "torch_iql_contextual_behavior_supported_actor_extraction "
+            "requires torch_iql_actor_calibration_validation_records"
+        )
+
+    def train_network_fn(
+        materialized_records: tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        return train_torch_discrete_iql_network(
+            materialized_records,
+            detach_viability_heads=detach_viability_heads,
+            behavior_margin_anchor=behavior_margin_anchor,
+            calibrated_actor_extraction=calibrated_actor_extraction,
+            constraint_aware_actor_extraction=(
+                constraint_aware_actor_extraction
+            ),
+            risk_adjusted_actor_extraction=risk_adjusted_actor_extraction,
+            calibrated_supported_actor_extraction=(
+                calibrated_supported_actor_extraction
+            ),
+            calibration_records=materialized_calibration_records,
+            contextual_behavior_supported_actor_extraction=(
+                contextual_behavior_supported_actor_extraction
+            ),
+            contextual_behavior_prior_regularization=(
+                contextual_behavior_prior_regularization
+            ),
+            action_distribution_regularization=(
+                action_distribution_regularization
+            ),
+            calibration_validation_records=(
+                materialized_calibration_validation_records
+            ),
+            return_calibration=return_calibration,
+            suppression_critic_calibration=suppression_critic_calibration,
+            torch_device=torch_device,
+        )
+
     return _train_neural_actor_critic_behavior_cloning_baseline(
         records,
         provenance=provenance,
@@ -504,11 +600,12 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
         neural_training_policy=TORCH_DISCRETE_IQL_TRAINING_POLICY,
         neural_hidden_units=TORCH_NEURAL_HIDDEN_UNITS,
         neural_seed=TORCH_NEURAL_SEED,
-        train_network_fn=train_torch_discrete_iql_network,
+        train_network_fn=train_network_fn,
         enable_value_supported_deviation=False,
         heuristic_delegate_max_training_score_margin=(
             IQL_HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
         ),
+        neural_actor_prior_blend_weight=neural_actor_prior_blend_weight,
     )
 
 
@@ -530,10 +627,15 @@ def _train_neural_actor_critic_behavior_cloning_baseline(
     ],
     enable_value_supported_deviation: bool = True,
     neural_actor_prior_policy: str = NEURAL_ACTOR_PRIOR_POLICY,
+    neural_actor_prior_blend_weight: float = NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
     heuristic_delegate_max_training_score_margin: float = (
         HEURISTIC_DELEGATE_MAX_TRAINING_SCORE_MARGIN
     ),
 ) -> BehaviorCloningBaseline:
+    _validate_neural_actor_prior_blend_weight(
+        neural_actor_prior_blend_weight,
+        option_name="neural_actor_prior_blend_weight",
+    )
     materialized_records = tuple(records)
     baseline = _train_neural_actor_prior_baseline(
         materialized_records,
@@ -607,10 +709,11 @@ def _train_neural_actor_critic_behavior_cloning_baseline(
         neural_seed=neural_seed,
         neural_state_value_policy=NEURAL_STATE_VALUE_POLICY,
         neural_actor_prior_policy=neural_actor_prior_policy,
-        neural_actor_prior_blend_weight=NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+        neural_actor_prior_blend_weight=neural_actor_prior_blend_weight,
         heuristic_delegate_max_training_score_margin=(
             heuristic_delegate_max_training_score_margin
         ),
+        torch_device_metadata=_torch_device_metadata_from_network(neural_network),
     )
 
 
@@ -678,7 +781,159 @@ def train_baseline_with_trainer(
     *,
     provenance: dict[str, object],
     trainer: str,
+    torch_iql_detach_viability_heads: bool = False,
+    torch_iql_behavior_margin_anchor: bool = False,
+    torch_iql_calibrated_actor_extraction: bool = False,
+    torch_iql_constraint_aware_actor_extraction: bool = False,
+    torch_iql_risk_adjusted_actor_extraction: bool = False,
+    torch_iql_calibrated_supported_actor_extraction: bool = False,
+    torch_iql_actor_calibration_records: Iterable[dict[str, object]] | None = None,
+    torch_iql_contextual_behavior_supported_actor_extraction: bool = False,
+    torch_iql_contextual_behavior_prior_regularization: bool = False,
+    torch_iql_action_distribution_regularization: bool = False,
+    torch_iql_actor_calibration_validation_records: (
+        Iterable[dict[str, object]] | None
+    ) = None,
+    torch_iql_return_calibration: bool = False,
+    torch_iql_suppression_critic_calibration: bool = False,
+    torch_iql_neural_actor_prior_blend_weight: float | None = None,
+    torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
+    if torch_device not in {"cpu", "cuda", "mps", "auto"}:
+        raise ValueError("torch_device must be one of cpu, cuda, mps, auto")
+    if torch_device != "cpu" and trainer not in TORCH_TRAINER_CHOICES:
+        raise ValueError("torch_device is only supported by torch trainers")
+    materialized_actor_calibration_records = tuple(
+        torch_iql_actor_calibration_records or ()
+    )
+    materialized_actor_calibration_validation_records = tuple(
+        torch_iql_actor_calibration_validation_records or ()
+    )
+    if (
+        torch_iql_detach_viability_heads
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_detach_viability_heads is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_behavior_margin_anchor
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_behavior_margin_anchor is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_calibrated_actor_extraction
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_calibrated_actor_extraction is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_return_calibration
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_return_calibration is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_suppression_critic_calibration
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_suppression_critic_calibration is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_constraint_aware_actor_extraction
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_constraint_aware_actor_extraction is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_risk_adjusted_actor_extraction
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_risk_adjusted_actor_extraction is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_calibrated_supported_actor_extraction
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_calibrated_supported_actor_extraction is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_contextual_behavior_supported_actor_extraction
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_contextual_behavior_supported_actor_extraction is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_contextual_behavior_prior_regularization
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_contextual_behavior_prior_regularization is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_action_distribution_regularization
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_action_distribution_regularization is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_contextual_behavior_prior_regularization
+        and not materialized_actor_calibration_records
+    ):
+        raise ValueError(
+            "torch_iql_contextual_behavior_prior_regularization requires "
+            "torch_iql_actor_calibration_records"
+        )
+    if (
+        materialized_actor_calibration_records
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_actor_calibration_records is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        materialized_actor_calibration_validation_records
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_actor_calibration_validation_records is only supported "
+            f"by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_neural_actor_prior_blend_weight is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_neural_actor_prior_blend_weight is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if torch_iql_neural_actor_prior_blend_weight is not None:
+        _validate_neural_actor_prior_blend_weight(
+            torch_iql_neural_actor_prior_blend_weight,
+            option_name="torch_iql_neural_actor_prior_blend_weight",
+        )
     if trainer == CONTEXTUAL_PRIOR_TRAINER:
         return train_behavior_cloning_baseline(records, provenance=provenance)
     if trainer == REWARD_WEIGHTED_CONTEXTUAL_PRIOR_TRAINER:
@@ -710,18 +965,75 @@ def train_baseline_with_trainer(
         return train_torch_neural_actor_critic_behavior_cloning_baseline(
             records,
             provenance=provenance,
+            torch_device=torch_device,
         )
     if trainer == TORCH_ADVANTAGE_ACTOR_CRITIC_TRAINER:
         return train_torch_advantage_actor_critic_behavior_cloning_baseline(
             records,
             provenance=provenance,
+            torch_device=torch_device,
         )
     if trainer == TORCH_DISCRETE_IQL_TRAINER:
         return train_torch_discrete_iql_behavior_cloning_baseline(
             records,
             provenance=provenance,
+            detach_viability_heads=torch_iql_detach_viability_heads,
+            behavior_margin_anchor=torch_iql_behavior_margin_anchor,
+            calibrated_actor_extraction=torch_iql_calibrated_actor_extraction,
+            constraint_aware_actor_extraction=(
+                torch_iql_constraint_aware_actor_extraction
+            ),
+            risk_adjusted_actor_extraction=(
+                torch_iql_risk_adjusted_actor_extraction
+            ),
+            calibrated_supported_actor_extraction=(
+                torch_iql_calibrated_supported_actor_extraction
+            ),
+            calibration_records=materialized_actor_calibration_records,
+            contextual_behavior_supported_actor_extraction=(
+                torch_iql_contextual_behavior_supported_actor_extraction
+            ),
+            contextual_behavior_prior_regularization=(
+                torch_iql_contextual_behavior_prior_regularization
+            ),
+            action_distribution_regularization=(
+                torch_iql_action_distribution_regularization
+            ),
+            calibration_validation_records=(
+                materialized_actor_calibration_validation_records
+            ),
+            return_calibration=torch_iql_return_calibration,
+            suppression_critic_calibration=(
+                torch_iql_suppression_critic_calibration
+            ),
+            neural_actor_prior_blend_weight=(
+                torch_iql_neural_actor_prior_blend_weight
+                if torch_iql_neural_actor_prior_blend_weight is not None
+                else NEURAL_ACTOR_PRIOR_BLEND_WEIGHT
+            ),
+            torch_device=torch_device,
         )
     raise ValueError(f"unsupported Mind baseline trainer: {trainer!r}")
+
+
+def _torch_device_metadata_from_network(
+    neural_network: dict[str, object],
+) -> dict[str, object] | None:
+    metadata = neural_network.get("torch_device_metadata")
+    return dict(metadata) if isinstance(metadata, dict) else None
+
+
+def _validate_neural_actor_prior_blend_weight(
+    value: float,
+    *,
+    option_name: str,
+) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{option_name} must be a finite number")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{option_name} must be finite")
+    if float(value) < 0.0 or float(value) > 1.0:
+        raise ValueError(f"{option_name} must be in [0.0, 1.0]")
 
 
 def _train_contextual_prior_baseline(

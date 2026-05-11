@@ -43,10 +43,19 @@ from evolution_sim.mind.neural import (
     TORCH_NEURAL_HIDDEN_UNITS,
     TORCH_NEURAL_TRAINING_POLICY,
 )
+from evolution_sim.mind.evolution import (
+    MIND_V3_CONTROLLER_ARCHITECTURE,
+    MIND_V3_CONTROLLER_SCHEMA_VERSION,
+    MIND_V3_CONTEXT_FEATURE_FIELDS,
+    MIND_V3_NEED_GATED_FEATURE_FIELDS,
+)
 
 MIND_V1_DATA_CONTRACT_VERSION = "mind_v1_data_contract_v1"
 MIND_MODEL_ARTIFACT_VERSION = "mind_model_artifact_v1"
 MIND_ONLINE_LEARNING_CONTRACT_VERSION = "mind_online_learning_contract_v1"
+MIND_V3_AUTONOMOUS_EVOLUTION_CONTRACT_VERSION = (
+    "mind_v3_autonomous_evolution_contract_v1"
+)
 MIND_RUNTIME_ENABLED_DEFAULT = False
 
 
@@ -88,15 +97,44 @@ def mind_online_learning_contract() -> dict[str, object]:
             "torch_actor_critic_bc_artifact_v1",
             "torch_advantage_actor_critic_bc_artifact_v1",
             "torch_discrete_iql_artifact_v1",
+            "heuristic_free_autonomous_controller_v1",
+            "in_run_contextual_bandit_adapter_v1",
         ],
         "trajectory_collection": {
             "heuristic_policy": "sim:trajectory",
             "learned_policy": (
-                "sim:trajectory -- --mind-artifact <artifact> --enable-mind"
+                "sim:trajectory -- --mind-artifact <artifact> --enable-mind "
+                "--mind-runtime-mode guarded"
             ),
+            "runtime_modes": ["guarded", "autonomous", "autonomous-online"],
             "requires_explicit_mind_enable": True,
+            "policy_decision_diagnostics_opt_in": (
+                "--include-policy-diagnostics"
+            ),
+            "policy_update_trace_opt_in": "--include-policy-update-trace",
+            "diagnostic_record_field": "policy_decision_diagnostics",
+            "update_trace_record_field": "policy_update_trace",
+            "diagnostic_payload_required_by_default": False,
             "summary_only": True,
             "full_replay_required": False,
+        },
+        "autonomous_controller": {
+            "policy": "heuristic_free_autonomous_controller_v1",
+            "enabled_by_default": False,
+            "heuristic_guard": False,
+            "heuristic_delegate": False,
+            "action_mask_required": True,
+            "promotion_status": "experiment_only",
+        },
+        "online_in_run_adapter": {
+            "policy": "in_run_contextual_bandit_adapter_v1",
+            "enabled_by_default": False,
+            "updates": "contextual_action_score_offsets",
+            "neural_weight_updates": False,
+            "requires_trajectory_feedback": True,
+            "update_trace_schema_version": "mind_policy_update_trace_v1",
+            "update_trace_replay": "deterministic_context_action_offset_replay_v1",
+            "promotion_status": "experiment_only",
         },
         "neural_actor_critic": {
             "trainer": NEURAL_ACTOR_CRITIC_TRAINER,
@@ -220,5 +258,34 @@ def mind_online_learning_contract() -> dict[str, object]:
             "strict_total_fallback_cap": 0.4779,
             "extended_validation_seeds": [5, 13, 19, 29, 37, 41],
             "extended_validation_ticks": [120, 180],
+        },
+    }
+
+
+def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
+    return {
+        "contract_version": MIND_V3_AUTONOMOUS_EVOLUTION_CONTRACT_VERSION,
+        "enabled_by_default": False,
+        "policy": "mind_v3_autonomous_evolution_policy_v1",
+        "action_selection": "inherited_controller_masked_argmax_v1",
+        "heuristic_guard": False,
+        "heuristic_delegate": False,
+        "heuristic_action_selection": False,
+        "action_mask_required": True,
+        "learning_mechanism": "bounded_parental_inheritance_with_mutation_v1",
+        "mind_state_storage": "agent.mind_inheritance_metadata",
+        "promotion_metric_family": "autonomous_survival_reproduction",
+        "controller": {
+            "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            "runtime_backend": "pure_python_deterministic_v1",
+            "feature_source": "mind_observation_v3_encoded_input",
+            "architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
+            "feature_scope": "policy_visible_self_local_patch_navigation",
+            "feature_fields": list(MIND_V3_CONTEXT_FEATURE_FIELDS),
+            "derived_feature_fields": list(MIND_V3_NEED_GATED_FEATURE_FIELDS),
+            "controller_private_fields_excluded_from_features": [
+                "mind_inheritance_available"
+            ],
+            "inherited_parameters": "action_head_weights_and_bias",
         },
     }

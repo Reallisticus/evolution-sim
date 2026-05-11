@@ -395,6 +395,84 @@ class RuntimeTrajectoryContractTests(RuntimeContractTestHelpers):
             feeding["gained_energy"],
         )
 
+    def test_trajectory_credits_both_parents_for_single_sexual_birth(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                max_agents=20,
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=0,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.2,
+                    sexual_partner_radius=1,
+                ),
+            )
+        )
+        genome = self._sexualized_genome(self._mixed_genome())
+        parent = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        partner = self._place_ready_agent(
+            world,
+            x=2,
+            y=3,
+            lineage_id=1,
+            reproductive_group_id=1,
+            reproductive_stage=STAGE1_FACULTATIVE_SEX,
+            reproductive_expression=SEXUAL_EXPRESSION,
+            genome=genome,
+        )
+        world.current_species_map = {
+            parent.agent_id: parent.lineage_id,
+            partner.agent_id: partner.lineage_id,
+        }
+        world.agent_last_species_map = world.current_species_map.copy()
+
+        def choose_scripted_action(
+            agent: Agent,
+            observation: dict[str, object] | None = None,
+        ) -> str:
+            world._policy_action_source = "scripted_stay"
+            world._policy_id = "scripted_stay"
+            world._policy_version = "scripted_stay_v1"
+            return "stay"
+
+        with patch.object(world, "_choose_action", side_effect=choose_scripted_action):
+            result = world.run(mode=RunMode.FULL_REPLAY, record_trajectory=True)
+
+        reproduced_events = [
+            event
+            for event in result.events
+            if event["type"] == EventType.AGENT_REPRODUCED.value
+        ]
+        records = {
+            record["agent_id"]: record
+            for record in result.viewer["trajectory"]["records"]
+            if record["agent_id"] in {parent.agent_id, partner.agent_id}
+        }
+
+        self.assertEqual(len(reproduced_events), 1)
+        self.assertEqual(
+            reproduced_events[0]["data"]["parent_ids"],
+            [parent.agent_id, partner.agent_id],
+        )
+        self.assertEqual(set(records), {parent.agent_id, partner.agent_id})
+        for agent_id in (parent.agent_id, partner.agent_id):
+            self.assertTrue(records[agent_id]["outcome"]["reproduced"])
+            self.assertEqual(
+                records[agent_id]["reward"]["components"]["reproduction_success"],
+                1.0,
+            )
+
     def test_trajectory_records_real_tick_resolution_conflict(self) -> None:
         world = SimulationWorld(
             WorldConfig(

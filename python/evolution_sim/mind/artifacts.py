@@ -51,6 +51,7 @@ from evolution_sim.mind.neural import (
     TORCH_NEURAL_TRAINING_POLICY,
 )
 from evolution_sim.mind.provenance import validate_dataset_provenance
+from evolution_sim.mind.viability import VIABILITY_COMPONENT_NAMES
 
 
 class MindArtifactError(ValueError):
@@ -894,10 +895,13 @@ def _validate_neural_actor_critic_metadata(
         raise MindArtifactError(
             "model.neural_actor_prior_blend_weight must be <= 1.0"
         )
-    if not math.isclose(
-        prior_blend_weight,
-        NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
-        abs_tol=1e-9,
+    if (
+        model_type != TORCH_DISCRETE_IQL_BASELINE_MODEL_TYPE
+        and not math.isclose(
+            prior_blend_weight,
+            NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
+            abs_tol=1e-9,
+        )
     ):
         raise MindArtifactError(
             (
@@ -966,6 +970,14 @@ def _validate_neural_actor_critic_metadata(
     _finite_reward_value(
         network.get("state_value_bias"),
         "model.neural_network.state_value_bias",
+    )
+    _validate_optional_viability_head(
+        network,
+        hidden_units=hidden_units,
+    )
+    _validate_optional_action_viability_head(
+        network,
+        hidden_units=hidden_units,
     )
 
 
@@ -1079,6 +1091,64 @@ def _validate_action_value_map(
             )
 
 
+def _validate_optional_viability_head(
+    network: dict[str, object],
+    *,
+    hidden_units: int,
+) -> None:
+    weights_present = "viability_component_output_weights" in network
+    bias_present = "viability_component_output_bias" in network
+    if weights_present != bias_present:
+        raise MindArtifactError(
+            (
+                "model.neural_network viability component weights and bias "
+                "must be serialized together"
+            )
+        )
+    if not weights_present:
+        return
+    _validate_named_vector_map(
+        network.get("viability_component_output_weights"),
+        names=VIABILITY_COMPONENT_NAMES,
+        location="model.neural_network.viability_component_output_weights",
+        vector_length=hidden_units,
+    )
+    _validate_named_bias_map(
+        network.get("viability_component_output_bias"),
+        names=VIABILITY_COMPONENT_NAMES,
+        location="model.neural_network.viability_component_output_bias",
+    )
+
+
+def _validate_optional_action_viability_head(
+    network: dict[str, object],
+    *,
+    hidden_units: int,
+) -> None:
+    weights_present = "action_viability_component_output_weights" in network
+    bias_present = "action_viability_component_output_bias" in network
+    if weights_present != bias_present:
+        raise MindArtifactError(
+            (
+                "model.neural_network action viability component weights and "
+                "bias must be serialized together"
+            )
+        )
+    if not weights_present:
+        return
+    _validate_action_component_vector_map(
+        network.get("action_viability_component_output_weights"),
+        location=(
+            "model.neural_network.action_viability_component_output_weights"
+        ),
+        vector_length=hidden_units,
+    )
+    _validate_action_component_bias_map(
+        network.get("action_viability_component_output_bias"),
+        location="model.neural_network.action_viability_component_output_bias",
+    )
+
+
 def _validate_numeric_matrix(
     payload: object,
     *,
@@ -1124,6 +1194,133 @@ def _validate_action_vector_map(
             payload.get(action),
             location=f"{location}.{action}",
             length=vector_length,
+        )
+
+
+def _validate_named_vector_map(
+    payload: object,
+    *,
+    names: tuple[str, ...],
+    location: str,
+    vector_length: int,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    keys = set(payload)
+    expected = set(names)
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MindArtifactError(
+            f"{location} must cover the full component vocabulary ({'; '.join(detail)})"
+        )
+    for name in names:
+        _validate_numeric_vector(
+            payload.get(name),
+            location=f"{location}.{name}",
+            length=vector_length,
+        )
+
+
+def _validate_key_set(
+    payload: dict[str, object],
+    *,
+    expected: set[str],
+    location: str,
+    vocabulary: str,
+) -> None:
+    keys = set(payload)
+    if keys == expected:
+        return
+    missing = sorted(expected - keys)
+    extra = sorted(keys - expected)
+    detail = []
+    if missing:
+        detail.append("missing " + ", ".join(missing))
+    if extra:
+        detail.append("unexpected " + ", ".join(extra))
+    raise MindArtifactError(
+        f"{location} must cover the full {vocabulary} vocabulary ({'; '.join(detail)})"
+    )
+
+
+def _validate_named_bias_map(
+    payload: object,
+    *,
+    names: tuple[str, ...],
+    location: str,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    keys = set(payload)
+    expected = set(names)
+    if keys != expected:
+        missing = sorted(expected - keys)
+        extra = sorted(keys - expected)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MindArtifactError(
+            f"{location} must cover the full component vocabulary ({'; '.join(detail)})"
+        )
+    for name in names:
+        _finite_number(payload.get(name), f"{location}.{name}")
+
+
+def _validate_action_component_vector_map(
+    payload: object,
+    *,
+    location: str,
+    vector_length: int,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    _validate_key_set(
+        payload,
+        expected=set(ACTION_NAMES),
+        location=location,
+        vocabulary="action",
+    )
+    for action in ACTION_NAMES:
+        action_payload = payload.get(action)
+        if not isinstance(action_payload, dict):
+            raise MindArtifactError(f"{location}.{action} must be an object")
+        _validate_named_vector_map(
+            action_payload,
+            names=VIABILITY_COMPONENT_NAMES,
+            location=f"{location}.{action}",
+            vector_length=vector_length,
+        )
+
+
+def _validate_action_component_bias_map(
+    payload: object,
+    *,
+    location: str,
+) -> None:
+    if not isinstance(payload, dict):
+        raise MindArtifactError(f"{location} must be an object")
+    _validate_key_set(
+        payload,
+        expected=set(ACTION_NAMES),
+        location=location,
+        vocabulary="action",
+    )
+    for action in ACTION_NAMES:
+        action_payload = payload.get(action)
+        if not isinstance(action_payload, dict):
+            raise MindArtifactError(f"{location}.{action} must be an object")
+        _validate_named_bias_map(
+            action_payload,
+            names=VIABILITY_COMPONENT_NAMES,
+            location=f"{location}.{action}",
         )
 
 
@@ -1286,6 +1483,6 @@ def write_model_artifact(path: str | Path, artifact: dict[str, Any]) -> None:
     artifact_path = Path(path)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        json.dumps(artifact, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )

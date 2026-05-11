@@ -947,6 +947,8 @@ class FoundationGateCliTests(unittest.TestCase):
                     "hunter": {
                         "alive_runs": 4,
                         "no_animal_consumption_runs": 3,
+                        "animal_resource_consuming_runs": 1,
+                        "animal_resource_opportunity_runs": 4,
                     },
                 },
                 "ecology_state_counts_at_end": {
@@ -960,6 +962,60 @@ class FoundationGateCliTests(unittest.TestCase):
         flags = _summary_gate_flags(evaluation, profile)
 
         self.assertTrue(
+            any(
+                flag["severity"] == "error"
+                and flag["field"]
+                == (
+                    "animal_resource_opportunity_run_counts_by_meat_mode."
+                    "hunter.consuming_run_share"
+                )
+                for flag in flags
+            )
+        )
+
+    def test_animal_resource_consuming_run_share_ignores_no_opportunity_runs(
+        self,
+    ) -> None:
+        profile = replace(
+            QUICK_PROFILE,
+            name="animal-resource-no-opportunity-run-share",
+            min_trophic_roles=1,
+            min_meat_modes=1,
+            min_hazardous_tiles=0,
+            min_ecology_pressure_tiles=0,
+            min_animal_resource_consumption_run_share_by_mode=0.5,
+            full_replay_probes=(),
+        )
+        evaluation = {
+            "flags": [],
+            "runs": [],
+            "aggregate": {
+                "hazardous_tiles": {"min": 1},
+                "trophic_role_counts_at_end": {
+                    "total": {"herbivore": 8, "omnivore": 0, "carnivore": 2}
+                },
+                "meat_mode_counts_at_end": {
+                    "total": {"none": 8, "scavenger": 0, "hunter": 2, "mixed": 0}
+                },
+                "animal_resource_opportunity_run_counts_by_meat_mode": {
+                    "hunter": {
+                        "alive_runs": 4,
+                        "no_animal_consumption_runs": 4,
+                        "animal_resource_consuming_runs": 0,
+                        "animal_resource_opportunity_runs": 0,
+                    },
+                },
+                "ecology_state_counts_at_end": {
+                    "total": {"stable": 1, "lush": 0, "recovering": 0, "depleted": 0}
+                },
+                "carrion_energy_consumed": {"max": 0.0},
+                "fresh_kill_energy_consumed": {"max": 0.0},
+            },
+        }
+
+        flags = _summary_gate_flags(evaluation, profile)
+
+        self.assertFalse(
             any(
                 flag["severity"] == "error"
                 and flag["field"]

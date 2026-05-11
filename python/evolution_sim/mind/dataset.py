@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterator, Sequence, TextIO
 
 from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
-from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
+from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION, ACTION_NAMES
 from evolution_sim.env.runtime.observations import OBSERVATION_SCHEMA_VERSION
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.reproduction import REPRODUCTIVE_GROUP_CONTRACT_VERSION
@@ -29,6 +29,13 @@ from evolution_sim.mind.provenance import (
 
 TRAJECTORY_JSONL_FORMAT = "evolution_sim_trajectory_jsonl_v1"
 TRAJECTORY_EPISODE_ID_FIELD = "__trajectory_episode_id"
+POLICY_UPDATE_TRACE_SCHEMA_VERSION = "mind_policy_update_trace_v1"
+ONLINE_CONTEXTUAL_BANDIT_POLICY = "in_run_contextual_bandit_adapter_v1"
+MIND_V3_UPDATE_TRACE_SCHEMA_VERSION = "mind_v3_controller_update_trace_v1"
+MIND_V3_UPDATE_TRACE_POLICY = "bounded_reward_modulated_controller_update_v1"
+MIND_V3_ELIGIBILITY_TRACE_POLICY = (
+    "policy_valid_requested_action_horizon_eligibility_trace_v3"
+)
 
 
 class TrajectoryDatasetError(ValueError):
@@ -55,6 +62,9 @@ class TrajectoryTransition:
     observation_input: dict[str, object]
     action_mask: dict[str, bool]
     action: str
+    action_source: str
+    policy_decision_diagnostics: dict[str, object] | None
+    policy_update_trace: dict[str, object] | None
     reward_total: float
     next_observation_input: dict[str, object] | None
     next_action_mask: dict[str, bool] | None
@@ -103,6 +113,11 @@ def build_trajectory_transitions(
                     observation_input=_transition_observation_input(record),
                     action_mask=_transition_action_mask(record),
                     action=_transition_action(record),
+                    action_source=_transition_action_source(record),
+                    policy_decision_diagnostics=(
+                        _transition_policy_decision_diagnostics(record)
+                    ),
+                    policy_update_trace=_transition_policy_update_trace(record),
                     reward_total=_transition_reward_total(record),
                     next_observation_input=(
                         None
@@ -120,6 +135,35 @@ def build_trajectory_transitions(
             next_record_by_agent[agent_id] = record
         transitions.extend(reversed(transitions_reversed))
     return tuple(transitions)
+
+
+def discounted_return_targets(
+    transitions: Sequence[TrajectoryTransition],
+    *,
+    discount: float,
+) -> tuple[float, ...]:
+    if isinstance(discount, bool) or not isinstance(discount, (int, float)):
+        raise ValueError("discount must be a finite number")
+    resolved_discount = float(discount)
+    if not math.isfinite(resolved_discount):
+        raise ValueError("discount must be finite")
+    if resolved_discount < 0.0 or resolved_discount > 1.0:
+        raise ValueError("discount must be in [0.0, 1.0]")
+
+    future_return_by_agent: dict[tuple[str, int], float] = {}
+    reversed_targets: list[float] = []
+    for transition in reversed(transitions):
+        key = (transition.episode_id, transition.agent_id)
+        future_return = future_return_by_agent.get(key)
+        if transition.done or future_return is None:
+            target = transition.reward_total
+        else:
+            target = transition.reward_total + resolved_discount * future_return
+        if not math.isfinite(target):
+            raise ValueError("discounted return target must be finite")
+        reversed_targets.append(target)
+        future_return_by_agent[key] = target
+    return tuple(reversed(reversed_targets))
 
 
 def records_with_trajectory_context(
@@ -241,6 +285,41 @@ def _transition_action(record: dict[str, object]) -> str:
     )
 
 
+def _transition_action_source(record: dict[str, object]) -> str:
+    action_source = record.get("action_source")
+    if action_source is None:
+        return "unknown"
+    if not isinstance(action_source, str) or not action_source:
+        raise TrajectoryDatasetError(
+            "trajectory record action_source must be a non-empty string"
+        )
+    return action_source
+
+
+def _transition_policy_decision_diagnostics(
+    record: dict[str, object],
+) -> dict[str, object] | None:
+    diagnostics = record.get("policy_decision_diagnostics")
+    if diagnostics is None:
+        return None
+    return _validate_policy_decision_diagnostics(
+        diagnostics,
+        record_index=None,
+    )
+
+
+def _transition_policy_update_trace(
+    record: dict[str, object],
+) -> dict[str, object] | None:
+    trace = record.get("policy_update_trace")
+    if trace is None:
+        return None
+    return _validate_policy_update_trace(
+        trace,
+        record_index=None,
+    )
+
+
 def _transition_reward_total(record: dict[str, object]) -> float:
     reward = record.get("reward")
     if not isinstance(reward, dict):
@@ -339,6 +418,14 @@ def _validate_record_payload(
         raise TrajectoryDatasetError(
             f"trajectory record {index} has stale observation schema"
         )
+    _validate_policy_decision_diagnostics(
+        record.get("policy_decision_diagnostics"),
+        record_index=index,
+    )
+    _validate_policy_update_trace(
+        record.get("policy_update_trace"),
+        record_index=index,
+    )
     outcome = record.get("outcome")
     if (
         not isinstance(outcome, dict)
@@ -351,6 +438,176 @@ def _validate_record_payload(
     if not isinstance(reward, dict) or reward.get("schema_version") != REWARD_SCHEMA_VERSION:
         raise TrajectoryDatasetError(f"trajectory record {index} has stale reward schema")
     return record
+
+
+def _validate_policy_decision_diagnostics(
+    payload: object,
+    *,
+    record_index: int | None,
+) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    prefix = (
+        "trajectory record"
+        if record_index is None
+        else f"trajectory record {record_index}"
+    )
+    if not isinstance(payload, dict):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_decision_diagnostics must be an object"
+        )
+    parsed: dict[str, object] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key:
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_decision_diagnostics keys must be strings"
+            )
+        if isinstance(value, bool) or isinstance(value, str) or value is None:
+            parsed[key] = value
+            continue
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            parsed[key] = value
+            continue
+        raise TrajectoryDatasetError(
+            (
+                f"{prefix} policy_decision_diagnostics field {key!r} "
+                "must be finite scalar"
+            )
+        )
+    return parsed
+
+
+def _validate_policy_update_trace(
+    payload: object,
+    *,
+    record_index: int | None,
+) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    prefix = (
+        "trajectory record"
+        if record_index is None
+        else f"trajectory record {record_index}"
+    )
+    if not isinstance(payload, dict):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace must be an object"
+        )
+    if payload.get("schema_version") == MIND_V3_UPDATE_TRACE_SCHEMA_VERSION:
+        return _validate_mind_v3_policy_update_trace(payload, prefix=prefix)
+    if payload.get("schema_version") != POLICY_UPDATE_TRACE_SCHEMA_VERSION:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace has unsupported schema"
+        )
+    if payload.get("policy") != ONLINE_CONTEXTUAL_BANDIT_POLICY:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace has unsupported policy"
+        )
+    required_string_fields = ("context_key", "action")
+    for field in required_string_fields:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} must be a string"
+            )
+    update_index = payload.get("update_index")
+    if (
+        isinstance(update_index, bool)
+        or not isinstance(update_index, int)
+        or update_index <= 0
+    ):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace update_index must be positive"
+        )
+    required_float_fields = (
+        "reward_total",
+        "reward_signal",
+        "previous_adjustment",
+        "updated_adjustment",
+        "learning_rate",
+        "min_adjustment",
+        "max_adjustment",
+    )
+    for field in required_float_fields:
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} must be finite"
+            )
+        if not math.isfinite(float(value)):
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} must be finite"
+            )
+    if float(payload["min_adjustment"]) > float(payload["max_adjustment"]):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace adjustment bounds are invalid"
+        )
+    return dict(payload)
+
+
+def _validate_mind_v3_policy_update_trace(
+    payload: dict[str, object],
+    *,
+    prefix: str,
+) -> dict[str, object]:
+    if payload.get("policy") != MIND_V3_UPDATE_TRACE_POLICY:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace has unsupported policy"
+        )
+    if payload.get("credit_assignment") != MIND_V3_ELIGIBILITY_TRACE_POLICY:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace has unsupported credit_assignment"
+        )
+    update_index = payload.get("update_index")
+    if (
+        isinstance(update_index, bool)
+        or not isinstance(update_index, int)
+        or update_index <= 0
+    ):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace update_index must be positive"
+        )
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, bool) or not isinstance(agent_id, int):
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace agent_id must be an integer"
+        )
+    for field in ("action", "requested_action", "resolved_action"):
+        action = payload.get(field)
+        if action not in ACTION_NAMES:
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} is unsupported"
+            )
+    credited_actions = payload.get("credited_actions")
+    if not isinstance(credited_actions, list) or not credited_actions:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace credited_actions must be a non-empty list"
+        )
+    for action in credited_actions:
+        if action not in ACTION_NAMES:
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace credited_actions includes unsupported action"
+            )
+    for field in ("reward_total", "reward_signal"):
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} must be finite"
+            )
+        if not math.isfinite(float(value)):
+            raise TrajectoryDatasetError(
+                f"{prefix} policy_update_trace {field} must be finite"
+            )
+    reward_signal = float(payload["reward_signal"])
+    if reward_signal < -1.0 or reward_signal > 1.0:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace reward_signal must be in [-1, 1]"
+        )
+    if payload.get("heuristic_free") is not True:
+        raise TrajectoryDatasetError(
+            f"{prefix} policy_update_trace heuristic_free must be true"
+        )
+    return dict(payload)
 
 
 def _validate_footer(

@@ -236,6 +236,10 @@ class EvaluateCliTests(unittest.TestCase):
         if opportunity_run_counts:
             first_counts = next(iter(opportunity_run_counts.values()))
             self.assertIn("animal_resource_present_unreachable_runs", first_counts)
+            self.assertIn("animal_resource_opportunity_runs", first_counts)
+            self.assertIn("no_animal_resource_opportunity_runs", first_counts)
+            self.assertIn("animal_resource_consuming_runs", first_counts)
+            self.assertIn("animal_resource_reachable_runs", first_counts)
             self.assertIn("animal_resource_reachable_unconsumed_runs", first_counts)
             self.assertIn("animal_resource_policy_actionable_runs", first_counts)
             self.assertIn(

@@ -243,8 +243,12 @@ def _animal_resource_opportunity_run_counts(
                 {
                     "alive_runs": 0,
                     "no_animal_consumption_runs": 0,
+                    "animal_resource_consuming_runs": 0,
+                    "animal_resource_opportunity_runs": 0,
+                    "no_animal_resource_opportunity_runs": 0,
                     "animal_resource_absent_runs": 0,
                     "animal_resource_present_unconsumed_runs": 0,
+                    "animal_resource_reachable_runs": 0,
                     "animal_resource_present_unreachable_runs": 0,
                     "animal_resource_reachable_unconsumed_runs": 0,
                     "animal_resource_policy_actionable_runs": 0,
@@ -271,8 +275,16 @@ def _animal_resource_opportunity_run_counts(
             mode_counts["alive_runs"] += 1
             if consumption_events <= 0:
                 mode_counts["no_animal_consumption_runs"] += 1
+            else:
+                mode_counts["animal_resource_consuming_runs"] += 1
+            if consumption_events > 0 or reachable_ticks > 0:
+                mode_counts["animal_resource_opportunity_runs"] += 1
+            else:
+                mode_counts["no_animal_resource_opportunity_runs"] += 1
             if present_ticks <= 0:
                 mode_counts["animal_resource_absent_runs"] += 1
+            if reachable_ticks > 0:
+                mode_counts["animal_resource_reachable_runs"] += 1
             if present_ticks > 0 and consumption_events <= 0:
                 mode_counts["animal_resource_present_unconsumed_runs"] += 1
                 if reachable_ticks <= 0:

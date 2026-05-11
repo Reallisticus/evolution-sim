@@ -769,6 +769,140 @@ class RuntimeFeedingContractTests(RuntimeContractTestHelpers):
         )
         self.assertEqual(run_counts["scavenger"]["alive_ticks"], 0)
 
+    def test_opportunity_recording_uses_decision_time_resource_presence(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+            )
+        )
+        world.tick_animal_resource_consumption_by_meat_mode = (
+            runtime_feeding.empty_grouped_animal_resource_consumption_counts(
+                MEAT_MODE_CODES
+            )
+        )
+        world.run_animal_resource_opportunity_by_meat_mode = (
+            runtime_feeding.empty_grouped_animal_resource_opportunity_counts(
+                MEAT_MODE_CODES
+            )
+        )
+        world.grid[1][1].fresh_kill_deposits.append(
+            FreshKillDeposit(
+                energy_remaining=0.4,
+                source_species=None,
+                source_agent_id=None,
+                killer_id=None,
+                death_tick=0,
+            )
+        )
+        self.assertTrue(
+            runtime_feeding.animal_resource_presence_this_tick(world)[
+                "animal_resource"
+            ]
+        )
+
+        runtime_feeding.record_animal_resource_opportunity_tick(
+            world,
+            {"hunter": 1, "mixed": 0, "none": 0, "scavenger": 0},
+            {
+                mode: runtime_feeding.empty_animal_resource_reachability_tick_counts()
+                for mode in MEAT_MODE_CODES
+            },
+            resource_presence={
+                "animal_resource": False,
+                "fresh_kill": False,
+                "carcass": False,
+            },
+        )
+
+        hunter = world.run_animal_resource_opportunity_by_meat_mode["hunter"]
+        self.assertEqual(hunter["alive_ticks"], 1)
+        self.assertEqual(hunter["animal_resource_present_ticks"], 0)
+        self.assertEqual(hunter["animal_resource_absent_ticks"], 1)
+        self.assertEqual(hunter["fresh_kill_present_ticks"], 0)
+
+    def test_same_tick_generated_consumption_still_counts_consumed_tick(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                initial_agents=0,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+            )
+        )
+        world.tick_animal_resource_consumption_by_meat_mode = (
+            runtime_feeding.empty_grouped_animal_resource_consumption_counts(
+                MEAT_MODE_CODES
+            )
+        )
+        world.run_animal_resource_opportunity_by_meat_mode = (
+            runtime_feeding.empty_grouped_animal_resource_opportunity_counts(
+                MEAT_MODE_CODES
+            )
+        )
+        world.tick_animal_resource_consumption_by_meat_mode["hunter"][
+            "fresh_kill_consumption_events"
+        ] = 1
+        world.tick_animal_resource_consumption_by_meat_mode["hunter"][
+            "animal_resource_consumption_events"
+        ] = 1
+
+        runtime_feeding.record_animal_resource_opportunity_tick(
+            world,
+            {"hunter": 1, "mixed": 0, "none": 0, "scavenger": 0},
+            {
+                mode: runtime_feeding.empty_animal_resource_reachability_tick_counts()
+                for mode in MEAT_MODE_CODES
+            },
+            resource_presence={
+                "animal_resource": False,
+                "fresh_kill": False,
+                "carcass": False,
+            },
+        )
+
+        hunter = world.run_animal_resource_opportunity_by_meat_mode["hunter"]
+        self.assertEqual(hunter["animal_resource_absent_ticks"], 1)
+        self.assertEqual(hunter["animal_resource_present_ticks"], 0)
+        self.assertEqual(hunter["animal_resource_consumed_ticks"], 1)
+        self.assertEqual(hunter["fresh_kill_present_ticks"], 0)
+        self.assertEqual(hunter["fresh_kill_consumed_ticks"], 1)
+
+    def test_tick_opportunity_accounting_reuses_decision_time_presence(self) -> None:
+        no_presence = {
+            "animal_resource": False,
+            "fresh_kill": False,
+            "carcass": False,
+        }
+        later_presence = {
+            "animal_resource": True,
+            "fresh_kill": True,
+            "carcass": False,
+        }
+        with patch(
+            "evolution_sim.env.runtime.feeding.animal_resource_presence_this_tick",
+            side_effect=[no_presence, later_presence],
+        ) as presence:
+            world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+            result = world.run(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertEqual(presence.call_count, 1)
+        total_present_ticks = sum(
+            counts["animal_resource_present_ticks"]
+            for counts in result.summary[
+                "animal_resource_opportunity_by_meat_mode_end"
+            ].values()
+        )
+        self.assertEqual(total_present_ticks, 0)
+
     def test_summary_only_never_invokes_full_replay_paths(self) -> None:
         with patch(
             "evolution_sim.env.runtime.collectors.apply_replay_taxonomy",

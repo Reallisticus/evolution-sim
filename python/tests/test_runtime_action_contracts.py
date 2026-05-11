@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
+import evolution_sim.env.runtime.ticks as runtime_ticks
 
 
 class RuntimeActionContractTests(RuntimeContractTestHelpers):
@@ -121,6 +122,77 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
         self.assertTrue(moved)
         self.assertEqual(movement_calls, [("move_east", 1, 0)])
         self.assertEqual(outcome["movement"]["to_x"], 1)
+
+    def test_tick_turn_order_uses_seed_tick_permutation(self) -> None:
+        agent_ids = (1, 2, 3, 4, 5)
+
+        first = runtime_ticks.deterministic_agent_turn_order(
+            agent_ids,
+            seed=7,
+            tick=0,
+        )
+        repeated = runtime_ticks.deterministic_agent_turn_order(
+            tuple(reversed(agent_ids)),
+            seed=7,
+            tick=0,
+        )
+        later = {
+            runtime_ticks.deterministic_agent_turn_order(
+                agent_ids,
+                seed=7,
+                tick=tick,
+            )
+            for tick in range(6)
+        }
+
+        self.assertEqual(first, repeated)
+        self.assertEqual(set(first), set(agent_ids))
+        self.assertNotEqual(first, agent_ids)
+        self.assertGreater(len(later), 1)
+        self.assertEqual(
+            runtime_ticks.TURN_ORDER_POLICY,
+            "seed_tick_agent_hash_permutation_v1",
+        )
+
+    def test_competing_moves_follow_tick_permutation_not_low_agent_id(self) -> None:
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                seed=1,
+                width=3,
+                height=1,
+                max_agents=2,
+            )
+        )
+        left = self._place_ready_agent(
+            world,
+            x=0,
+            y=0,
+            lineage_id=1,
+            genome=self._mixed_genome(),
+        )
+        right = self._place_ready_agent(
+            world,
+            x=2,
+            y=0,
+            lineage_id=2,
+            genome=self._mixed_genome(),
+        )
+        seen_order: list[int] = []
+
+        def choose_scripted_action(
+            agent: Agent,
+            observation: dict[str, object] | None = None,
+        ) -> str:
+            seen_order.append(agent.agent_id)
+            return "move_east" if agent.agent_id == left.agent_id else "move_west"
+
+        with patch.object(world, "_choose_action", side_effect=choose_scripted_action):
+            world.run(mode=RunMode.SUMMARY_ONLY)
+
+        self.assertEqual(world.tick_action_order, [right.agent_id, left.agent_id])
+        self.assertEqual(seen_order, [right.agent_id, left.agent_id])
+        self.assertEqual((right.x, right.y), (1, 0))
+        self.assertEqual((left.x, left.y), (0, 0))
 
     def test_desperate_meat_policy_prioritizes_urgent_water_over_prey(self) -> None:
         navigation = self._empty_navigation()
@@ -375,6 +447,25 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
 
         self.assertEqual(decision.requested_action, "move_east")
 
+    def test_mixed_policy_seeks_nearby_carrion_when_well_fed(self) -> None:
+        navigation = self._empty_navigation()
+        navigation["carrion"] = {"dx": 2, "dy": 0, "distance": 2, "strength": 0.4}
+        navigation["plant"] = {"dx": -1, "dy": 0, "distance": 1, "strength": 1.0}
+
+        decision = ObservationHeuristicPolicy().decide(
+            self._policy_observation(
+                energy_ratio=0.96,
+                hydration_ratio=0.82,
+                navigation=navigation,
+                center_food=0.8,
+                trophic_role="omnivore",
+                meat_mode="mixed",
+            ),
+            self._policy_action_mask(),
+        )
+
+        self.assertEqual(decision.requested_action, "move_east")
+
     def test_mixed_policy_keeps_release_horizon_carrion_actionable(self) -> None:
         navigation = self._empty_navigation()
         navigation["carrion"] = {"dx": 10, "dy": 0, "distance": 10, "strength": 0.9}
@@ -459,6 +550,33 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
         decision = ObservationHeuristicPolicy().decide(observation, action_mask)
 
         self.assertEqual(decision.requested_action, "attack_east")
+
+    def test_mixed_policy_does_not_attack_when_fed_on_rich_plants(self) -> None:
+        observation = self._policy_observation(
+            energy_ratio=0.94,
+            hydration_ratio=0.86,
+            navigation=self._empty_navigation(),
+            center_food=0.9,
+            trophic_role="omnivore",
+            meat_mode="mixed",
+        )
+        observation["local_patch"].append(
+            self._policy_cell(
+                1,
+                0,
+                occupant="agent",
+                prey_biomass=1.0,
+                predator_risk=0.0,
+            )
+        )
+        action_mask = self._policy_action_mask()
+        for action in ("move_north", "move_south", "move_east", "move_west"):
+            action_mask[action] = False
+        action_mask["attack_east"] = True
+
+        decision = ObservationHeuristicPolicy().decide(observation, action_mask)
+
+        self.assertEqual(decision.requested_action, "stay")
 
     def test_desperate_meat_policy_conserves_instead_of_chasing_distant_prey(self) -> None:
         navigation = self._empty_navigation()

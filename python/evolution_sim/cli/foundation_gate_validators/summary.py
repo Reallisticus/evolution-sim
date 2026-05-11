@@ -713,11 +713,21 @@ def _summary_gate_flags(
                 alive_runs = int(mode_counts.get("alive_runs", 0))
                 if alive_runs <= 0:
                     continue
+                opportunity_runs = int(
+                    mode_counts.get("animal_resource_opportunity_runs", alive_runs)
+                )
+                if opportunity_runs <= 0:
+                    continue
                 no_consumption_runs = int(
                     mode_counts.get("no_animal_consumption_runs", 0)
                 )
-                consuming_runs = alive_runs - no_consumption_runs
-                consuming_run_share = consuming_runs / max(alive_runs, 1)
+                consuming_runs = int(
+                    mode_counts.get(
+                        "animal_resource_consuming_runs",
+                        alive_runs - no_consumption_runs,
+                    )
+                )
+                consuming_run_share = consuming_runs / max(opportunity_runs, 1)
                 floor = profile.min_animal_resource_consumption_run_share_by_mode
                 if consuming_run_share < floor:
                     flags.append(
@@ -731,7 +741,7 @@ def _summary_gate_flags(
                             (
                                 f"{mode} consuming-run share is below the floor of "
                                 f"{floor:.4f}: {consuming_run_share:.4f} "
-                                f"({consuming_runs}/{alive_runs})."
+                                f"({consuming_runs}/{opportunity_runs})."
                             ),
                         )
                     )
