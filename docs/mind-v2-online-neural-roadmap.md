@@ -965,7 +965,17 @@ criteria before it can replace more heuristic behavior:
     alive agents, and `124` labels attached to terminal-alive agents. Next work
     is opt-in torch/IQL consumption of these labels, not another diagnostic
     report.
-45. Add quality-diversity viewer diagnostics once policy lineages
+45. Opt-in torch/IQL consumption of carrion counterfactual labels is now wired
+    through `sim:mind:train` and `sim:mind:gate` with
+    `--torch-iql-counterfactual-labels`. Labels align by trajectory path and
+    record index so broad-plus-counterfactual training mixes can prepend broad
+    trajectories without losing the v33 labels. The trainer uses the labels for
+    row weights, rollout-terminal action-value supervision, and terminal
+    homeostatic viability supervision, and records matched-label/action-support
+    diagnostics in artifact training metrics. The next step is the bounded
+    torch/IQL candidate run on a torch-capable host; this is not a new default
+    controller or a promotion.
+46. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

@@ -1481,9 +1481,9 @@ Twelfth implementation milestone:
 
 Adjusted next tasks after the label result:
 
-1. Wire the counterfactual label report into an opt-in torch/IQL data path.
-   Keep the original trajectories as the transition source, but use the labels
-   for row weights, terminal/homeostatic constraints, and action-support
+1. The counterfactual label report is now wired into an opt-in torch/IQL data
+   path. Keep the original trajectories as the transition source, but use the
+   labels for row weights, terminal/homeostatic constraints, and action-support
    diagnostics. Do not change default Mind v3 runtime selection.
 2. Train one bounded torch/IQL candidate using broad trajectories plus these
    hydration-cycle labels. Acceptance remains broad 120 within about `1.0`
@@ -1493,6 +1493,30 @@ Adjusted next tasks after the label result:
 3. If the labeled torch/IQL slice cannot move carrion, stop this path and move
    to vectorized rollout/model-based training rather than adding another
    weight/anchor/search tweak.
+
+Thirteenth implementation milestone:
+
+- `sim:mind:train` and `sim:mind:gate` now accept
+  `--torch-iql-counterfactual-labels` plus
+  `--torch-iql-counterfactual-label-weight-scale` for `torch-discrete-iql`.
+  This is opt-in only; no default Mind v3 runtime, trainer, or promotion path
+  changes.
+- Training records now carry in-memory source path and dataset-record index
+  context, and the counterfactual labels align primarily by trajectory path and
+  record index. This avoids a silent miss when broad trajectories are prepended
+  to the counterfactual trajectories during mixed training.
+- The torch/IQL hook uses the label report for three signals: row weights,
+  auxiliary logged-action value targets from the rollout-terminal score, and
+  auxiliary terminal homeostatic viability targets for both the state viability
+  head and logged-action viability head. The artifact training metrics record
+  matched-label count, action support failures, terminal-alive label count,
+  animal-resource gain, source scripts, action counts, and label digest.
+- This slice still has not produced a trained torch candidate in the local CPU
+  environment. The next acceptance-bearing run is on a torch-capable machine:
+  train one candidate on broad trajectories plus
+  `output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json`,
+  then evaluate broad `120` and carrion-only fixture gates beside linear and
+  anchored neural.
 
 ## Promotion Boundary
 

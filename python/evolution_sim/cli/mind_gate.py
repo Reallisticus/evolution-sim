@@ -331,6 +331,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--torch-iql-counterfactual-labels",
+        type=Path,
+        help=(
+            "Opt in to Mind v3 carrion counterfactual label supervision for "
+            "torch-discrete-iql artifact training. The report must align "
+            "with one or more training or extra trajectories by path and "
+            "record index."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-counterfactual-label-weight-scale",
+        type=float,
+        help=(
+            "Non-negative row-weight multiplier scale for counterfactual "
+            "label supervision. Defaults to the torch-discrete-iql contract "
+            "value."
+        ),
+    )
+    parser.add_argument(
         "--max-alive-agents-mean-regression",
         type=float,
         default=DEFAULT_GATE_CRITERIA["max_alive_agents_mean_regression"],
@@ -498,6 +517,10 @@ def main() -> None:
         torch_iql_neural_actor_prior_blend_weight=(
             args.torch_iql_neural_actor_prior_blend_weight
         ),
+        torch_iql_counterfactual_labels=args.torch_iql_counterfactual_labels,
+        torch_iql_counterfactual_label_weight_scale=(
+            args.torch_iql_counterfactual_label_weight_scale
+        ),
         runtime_mode_comparisons=args.compare_runtime_mode,
         evaluation_workers=args.evaluation_workers,
         artifact_diagnostics_workers=args.artifact_diagnostics_workers,
@@ -541,6 +564,8 @@ def run_mind_gate(
     torch_iql_suppression_critic_calibration: bool = False,
     torch_iql_action_distribution_regularization: bool = False,
     torch_iql_neural_actor_prior_blend_weight: float | None = None,
+    torch_iql_counterfactual_labels: Path | None = None,
+    torch_iql_counterfactual_label_weight_scale: float | None = None,
     runtime_mode_comparisons: Sequence[str] | None = None,
     evaluation_workers: int = 1,
     artifact_diagnostics_workers: int = 1,
@@ -643,6 +668,13 @@ def run_mind_gate(
             f"count={len(calibration_validation_datasets)} paths="
             f"{[str(path) for path in calibration_validation_trajectory_paths]}"
         )
+    counterfactual_label_report = (
+        _load_json_report(torch_iql_counterfactual_labels)
+        if torch_iql_counterfactual_labels is not None
+        else None
+    )
+    if torch_iql_counterfactual_labels is not None:
+        _log(f"load counterfactual labels path={torch_iql_counterfactual_labels}")
     _record_phase_wall_seconds(
         phase_timings,
         phase="training_dataset_load",
@@ -693,6 +725,10 @@ def run_mind_gate(
         ),
         torch_iql_neural_actor_prior_blend_weight=(
             torch_iql_neural_actor_prior_blend_weight
+        ),
+        torch_iql_counterfactual_label_report=counterfactual_label_report,
+        torch_iql_counterfactual_label_weight_scale=(
+            torch_iql_counterfactual_label_weight_scale
         ),
     )
     _record_phase_wall_seconds(
@@ -948,6 +984,14 @@ def run_mind_gate(
             ),
             "torch_iql_neural_actor_prior_blend_weight": (
                 torch_iql_neural_actor_prior_blend_weight
+            ),
+            "torch_iql_counterfactual_labels": (
+                str(torch_iql_counterfactual_labels)
+                if torch_iql_counterfactual_labels is not None
+                else None
+            ),
+            "torch_iql_counterfactual_label_weight_scale": (
+                torch_iql_counterfactual_label_weight_scale
             ),
             "criteria": resolved_gate_criteria,
             "reference_guard_intervention_rate": reference_guard_intervention_rate,
@@ -1942,6 +1986,13 @@ def _float_or_none(payload: object) -> float | None:
     if isinstance(payload, bool) or not isinstance(payload, (int, float)):
         return None
     return round(float(payload), 4)
+
+
+def _load_json_report(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON report must be an object: {path}")
+    return payload
 
 
 def _log(message: str) -> None:

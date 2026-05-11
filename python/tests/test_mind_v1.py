@@ -48,6 +48,9 @@ from evolution_sim.mind.contracts import (
     mind_v1_data_contract,
 )
 from evolution_sim.mind.dataset import (
+    TRAJECTORY_DATASET_RECORD_INDEX_FIELD,
+    TRAJECTORY_EPISODE_ID_FIELD,
+    TRAJECTORY_SOURCE_PATH_FIELD,
     TrajectoryDatasetError,
     TrajectoryJsonlDataset,
     build_trajectory_transitions,
@@ -56,6 +59,9 @@ from evolution_sim.mind.dataset import (
     discounted_return_targets,
     load_trajectory_jsonl,
     records_with_trajectory_context,
+)
+from evolution_sim.mind.carrion_counterfactual_labels import (
+    MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION,
 )
 from evolution_sim.mind.diagnostics import (
     build_artifact_diagnostics,
@@ -233,6 +239,18 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             contract["torch_discrete_iql"]["model_type"],
             "guarded_torch_discrete_iql_v1",
+        )
+        counterfactual_supervision = contract["torch_discrete_iql"][
+            "counterfactual_label_supervision"
+        ]
+        self.assertFalse(counterfactual_supervision["enabled_by_default"])
+        self.assertEqual(
+            counterfactual_supervision["label_schema_version"],
+            MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            counterfactual_supervision["policy"],
+            "carrion_counterfactual_terminal_action_value_supervision_v1",
         )
         self.assertFalse(
             contract["torch_advantage_actor_critic"][
@@ -4387,6 +4405,23 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertEqual(args.torch_device, "auto")
 
+    def test_mind_train_parser_accepts_counterfactual_label_flags(self) -> None:
+        args = mind_train.build_parser().parse_args(
+            [
+                "--trajectory",
+                "trajectory.jsonl.gz",
+                "--trainer",
+                "torch-discrete-iql",
+                "--torch-iql-counterfactual-labels",
+                "labels.json",
+                "--torch-iql-counterfactual-label-weight-scale",
+                "3.5",
+            ]
+        )
+
+        self.assertEqual(args.torch_iql_counterfactual_labels, Path("labels.json"))
+        self.assertEqual(args.torch_iql_counterfactual_label_weight_scale, 3.5)
+
     def test_mind_gate_parser_accepts_torch_device_flag(self) -> None:
         args = mind_gate.build_parser().parse_args(
             [
@@ -4398,6 +4433,21 @@ class MindV1Tests(unittest.TestCase):
         )
 
         self.assertEqual(args.torch_device, "cuda")
+
+    def test_mind_gate_parser_accepts_counterfactual_label_flags(self) -> None:
+        args = mind_gate.build_parser().parse_args(
+            [
+                "--trainer",
+                "torch-discrete-iql",
+                "--torch-iql-counterfactual-labels",
+                "labels.json",
+                "--torch-iql-counterfactual-label-weight-scale",
+                "2.25",
+            ]
+        )
+
+        self.assertEqual(args.torch_iql_counterfactual_labels, Path("labels.json"))
+        self.assertEqual(args.torch_iql_counterfactual_label_weight_scale, 2.25)
 
     def test_mind_gate_parser_accepts_evaluation_workers_flag(self) -> None:
         args = mind_gate.build_parser().parse_args(
@@ -4432,6 +4482,101 @@ class MindV1Tests(unittest.TestCase):
                     trainer="contextual-prior",
                     torch_device="cuda",
                 )
+
+    def test_torch_counterfactual_labels_are_rejected_for_non_iql_trainer(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+            with self.assertRaisesRegex(ValueError, "counterfactual_label_report"):
+                train_baseline_with_trainer(
+                    dataset.records,
+                    provenance=dataset_provenance(dataset),
+                    trainer="contextual-prior",
+                    torch_iql_counterfactual_label_report={
+                        "schema_version": (
+                            MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION
+                        ),
+                        "labels": [],
+                    },
+                )
+
+    def test_torch_counterfactual_labels_weight_matching_training_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            records = tuple(records_with_trajectory_context([dataset]))
+            transitions = build_trajectory_transitions(records)
+            action = transitions[0].action
+            label_report = {
+                "schema_version": MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION,
+                "source": {"trajectory_paths": [str(trajectory_path)]},
+                "aggregate": {"label_count": 1},
+                "labels": [
+                    {
+                        "episode_id": records[0][TRAJECTORY_EPISODE_ID_FIELD],
+                        "dataset_record_index": records[0][
+                            TRAJECTORY_DATASET_RECORD_INDEX_FIELD
+                        ],
+                        "trajectory_path": records[0][TRAJECTORY_SOURCE_PATH_FIELD],
+                        "tick": records[0]["tick"],
+                        "agent_id": records[0]["agent_id"],
+                        "source_script": "hydration_safe_carrion_cycle",
+                        "action_support": {
+                            "logged_action": action,
+                            "logged_action_legal": True,
+                        },
+                        "rollout_terminal_target": {
+                            "terminal_alive": True,
+                            "terminal_state": {
+                                "energy_ratio": 0.72,
+                                "hydration_ratio": 0.81,
+                                "health_ratio": 0.91,
+                                "matched_diet_ratio": 1.0,
+                            },
+                            "animal_resource_gain_to_terminal": 1.25,
+                            "action_value": {"score": 0.75},
+                        },
+                    }
+                ],
+            }
+
+        supervision = mind_torch_trainer._counterfactual_label_supervision(
+            records,
+            transitions,
+            label_report,
+            action_index={
+                action_name: index
+                for index, action_name in enumerate(ACTION_NAMES)
+            },
+            weight_scale=2.0,
+        )
+
+        self.assertEqual(
+            supervision["diagnostics"]["matched_record_count"],
+            1,
+        )
+        self.assertEqual(
+            supervision["diagnostics"]["source_script_counts"],
+            {"hydration_safe_carrion_cycle": 1},
+        )
+        self.assertEqual(supervision["sample_weights"][0], 2.5)
+        self.assertEqual(supervision["loss_weights"][0], 2.5)
+        self.assertEqual(supervision["action_value_targets"][0], 0.75)
+        self.assertTrue(
+            all(weight == 1.0 for weight in supervision["sample_weights"][1:])
+        )
+        logged_action_index = ACTION_NAMES.index(action)
+        self.assertEqual(
+            supervision["action_viability_observed"][0][logged_action_index],
+            tuple(1.0 for _ in VIABILITY_COMPONENT_NAMES),
+        )
+        self.assertEqual(
+            supervision["viability_targets"][0],
+            tuple(0.0 for _ in VIABILITY_COMPONENT_NAMES),
+        )
 
     @unittest.skipUnless(
         importlib.util.find_spec("torch"),

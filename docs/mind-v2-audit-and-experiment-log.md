@@ -1579,6 +1579,19 @@ should make the learner stronger and easier to evaluate.
     is `119`; the rollout-terminal target exists specifically to avoid losing
     those positive labels. Next work should wire this report into an opt-in
     torch/IQL data path for row weighting and terminal/homeostatic constraints.
+52. The opt-in torch/IQL counterfactual-label data path is implemented.
+    `sim:mind:train` and `sim:mind:gate` now accept
+    `--torch-iql-counterfactual-labels` for `torch-discrete-iql`, plus a
+    non-default row-weight scale override. The hook aligns labels by
+    trajectory path and dataset-record index, then adds label-derived row
+    weights, rollout-terminal logged-action value targets, state viability
+    targets, and logged-action viability targets. Artifact training metrics now
+    include matched label counts, action-support failures, terminal-alive label
+    count, source scripts, action counts, animal-resource gain, and label
+    digest. This is still not a result claim: no torch candidate has been
+    trained or evaluated in this slice. The next run should train one bounded
+    candidate on broad trajectories plus the v33 hydration-cycle labels and
+    accept it only if carrion-only blockers move without broad 120 regression.
 
 ### GPU / CUDA Boundary
 

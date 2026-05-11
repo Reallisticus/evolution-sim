@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from evolution_sim.mind.artifacts import write_model_artifact
@@ -171,6 +172,24 @@ def build_parser() -> argparse.ArgumentParser:
             "authority; the default remains the artifact contract value."
         ),
     )
+    parser.add_argument(
+        "--torch-iql-counterfactual-labels",
+        type=Path,
+        help=(
+            "Opt in to Mind v3 carrion counterfactual label supervision for "
+            "torch-discrete-iql. The report must align with one or more "
+            "training trajectories by path and record index."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-counterfactual-label-weight-scale",
+        type=float,
+        help=(
+            "Non-negative row-weight multiplier scale for counterfactual "
+            "label supervision. Defaults to the torch-discrete-iql contract "
+            "value."
+        ),
+    )
     return parser
 
 
@@ -195,6 +214,11 @@ def main() -> None:
         records_with_trajectory_context(calibration_validation_datasets)
         if calibration_validation_datasets
         else ()
+    )
+    counterfactual_label_report = (
+        _load_json_report(args.torch_iql_counterfactual_labels)
+        if args.torch_iql_counterfactual_labels is not None
+        else None
     )
     baseline = train_baseline_with_trainer(
         records,
@@ -233,6 +257,10 @@ def main() -> None:
         ),
         torch_iql_neural_actor_prior_blend_weight=(
             args.torch_iql_neural_actor_prior_blend_weight
+        ),
+        torch_iql_counterfactual_label_report=counterfactual_label_report,
+        torch_iql_counterfactual_label_weight_scale=(
+            args.torch_iql_counterfactual_label_weight_scale
         ),
         torch_device=args.torch_device,
     )
@@ -309,6 +337,15 @@ def main() -> None:
             "calibration_validation_trajectories="
             f"{len(calibration_validation_datasets)}"
         )
+    if args.torch_iql_counterfactual_labels is not None:
+        print(f"torch_iql_counterfactual_labels={args.torch_iql_counterfactual_labels}")
+
+
+def _load_json_report(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON report must be an object: {path}")
+    return payload
 
 
 if __name__ == "__main__":

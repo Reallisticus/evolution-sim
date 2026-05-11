@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Iterable
 
@@ -55,6 +55,7 @@ from evolution_sim.mind.neural import (
 )
 from evolution_sim.mind.provenance import validate_dataset_provenance
 from evolution_sim.mind.torch_trainer import (
+    TORCH_IQL_COUNTERFACTUAL_LABEL_DEFAULT_WEIGHT_SCALE,
     train_torch_actor_critic_network,
     train_torch_advantage_actor_critic_network,
     train_torch_discrete_iql_network,
@@ -527,6 +528,10 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
     calibration_validation_records: Iterable[dict[str, object]] | None = None,
     return_calibration: bool = False,
     suppression_critic_calibration: bool = False,
+    counterfactual_label_report: Mapping[str, object] | None = None,
+    counterfactual_label_weight_scale: float = (
+        TORCH_IQL_COUNTERFACTUAL_LABEL_DEFAULT_WEIGHT_SCALE
+    ),
     neural_actor_prior_blend_weight: float = NEURAL_ACTOR_PRIOR_BLEND_WEIGHT,
     torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
@@ -586,6 +591,8 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
             ),
             return_calibration=return_calibration,
             suppression_critic_calibration=suppression_critic_calibration,
+            counterfactual_label_report=counterfactual_label_report,
+            counterfactual_label_weight_scale=counterfactual_label_weight_scale,
             torch_device=torch_device,
         )
 
@@ -797,6 +804,8 @@ def train_baseline_with_trainer(
     torch_iql_return_calibration: bool = False,
     torch_iql_suppression_critic_calibration: bool = False,
     torch_iql_neural_actor_prior_blend_weight: float | None = None,
+    torch_iql_counterfactual_label_report: Mapping[str, object] | None = None,
+    torch_iql_counterfactual_label_weight_scale: float | None = None,
     torch_device: str = "cpu",
 ) -> BehaviorCloningBaseline:
     if torch_device not in {"cpu", "cuda", "mps", "auto"}:
@@ -929,10 +938,36 @@ def train_baseline_with_trainer(
             "torch_iql_neural_actor_prior_blend_weight is only supported by "
             f"{TORCH_DISCRETE_IQL_TRAINER!r}"
         )
+    if (
+        torch_iql_counterfactual_label_report is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_counterfactual_label_report is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_counterfactual_label_report is not None
+        and not isinstance(torch_iql_counterfactual_label_report, Mapping)
+    ):
+        raise ValueError("torch_iql_counterfactual_label_report must be a mapping")
+    if (
+        torch_iql_counterfactual_label_weight_scale is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_counterfactual_label_weight_scale is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
     if torch_iql_neural_actor_prior_blend_weight is not None:
         _validate_neural_actor_prior_blend_weight(
             torch_iql_neural_actor_prior_blend_weight,
             option_name="torch_iql_neural_actor_prior_blend_weight",
+        )
+    if torch_iql_counterfactual_label_weight_scale is not None:
+        _validate_counterfactual_label_weight_scale(
+            torch_iql_counterfactual_label_weight_scale,
+            option_name="torch_iql_counterfactual_label_weight_scale",
         )
     if trainer == CONTEXTUAL_PRIOR_TRAINER:
         return train_behavior_cloning_baseline(records, provenance=provenance)
@@ -1006,6 +1041,12 @@ def train_baseline_with_trainer(
             suppression_critic_calibration=(
                 torch_iql_suppression_critic_calibration
             ),
+            counterfactual_label_report=torch_iql_counterfactual_label_report,
+            counterfactual_label_weight_scale=(
+                torch_iql_counterfactual_label_weight_scale
+                if torch_iql_counterfactual_label_weight_scale is not None
+                else TORCH_IQL_COUNTERFACTUAL_LABEL_DEFAULT_WEIGHT_SCALE
+            ),
             neural_actor_prior_blend_weight=(
                 torch_iql_neural_actor_prior_blend_weight
                 if torch_iql_neural_actor_prior_blend_weight is not None
@@ -1034,6 +1075,19 @@ def _validate_neural_actor_prior_blend_weight(
         raise ValueError(f"{option_name} must be finite")
     if float(value) < 0.0 or float(value) > 1.0:
         raise ValueError(f"{option_name} must be in [0.0, 1.0]")
+
+
+def _validate_counterfactual_label_weight_scale(
+    value: float,
+    *,
+    option_name: str,
+) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{option_name} must be a finite number")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{option_name} must be finite")
+    if float(value) < 0.0:
+        raise ValueError(f"{option_name} must be non-negative")
 
 
 def _train_contextual_prior_baseline(

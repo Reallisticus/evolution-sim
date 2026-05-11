@@ -4,6 +4,8 @@ import importlib.metadata as importlib_metadata
 import math
 import platform
 from collections import Counter
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
@@ -12,7 +14,13 @@ from evolution_sim.env.runtime.observations import (
     decode_observation_input,
 )
 from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
+from evolution_sim.mind.carrion_counterfactual_labels import (
+    MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION,
+)
 from evolution_sim.mind.dataset import (
+    TRAJECTORY_DATASET_RECORD_INDEX_FIELD,
+    TRAJECTORY_EPISODE_ID_FIELD,
+    TRAJECTORY_SOURCE_PATH_FIELD,
     build_trajectory_transitions,
     discounted_return_targets,
 )
@@ -61,11 +69,14 @@ from evolution_sim.mind.neural import (
     _record_observation_values,
     _record_reward_total,
 )
+from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.learned_policy import (
     HEURISTIC_DELEGATE_POLICY,
     HEURISTIC_GUARD_POLICY,
 )
 from evolution_sim.mind.viability import (
+    VIABILITY_FLOOR_RISK_RATIO,
+    VIABILITY_HEALTH_FLOOR_RISK_RATIO,
     VIABILITY_ACTION_HEAD_POLICY,
     VIABILITY_ACTION_SUPERVISION_POLICY,
     VIABILITY_COMPONENT_NAMES,
@@ -177,6 +188,16 @@ TORCH_IQL_SUPPRESSION_CRITIC_CALIBRATION_POLICY = (
 TORCH_IQL_SUPPRESSION_CRITIC_CALIBRATION_LOSS_WEIGHT = 0.12
 TORCH_IQL_SUPPRESSION_CRITIC_CALIBRATION_MARGIN = 0.05
 TORCH_IQL_SUPPRESSION_CRITIC_STATE_ADVANTAGE_WEIGHT = 0.5
+TORCH_IQL_COUNTERFACTUAL_LABEL_SUPERVISION_POLICY = (
+    "carrion_counterfactual_terminal_action_value_supervision_v1"
+)
+TORCH_IQL_COUNTERFACTUAL_LABEL_WEIGHT_POLICY = (
+    "one_plus_terminal_value_weight_scale_v1"
+)
+TORCH_IQL_COUNTERFACTUAL_LABEL_DEFAULT_WEIGHT_SCALE = 2.0
+TORCH_IQL_COUNTERFACTUAL_ACTION_VALUE_LOSS_WEIGHT = 0.08
+TORCH_IQL_COUNTERFACTUAL_VIABILITY_LOSS_WEIGHT = 0.05
+TORCH_IQL_COUNTERFACTUAL_ACTION_VIABILITY_LOSS_WEIGHT = 0.05
 
 
 def train_torch_actor_critic_network(
@@ -219,6 +240,10 @@ def train_torch_discrete_iql_network(
     calibration_validation_records: tuple[dict[str, object], ...] | None = None,
     return_calibration: bool = False,
     suppression_critic_calibration: bool = False,
+    counterfactual_label_report: Mapping[str, object] | None = None,
+    counterfactual_label_weight_scale: float = (
+        TORCH_IQL_COUNTERFACTUAL_LABEL_DEFAULT_WEIGHT_SCALE
+    ),
     torch_device: str = "cpu",
 ) -> dict[str, object]:
     torch = _load_torch()
@@ -289,13 +314,28 @@ def train_torch_discrete_iql_network(
         _action_mask_values(transition.action_mask)
         for transition in transitions
     ]
+    counterfactual_supervision = _counterfactual_label_supervision(
+        records,
+        transitions,
+        counterfactual_label_report,
+        action_index=action_index,
+        weight_scale=counterfactual_label_weight_scale,
+    )
     guard_feedback = [
         _guard_feedback_record(transition, action_index=action_index)
         for transition in transitions
     ]
-    replay_weights = [
+    base_replay_weights = [
         _replay_weight_record(transition)
         for transition in transitions
+    ]
+    replay_weights = [
+        base_weight * counterfactual_weight
+        for base_weight, counterfactual_weight in zip(
+            base_replay_weights,
+            counterfactual_supervision["sample_weights"],  # type: ignore[index]
+            strict=True,
+        )
     ]
     online_feedback = [
         _online_update_feedback_record(transition, action_index=action_index)
@@ -424,6 +464,36 @@ def train_torch_discrete_iql_network(
         dtype=torch.float32,
         device=device,
     )
+    counterfactual_loss_weight_tensor = torch.tensor(
+        counterfactual_supervision["loss_weights"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    )
+    counterfactual_action_value_target_tensor = torch.tensor(
+        counterfactual_supervision["action_value_targets"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    ).unsqueeze(1)
+    counterfactual_viability_target_tensor = torch.tensor(
+        counterfactual_supervision["viability_targets"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    )
+    counterfactual_viability_observed_tensor = torch.tensor(
+        counterfactual_supervision["viability_observed"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    )
+    counterfactual_action_viability_target_tensor = torch.tensor(
+        counterfactual_supervision["action_viability_targets"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    )
+    counterfactual_action_viability_observed_tensor = torch.tensor(
+        counterfactual_supervision["action_viability_observed"],  # type: ignore[index]
+        dtype=torch.float32,
+        device=device,
+    )
     viability_pos_weights = _viability_positive_weights(
         torch,
         viability_targets,
@@ -455,6 +525,9 @@ def train_torch_discrete_iql_network(
     final_online_update_feedback_loss = 0.0
     final_return_calibration_loss = 0.0
     final_suppression_critic_calibration_loss = 0.0
+    final_counterfactual_action_value_loss = 0.0
+    final_counterfactual_viability_loss = 0.0
+    final_counterfactual_action_viability_loss = 0.0
     final_action_distribution_loss = 0.0
     final_risk_adjusted_actor_loss = 0.0
     final_calibrated_supported_actor_loss = 0.0
@@ -624,6 +697,14 @@ def train_torch_discrete_iql_network(
                 guard_feedback_weights,
             )
         )
+        counterfactual_action_value_loss = _weighted_mean(
+            torch.nn.functional.mse_loss(
+                selected_action_values,
+                counterfactual_action_value_target_tensor,
+                reduction="none",
+            ),
+            counterfactual_loss_weight_tensor.unsqueeze(1),
+        )
         viability_component_losses = (
             torch.nn.functional.binary_cross_entropy_with_logits(
                 viability_logits,
@@ -637,6 +718,18 @@ def train_torch_discrete_iql_network(
             viability_observed_tensor,
             replay_weight_tensor,
         )
+        counterfactual_viability_component_losses = (
+            torch.nn.functional.binary_cross_entropy_with_logits(
+                viability_logits,
+                counterfactual_viability_target_tensor,
+                reduction="none",
+            )
+        )
+        counterfactual_viability_loss = _masked_component_mean(
+            counterfactual_viability_component_losses,
+            counterfactual_viability_observed_tensor,
+            counterfactual_loss_weight_tensor,
+        )
         action_viability_component_losses = (
             torch.nn.functional.binary_cross_entropy_with_logits(
                 action_viability_logits,
@@ -649,6 +742,18 @@ def train_torch_discrete_iql_network(
             action_viability_component_losses,
             action_viability_observed_tensor,
             replay_weight_tensor,
+        )
+        counterfactual_action_viability_component_losses = (
+            torch.nn.functional.binary_cross_entropy_with_logits(
+                action_viability_logits,
+                counterfactual_action_viability_target_tensor,
+                reduction="none",
+            )
+        )
+        counterfactual_action_viability_loss = _masked_action_component_mean(
+            counterfactual_action_viability_component_losses,
+            counterfactual_action_viability_observed_tensor,
+            counterfactual_loss_weight_tensor,
         )
         loss = (
             TORCH_IQL_ACTOR_LOSS_WEIGHT * actor_loss
@@ -673,6 +778,12 @@ def train_torch_discrete_iql_network(
                 else 0.0
             )
             * suppression_critic_calibration_loss
+            + TORCH_IQL_COUNTERFACTUAL_ACTION_VALUE_LOSS_WEIGHT
+            * counterfactual_action_value_loss
+            + TORCH_IQL_COUNTERFACTUAL_VIABILITY_LOSS_WEIGHT
+            * counterfactual_viability_loss
+            + TORCH_IQL_COUNTERFACTUAL_ACTION_VIABILITY_LOSS_WEIGHT
+            * counterfactual_action_viability_loss
             + TORCH_IQL_Q_LOSS_WEIGHT * q_loss
             + TORCH_IQL_VALUE_LOSS_WEIGHT * value_loss
             + TORCH_IQL_CQL_LOSS_WEIGHT * cql_loss
@@ -720,6 +831,15 @@ def train_torch_discrete_iql_network(
         )
         final_suppression_critic_calibration_loss = float(
             suppression_critic_calibration_loss.detach().cpu().item()
+        )
+        final_counterfactual_action_value_loss = float(
+            counterfactual_action_value_loss.detach().cpu().item()
+        )
+        final_counterfactual_viability_loss = float(
+            counterfactual_viability_loss.detach().cpu().item()
+        )
+        final_counterfactual_action_viability_loss = float(
+            counterfactual_action_viability_loss.detach().cpu().item()
         )
         final_risk_adjusted_actor_loss = float(
             risk_adjusted_actor_loss.detach().cpu().item()
@@ -1072,6 +1192,15 @@ def train_torch_discrete_iql_network(
         "final_suppression_critic_calibration_loss": _round(
             final_suppression_critic_calibration_loss
         ),
+        "final_counterfactual_action_value_loss": _round(
+            final_counterfactual_action_value_loss
+        ),
+        "final_counterfactual_viability_loss": _round(
+            final_counterfactual_viability_loss
+        ),
+        "final_counterfactual_action_viability_loss": _round(
+            final_counterfactual_action_viability_loss
+        ),
         "final_action_distribution_loss": _round(
             final_action_distribution_loss
         ),
@@ -1145,6 +1274,30 @@ def train_torch_discrete_iql_network(
             )
             if guard_feedback
             else 0.0
+        ),
+        "counterfactual_label_supervision": (
+            counterfactual_supervision["diagnostics"]
+        ),
+        "counterfactual_label_supervision_enabled": (
+            counterfactual_label_report is not None
+        ),
+        "counterfactual_label_supervision_policy": (
+            TORCH_IQL_COUNTERFACTUAL_LABEL_SUPERVISION_POLICY
+        ),
+        "counterfactual_label_weight_policy": (
+            TORCH_IQL_COUNTERFACTUAL_LABEL_WEIGHT_POLICY
+        ),
+        "counterfactual_label_weight_scale": _round(
+            counterfactual_label_weight_scale
+        ),
+        "counterfactual_action_value_loss_weight": (
+            TORCH_IQL_COUNTERFACTUAL_ACTION_VALUE_LOSS_WEIGHT
+        ),
+        "counterfactual_viability_loss_weight": (
+            TORCH_IQL_COUNTERFACTUAL_VIABILITY_LOSS_WEIGHT
+        ),
+        "counterfactual_action_viability_loss_weight": (
+            TORCH_IQL_COUNTERFACTUAL_ACTION_VIABILITY_LOSS_WEIGHT
         ),
         "critic_regularization_policy": TORCH_IQL_CQL_REGULARIZATION_POLICY,
         "critic_regularization_enabled": TORCH_IQL_CQL_LOSS_WEIGHT > 0.0,
@@ -1799,6 +1952,426 @@ def _train_torch_actor_critic_network(
         training_metrics=training_metrics,
         torch_device_metadata=torch_device_metadata,
     )
+
+
+def _counterfactual_label_supervision(
+    records: tuple[dict[str, object], ...],
+    transitions: tuple[Any, ...],
+    label_report: Mapping[str, object] | None,
+    *,
+    action_index: Mapping[str, int],
+    weight_scale: float,
+) -> dict[str, object]:
+    row_count = len(records)
+    _validate_counterfactual_weight_scale(weight_scale)
+    empty = _empty_counterfactual_label_supervision(
+        row_count,
+        weight_scale=weight_scale,
+    )
+    if label_report is None:
+        return empty
+    if (
+        label_report.get("schema_version")
+        != MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "counterfactual label report has unsupported schema_version"
+        )
+    labels_payload = label_report.get("labels")
+    if not isinstance(labels_payload, list):
+        raise ValueError("counterfactual label report labels must be a list")
+
+    label_lookup: dict[tuple[object, ...], Mapping[str, object]] = {}
+    duplicate_label_count = 0
+    usable_label_count = 0
+    for payload in labels_payload:
+        if not isinstance(payload, Mapping):
+            continue
+        keys = _counterfactual_label_lookup_keys(payload)
+        if not keys:
+            continue
+        usable_label_count += 1
+        for key in keys:
+            if key in label_lookup:
+                duplicate_label_count += 1
+                continue
+            label_lookup[key] = payload
+
+    sample_weights = list(empty["sample_weights"])  # type: ignore[arg-type]
+    loss_weights = list(empty["loss_weights"])  # type: ignore[arg-type]
+    action_value_targets = list(
+        empty["action_value_targets"]  # type: ignore[arg-type]
+    )
+    viability_targets = [
+        list(row)
+        for row in empty["viability_targets"]  # type: ignore[union-attr]
+    ]
+    viability_observed = [
+        list(row)
+        for row in empty["viability_observed"]  # type: ignore[union-attr]
+    ]
+    action_viability_targets = [
+        [list(components) for components in row]
+        for row in empty["action_viability_targets"]  # type: ignore[union-attr]
+    ]
+    action_viability_observed = [
+        [list(components) for components in row]
+        for row in empty["action_viability_observed"]  # type: ignore[union-attr]
+    ]
+
+    matched_count = 0
+    action_mismatch_count = 0
+    illegal_logged_action_count = 0
+    terminal_alive_count = 0
+    value_scores: list[float] = []
+    sample_weight_values: list[float] = []
+    animal_resource_gain_total = 0.0
+    action_counts: Counter[str] = Counter()
+    script_counts: Counter[str] = Counter()
+    viability_positive_counts: Counter[str] = Counter()
+    record_label_misses = 0
+    for row_index, (record, transition) in enumerate(
+        zip(records, transitions, strict=True)
+    ):
+        label = _counterfactual_label_for_record(record, label_lookup)
+        if label is None:
+            record_label_misses += 1
+            continue
+        action_support = _mapping(label.get("action_support"))
+        logged_action = str(action_support.get("logged_action", ""))
+        if logged_action != str(transition.action):
+            action_mismatch_count += 1
+            continue
+        if action_support.get("logged_action_legal") is not True:
+            illegal_logged_action_count += 1
+            continue
+        target = _counterfactual_terminal_target(label)
+        value_score = _counterfactual_target_value_score(target)
+        row_weight = 1.0 + float(weight_scale) * value_score
+        sample_weights[row_index] = row_weight
+        loss_weights[row_index] = row_weight
+        action_value_targets[row_index] = value_score
+        matched_count += 1
+        value_scores.append(value_score)
+        sample_weight_values.append(row_weight)
+        action_counts[logged_action] += 1
+        script = label.get("source_script")
+        if isinstance(script, str) and script:
+            script_counts[script] += 1
+        if target.get("terminal_alive") is True:
+            terminal_alive_count += 1
+        animal_resource_gain_total += _finite_float(
+            target.get("animal_resource_gain_to_terminal"),
+            default=0.0,
+        )
+        component_targets, component_observed = (
+            _counterfactual_viability_components(target, action_support)
+        )
+        logged_action_index = action_index[logged_action]
+        for component_index, component in enumerate(VIABILITY_COMPONENT_NAMES):
+            if not component_observed[component_index]:
+                continue
+            target_value = component_targets[component_index]
+            viability_targets[row_index][component_index] = target_value
+            viability_observed[row_index][component_index] = 1.0
+            action_viability_targets[row_index][logged_action_index][
+                component_index
+            ] = target_value
+            action_viability_observed[row_index][logged_action_index][
+                component_index
+            ] = 1.0
+            if target_value > 0.0:
+                viability_positive_counts[component] += 1
+
+    if matched_count <= 0:
+        raise ValueError(
+            "counterfactual label report did not match any training records"
+        )
+
+    diagnostics = {
+        "schema_version": MIND_V3_CARRION_COUNTERFACTUAL_LABEL_SCHEMA_VERSION,
+        "policy": TORCH_IQL_COUNTERFACTUAL_LABEL_SUPERVISION_POLICY,
+        "label_report_digest": stable_payload_digest(
+            {
+                "schema_version": label_report.get("schema_version"),
+                "source": label_report.get("source"),
+                "aggregate": label_report.get("aggregate"),
+                "label_count": len(labels_payload),
+            }
+        ),
+        "label_report_label_count": len(labels_payload),
+        "usable_label_count": usable_label_count,
+        "duplicate_lookup_key_count": duplicate_label_count,
+        "training_record_count": row_count,
+        "matched_record_count": matched_count,
+        "matched_record_rate": _round(matched_count / float(row_count))
+        if row_count
+        else 0.0,
+        "unmatched_record_count": record_label_misses,
+        "action_mismatch_count": action_mismatch_count,
+        "illegal_logged_action_count": illegal_logged_action_count,
+        "terminal_alive_label_count": terminal_alive_count,
+        "terminal_alive_label_rate": _round(
+            terminal_alive_count / float(matched_count)
+        ),
+        "animal_resource_gain_to_terminal_total": _round(
+            animal_resource_gain_total
+        ),
+        "action_value_score_mean": _safe_mean(value_scores),
+        "action_value_score_min": _round(min(value_scores)),
+        "action_value_score_max": _round(max(value_scores)),
+        "sample_weight_mean": _safe_mean(sample_weight_values),
+        "sample_weight_min": _round(min(sample_weight_values)),
+        "sample_weight_max": _round(max(sample_weight_values)),
+        "action_counts": dict(sorted(action_counts.items())),
+        "source_script_counts": dict(sorted(script_counts.items())),
+        "viability_positive_counts": dict(
+            sorted(viability_positive_counts.items())
+        ),
+        "weight_policy": TORCH_IQL_COUNTERFACTUAL_LABEL_WEIGHT_POLICY,
+        "weight_scale": _round(weight_scale),
+    }
+    return {
+        "sample_weights": tuple(sample_weights),
+        "loss_weights": tuple(loss_weights),
+        "action_value_targets": tuple(action_value_targets),
+        "viability_targets": tuple(tuple(row) for row in viability_targets),
+        "viability_observed": tuple(tuple(row) for row in viability_observed),
+        "action_viability_targets": tuple(
+            tuple(tuple(components) for components in row)
+            for row in action_viability_targets
+        ),
+        "action_viability_observed": tuple(
+            tuple(tuple(components) for components in row)
+            for row in action_viability_observed
+        ),
+        "diagnostics": diagnostics,
+    }
+
+
+def _empty_counterfactual_label_supervision(
+    row_count: int,
+    *,
+    weight_scale: float,
+) -> dict[str, object]:
+    component_count = len(VIABILITY_COMPONENT_NAMES)
+    action_count = len(ACTION_NAMES)
+    return {
+        "sample_weights": tuple(1.0 for _ in range(row_count)),
+        "loss_weights": tuple(0.0 for _ in range(row_count)),
+        "action_value_targets": tuple(0.0 for _ in range(row_count)),
+        "viability_targets": tuple(
+            tuple(0.0 for _ in range(component_count))
+            for _ in range(row_count)
+        ),
+        "viability_observed": tuple(
+            tuple(0.0 for _ in range(component_count))
+            for _ in range(row_count)
+        ),
+        "action_viability_targets": tuple(
+            tuple(
+                tuple(0.0 for _ in range(component_count))
+                for _ in range(action_count)
+            )
+            for _ in range(row_count)
+        ),
+        "action_viability_observed": tuple(
+            tuple(
+                tuple(0.0 for _ in range(component_count))
+                for _ in range(action_count)
+            )
+            for _ in range(row_count)
+        ),
+        "diagnostics": {
+            "schema_version": None,
+            "policy": TORCH_IQL_COUNTERFACTUAL_LABEL_SUPERVISION_POLICY,
+            "label_report_digest": None,
+            "label_report_label_count": 0,
+            "usable_label_count": 0,
+            "duplicate_lookup_key_count": 0,
+            "training_record_count": row_count,
+            "matched_record_count": 0,
+            "matched_record_rate": 0.0,
+            "unmatched_record_count": row_count,
+            "action_mismatch_count": 0,
+            "illegal_logged_action_count": 0,
+            "terminal_alive_label_count": 0,
+            "terminal_alive_label_rate": 0.0,
+            "animal_resource_gain_to_terminal_total": 0.0,
+            "action_value_score_mean": None,
+            "action_value_score_min": None,
+            "action_value_score_max": None,
+            "sample_weight_mean": None,
+            "sample_weight_min": None,
+            "sample_weight_max": None,
+            "action_counts": {},
+            "source_script_counts": {},
+            "viability_positive_counts": {},
+            "weight_policy": TORCH_IQL_COUNTERFACTUAL_LABEL_WEIGHT_POLICY,
+            "weight_scale": _round(weight_scale),
+        },
+    }
+
+
+def _counterfactual_label_for_record(
+    record: Mapping[str, object],
+    label_lookup: Mapping[tuple[object, ...], Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    for key in _counterfactual_record_lookup_keys(record):
+        label = label_lookup.get(key)
+        if label is not None:
+            return label
+    return None
+
+
+def _counterfactual_label_lookup_keys(
+    label: Mapping[str, object],
+) -> tuple[tuple[object, ...], ...]:
+    keys: list[tuple[object, ...]] = []
+    dataset_record_index = _optional_int(label.get("dataset_record_index"))
+    trajectory_path = _optional_string(label.get("trajectory_path"))
+    if trajectory_path is not None and dataset_record_index is not None:
+        for path in _path_lookup_variants(trajectory_path):
+            keys.append(("path-record", path, dataset_record_index))
+    episode_id = _optional_string(label.get("episode_id"))
+    tick = _optional_int(label.get("tick"))
+    agent_id = _optional_int(label.get("agent_id"))
+    if episode_id is not None and tick is not None and agent_id is not None:
+        keys.append(("episode-tick-agent", episode_id, tick, agent_id))
+    return tuple(dict.fromkeys(keys))
+
+
+def _counterfactual_record_lookup_keys(
+    record: Mapping[str, object],
+) -> tuple[tuple[object, ...], ...]:
+    keys: list[tuple[object, ...]] = []
+    dataset_record_index = _optional_int(
+        record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD)
+    )
+    trajectory_path = _optional_string(record.get(TRAJECTORY_SOURCE_PATH_FIELD))
+    if trajectory_path is not None and dataset_record_index is not None:
+        for path in _path_lookup_variants(trajectory_path):
+            keys.append(("path-record", path, dataset_record_index))
+    episode_id = _optional_string(record.get(TRAJECTORY_EPISODE_ID_FIELD))
+    tick = _optional_int(record.get("tick"))
+    agent_id = _optional_int(record.get("agent_id"))
+    if episode_id is not None and tick is not None and agent_id is not None:
+        keys.append(("episode-tick-agent", episode_id, tick, agent_id))
+    return tuple(dict.fromkeys(keys))
+
+
+def _path_lookup_variants(value: str) -> tuple[str, ...]:
+    raw = str(value)
+    try:
+        resolved = str(Path(raw).resolve(strict=False))
+    except OSError:
+        return (raw,)
+    return tuple(dict.fromkeys((raw, resolved)))
+
+
+def _counterfactual_terminal_target(
+    label: Mapping[str, object],
+) -> Mapping[str, object]:
+    rollout = _mapping(label.get("rollout_terminal_target"))
+    if rollout:
+        return rollout
+    return _mapping(label.get("primary_target"))
+
+
+def _counterfactual_target_value_score(target: Mapping[str, object]) -> float:
+    action_value = _mapping(target.get("action_value"))
+    score = _finite_float(action_value.get("score"), default=0.0)
+    return _clamp01(score)
+
+
+def _counterfactual_viability_components(
+    target: Mapping[str, object],
+    action_support: Mapping[str, object],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    terminal_state = _mapping(target.get("terminal_state"))
+    terminal_alive = target.get("terminal_alive")
+    components: dict[str, tuple[float, float]] = {
+        "death_or_survival_horizon_risk": (
+            1.0 if terminal_alive is False else 0.0,
+            1.0 if isinstance(terminal_alive, bool) else 0.0,
+        ),
+        "energy_floor_risk": _ratio_risk_component(
+            terminal_state.get("energy_ratio"),
+            floor=VIABILITY_FLOOR_RISK_RATIO,
+        ),
+        "hydration_floor_risk": _ratio_risk_component(
+            terminal_state.get("hydration_ratio"),
+            floor=VIABILITY_FLOOR_RISK_RATIO,
+        ),
+        "health_floor_risk": _ratio_risk_component(
+            terminal_state.get("health_ratio"),
+            floor=VIABILITY_HEALTH_FLOOR_RISK_RATIO,
+        ),
+        "invalid_action": (
+            0.0 if action_support.get("logged_action_legal") is True else 1.0,
+            1.0,
+        ),
+        VIABILITY_SUPPRESSION_COMPONENT: (0.0, 1.0),
+    }
+    return (
+        tuple(components[component][0] for component in VIABILITY_COMPONENT_NAMES),
+        tuple(components[component][1] for component in VIABILITY_COMPONENT_NAMES),
+    )
+
+
+def _ratio_risk_component(value: object, *, floor: float) -> tuple[float, float]:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return (0.0, 0.0)
+    return (1.0 if parsed <= floor else 0.0, 1.0)
+
+
+def _mapping(payload: object) -> Mapping[str, object]:
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _optional_string(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
+
+
+def _finite_float(value: object, *, default: float) -> float:
+    parsed = _optional_float(value)
+    return default if parsed is None else parsed
+
+
+def _clamp01(value: float) -> float:
+    return _clamp(float(value), 0.0, 1.0)
+
+
+def _safe_mean(values: list[float]) -> float | None:
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    if not finite:
+        return None
+    return _round(sum(finite) / float(len(finite)))
+
+
+def _validate_counterfactual_weight_scale(value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("counterfactual_label_weight_scale must be a finite number")
+    if not math.isfinite(float(value)):
+        raise ValueError("counterfactual_label_weight_scale must be finite")
+    if float(value) < 0.0:
+        raise ValueError("counterfactual_label_weight_scale must be non-negative")
 
 
 def _actor_weighting_policy(

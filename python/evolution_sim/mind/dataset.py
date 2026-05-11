@@ -29,6 +29,9 @@ from evolution_sim.mind.provenance import (
 
 TRAJECTORY_JSONL_FORMAT = "evolution_sim_trajectory_jsonl_v1"
 TRAJECTORY_EPISODE_ID_FIELD = "__trajectory_episode_id"
+TRAJECTORY_DATASET_INDEX_FIELD = "__trajectory_dataset_index"
+TRAJECTORY_DATASET_RECORD_INDEX_FIELD = "__trajectory_dataset_record_index"
+TRAJECTORY_SOURCE_PATH_FIELD = "__trajectory_path"
 POLICY_UPDATE_TRACE_SCHEMA_VERSION = "mind_policy_update_trace_v1"
 ONLINE_CONTEXTUAL_BANDIT_POLICY = "in_run_contextual_bandit_adapter_v1"
 MIND_V3_UPDATE_TRACE_SCHEMA_VERSION = "mind_v3_controller_update_trace_v1"
@@ -171,9 +174,14 @@ def records_with_trajectory_context(
 ) -> Iterator[dict[str, object]]:
     for dataset_index, dataset in enumerate(datasets):
         episode_id = _dataset_episode_id(dataset, dataset_index=dataset_index)
-        for record in dataset.records:
+        for dataset_record_index, record in enumerate(dataset.records):
             contextual_record = dict(record)
             contextual_record[TRAJECTORY_EPISODE_ID_FIELD] = episode_id
+            contextual_record[TRAJECTORY_DATASET_INDEX_FIELD] = dataset_index
+            contextual_record[TRAJECTORY_DATASET_RECORD_INDEX_FIELD] = (
+                dataset_record_index
+            )
+            contextual_record[TRAJECTORY_SOURCE_PATH_FIELD] = str(dataset.path)
             yield contextual_record
 
 

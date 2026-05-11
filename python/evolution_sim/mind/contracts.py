@@ -188,6 +188,20 @@ def mind_online_learning_contract() -> dict[str, object]:
             "third_party_ml_dependency": "requirements-mind-ml.txt",
             "weights_mutable_during_run": False,
             "inference_requires_third_party_ml_dependency": False,
+            "counterfactual_label_supervision": {
+                "enabled_by_default": False,
+                "label_schema_version": (
+                    "mind_v3_carrion_counterfactual_labels_v1"
+                ),
+                "policy": (
+                    "carrion_counterfactual_terminal_action_value_supervision_v1"
+                ),
+                "weight_policy": "one_plus_terminal_value_weight_scale_v1",
+                "default_weight_scale": 2.0,
+                "action_value_loss_weight": 0.08,
+                "viability_loss_weight": 0.05,
+                "action_viability_loss_weight": 0.05,
+            },
         },
         "algorithm_ladder": [
             {
