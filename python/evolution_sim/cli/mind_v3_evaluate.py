@@ -16,6 +16,7 @@ from evolution_sim.env.runtime.state import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.mind.evolution import load_mind_v3_founder_template
+from evolution_sim.mind.v3_neural import load_mind_v3_neural_artifact
 from evolution_sim.mind.v3_policy import (
     MIND_V3_REPRODUCTION_READINESS_GOALS,
     MindV3EvolutionPolicy,
@@ -71,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional raw Mind v3 controller metadata or evolution-search "
             "report whose best candidate initializes founders."
+        ),
+    )
+    parser.add_argument(
+        "--neural-artifact",
+        type=Path,
+        help=(
+            "Optional frozen Mind v3 neural policy artifact. The artifact "
+            "uses ecological policy inputs and does not mutate neural weights "
+            "inside a run."
         ),
     )
     parser.add_argument(
@@ -161,6 +171,11 @@ def main() -> None:
         if args.founder_template is not None
         else None
     )
+    neural_artifact = (
+        load_mind_v3_neural_artifact(args.neural_artifact)
+        if args.neural_artifact is not None
+        else None
+    )
     heuristic_runs = [
         _run_once(seed=seed, ticks=args.ticks, policy=None) for seed in seeds
     ]
@@ -168,7 +183,11 @@ def main() -> None:
         _run_once(
             seed=seed,
             ticks=args.ticks,
-            policy=_mind_v3_policy(seed=seed, founder_template=founder_template),
+            policy=_mind_v3_policy(
+                seed=seed,
+                founder_template=founder_template,
+                neural_artifact=neural_artifact,
+            ),
         )
         for seed in seeds
     ]
@@ -186,6 +205,26 @@ def main() -> None:
             "founder_template_count": _founder_template_count(founder_template),
             "founder_template_specialization_profile_counts": (
                 _founder_template_specialization_profile_counts(founder_template)
+            ),
+            "neural_artifact_source": (
+                str(args.neural_artifact)
+                if args.neural_artifact is not None
+                else None
+            ),
+            "neural_artifact_schema_version": (
+                neural_artifact.get("schema_version")
+                if isinstance(neural_artifact, dict)
+                else None
+            ),
+            "neural_model_type": (
+                neural_artifact.get("model_type")
+                if isinstance(neural_artifact, dict)
+                else None
+            ),
+            "neural_input_policy": (
+                neural_artifact.get("input_policy")
+                if isinstance(neural_artifact, dict)
+                else None
             ),
         },
         "comparison": {
@@ -232,6 +271,7 @@ def main() -> None:
             seeds=fixture_seeds,
             ticks=fixture_ticks,
             founder_template=founder_template,
+            neural_artifact=neural_artifact,
         )
         report["fixture_gate"] = mind_v3_fixture_gate_status(
             fixture_suite=report["fixture_suite"],
@@ -268,10 +308,12 @@ def _mind_v3_policy(
     *,
     seed: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
+    neural_artifact: dict[str, object] | None = None,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
         founder_template_metadata=founder_template,
+        neural_artifact=neural_artifact,
     )
 
 
@@ -367,6 +409,7 @@ def run_mind_v3_fixture_suite(
     seeds: list[int],
     ticks: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
+    neural_artifact: dict[str, object] | None = None,
 ) -> dict[str, object]:
     fixtures = []
     for fixture_name in _fixture_names(suite):
@@ -387,6 +430,7 @@ def run_mind_v3_fixture_suite(
                 policy=_mind_v3_policy(
                     seed=seed,
                     founder_template=founder_template,
+                    neural_artifact=neural_artifact,
                 ),
             )
             for seed in seeds

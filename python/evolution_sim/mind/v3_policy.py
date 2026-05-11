@@ -22,6 +22,13 @@ from evolution_sim.mind.evolution import (
     inherit_mind_v3_metadata,
     score_mind_v3_metadata,
 )
+from evolution_sim.mind.v3_neural import (
+    MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_MODEL_TYPE,
+    mind_v3_neural_head_predictions,
+    score_mind_v3_neural_artifact,
+    validate_mind_v3_neural_artifact,
+)
 
 MIND_V3_ELIGIBILITY_TRACE_POLICY = (
     "policy_valid_requested_action_horizon_eligibility_trace_v3"
@@ -95,10 +102,16 @@ class MindV3EvolutionPolicy:
         founder_template_metadata: (
             Mapping[str, object] | Sequence[Mapping[str, object]] | None
         ) = None,
+        neural_artifact: Mapping[str, object] | None = None,
     ) -> None:
         self._rng = Random(seed)
         self._founder_template_pool = _founder_template_pool(
             founder_template_metadata
+        )
+        if neural_artifact is not None:
+            validate_mind_v3_neural_artifact(neural_artifact)
+        self._neural_artifact = (
+            dict(neural_artifact) if neural_artifact is not None else None
         )
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[int, list[tuple[str, list[float]]]] = {}
@@ -237,29 +250,58 @@ class MindV3EvolutionPolicy:
                 trophic_role=_optional_string(self_payload.get("trophic_role")),
                 meat_mode=_optional_string(self_payload.get("meat_mode")),
             )
-        scores = score_mind_v3_metadata(
-            metadata=metadata,
-            observation_input=_observation_values(observation),
-            action_mask=action_mask,
-        )
+        observation_input = _observation_input_payload(observation)
+        if self._neural_artifact is None:
+            scores = score_mind_v3_metadata(
+                metadata=metadata,
+                observation_input=_observation_values(observation),
+                action_mask=action_mask,
+            )
+            controller_backend = "inherited_linear_controller"
+            neural_head_predictions = None
+        else:
+            scores = score_mind_v3_neural_artifact(
+                artifact=self._neural_artifact,
+                observation_input=observation_input,
+                action_mask=action_mask,
+            )
+            controller_backend = "frozen_neural_artifact"
+            neural_head_predictions = mind_v3_neural_head_predictions(
+                artifact=self._neural_artifact,
+                observation_input=observation_input,
+            )
         requested_action, score = _best_action(scores, action_mask)
+        diagnostics: dict[str, object] = {
+            "runtime_mode": "mind-v3-autonomous-evolution",
+            "heuristic_free": True,
+            "agent_id": agent_id,
+            "score": score,
+            "legal_action_count": sum(
+                1 for allowed in action_mask.values() if allowed
+            ),
+            "controller_backend": controller_backend,
+        }
+        if neural_head_predictions is not None:
+            diagnostics.update(
+                {
+                    "neural_artifact_schema_version": (
+                        MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION
+                    ),
+                    "neural_model_type": MIND_V3_NEURAL_MODEL_TYPE,
+                    "neural_head_predictions": neural_head_predictions,
+                }
+            )
         return ActionDecision(
             requested_action=requested_action,
             source=MIND_V3_POLICY_VERSION,
             policy_id=self.policy_id,
             policy_version=self.policy_version,
-            diagnostics={
-                "runtime_mode": "mind-v3-autonomous-evolution",
-                "heuristic_free": True,
-                "agent_id": agent_id,
-                "score": score,
-                "legal_action_count": sum(
-                    1 for allowed in action_mask.values() if allowed
-                ),
-            },
+            diagnostics=diagnostics,
         )
 
     def observe_transition(self, record: dict[str, object]) -> dict[str, object] | None:
+        if self._neural_artifact is not None:
+            return None
         passive_terminal_feedback = False
         if record.get("action_source") == "passive":
             if not _record_has_terminal_feedback(record):
@@ -427,6 +469,17 @@ def _agent_id(observation: Mapping[str, object]) -> int:
     if not isinstance(metadata, Mapping):
         return -1
     return int(metadata.get("agent_id", -1))
+
+
+def _observation_input_payload(
+    observation: Mapping[str, object],
+) -> dict[str, object]:
+    payload = observation.get("observation_input")
+    return (
+        dict(payload)
+        if isinstance(payload, Mapping)
+        else encode_observation_input(dict(observation))
+    )
 
 
 def _record_agent_id(record: Mapping[str, object]) -> int | None:

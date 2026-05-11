@@ -14,8 +14,10 @@ from evolution_sim.cli import (
     collect_trajectory,
     mind_fixture_labels,
     mind_horizon_labels,
+    mind_v3_neural_artifact,
     mind_artifact_diagnostics,
     mind_gate,
+    mind_v3_evaluate,
     mind_policy_eval,
     mind_train,
     run_headless,
@@ -79,6 +81,13 @@ from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
     ecological_policy_input_contract,
     ecological_policy_values_from_decoded,
+)
+from evolution_sim.mind.v3_neural import (
+    MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_INPUT_POLICY,
+    load_mind_v3_neural_artifact,
+    score_mind_v3_neural_artifact,
+    train_mind_v3_neural_artifact,
 )
 from evolution_sim.mind.learned_policy import (
     OnlineAdaptiveMindPolicy,
@@ -307,6 +316,19 @@ class MindV1Tests(unittest.TestCase):
             contract["controller"][
                 "controller_private_fields_excluded_from_features"
             ],
+        )
+        self.assertEqual(
+            contract["frozen_neural_artifact"]["schema_version"],
+            MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            contract["frozen_neural_artifact"]["input_contract"][
+                "schema_version"
+            ],
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self.assertFalse(
+            contract["frozen_neural_artifact"]["weights_mutable_during_run"]
         )
         json.dumps(contract)
 
@@ -736,6 +758,290 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
             ("self.mind_inheritance_available",),
+        )
+
+    def test_mind_v3_neural_artifact_trains_on_horizon_labels(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            fixture_report = build_fixture_label_report(
+                [
+                    {
+                        "schema_version": "mind_v3_autonomous_evolution_evaluation_v1",
+                        "fixture_gate": {
+                            "suite": "basic",
+                            "seeds": [7],
+                            "ticks": 2,
+                            "min_alive": 1.0,
+                            "min_births": 0.0,
+                            "min_mixed_stable_births": 0.0,
+                            "min_energy_viability": 0.5,
+                            "min_hydration_viability": 0.5,
+                            "min_health_viability": 0.5,
+                            "min_matched_diet_viability": 0.0,
+                            "min_biologically_ready": 0.0,
+                            "per_fixture": {
+                                "carrion_only": {
+                                    "metrics": {
+                                        "alive_agents_mean": 0.0,
+                                        "births_mean": 0.0,
+                                        "energy_viability_share_mean": 0.0,
+                                        "hydration_viability_share_mean": 0.0,
+                                        "health_viability_share_mean": 0.0,
+                                        "matched_diet_viability_share_mean": 0.0,
+                                        "biologically_ready_agents_mean": 0.0,
+                                    }
+                                }
+                            },
+                        },
+                    }
+                ]
+            )
+
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                fixture_label_report=fixture_report,
+                hidden_units=6,
+                seed=5,
+            )
+
+            self.assertEqual(
+                artifact["schema_version"],
+                MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+            )
+            self.assertEqual(artifact["input_policy"], MIND_V3_NEURAL_INPUT_POLICY)
+            self.assertEqual(artifact["hidden_units"], 6)
+            self.assertGreater(artifact["trained_record_count"], 0)
+            self.assertGreater(
+                artifact["fixture_pressure_summary"]["pressure_total"],
+                0.0,
+            )
+            first_record = dataset.records[0]
+            scores = score_mind_v3_neural_artifact(
+                artifact=artifact,
+                observation_input=first_record["observation_input"],
+                action_mask=first_record["action_mask"],
+            )
+
+        self.assertTrue(scores)
+        self.assertTrue(set(scores).issubset(ACTION_NAMES))
+
+    def test_mind_v3_neural_artifact_ignores_mind_inheritance_bit(
+        self,
+    ) -> None:
+        import base64
+        import struct
+        import zlib
+
+        from evolution_sim.env.runtime.observations import (
+            OBSERVATION_ENCODER_VERSION,
+            OBSERVATION_INPUT_DTYPE,
+            OBSERVATION_INPUT_VALUE_RANGE,
+            OBSERVATION_QUANTIZATION_SCALE,
+            OBSERVATION_SCHEMA_VERSION,
+            OBSERVATION_STORAGE_DTYPE,
+            OBSERVATION_STORAGE_ENCODING,
+            SELF_INPUT_FIELDS,
+            decode_observation_input,
+        )
+
+        def encoded(values: list[float]) -> dict[str, object]:
+            quantized = [
+                int(
+                    round(
+                        max(-1.0, min(1.0, value))
+                        * OBSERVATION_QUANTIZATION_SCALE
+                    )
+                )
+                for value in values
+            ]
+            packed = struct.pack(f"<{len(quantized)}h", *quantized)
+            return {
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "encoder_version": OBSERVATION_ENCODER_VERSION,
+                "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+                "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+                "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+                "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+                "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+                "data": base64.b64encode(zlib.compress(packed, level=6)).decode(
+                    "ascii"
+                ),
+            }
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+            )
+            first_record = dataset.records[0]
+            base_values = decode_observation_input(first_record["observation_input"])
+            unavailable = list(base_values)
+            available = list(base_values)
+            inheritance_index = SELF_INPUT_FIELDS.index("mind_inheritance_available")
+            unavailable[inheritance_index] = 0.0
+            available[inheritance_index] = 1.0
+            action_mask = {action: True for action in ACTION_NAMES}
+
+            unavailable_scores = score_mind_v3_neural_artifact(
+                artifact=artifact,
+                observation_input=encoded(unavailable),
+                action_mask=action_mask,
+            )
+            available_scores = score_mind_v3_neural_artifact(
+                artifact=artifact,
+                observation_input=encoded(available),
+                action_mask=action_mask,
+            )
+
+        self.assertEqual(unavailable_scores, available_scores)
+
+    def test_mind_v3_policy_can_use_frozen_neural_artifact(
+        self,
+    ) -> None:
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+            )
+            first_record = dataset.records[0]
+            policy = MindV3EvolutionPolicy(seed=7, neural_artifact=artifact)
+
+            decision = policy.decide(
+                {
+                    "metadata": {"agent_id": 3},
+                    "self": {"trophic_role": "herbivore", "meat_mode": "none"},
+                    "observation_input": first_record["observation_input"],
+                },
+                dict(first_record["action_mask"]),
+            )
+            update = policy.observe_transition(dict(first_record))
+
+        self.assertIn(decision.requested_action, ACTION_NAMES)
+        self.assertEqual(
+            decision.diagnostics["controller_backend"],
+            "frozen_neural_artifact",
+        )
+        self.assertEqual(
+            decision.diagnostics["neural_model_type"],
+            "deterministic_ecological_mlp_policy_v1",
+        )
+        self.assertIsNone(update)
+
+    def test_mind_v3_neural_artifact_cli_writes_artifact(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "train.jsonl.gz"
+            horizon_path = tmp_path / "horizon.json"
+            artifact_path = tmp_path / "artifact.json"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_path.write_text(
+                json.dumps(build_horizon_label_report([dataset], horizons=(1,))),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "sys.argv",
+                [
+                    "mind_v3_neural_artifact",
+                    "--trajectory",
+                    str(trajectory_path),
+                    "--horizon-labels",
+                    str(horizon_path),
+                    "--hidden-units",
+                    "6",
+                    "--output",
+                    str(artifact_path),
+                ],
+            ):
+                mind_v3_neural_artifact.main()
+
+            artifact = load_mind_v3_neural_artifact(artifact_path)
+
+        self.assertEqual(
+            artifact["schema_version"],
+            MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(artifact["hidden_units"], 6)
+
+    def test_mind_v3_evaluate_cli_accepts_neural_artifact(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "train.jsonl.gz"
+            horizon_path = tmp_path / "horizon.json"
+            artifact_path = tmp_path / "artifact.json"
+            report_path = tmp_path / "eval.json"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_path.write_text(
+                json.dumps(build_horizon_label_report([dataset], horizons=(1,))),
+                encoding="utf-8",
+            )
+            with patch(
+                "sys.argv",
+                [
+                    "mind_v3_neural_artifact",
+                    "--trajectory",
+                    str(trajectory_path),
+                    "--horizon-labels",
+                    str(horizon_path),
+                    "--hidden-units",
+                    "6",
+                    "--output",
+                    str(artifact_path),
+                ],
+            ):
+                mind_v3_neural_artifact.main()
+
+            with patch(
+                "sys.argv",
+                [
+                    "mind_v3_evaluate",
+                    "--seeds",
+                    "7",
+                    "--ticks",
+                    "2",
+                    "--neural-artifact",
+                    str(artifact_path),
+                    "--output",
+                    str(report_path),
+                ],
+            ):
+                mind_v3_evaluate.main()
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            report["policy"]["neural_artifact_schema_version"],
+            MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            report["policy"]["neural_input_policy"],
+            MIND_V3_NEURAL_INPUT_POLICY,
         )
 
     def test_mind_v3_child_metadata_mutates_from_parent(self) -> None:

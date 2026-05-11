@@ -214,6 +214,22 @@ npm run sim:mind:fixture-labels -- \
   --output output/mind/mind-v3-fixture-labels.json
 ```
 
+Train and smoke-evaluate the first frozen deterministic v3 neural artifact with:
+
+```bash
+npm run sim:mind:v3:train-neural -- \
+  --trajectory output/trajectories/mind-v3-probe.jsonl.gz \
+  --horizon-labels output/mind/mind-v3-horizon-labels.json \
+  --fixture-labels output/mind/mind-v3-fixture-labels.json \
+  --output output/mind/mind-v3-neural-artifact.json
+
+npm run sim:mind:v3:evaluate -- \
+  --seeds 5,13 \
+  --ticks 80 \
+  --neural-artifact output/mind/mind-v3-neural-artifact.json \
+  --output output/mind/mind-v3-neural-80-eval.json
+```
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:

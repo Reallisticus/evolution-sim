@@ -13,6 +13,7 @@ from evolution_sim.mind.learned_policy import (
     load_learned_policy,
 )
 from evolution_sim.mind.evolution import load_mind_v3_founder_template
+from evolution_sim.mind.v3_neural import load_mind_v3_neural_artifact
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
 
@@ -62,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
             "report used by --mind-v3-autonomous-evolution."
         ),
     )
+    parser.add_argument(
+        "--mind-v3-neural-artifact",
+        type=Path,
+        help=(
+            "Optional frozen Mind v3 neural policy artifact used by "
+            "--mind-v3-autonomous-evolution."
+        ),
+    )
     return parser
 
 
@@ -70,6 +79,10 @@ def main() -> None:
     if args.mind_v3_founder_template is not None and not args.mind_v3_autonomous_evolution:
         raise SystemExit(
             "--mind-v3-founder-template requires --mind-v3-autonomous-evolution"
+        )
+    if args.mind_v3_neural_artifact is not None and not args.mind_v3_autonomous_evolution:
+        raise SystemExit(
+            "--mind-v3-neural-artifact requires --mind-v3-autonomous-evolution"
         )
     if args.mind_v3_autonomous_evolution and (
         args.mind_artifact is not None or args.enable_mind
@@ -88,9 +101,15 @@ def main() -> None:
             if args.mind_v3_founder_template is not None
             else None
         )
+        neural_artifact = (
+            load_mind_v3_neural_artifact(args.mind_v3_neural_artifact)
+            if args.mind_v3_neural_artifact is not None
+            else None
+        )
         policy = MindV3EvolutionPolicy(
             seed=args.seed,
             founder_template_metadata=founder_template,
+            neural_artifact=neural_artifact,
         )
         mind_runtime_mode = "mind-v3-autonomous-evolution"
     else:
@@ -129,6 +148,8 @@ def main() -> None:
         print(f"mind_runtime_mode={mind_runtime_mode}")
         if args.mind_v3_founder_template is not None:
             print(f"mind_v3_founder_template={args.mind_v3_founder_template}")
+        if args.mind_v3_neural_artifact is not None:
+            print(f"mind_v3_neural_artifact={args.mind_v3_neural_artifact}")
     print(
         "climate_end="
         f"{summary['disturbance_at_end']}:{summary['disturbance_strength_at_end']}"

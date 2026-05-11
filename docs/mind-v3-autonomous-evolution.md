@@ -1073,10 +1073,37 @@ Initial implementation milestone:
   `self.mind_inheritance_available` while retaining self ecology, local patch,
   and navigation inputs.
 
-This milestone is complete when a v3 trajectory and a fixture-gated v3 report
-can produce loadable label reports, focused tests pass, and the next neural
-artifact consumes `mind_ecological_policy_input_v1` instead of the raw
+This milestone is complete: v3 trajectory data and fixture-gated v3 reports can
+produce loadable label reports, focused tests cover the contract, and the next
+artifact path consumes `mind_ecological_policy_input_v1` instead of the raw
 observation vector.
+
+Second implementation milestone:
+
+- `sim:mind:v3:train-neural` writes a frozen
+  `mind_v3_neural_policy_artifact_v1` artifact from trajectory JSONL plus a
+  matching `mind_horizon_labels_v1` report. Optional
+  `mind_fixture_blocker_labels_v1` input contributes bounded global fixture
+  pressure, recorded as `global_fixture_floor_gap_action_bias_v1`, without
+  introducing fixture-specific world knowledge at runtime.
+- The artifact uses a deterministic pure-Python fixed-projection MLP with
+  masked action logits plus serialized survival and reproduction horizon heads.
+  Runtime inference is dependency-free and uses only the ecological input
+  contract; `self.mind_inheritance_available` remains excluded.
+- `MindV3EvolutionPolicy` now accepts this artifact as an opt-in frozen backend.
+  The linear inherited controller remains the default and the baseline. Neural
+  artifacts do not mutate weights inside simulation ticks; they can be used via
+  `sim:mind:v3:evaluate -- --neural-artifact ...`,
+  `sim:run -- --mind-v3-autonomous-evolution --mind-v3-neural-artifact ...`,
+  and `sim:trajectory -- --mind-v3-autonomous-evolution
+  --mind-v3-neural-artifact ...`.
+
+This milestone is complete when a small artifact can be trained from real v3
+trajectory labels, loaded by the v3 evaluator, and smoke-evaluated without
+heuristic fallback or controller-private input leakage. The next slice should
+compare this frozen neural path against the current linear v3 on the same
+`80`/`120` broad and controlled fixture matrix, then decide whether to improve
+the trainer or move artifact selection into the v3 search loop.
 
 ## Promotion Boundary
 

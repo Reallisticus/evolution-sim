@@ -49,6 +49,13 @@ from evolution_sim.mind.evolution import (
     MIND_V3_CONTEXT_FEATURE_FIELDS,
     MIND_V3_NEED_GATED_FEATURE_FIELDS,
 )
+from evolution_sim.mind.policy_inputs import ecological_policy_input_contract
+from evolution_sim.mind.v3_neural import (
+    MIND_V3_NEURAL_ARCHITECTURE,
+    MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_BACKEND,
+    MIND_V3_NEURAL_MODEL_TYPE,
+)
 
 MIND_V1_DATA_CONTRACT_VERSION = "mind_v1_data_contract_v1"
 MIND_MODEL_ARTIFACT_VERSION = "mind_model_artifact_v1"
@@ -287,5 +294,15 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
                 "mind_inheritance_available"
             ],
             "inherited_parameters": "action_head_weights_and_bias",
+        },
+        "frozen_neural_artifact": {
+            "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+            "model_type": MIND_V3_NEURAL_MODEL_TYPE,
+            "runtime_backend": MIND_V3_NEURAL_BACKEND,
+            "architecture": MIND_V3_NEURAL_ARCHITECTURE,
+            "input_contract": ecological_policy_input_contract(),
+            "weights_mutable_during_run": False,
+            "enabled_by_default": False,
+            "promotion_status": "experiment_only",
         },
     }
