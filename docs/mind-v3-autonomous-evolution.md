@@ -1099,12 +1099,56 @@ Second implementation milestone:
   and `sim:trajectory -- --mind-v3-autonomous-evolution
   --mind-v3-neural-artifact ...`.
 
-This milestone is complete when a small artifact can be trained from real v3
+This milestone is complete: a small artifact can be trained from real v3
 trajectory labels, loaded by the v3 evaluator, and smoke-evaluated without
-heuristic fallback or controller-private input leakage. The next slice should
-compare this frozen neural path against the current linear v3 on the same
-`80`/`120` broad and controlled fixture matrix, then decide whether to improve
-the trainer or move artifact selection into the v3 search loop.
+heuristic fallback or controller-private input leakage. The first comparable
+run found a real failure mode: raw neural action logits collapsed back toward
+`eat`, and the initial frozen-artifact runtime accidentally disabled the online
+linear-controller update path that the v3 safety floor still depends on.
+
+Third implementation milestone:
+
+- The neural trainer now records a damped action-frequency prior
+  (`action_prior_log_weight=0.18`) and stronger contextual prototype scale
+  (`prototype_weight_scale=2.0`) so the artifact is less directly dominated by
+  logged action frequency.
+- Fixture blocker labels now feed the artifact through the actual
+  `pressure` field. The previous implementation read a stale
+  `pressure_weight` key, so `fixture_action_bias_delta` stayed zero even when
+  the fixture label report contained carrion-only blockers.
+- The v3 runtime now uses
+  `linear_controller_guarded_neural_residual_v1` when a frozen neural artifact
+  is loaded. Neural weights remain immutable during a run, but the inherited
+  linear anchor controller keeps receiving the same bounded reward-modulated
+  updates as the linear baseline. The neural residual is bounded and shadowed
+  when the artifact's local top action is the known collapsed `eat` mode.
+
+Measured on the v26 template/artifact slice:
+
+- Artifact: `output/mind/mind-v3-v26-neural-artifact-v2.json`
+- 80-tick broad comparison:
+  `output/mind/mind-v3-v26-neural-guarded-online-anchor-compare-80.json`
+  produced v3-neural-anchor `19.0` alive / `11.0` births versus linear
+  `20.5` / `10.0`; dominant requested action share was `0.4224`.
+- 120-tick broad comparison:
+  `output/mind/mind-v3-v26-neural-guarded-online-anchor-compare-120.json`
+  produced v3-neural-anchor `16.0` alive / `16.0` births versus linear
+  `23.5` / `18.5`; dominant requested action share was `0.4264`.
+- 120-tick controlled fixture comparison:
+  `output/mind/mind-v3-v26-neural-guarded-online-anchor-fixture-120.json`
+  reduced the hard fixture blockers to `5`, all in `carrion_only`, with
+  `blocker_count_delta=0` versus the linear baseline.
+
+This is not a promotion. It is a safety-ratchet milestone: the neural path no
+longer collapses broad action mix or fixture pressure beyond the linear floor,
+but it still depends heavily on the online linear anchor and still fails the
+carrion-only controlled fixture. The next v3 milestone is explicit: reduce
+anchor dependence only when the artifact is within `2` alive agents of the
+linear baseline at 120 ticks, matches or beats linear births, keeps dominant
+action share at or below `0.50`, and does not add fixture blockers. If two
+consecutive slices fail to reduce the carrion-only blocker set, stop tuning this
+pure-Python residual artifact and move to the torch/IQL or vectorized rollout
+training path with carrion fixture labels in the training loop.
 
 ## Promotion Boundary
 

@@ -821,6 +821,8 @@ class MindV1Tests(unittest.TestCase):
                 artifact["fixture_pressure_summary"]["pressure_total"],
                 0.0,
             )
+            self.assertGreater(artifact["fixture_action_bias_delta"]["eat"], 0.0)
+            self.assertGreater(artifact["fixture_action_bias_delta"]["drink"], 0.0)
             first_record = dataset.records[0]
             scores = score_mind_v3_neural_artifact(
                 artifact=artifact,
@@ -939,13 +941,88 @@ class MindV1Tests(unittest.TestCase):
         self.assertIn(decision.requested_action, ACTION_NAMES)
         self.assertEqual(
             decision.diagnostics["controller_backend"],
-            "frozen_neural_artifact",
+            "frozen_neural_artifact_linear_anchor",
         )
+        self.assertEqual(
+            decision.diagnostics["neural_linear_anchor_policy"],
+            "linear_controller_guarded_neural_residual_v1",
+        )
+        self.assertEqual(decision.diagnostics["neural_residual_scale"], 0.05)
         self.assertEqual(
             decision.diagnostics["neural_model_type"],
             "deterministic_ecological_mlp_policy_v1",
         )
         self.assertIsNone(update)
+
+    def test_mind_v3_neural_linear_anchor_can_counter_collapsed_logits(
+        self,
+    ) -> None:
+        from evolution_sim.mind.v3_policy import _blend_neural_with_linear_anchor
+
+        action_mask = {
+            action: action in {"eat", "drink"} for action in ACTION_NAMES
+        }
+        scores = _blend_neural_with_linear_anchor(
+            neural_scores={"eat": 10.0, "drink": 0.0},
+            linear_scores={"eat": 0.0, "drink": 1.0},
+            action_mask=action_mask,
+        )
+
+        self.assertGreater(scores["drink"], scores["eat"])
+        self.assertEqual(scores["drink"], 1.0)
+        self.assertEqual(scores["eat"], 0.0)
+
+    def test_mind_v3_neural_policy_updates_anchor_controller_only(
+        self,
+    ) -> None:
+        from random import Random
+
+        from evolution_sim.mind.evolution import founder_mind_v3_metadata
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+            )
+            metadata = founder_mind_v3_metadata(agent_id=3, rng=Random(9))
+            policy = MindV3EvolutionPolicy(seed=9, neural_artifact=artifact)
+            policy.register_agent_mind(agent_id=3, metadata=metadata)
+            before = policy.agent_mind_metadata(agent_id=3)
+
+            trace = policy.observe_transition(
+                {
+                    "agent_id": 3,
+                    "policy_id": policy.policy_id,
+                    "observation_input": {
+                        "values": [0.1] * OBSERVATION_INPUT_VECTOR_SIZE
+                    },
+                    "action_mask": {
+                        action: action in {"stay", "move_east"}
+                        for action in ACTION_NAMES
+                    },
+                    "requested_action": "move_east",
+                    "resolved_action": "move_east",
+                    "action_valid": True,
+                    "resolution_action_valid": True,
+                    "reward": {"total": 0.8},
+                }
+            )
+            after = policy.agent_mind_metadata(agent_id=3)
+
+        self.assertIsNotNone(trace)
+        self.assertTrue(trace["neural_artifact_frozen"])
+        self.assertTrue(trace["anchor_controller_update"])
+        self.assertNotEqual(
+            after["action_head_bias"]["move_east"],
+            before["action_head_bias"]["move_east"],
+        )
 
     def test_mind_v3_neural_artifact_cli_writes_artifact(
         self,

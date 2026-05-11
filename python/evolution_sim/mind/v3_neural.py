@@ -34,6 +34,8 @@ MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS = 32
 MIND_V3_NEURAL_DEFAULT_SEED = 43
 MIND_V3_NEURAL_FIXTURE_BIAS_POLICY = "global_fixture_floor_gap_action_bias_v1"
 MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY = "horizon_survival_reproduction_viability_v1"
+MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT = 0.18
+MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE = 2.0
 
 
 class MindV3NeuralArtifactError(ValueError):
@@ -105,6 +107,8 @@ def train_mind_v3_neural_artifact(
         "input_policy": MIND_V3_NEURAL_INPUT_POLICY,
         "sample_weight_policy": MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY,
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
+        "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
+        "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
         "hidden_units": hidden_units,
         "seed": seed,
         "horizon_ticks": horizon_ticks,
@@ -119,6 +123,8 @@ def train_mind_v3_neural_artifact(
         "input_contract": input_contract,
         "sample_weight_policy": MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY,
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
+        "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
+        "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
         "hidden_units": hidden_units,
         "seed": seed,
         "trained_record_count": len(samples),
@@ -495,7 +501,10 @@ def _action_output_weights(
             continue
         mean = _weighted_mean_hidden(action_samples)
         weights[action] = [
-            _round(0.75 * (mean[index] - global_mean[index]))
+            _round(
+                MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE
+                * (mean[index] - global_mean[index])
+            )
             for index in range(hidden_units)
         ]
     return weights
@@ -510,7 +519,10 @@ def _action_output_bias(samples: Sequence[Mapping[str, object]]) -> dict[str, fl
         total += weight
     denominator = total + 0.1 * len(ACTION_NAMES)
     return {
-        action: _round(math.log((float(totals.get(action, 0.0)) + 0.1) / denominator))
+        action: _round(
+            MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT
+            * math.log((float(totals.get(action, 0.0)) + 0.1) / denominator)
+        )
         for action in ACTION_NAMES
     }
 
@@ -593,7 +605,7 @@ def _fixture_action_bias_delta(
     for label in labels if isinstance(labels, list) else []:
         if not isinstance(label, Mapping) or bool(label.get("passed", False)):
             continue
-        pressure = _optional_float(label.get("pressure_weight")) or 0.0
+        pressure = _optional_float(label.get("pressure")) or 0.0
         fixture = str(label.get("fixture", ""))
         reason = str(label.get("reason", ""))
         if fixture == "carrion_only":
@@ -613,8 +625,8 @@ def _fixture_action_bias_delta(
         deltas["mate"] -= 0.20 * carrion_scale
     if mixed_scale:
         deltas["mate"] += 0.55 * mixed_scale
-        deltas["signal_food"] += 0.20 * mixed_scale
-        deltas["signal_danger"] += 0.10 * mixed_scale
+        deltas["signal_0_profile_0"] += 0.20 * mixed_scale
+        deltas["signal_0_profile_1"] += 0.10 * mixed_scale
     return {action: _round(value) for action, value in deltas.items()}
 
 

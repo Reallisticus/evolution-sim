@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from random import Random
 
@@ -41,6 +42,11 @@ MIND_V3_REWARD_SIGNAL_POLICY = (
 MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY = (
     "contextual_trophic_founder_template_assignment_v1"
 )
+MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY = (
+    "linear_controller_guarded_neural_residual_v1"
+)
+MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
+MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS = frozenset({"eat"})
 MIND_V3_REWARD_COMPONENT_SIGNAL_WEIGHTS = {
     "survival_continuation": 0.65,
     "energy_stability": 0.2,
@@ -259,17 +265,33 @@ class MindV3EvolutionPolicy:
             )
             controller_backend = "inherited_linear_controller"
             neural_head_predictions = None
+            neural_anchor_diagnostics = {}
         else:
-            scores = score_mind_v3_neural_artifact(
+            observation_values = _observation_values(observation)
+            neural_scores = score_mind_v3_neural_artifact(
                 artifact=self._neural_artifact,
                 observation_input=observation_input,
                 action_mask=action_mask,
             )
-            controller_backend = "frozen_neural_artifact"
+            linear_anchor_scores = score_mind_v3_metadata(
+                metadata=metadata,
+                observation_input=observation_values,
+                action_mask=action_mask,
+            )
+            scores = _blend_neural_with_linear_anchor(
+                neural_scores=neural_scores,
+                linear_scores=linear_anchor_scores,
+                action_mask=action_mask,
+            )
+            controller_backend = "frozen_neural_artifact_linear_anchor"
             neural_head_predictions = mind_v3_neural_head_predictions(
                 artifact=self._neural_artifact,
                 observation_input=observation_input,
             )
+            neural_anchor_diagnostics = {
+                "neural_linear_anchor_policy": MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY,
+                "neural_residual_scale": MIND_V3_NEURAL_RESIDUAL_SCALE,
+            }
         requested_action, score = _best_action(scores, action_mask)
         diagnostics: dict[str, object] = {
             "runtime_mode": "mind-v3-autonomous-evolution",
@@ -281,6 +303,7 @@ class MindV3EvolutionPolicy:
             ),
             "controller_backend": controller_backend,
         }
+        diagnostics.update(neural_anchor_diagnostics)
         if neural_head_predictions is not None:
             diagnostics.update(
                 {
@@ -300,8 +323,6 @@ class MindV3EvolutionPolicy:
         )
 
     def observe_transition(self, record: dict[str, object]) -> dict[str, object] | None:
-        if self._neural_artifact is not None:
-            return None
         passive_terminal_feedback = False
         if record.get("action_source") == "passive":
             if not _record_has_terminal_feedback(record):
@@ -376,6 +397,8 @@ class MindV3EvolutionPolicy:
             "terminal_feedback": passive_terminal_feedback,
             "trace_appended_action": not passive_terminal_feedback,
             "heuristic_free": True,
+            "neural_artifact_frozen": self._neural_artifact is not None,
+            "anchor_controller_update": self._neural_artifact is not None,
         }
 
 
@@ -1096,3 +1119,65 @@ def _best_action(
     if best_score == float("-inf"):
         return "stay", 0.0
     return best_action, best_score
+
+
+def _blend_neural_with_linear_anchor(
+    *,
+    neural_scores: Mapping[str, float],
+    linear_scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    legal_actions = tuple(
+        action for action in sorted(action_mask) if bool(action_mask[action])
+    )
+    neural_normalized = _normalized_legal_scores(neural_scores, legal_actions)
+    neural_top_action = _top_score_action(neural_normalized)
+    residual_scale = (
+        0.0
+        if neural_top_action in MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS
+        else MIND_V3_NEURAL_RESIDUAL_SCALE
+    )
+    return {
+        action: _round(
+            _finite_score(linear_scores.get(action, 0.0))
+            + residual_scale * neural_normalized[action]
+        )
+        for action in legal_actions
+    }
+
+
+def _normalized_legal_scores(
+    scores: Mapping[str, float],
+    legal_actions: Sequence[str],
+) -> dict[str, float]:
+    if not legal_actions:
+        return {}
+    raw_scores = {
+        action: _finite_score(scores.get(action, 0.0)) for action in legal_actions
+    }
+    mean_score = sum(raw_scores.values()) / float(len(raw_scores))
+    centered = {
+        action: raw_scores[action] - mean_score for action in legal_actions
+    }
+    scale = max(abs(value) for value in centered.values())
+    if scale <= 1e-9:
+        return {action: 0.0 for action in legal_actions}
+    return {action: _round(centered[action] / scale) for action in legal_actions}
+
+
+def _finite_score(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else 0.0
+
+
+def _top_score_action(scores: Mapping[str, float]) -> str | None:
+    best_action: str | None = None
+    best_score = float("-inf")
+    for action in sorted(scores):
+        score = float(scores[action])
+        if score > best_score:
+            best_action = action
+            best_score = score
+    return best_action

@@ -231,6 +231,17 @@ npm run sim:mind:v3:evaluate -- \
   --output output/mind/mind-v3-neural-80-eval.json
 ```
 
+The current v3 neural runtime is a guarded residual milestone, not an
+independent promotion candidate. Frozen neural weights are evaluated through
+`linear_controller_guarded_neural_residual_v1`: the inherited linear controller
+remains live and receives normal bounded reward updates, while the neural
+residual is shadowed when the artifact expresses the known collapsed `eat`
+mode. The latest comparable slice recovered broad behavior to `19.0` alive /
+`11.0` births at 80 ticks and `16.0` / `16.0` at 120 ticks on the v26 template,
+but the hard fixture gate still fails on carrion-only. See
+`docs/mind-v3-autonomous-evolution.md` for the milestone boundary before
+reducing the anchor or moving to torch/vectorized training.
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:
