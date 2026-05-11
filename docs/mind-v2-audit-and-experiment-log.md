@@ -1467,6 +1467,29 @@ should make the learner stronger and easier to evaluate.
     `393` labels at horizons `10,20,40`. This makes the next step concrete:
     include controlled carrion trajectories in artifact training/evaluation,
     rather than asking aggregate blocker labels to stand in for sequence data.
+46. The first controlled-trajectory neural training slice produced a partial
+    result and a sharper blocker. First,
+    `output/mind/mind-v3-v28-broad-carrion-neural-artifact.json` trained on
+    broad v3 plus failing carrion-only v3 fixture trajectories. That raised
+    label animal-resource contacts to `126` but did not beat the linear anchor:
+    `19.0` alive / `9.0` births at `80` and `22.0` / `17.0` at `120`; the
+    carrion fixture stayed at `0.0` alive / `2.5` births with five blockers.
+    The trainer now supports explicit per-trajectory multipliers through
+    `sim:mind:v3:train-neural --trajectory-weight`, recorded in the artifact
+    as `trajectory_weight_multipliers` and separate horizon/trajectory/final
+    sample-weight summaries. The source-balanced artifact
+    `output/mind/mind-v3-v29-source-balanced-neural-artifact.json` used weights
+    `1,1,4,4,1,1` for broad v3, heuristic carrion fixture, and failing v3
+    carrion fixture trajectories. It improved broad reproduction to `20.0`
+    alive / `11.5` births at `80` and `23.0` / `19.5` at `120`, versus linear
+    `20.5` / `10.0` and `23.5` / `18.5`. Dominant action share stayed below
+    `0.47`, but carrion-only still had `0.0` alive, `2.5` births, and five
+    blockers. Diagnostics show the neural top shifted toward movement while
+    the linear-margin guard still shadowed most fixture overrides. Next work
+    should test one bounded anchor/learner leverage change against the same
+    broad-plus-carrion matrix; if carrion terminal alive or blocker count does
+    not move, switch to torch/IQL or vectorized rollout training rather than
+    another scalar-weight pass.
 
 ### GPU / CUDA Boundary
 

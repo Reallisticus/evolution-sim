@@ -880,7 +880,23 @@ criteria before it can replace more heuristic behavior:
     and generated `393` horizon labels at `10,20,40` ticks. This is the bridge
     needed for the next learner iteration: train on actual controlled fixture
     sequences instead of only broad trajectories plus aggregate blocker labels.
-39. Add quality-diversity viewer diagnostics once policy lineages
+39. The first controlled carrion trajectory training slice is complete and
+    source-balanced trajectory weighting is now available. A v3-only fixture
+    inclusion run,
+    `output/mind/mind-v3-v28-broad-carrion-neural-artifact.json`, raised
+    animal-resource contacts in labels to `126` but stayed below the linear
+    baseline and left carrion-only at `0.0` alive / `2.5` births. A
+    source-balanced distillation run,
+    `output/mind/mind-v3-v29-source-balanced-neural-artifact.json`, used
+    `--trajectory-weight` values `1,1,4,4,1,1` for broad v3, heuristic
+    carrion fixture, and failing v3 carrion fixture trajectories. It improved
+    broad eval to `20.0` alive / `11.5` births at `80` and `23.0` /
+    `19.5` at `120`, beating the linear baseline on births while staying
+    `0.5` alive behind. Carrion-only still failed with five blockers. Treat
+    this as a partial learner-data win, not a promotion: the next bounded
+    milestone must reduce carrion blockers or produce nonzero terminal
+    carrion-only alive before more pure scalar weighting is justified.
+40. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

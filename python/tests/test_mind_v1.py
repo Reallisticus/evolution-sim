@@ -49,6 +49,7 @@ from evolution_sim.mind.contracts import (
 )
 from evolution_sim.mind.dataset import (
     TrajectoryDatasetError,
+    TrajectoryJsonlDataset,
     build_trajectory_transitions,
     combined_dataset_provenance,
     dataset_provenance,
@@ -841,6 +842,56 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertTrue(scores)
         self.assertTrue(set(scores).issubset(ACTION_NAMES))
+
+    def test_mind_v3_neural_artifact_applies_trajectory_weights(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+            def action_dataset(action: str) -> TrajectoryJsonlDataset:
+                records = []
+                for record in dataset.records:
+                    updated = dict(record)
+                    updated["requested_action"] = action
+                    updated["resolved_action"] = action
+                    updated["action_valid"] = True
+                    updated["resolution_action_valid"] = True
+                    records.append(updated)
+                return TrajectoryJsonlDataset(
+                    path=tmp_path / f"{action}.jsonl.gz",
+                    header=dict(dataset.header),
+                    records=tuple(records),
+                    footer=dict(dataset.footer),
+                )
+
+            eat_dataset = action_dataset("eat")
+            stay_dataset = action_dataset("stay")
+            horizon_report = build_horizon_label_report(
+                [eat_dataset, stay_dataset],
+                horizons=(1,),
+            )
+            artifact = train_mind_v3_neural_artifact(
+                [eat_dataset, stay_dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+                trajectory_weight_multipliers=(1.0, 5.0),
+            )
+
+        self.assertEqual(artifact["trajectory_weight_multipliers"], [1.0, 5.0])
+        self.assertEqual(artifact["training_summary"]["trajectory_weight_max"], 5.0)
+        self.assertGreater(
+            artifact["training_summary"]["sample_weight_mean"],
+            artifact["training_summary"]["horizon_weight_mean"],
+        )
+        self.assertGreater(
+            artifact["action_output_bias"]["stay"],
+            artifact["action_output_bias"]["eat"],
+        )
 
     def test_mind_v3_neural_fixture_context_bias_uses_visible_targets(
         self,

@@ -72,6 +72,7 @@ def train_mind_v3_neural_artifact(
     fixture_label_report: Mapping[str, object] | None = None,
     hidden_units: int = MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS,
     seed: int = MIND_V3_NEURAL_DEFAULT_SEED,
+    trajectory_weight_multipliers: Sequence[float] | None = None,
 ) -> dict[str, object]:
     if not datasets:
         raise MindV3NeuralArtifactError("at least one trajectory dataset is required")
@@ -82,8 +83,17 @@ def train_mind_v3_neural_artifact(
         _validate_fixture_label_report(fixture_label_report)
 
     contextual_records = tuple(records_with_trajectory_context(datasets))
+    trajectory_weights = _trajectory_weight_multipliers(
+        datasets,
+        trajectory_weight_multipliers,
+    )
+    source_weight_by_index = _source_weight_by_index(datasets, trajectory_weights)
     labels_by_index = _horizon_labels_by_source_index(horizon_label_report)
-    samples = _training_samples(contextual_records, labels_by_index)
+    samples = _training_samples(
+        contextual_records,
+        labels_by_index,
+        source_weight_by_index=source_weight_by_index,
+    )
     if not samples:
         raise MindV3NeuralArtifactError(
             "no trajectory records could be paired with horizon labels"
@@ -133,6 +143,7 @@ def train_mind_v3_neural_artifact(
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
         "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
         "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
+        "trajectory_weight_multipliers": list(trajectory_weights),
         "hidden_units": hidden_units,
         "seed": seed,
         "horizon_ticks": horizon_ticks,
@@ -149,6 +160,7 @@ def train_mind_v3_neural_artifact(
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
         "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
         "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
+        "trajectory_weight_multipliers": list(trajectory_weights),
         "hidden_units": hidden_units,
         "seed": seed,
         "trained_record_count": len(samples),
@@ -379,6 +391,8 @@ def _horizon_labels_by_source_index(
 def _training_samples(
     records: Sequence[Mapping[str, object]],
     labels_by_index: Mapping[int, Mapping[str, object]],
+    *,
+    source_weight_by_index: Mapping[int, float] | None = None,
 ) -> list[dict[str, object]]:
     samples: list[dict[str, object]] = []
     for source_index, record in enumerate(records):
@@ -395,16 +409,62 @@ def _training_samples(
         horizons = _observed_horizon_payloads(label)
         if not horizons:
             continue
+        horizon_weight = _sample_weight(horizons)
+        trajectory_weight = (
+            float(source_weight_by_index.get(source_index, 1.0))
+            if source_weight_by_index is not None
+            else 1.0
+        )
         samples.append(
             {
                 "source_record_index": source_index,
                 "values": values,
                 "action": action,
-                "weight": _sample_weight(horizons),
+                "weight": _round(horizon_weight * trajectory_weight),
+                "horizon_weight": horizon_weight,
+                "trajectory_weight": trajectory_weight,
                 "horizons": horizons,
             }
         )
     return samples
+
+
+def _trajectory_weight_multipliers(
+    datasets: Sequence[TrajectoryJsonlDataset],
+    supplied: Sequence[float] | None,
+) -> tuple[float, ...]:
+    if supplied is None:
+        return tuple(1.0 for _dataset in datasets)
+    if len(supplied) != len(datasets):
+        raise MindV3NeuralArtifactError(
+            "trajectory_weight_multipliers length must match datasets"
+        )
+    weights: list[float] = []
+    for index, value in enumerate(supplied):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise MindV3NeuralArtifactError(
+                f"trajectory_weight_multipliers[{index}] must be finite"
+            )
+        parsed = float(value)
+        if not math.isfinite(parsed) or parsed <= 0.0:
+            raise MindV3NeuralArtifactError(
+                f"trajectory_weight_multipliers[{index}] must be positive"
+            )
+        weights.append(_round(parsed))
+    return tuple(weights)
+
+
+def _source_weight_by_index(
+    datasets: Sequence[TrajectoryJsonlDataset],
+    trajectory_weights: Sequence[float],
+) -> dict[int, float]:
+    source_weights: dict[int, float] = {}
+    source_index = 0
+    for dataset, weight in zip(datasets, trajectory_weights, strict=True):
+        for _record in dataset.records:
+            source_weights[source_index] = float(weight)
+            source_index += 1
+    return source_weights
 
 
 def _record_action(record: Mapping[str, object]) -> str:
@@ -849,6 +909,8 @@ def _fixture_pressure_summary(
 def _training_summary(samples: Sequence[Mapping[str, object]]) -> dict[str, object]:
     actions = Counter(str(sample["action"]) for sample in samples)
     weights = [float(sample["weight"]) for sample in samples]
+    horizon_weights = [float(sample["horizon_weight"]) for sample in samples]
+    trajectory_weights = [float(sample["trajectory_weight"]) for sample in samples]
     return {
         "record_count": len(samples),
         "action_counts": dict(sorted(actions.items())),
@@ -856,6 +918,28 @@ def _training_summary(samples: Sequence[Mapping[str, object]]) -> dict[str, obje
         "sample_weight_max": _round(max(weights) if weights else 0.0),
         "sample_weight_mean": _round(
             sum(weights) / float(len(weights)) if weights else 0.0
+        ),
+        "horizon_weight_min": _round(
+            min(horizon_weights) if horizon_weights else 0.0
+        ),
+        "horizon_weight_max": _round(
+            max(horizon_weights) if horizon_weights else 0.0
+        ),
+        "horizon_weight_mean": _round(
+            sum(horizon_weights) / float(len(horizon_weights))
+            if horizon_weights
+            else 0.0
+        ),
+        "trajectory_weight_min": _round(
+            min(trajectory_weights) if trajectory_weights else 0.0
+        ),
+        "trajectory_weight_max": _round(
+            max(trajectory_weights) if trajectory_weights else 0.0
+        ),
+        "trajectory_weight_mean": _round(
+            sum(trajectory_weights) / float(len(trajectory_weights))
+            if trajectory_weights
+            else 0.0
         ),
     }
 

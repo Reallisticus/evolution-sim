@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Trajectory JSONL or JSONL.gz input. Repeat to combine datasets.",
     )
     parser.add_argument(
+        "--trajectory-weight",
+        type=float,
+        action="append",
+        help=(
+            "Optional positive multiplier for each --trajectory in the same "
+            "order. Repeat exactly once per trajectory."
+        ),
+    )
+    parser.add_argument(
         "--horizon-labels",
         type=Path,
         required=True,
@@ -76,6 +85,7 @@ def main() -> None:
             fixture_label_report=fixture_label_report,
             hidden_units=int(args.hidden_units),
             seed=int(args.seed),
+            trajectory_weight_multipliers=args.trajectory_weight,
         )
         write_mind_v3_neural_artifact(artifact, args.output)
     except (OSError, ValueError, MindV3NeuralArtifactError) as exc:

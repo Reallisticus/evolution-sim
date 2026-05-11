@@ -1236,6 +1236,48 @@ labels. The next neural/learner slice should train with these fixture
 trajectories included, not only with broad-world v3 trajectories plus aggregate
 fixture blocker pressure.
 
+Seventh implementation milestone:
+
+- `sim:mind:v3:train-neural` now accepts repeated
+  `--trajectory-weight <positive-float>` arguments, one per trajectory input.
+  The artifact records `trajectory_weight_multipliers` plus separate horizon,
+  trajectory, and final sample-weight summaries. This lets controlled fixture
+  or distillation trajectories be made comparable to broad open-world
+  trajectories without adding runtime fixture identity, hidden world state, or
+  heuristic delegation.
+- First falsification run:
+  `output/mind/mind-v3-v28-broad-carrion-neural-artifact.json` trained on the
+  two v26 broad v3 trajectories plus two failing carrion-only v3 fixture
+  trajectories. The label set increased animal-resource contacts from `34` to
+  `126`, but the artifact remained below the linear anchor: `19.0` alive /
+  `9.0` births at `80` versus linear `20.5` / `10.0`, and `22.0` /
+  `17.0` at `120` versus linear `23.5` / `18.5`. Carrion-only stayed at
+  `0.0` alive / `2.5` births with five blockers.
+- Source-balanced distillation run:
+  `output/mind/mind-v3-v29-source-balanced-neural-artifact.json` trained on
+  broad v3 trajectories at weight `1`, controlled carrion heuristic fixture
+  trajectories at weight `4`, and failing controlled carrion v3 trajectories
+  at weight `1`. The label set recorded `584` animal-resource contacts.
+  Broad eval improved to `20.0` alive / `11.5` births at `80` versus linear
+  `20.5` / `10.0`, and `23.0` / `19.5` at `120` versus linear `23.5` /
+  `18.5`. Dominant action share stayed below `0.47` and heuristic action
+  sources stayed zero.
+- The hard blocker remains controlled carrion survival. The source-balanced
+  artifact still produced `0.0` carrion-only alive / `2.5` births with the
+  same five blockers: alive, energy, hydration, health, and matched diet. At
+  `120`, neural top actions shifted strongly toward movement on carrion-only,
+  but `542` fixture decisions were still shadowed by the linear-margin guard.
+
+This is useful progress because broad reproduction moved without action
+collapse, and it is also a clear stop signal for treating source weighting as
+the main fix. The next milestone for this track is explicit: keep the broad
+`120` result within `1.0` alive of the linear anchor, match or beat linear
+births, keep dominant action share at or below `0.50`, and reduce the
+carrion-only blocker set below five or produce nonzero terminal carrion-only
+alive. If the next bounded anchor/learner slice cannot move the carrion fixture,
+switch effort to torch/IQL or vectorized rollout training rather than another
+pure scalar-weight pass.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
