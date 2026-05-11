@@ -952,7 +952,20 @@ criteria before it can replace more heuristic behavior:
     This proves the fixture is mechanically survivable and moves the next work
     to constrained torch/IQL labels, not more scalar weighting or anchor
     leverage.
-44. Add quality-diversity viewer diagnostics once policy lineages
+44. The counterfactual label artifact is implemented as
+    `sim:mind:v3:carrion-counterfactual-labels`. The v33 report
+    `output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json`
+    labels the successful `hydration_safe_carrion_cycle` trajectories with
+    horizons `20,40,80,120`, policy-visible action support, fixture seed,
+    source script, horizon value targets, and rollout-terminal targets. It
+    contains `1155` labels with `1.0` logged-action legal rate. Because final
+    survivors have their last decision at tick `119`, strict 120-tick horizon
+    labels are censored for those survivors; the rollout-terminal target
+    preserves the real end state: `46` terminal agent timelines, `6` terminal
+    alive agents, and `124` labels attached to terminal-alive agents. Next work
+    is opt-in torch/IQL consumption of these labels, not another diagnostic
+    report.
+45. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

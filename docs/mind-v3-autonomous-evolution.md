@@ -1436,9 +1436,9 @@ Eleventh implementation milestone:
 
 Adjusted next tasks after the counterfactual result:
 
-1. Convert the successful counterfactual trajectories into explicit
-   action/value labels for the existing torch/IQL trainer. The label contract
-   must preserve source script, fixture seed, horizon, terminal alive, energy,
+1. The successful counterfactual trajectories now need to become explicit
+   action/value labels for constrained torch/IQL. The label contract must
+   preserve source script, fixture seed, horizon, terminal alive, energy,
    hydration, health, matched diet, action support, and animal-resource gain.
 2. Train an opt-in torch/IQL artifact on broad trajectories plus the
    counterfactual carrion labels with constraints for terminal alive and
@@ -1452,6 +1452,47 @@ Adjusted next tasks after the counterfactual result:
 4. If torch/IQL cannot learn the hydration-cycle behavior despite positive
    labels, move to vectorized rollout/model-based training. Do not return to
    residual-scale, anchor-margin, or scalar trajectory-weight tuning.
+
+Twelfth implementation milestone:
+
+- `sim:mind:v3:carrion-counterfactual-labels` now builds
+  `mind_v3_carrion_counterfactual_labels_v1` reports from scripted
+  counterfactual trajectory JSONL.gz files. The labels align every trajectory
+  decision with policy-visible action support, source script, fixture seed,
+  horizon targets, and a rollout-terminal target. This still does not alter
+  runtime policy or trainer behavior.
+- The first v33 label report is
+  `output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json`,
+  generated from the two successful `hydration_safe_carrion_cycle` trajectories
+  with horizons `20,40,80,120` and primary horizon `120`.
+- The report contains `1155` labels, all with legal logged actions. Logged
+  action counts are `stay=322`, `move_north=200`, `eat=186`, `drink=141`,
+  `move_east=126`, `move_south=90`, and `move_west=90`. The 120-tick horizon
+  itself is censored for final survivors because the last decision tick is
+  `119`, so primary observed terminal-alive rate is `0.0`; the added
+  rollout-terminal target preserves the real end-of-run result: `46` terminal
+  agent timelines, `6` terminal-alive agents, alive-agent rate `0.130435`, and
+  `124` labels whose owning agent survives to the rollout terminal state.
+- The strongest positive labels now expose the desired sequence explicitly. One
+  example at tick `64` requests `drink`, has legal action support, and reaches
+  terminal alive at tick `119` with energy `0.4531`, hydration `0.965`, health
+  `0.9803`, matched diet `1.0`, `1.8204` animal-resource gain to terminal, and
+  rollout action-value score `0.89062`.
+
+Adjusted next tasks after the label result:
+
+1. Wire the counterfactual label report into an opt-in torch/IQL data path.
+   Keep the original trajectories as the transition source, but use the labels
+   for row weights, terminal/homeostatic constraints, and action-support
+   diagnostics. Do not change default Mind v3 runtime selection.
+2. Train one bounded torch/IQL candidate using broad trajectories plus these
+   hydration-cycle labels. Acceptance remains broad 120 within about `1.0`
+   alive of linear, births not worse than linear, dominant action share
+   `<= 0.50`, zero heuristic runtime actions, and carrion-only blocker count
+   reduced or terminal alive nonzero.
+3. If the labeled torch/IQL slice cannot move carrion, stop this path and move
+   to vectorized rollout/model-based training rather than adding another
+   weight/anchor/search tweak.
 
 ## Promotion Boundary
 

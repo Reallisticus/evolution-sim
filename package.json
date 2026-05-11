@@ -29,6 +29,7 @@
     "sim:mind:horizon-labels": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_horizon_labels",
     "sim:mind:v3:carrion-autopsy": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_autopsy",
     "sim:mind:v3:carrion-counterfactual": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_counterfactual",
+    "sim:mind:v3:carrion-counterfactual-labels": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_counterfactual_labels",
     "sim:mind:v3:train-neural": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_neural_artifact",
     "sim:mind:v3:evaluate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_evaluate",
     "sim:mind:v3:evolve": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_evolve",

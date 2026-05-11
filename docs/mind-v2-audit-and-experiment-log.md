@@ -1564,6 +1564,21 @@ should make the learner stronger and easier to evaluate.
     next implementation slice should convert these positive sequences into
     constrained torch/IQL labels rather than continue residual-scale,
     anchor-margin, or scalar-weight tuning.
+51. The counterfactual action/value label slice is complete. The new
+    `sim:mind:v3:carrion-counterfactual-labels` command writes
+    `mind_v3_carrion_counterfactual_labels_v1` reports from scripted
+    counterfactual trajectories. The v33 label report
+    `output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json`
+    was generated from the two successful `hydration_safe_carrion_cycle`
+    trajectories with horizons `20,40,80,120` and primary horizon `120`. It
+    contains `1155` labels, legal logged-action rate `1.0`, and rollout
+    terminal targets preserving the actual end state: `46` terminal agent
+    timelines, `6` terminal-alive agents, alive-agent rate `0.130435`, and
+    `124` labels whose owning agent survives to terminal. The strict 120-tick
+    horizon remains censored for final survivors because the last decision tick
+    is `119`; the rollout-terminal target exists specifically to avoid losing
+    those positive labels. Next work should wire this report into an opt-in
+    torch/IQL data path for row weighting and terminal/homeostatic constraints.
 
 ### GPU / CUDA Boundary
 
