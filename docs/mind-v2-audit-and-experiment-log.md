@@ -1490,6 +1490,20 @@ should make the learner stronger and easier to evaluate.
     broad-plus-carrion matrix; if carrion terminal alive or blocker count does
     not move, switch to torch/IQL or vectorized rollout training rather than
     another scalar-weight pass.
+47. That bounded anchor/learner leverage change was tested and falsified. A
+    policy-visible carrion/water context gate that relaxed the residual scale
+    and linear-margin guard was too broad: v30 broad eval regressed to `15.5`
+    alive / `7.5` births at `80` and `11.0` / `10.0` at `120`, while
+    carrion-only still failed with `0.0` alive and five blockers. Tightening the
+    gate to direction-aligned carrion/water navigation made it rare in broad
+    worlds (`1.21%` active at `80`, `0.86%` at `120`) and recovered broad eval
+    to `20.0` / `11.5` at `80` and `22.5` / `19.0` at `120`, but carrion-only
+    remained `0.0` alive / `2.5` births with alive, energy, hydration, health,
+    and matched-diet blockers. The runtime code was restored to the existing
+    `linear_controller_margin_guarded_neural_residual_v2` default. Treat this
+    as stop evidence for residual leverage and scalar weighting loops; the next
+    useful implementation path is stronger deterministic controller capacity
+    against horizon/fixture labels, or torch/IQL/vectorized rollout training.
 
 ### GPU / CUDA Boundary
 

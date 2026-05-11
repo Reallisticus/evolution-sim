@@ -896,7 +896,19 @@ criteria before it can replace more heuristic behavior:
     this as a partial learner-data win, not a promotion: the next bounded
     milestone must reduce carrion blockers or produce nonzero terminal
     carrion-only alive before more pure scalar weighting is justified.
-40. Add quality-diversity viewer diagnostics once policy lineages
+40. The bounded neural-control leverage follow-up was run and rejected as a
+    runtime change. A broad context gate over-relaxed the neural residual and
+    regressed open-world outcomes to `15.5` alive / `7.5` births at `80` and
+    `11.0` / `10.0` at `120`, with carrion-only still at `0.0` alive and five
+    blockers. A direction-aligned gate recovered broad behavior (`20.0` /
+    `11.5` at `80`, `22.5` / `19.0` at `120`) but still left carrion-only at
+    `0.0` alive / `2.5` births with the same five blockers. Keep the default
+    `linear_controller_margin_guarded_neural_residual_v2`; this closes the
+    residual-scale/margin-threshold loop. The next useful v3 milestone is a
+    stronger deterministic autonomous policy artifact trained on horizon and
+    fixture labels, or torch/IQL/vectorized rollout training if that bounded
+    artifact path does not move carrion.
+41. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

@@ -1278,6 +1278,37 @@ alive. If the next bounded anchor/learner slice cannot move the carrion fixture,
 switch effort to torch/IQL or vectorized rollout training rather than another
 pure scalar-weight pass.
 
+Eighth implementation milestone:
+
+- Bounded neural-control leverage was tested and rejected as a runtime change.
+  The first v30 variant let policy-visible carrion/water context relax the
+  neural residual scale and linear-margin guard. It was too broad:
+  `output/mind/mind-v3-v30-contextual-anchor-leverage-80.json` fell to
+  `15.5` alive / `7.5` births versus linear `20.5` / `10.0`, and
+  `output/mind/mind-v3-v30-contextual-anchor-leverage-120.json` fell to
+  `11.0` / `10.0` versus linear `23.5` / `18.5`. Carrion-only still had
+  `0.0` alive, five blockers, and only `3.5` births, so the broad regression
+  bought no controlled-fixture progress.
+- A tighter direction-aligned variant only relaxed leverage when the neural
+  movement top action aligned with policy-visible carrion or water navigation.
+  That made the intervention rare in broad worlds (`1.21%` of decisions at
+  `80`, `0.86%` at `120`) and recovered most broad performance:
+  `output/mind/mind-v3-v30-directional-context-leverage-80.json` produced
+  `20.0` alive / `11.5` births, and
+  `output/mind/mind-v3-v30-directional-context-leverage-120.json` produced
+  `22.5` / `19.0`. The fixture result still did not move: carrion-only stayed
+  at `0.0` alive / `2.5` births with the same alive, energy, hydration,
+  health, and matched-diet blockers.
+- The tested code path was not kept. The existing default remains
+  `linear_controller_margin_guarded_neural_residual_v2`; v30 is documented as
+  evidence that small anchor/residual leverage changes are exhausted for the
+  carrion blocker. The next implementation milestone should either build a
+  stronger deterministic autonomous policy artifact from horizon/fixture labels
+  or move to torch/IQL/vectorized rollout training. Do not spend another slice
+  on scalar trajectory weights, residual scale, or margin guard thresholds
+  unless it is part of that stronger learner path and has a predeclared
+  carrion-fixture pass/fail threshold.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
