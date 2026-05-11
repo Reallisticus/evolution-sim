@@ -247,6 +247,11 @@ inputs and reproduced the same `19.0` / `16.0` broad result with the same
 carrion blocker set, so the next useful step is controlled fixture trajectory
 data or a stronger learner, not another hand-shaped residual bias.
 
+`sim:mind:v3:evaluate --trajectory-output-dir ...` can now persist broad and
+controlled-fixture runs as trajectory JSONL.gz files. Use this to turn
+carrion-only fixture failures into `mind_horizon_labels_v1` training data
+instead of relying only on aggregate fixture blocker labels.
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:

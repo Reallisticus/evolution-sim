@@ -1456,6 +1456,17 @@ should make the learner stronger and easier to evaluate.
     controllable leverage. Next work should collect controlled fixture
     trajectories for horizon labels or move to torch/vectorized rollout
     training; another hand-shaped residual bias is not justified.
+45. The fixture-to-label bridge is now implemented. `mind_v3_evaluate` accepts
+    `--trajectory-output-dir` and writes broad plus controlled-fixture runs as
+    loadable trajectory JSONL.gz files while keeping summary-only evaluation.
+    Reports carry each run's `trajectory_path`. Smoke report
+    `output/mind/mind-v3-v27-fixture-trajectory-export-smoke.json` exported
+    `output/trajectories/mind-v3-v27-fixture-export-smoke/fixture-carrion-only-mind-v3-29-40.jsonl.gz`,
+    and `mind_horizon_labels` generated
+    `output/mind/mind-v3-v27-carrion-fixture-horizon-labels-smoke.json` with
+    `393` labels at horizons `10,20,40`. This makes the next step concrete:
+    include controlled carrion trajectories in artifact training/evaluation,
+    rather than asking aggregate blocker labels to stand in for sequence data.
 
 ### GPU / CUDA Boundary
 

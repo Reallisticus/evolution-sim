@@ -12,9 +12,11 @@ from typing import Any
 from evolution_sim.config import ClimateConfig, ResourceRegrowthConfig, WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime import reproduction as runtime_reproduction
+from evolution_sim.env.runtime import trajectory as runtime_trajectory
 from evolution_sim.env.runtime.state import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
+from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.evolution import load_mind_v3_founder_template
 from evolution_sim.mind.v3_neural import load_mind_v3_neural_artifact
 from evolution_sim.mind.v3_policy import (
@@ -99,6 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         default=Path("output/mind/mind-v3-autonomous-evolution-report.json"),
+    )
+    parser.add_argument(
+        "--trajectory-output-dir",
+        type=Path,
+        help=(
+            "Optional directory for per-run trajectory JSONL.gz files. "
+            "This preserves broad and controlled-fixture runs for horizon "
+            "label generation without building full replay payloads."
+        ),
     )
     parser.add_argument(
         "--fixture-suite",
@@ -198,7 +209,20 @@ def main() -> None:
     if args.compare_linear_baseline and neural_artifact is None:
         raise SystemExit("--compare-linear-baseline requires --neural-artifact")
     heuristic_runs = [
-        _run_once(seed=seed, ticks=args.ticks, policy=None) for seed in seeds
+        _run_once(
+            seed=seed,
+            ticks=args.ticks,
+            policy=None,
+            trajectory_output_path=_trajectory_output_path(
+                args.trajectory_output_dir,
+                "open",
+                "heuristic",
+                seed,
+                args.ticks,
+            ),
+            trajectory_split_id="mind_v3_evaluate_open_heuristic",
+        )
+        for seed in seeds
     ]
     linear_runs = (
         [
@@ -209,6 +233,14 @@ def main() -> None:
                     seed=seed,
                     founder_template=founder_template,
                 ),
+                trajectory_output_path=_trajectory_output_path(
+                    args.trajectory_output_dir,
+                    "open",
+                    "mind_v3_linear",
+                    seed,
+                    args.ticks,
+                ),
+                trajectory_split_id="mind_v3_evaluate_open_linear",
             )
             for seed in seeds
         ]
@@ -224,6 +256,14 @@ def main() -> None:
                 founder_template=founder_template,
                 neural_artifact=neural_artifact,
             ),
+            trajectory_output_path=_trajectory_output_path(
+                args.trajectory_output_dir,
+                "open",
+                "mind_v3",
+                seed,
+                args.ticks,
+            ),
+            trajectory_split_id="mind_v3_evaluate_open_mind_v3",
         )
         for seed in seeds
     ]
@@ -324,6 +364,8 @@ def main() -> None:
             ticks=fixture_ticks,
             founder_template=founder_template,
             neural_artifact=neural_artifact,
+            trajectory_output_dir=args.trajectory_output_dir,
+            trajectory_prefix="fixture",
         )
         report["fixture_gate"] = mind_v3_fixture_gate_status(
             fixture_suite=report["fixture_suite"],
@@ -336,6 +378,8 @@ def main() -> None:
                 seeds=fixture_seeds,
                 ticks=fixture_ticks,
                 founder_template=founder_template,
+                trajectory_output_dir=args.trajectory_output_dir,
+                trajectory_prefix="fixture_linear_baseline",
             )
             report["linear_baseline_fixture_gate"] = mind_v3_fixture_gate_status(
                 fixture_suite=report["linear_baseline_fixture_suite"],
@@ -396,12 +440,20 @@ def _run_once(
     seed: int,
     ticks: int,
     policy: object | None,
+    trajectory_output_path: Path | None = None,
+    trajectory_split_id: str = "mind_v3_evaluate",
 ) -> dict[str, object]:
     world = SimulationWorld(
         WorldConfig(seed=seed, max_ticks=ticks),
         policy=policy,
     )
-    return _run_world(world=world, seed=seed, ticks=ticks)
+    return _run_world(
+        world=world,
+        seed=seed,
+        ticks=ticks,
+        trajectory_output_path=trajectory_output_path,
+        trajectory_split_id=trajectory_split_id,
+    )
 
 
 def _run_world(
@@ -409,6 +461,8 @@ def _run_world(
     world: SimulationWorld,
     seed: int,
     ticks: int,
+    trajectory_output_path: Path | None = None,
+    trajectory_split_id: str = "mind_v3_evaluate",
 ) -> dict[str, object]:
     result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
     action_source_counts = Counter(
@@ -431,7 +485,15 @@ def _run_world(
     )
     dominant_action = _dominant_action_summary(requested_action_counts)
     summary = result.summary
-    return {
+    if trajectory_output_path is not None:
+        _write_trajectory_records(
+            world=world,
+            summary=summary,
+            output_path=trajectory_output_path,
+            seed=seed,
+            split_id=trajectory_split_id,
+        )
+    run = {
         "seed": seed,
         "ticks": ticks,
         "ticks_executed": int(summary["ticks_executed"]),
@@ -478,6 +540,59 @@ def _run_world(
         "action_source_counts": dict(sorted(action_source_counts.items())),
         "policy_id_counts": dict(sorted(policy_id_counts.items())),
     }
+    if trajectory_output_path is not None:
+        run["trajectory_path"] = str(trajectory_output_path)
+    return run
+
+
+def _write_trajectory_records(
+    *,
+    world: SimulationWorld,
+    summary: Mapping[str, object],
+    output_path: Path,
+    seed: int,
+    split_id: str,
+) -> None:
+    writer = JsonlTrajectoryWriter(
+        output_path,
+        source_seeds=[seed],
+        split_id=split_id,
+        include_policy_decision_diagnostics=True,
+        include_policy_update_trace=True,
+    )
+    writer.begin(
+        run_id=world.run_id,
+        config=world.config.to_dict(),
+        contract=runtime_trajectory.trajectory_contract(world.config.signals),
+    )
+    try:
+        for record in world.trajectory_records:
+            writer.write_record(record)
+        writer.finish(summary=dict(summary))
+    except Exception:
+        writer.abort()
+        raise
+
+
+def _trajectory_output_path(
+    output_dir: Path | None,
+    *parts: object,
+) -> Path | None:
+    if output_dir is None:
+        return None
+    stem = "-".join(_safe_path_part(part) for part in parts if part is not None)
+    return output_dir / f"{stem}.jsonl.gz"
+
+
+def _safe_path_part(value: object) -> str:
+    text = str(value).strip().replace("_", "-")
+    safe = [
+        character.lower()
+        if character.isalnum() or character in {"-", "."}
+        else "-"
+        for character in text
+    ]
+    return "".join(safe).strip("-") or "run"
 
 
 def run_mind_v3_fixture_suite(
@@ -488,6 +603,8 @@ def run_mind_v3_fixture_suite(
     ticks: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
+    trajectory_output_dir: Path | None = None,
+    trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
     fixtures = []
     selected_fixture_names = (
@@ -500,6 +617,17 @@ def run_mind_v3_fixture_suite(
                 seed=seed,
                 ticks=ticks,
                 policy=None,
+                trajectory_output_path=_trajectory_output_path(
+                    trajectory_output_dir,
+                    trajectory_prefix,
+                    fixture_name,
+                    "heuristic",
+                    seed,
+                    ticks,
+                ),
+                trajectory_split_id=(
+                    f"mind_v3_evaluate_{trajectory_prefix}_{fixture_name}_heuristic"
+                ),
             )
             for seed in seeds
         ]
@@ -512,6 +640,17 @@ def run_mind_v3_fixture_suite(
                     seed=seed,
                     founder_template=founder_template,
                     neural_artifact=neural_artifact,
+                ),
+                trajectory_output_path=_trajectory_output_path(
+                    trajectory_output_dir,
+                    trajectory_prefix,
+                    fixture_name,
+                    "mind_v3",
+                    seed,
+                    ticks,
+                ),
+                trajectory_split_id=(
+                    f"mind_v3_evaluate_{trajectory_prefix}_{fixture_name}_mind_v3"
                 ),
             )
             for seed in seeds
@@ -828,6 +967,8 @@ def _run_fixture_once(
     seed: int,
     ticks: int,
     policy: object | None,
+    trajectory_output_path: Path | None = None,
+    trajectory_split_id: str = "mind_v3_evaluate_fixture",
 ) -> dict[str, object]:
     world = _fixture_world(
         fixture_name=fixture_name,
@@ -835,7 +976,13 @@ def _run_fixture_once(
         ticks=ticks,
         policy=policy,
     )
-    run = _run_world(world=world, seed=seed, ticks=ticks)
+    run = _run_world(
+        world=world,
+        seed=seed,
+        ticks=ticks,
+        trajectory_output_path=trajectory_output_path,
+        trajectory_split_id=trajectory_split_id,
+    )
     run["fixture"] = fixture_name
     run["evaluation_context"] = "controlled_ecology_fixture"
     return run

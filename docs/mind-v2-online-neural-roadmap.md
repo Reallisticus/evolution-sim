@@ -873,7 +873,14 @@ criteria before it can replace more heuristic behavior:
     stop signal for hand-shaped pure-Python residual work: the next useful
     slice is controlled fixture trajectory data or a stronger learner that
     trains on carrion-only sequences directly.
-38. Add quality-diversity viewer diagnostics once policy lineages
+38. `mind_v3_evaluate` can now export trajectory JSONL.gz files with
+    `--trajectory-output-dir`, including controlled fixtures. A carrion-only
+    smoke exported
+    `output/trajectories/mind-v3-v27-fixture-export-smoke/fixture-carrion-only-mind-v3-29-40.jsonl.gz`
+    and generated `393` horizon labels at `10,20,40` ticks. This is the bridge
+    needed for the next learner iteration: train on actual controlled fixture
+    sequences instead of only broad trajectories plus aggregate blocker labels.
+39. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

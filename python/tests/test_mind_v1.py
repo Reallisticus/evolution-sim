@@ -6782,6 +6782,7 @@ class MindV1Tests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "mind-v3-carrion-fixture-eval.json"
+            trajectory_dir = Path(tmpdir) / "trajectories"
             stdout = io.StringIO()
             with (
                 patch(
@@ -6798,6 +6799,8 @@ class MindV1Tests(unittest.TestCase):
                         "carrion_only",
                         "--fixture-ticks",
                         "2",
+                        "--trajectory-output-dir",
+                        str(trajectory_dir),
                         "--output",
                         str(report_path),
                     ],
@@ -6808,9 +6811,25 @@ class MindV1Tests(unittest.TestCase):
                 mind_v3_evaluate.main()
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
+            fixture_suite = report["fixture_suite"]
+            open_trajectory_path = Path(
+                report["comparison"]["mind_v3"]["runs"][0]["trajectory_path"]
+            )
+            fixture_trajectory_path = Path(
+                fixture_suite["fixtures"][0]["comparison"]["mind_v3"]["runs"][0][
+                    "trajectory_path"
+                ]
+            )
+            open_trajectory_exists = open_trajectory_path.exists()
+            fixture_trajectory_exists = fixture_trajectory_path.exists()
+            open_trajectory_record_count = load_trajectory_jsonl(
+                open_trajectory_path
+            ).record_count
+            fixture_trajectory_record_count = load_trajectory_jsonl(
+                fixture_trajectory_path
+            ).record_count
 
         self.assertIn("mind_v3_fixture_count=1", stdout.getvalue())
-        fixture_suite = report["fixture_suite"]
         self.assertEqual(fixture_suite["fixture_names"], ["carrion_only"])
         self.assertEqual(len(fixture_suite["fixtures"]), 1)
         self.assertEqual(
@@ -6820,6 +6839,20 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             report["fixture_gate"]["fixture_names"],
             ["carrion_only"],
+        )
+        self.assertTrue(open_trajectory_exists)
+        self.assertTrue(fixture_trajectory_exists)
+        self.assertEqual(
+            open_trajectory_record_count,
+            report["comparison"]["mind_v3"]["runs"][0][
+                "trajectory_record_count"
+            ],
+        )
+        self.assertEqual(
+            fixture_trajectory_record_count,
+            fixture_suite["fixtures"][0]["comparison"]["mind_v3"]["runs"][0][
+                "trajectory_record_count"
+            ],
         )
 
     def test_mind_v3_fixture_gate_blocks_mixed_stable_birth_floor(

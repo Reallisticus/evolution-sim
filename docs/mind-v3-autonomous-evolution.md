@@ -1212,6 +1212,30 @@ productive slice is to collect controlled fixture trajectories for horizon
 labels or run a stronger torch/vectorized learner that can train directly on
 carrion-only sequences.
 
+Sixth implementation milestone:
+
+- `sim:mind:v3:evaluate --trajectory-output-dir <dir>` now writes each broad
+  and controlled-fixture run as a trajectory JSONL.gz file while keeping the
+  evaluator in summary-only mode. Reports include `trajectory_path` per run.
+- The exported files use the same trajectory contract and loader as
+  `sim:trajectory`, so fixture runs can feed `mind_horizon_labels_v1` directly.
+
+Smoke evidence:
+
+- Evaluation:
+  `output/mind/mind-v3-v27-fixture-trajectory-export-smoke.json`
+- Exported carrion trajectory:
+  `output/trajectories/mind-v3-v27-fixture-export-smoke/fixture-carrion-only-mind-v3-29-40.jsonl.gz`
+- Horizon labels:
+  `output/mind/mind-v3-v27-carrion-fixture-horizon-labels-smoke.json`
+- The exported carrion trajectory produced `393` labels at horizons
+  `10,20,40`; observed labels were `383/393`, `373/393`, and `353/393`.
+
+This is the first direct bridge from controlled carrion failures to training
+labels. The next neural/learner slice should train with these fixture
+trajectories included, not only with broad-world v3 trajectories plus aggregate
+fixture blocker pressure.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
