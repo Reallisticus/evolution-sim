@@ -4,6 +4,11 @@ from collections.abc import Mapping, Sequence
 from random import Random
 
 from evolution_sim.env.runtime.observations import (
+    NAVIGATION_INPUT_FIELDS,
+    NAVIGATION_TARGETS,
+    PATCH_CELL_COUNT,
+    PATCH_INPUT_FIELDS,
+    SELF_INPUT_FIELDS,
     decode_observation_input,
     encode_observation_input,
 )
@@ -24,7 +29,7 @@ MIND_V3_ELIGIBILITY_TRACE_POLICY = (
 MIND_V3_ELIGIBILITY_TRACE_LENGTH = 12
 MIND_V3_ELIGIBILITY_TRACE_DECAY = 0.84
 MIND_V3_REWARD_SIGNAL_POLICY = (
-    "balanced_bottleneck_observed_carrion_readiness_signal_v7"
+    "balanced_bottleneck_visible_navigation_carrion_readiness_signal_v8"
 )
 MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY = (
     "contextual_trophic_founder_template_assignment_v1"
@@ -69,6 +74,14 @@ MIND_V3_USEFUL_EAT_SIGNAL_CAP = 0.34
 MIND_V3_USEFUL_ANIMAL_RESOURCE_EAT_SIGNAL_CAP = 0.16
 MIND_V3_USEFUL_DRINK_SIGNAL_CAP = 0.22
 MIND_V3_USEFUL_MOVEMENT_SIGNAL_CAP = 0.1
+MIND_V3_USEFUL_NAVIGATION_MOVEMENT_SIGNAL_CAP = 0.08
+MIND_V3_NAVIGATION_MOVEMENT_SIGNAL_SCALE = 0.18
+MIND_V3_NAVIGATION_MOVEMENT_DIRECTIONS = {
+    "move_north": (0.0, -1.0),
+    "move_south": (0.0, 1.0),
+    "move_east": (1.0, 0.0),
+    "move_west": (-1.0, 0.0),
+}
 
 
 class MindV3EvolutionPolicy:
@@ -774,17 +787,108 @@ def _record_action_outcome_signal(
 
     if action.startswith("move_"):
         useful_progress = limiting_progress + 0.5 * balanced_progress
+        navigation_signal = _record_navigation_movement_signal(
+            record,
+            action=action,
+            bottleneck=bottleneck,
+        )
         if bool(record.get("moved", False)) and useful_progress > 0.0:
+            immediate_signal = min(
+                MIND_V3_USEFUL_MOVEMENT_SIGNAL_CAP,
+                0.25 * max(useful_progress, 0.25 * positive_total),
+            )
             return (
                 min(
                     MIND_V3_USEFUL_MOVEMENT_SIGNAL_CAP,
-                    0.25 * max(useful_progress, 0.25 * positive_total),
+                    immediate_signal + navigation_signal,
                 ),
                 False,
             )
+        if bool(record.get("moved", False)) and navigation_signal > 0.0:
+            return (navigation_signal, False)
         return (0.0, False)
 
     return (0.0, False)
+
+
+def _record_navigation_movement_signal(
+    record: Mapping[str, object],
+    *,
+    action: str,
+    bottleneck: Mapping[str, float | str],
+) -> float:
+    action_direction = MIND_V3_NAVIGATION_MOVEMENT_DIRECTIONS.get(action)
+    if action_direction is None:
+        return 0.0
+    if not isinstance(record.get("observation_input"), Mapping):
+        return 0.0
+    values = _observation_values(record)
+    if not values:
+        return 0.0
+    energy = _vector_self_feature(values, "energy_ratio", default=1.0)
+    hydration = _vector_self_feature(values, "hydration_ratio", default=1.0)
+    matched_diet = _vector_self_feature(values, "matched_diet_ratio")
+    trophic_role = _vector_self_feature(values, "trophic_role_code")
+    meat_mode = _vector_self_feature(values, "meat_mode_code")
+    vegetation = _vector_self_feature(values, "tile_vegetation")
+    local_plant = max(_vector_center_patch_feature(values, "food"), vegetation)
+    local_animal = max(
+        _vector_center_patch_feature(values, "fresh_kill_energy"),
+        _vector_center_patch_feature(values, "carcass_energy"),
+    )
+    hunger = max(0.0, 0.72 - energy) / 0.72
+    thirst = max(0.0, 0.72 - hydration) / 0.72
+    if hunger <= 0.0 and thirst <= 0.0:
+        return 0.0
+    plant_preference = max(0.0, min(1.0, 1.0 - meat_mode + local_plant * 0.5))
+    meat_preference = max(
+        0.0,
+        min(
+            1.0,
+            meat_mode * 1.8
+            + trophic_role * 0.25
+            + local_animal * 0.5
+            + max(0.0, 0.65 - matched_diet) * 0.3,
+        ),
+    )
+    prey_preference = max(0.0, min(1.0, meat_mode * 1.3 + trophic_role * 0.35))
+    limiting_field = str(bottleneck.get("field", "unknown"))
+    water_weight = thirst * (1.35 if limiting_field == "hydration_ratio" else 0.7)
+    energy_weight = 1.25 if limiting_field == "energy_ratio" else 0.85
+    target_signals = [
+        water_weight
+        * _navigation_movement_alignment(values, "water", action_direction),
+        hunger
+        * plant_preference
+        * energy_weight
+        * _navigation_movement_alignment(values, "plant", action_direction),
+        hunger
+        * meat_preference
+        * energy_weight
+        * _navigation_movement_alignment(values, "carrion", action_direction),
+        hunger
+        * prey_preference
+        * energy_weight
+        * 0.75
+        * _navigation_movement_alignment(values, "prey", action_direction),
+    ]
+    best_signal = max(target_signals)
+    if best_signal <= 0.0:
+        return 0.0
+    return min(
+        MIND_V3_USEFUL_NAVIGATION_MOVEMENT_SIGNAL_CAP,
+        MIND_V3_NAVIGATION_MOVEMENT_SIGNAL_SCALE * best_signal,
+    )
+
+
+def _navigation_movement_alignment(
+    values: list[float],
+    target: str,
+    action_direction: tuple[float, float],
+) -> float:
+    target_dx, target_dy = _vector_navigation_vector(values, target)
+    action_dx, action_dy = action_direction
+    return max(0.0, action_dx * target_dx + action_dy * target_dy)
 
 
 def _record_terminal_signal(record: Mapping[str, object]) -> float:
@@ -843,6 +947,84 @@ def _observation_values(observation: Mapping[str, object]) -> list[float]:
             ]
         return decode_observation_input(dict(payload))
     return decode_observation_input(encode_observation_input(dict(observation)))
+
+
+def _vector_self_feature(
+    values: list[float],
+    field: str,
+    *,
+    default: float = 0.0,
+) -> float:
+    try:
+        index = SELF_INPUT_FIELDS.index(field)
+    except ValueError:
+        return default
+    if index >= len(values):
+        return default
+    return max(0.0, min(1.0, float(values[index])))
+
+
+def _vector_center_patch_feature(
+    values: list[float],
+    field: str,
+    *,
+    default: float = 0.0,
+) -> float:
+    try:
+        field_index = PATCH_INPUT_FIELDS.index(field)
+    except ValueError:
+        return default
+    center_cell_index = PATCH_CELL_COUNT // 2
+    index = (
+        len(SELF_INPUT_FIELDS)
+        + center_cell_index * len(PATCH_INPUT_FIELDS)
+        + field_index
+    )
+    if index >= len(values):
+        return default
+    return max(0.0, min(1.0, float(values[index])))
+
+
+def _vector_navigation_feature(
+    values: list[float],
+    target: str,
+    field: str,
+    *,
+    default: float = 0.0,
+) -> float:
+    try:
+        target_index = NAVIGATION_TARGETS.index(target)
+        field_index = NAVIGATION_INPUT_FIELDS.index(field)
+    except ValueError:
+        return default
+    navigation_start = len(SELF_INPUT_FIELDS) + (
+        PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+    )
+    index = (
+        navigation_start
+        + target_index * len(NAVIGATION_INPUT_FIELDS)
+        + field_index
+    )
+    if index >= len(values):
+        return default
+    return max(-1.0, min(1.0, float(values[index])))
+
+
+def _vector_navigation_vector(
+    values: list[float],
+    target: str,
+) -> tuple[float, float]:
+    strength = max(0.0, _vector_navigation_feature(values, target, "strength"))
+    distance = max(
+        0.0,
+        min(1.0, _vector_navigation_feature(values, target, "distance")),
+    )
+    falloff = max(0.0, 1.0 - distance * 0.35)
+    scale = strength * falloff
+    return (
+        _vector_navigation_feature(values, target, "dx") * scale,
+        _vector_navigation_feature(values, target, "dy") * scale,
+    )
 
 
 def _best_action(

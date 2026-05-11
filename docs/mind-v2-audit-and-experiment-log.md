@@ -9,6 +9,14 @@ experiment ledger so future Mind work does not repeat failed trainer or
 delegation paths. Any new Mind trainer, calibration rule, or gate probe should
 add a row here before the next implementation slice starts.
 
+May 11 direction update: Mind v2 remains the guarded safety-floor and offline
+RL comparison path, but it is no longer the main autonomy frontier. The deep
+system audit found that Mind v3's no-heuristic boundary is strategically
+correct while the current hand-shaped linear v3 controller is underpowered.
+Future v2 work should support v3 with labels, diagnostics, and comparison
+artifacts rather than widening heuristic delegation or optimizing fallback
+metrics as a proxy for autonomous intelligence.
+
 ## Current Control
 
 The current promoted runtime remains heuristic-backed and Mind-disabled by

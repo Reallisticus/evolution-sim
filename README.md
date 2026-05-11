@@ -195,6 +195,25 @@ See `docs/mind-v1-stage-plan.md` for the phase boundary before moving beyond
 the heuristic safety floor, and `docs/mind-v2-online-neural-roadmap.md` for the
 neural/offline-to-online plan.
 
+Mind v3 is the current no-heuristic autonomous-controller track. Its durable
+ledger and next direction are in `docs/mind-v3-autonomous-evolution.md`. The
+May 11 deep-system audit keeps v3 as the strategic path, but changes the next
+work from scalar reward/search tuning toward horizon labels, fixture blocker
+labels, a policy-input/diagnostic split, and a stronger deterministic v3 policy
+artifact evaluated against the existing linear controller.
+
+Generate the first label reports with:
+
+```bash
+npm run sim:mind:horizon-labels -- \
+  --trajectory output/trajectories/mind-v3-probe.jsonl.gz \
+  --output output/mind/mind-v3-horizon-labels.json
+
+npm run sim:mind:fixture-labels -- \
+  --report output/mind/mind-v3-visible-nav-v26-top8-80-120-search.json \
+  --output output/mind/mind-v3-fixture-labels.json
+```
+
 ## Foundation Gate
 
 Run the local readiness gate before starting Mind work:

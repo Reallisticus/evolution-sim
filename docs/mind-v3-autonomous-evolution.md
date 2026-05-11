@@ -948,14 +948,135 @@ carrion fixture.
 
 The next search slice starts that fixture-in-loop pressure. When
 `--fixture-suite basic` is enabled, `sim:mind:v3:evolve` now defaults to a
-bounded per-generation fixture nominee pass via `--fixture-selection-top-k 3`
-plus the existing warm-start and ecology-lane nominees. Those fixture outcomes
-add a `fixture_selection_pressure` score component and a `fixture_selection`
-archive elite, so candidates with fewer controlled-fixture blockers can seed the
-next generation before final top-K rerank. This remains search-time selection
-pressure only: runtime controllers still receive no fixture identity, wider
-field of view, or heuristic fallback. Use `--fixture-selection-top-k 0` to
-recover the previous post-hoc-only fixture path for audits.
+bounded per-generation fixture nominee pass via `--fixture-selection-top-k 4`.
+The nominee pool is deliberately small but no longer scalar-only: it preserves a
+broad-score nominee, a scavenger/ecology-lane nominee, a current-architecture
+nominee, and a controlled-readiness nominee before filling remaining slots by
+the existing prefilter. Those fixture outcomes add a
+`fixture_selection_pressure` score component and a `fixture_selection` archive
+elite, so candidates with fewer and less severe controlled-fixture blockers can
+seed the next generation before final top-K rerank.
+
+The v25 scoring policy also records fixture blocker pressure. Raw blocker count
+still matters, but search pressure now includes the size of each failed
+floor gap, with extra weight for carrion-only failures and alive-floor failures.
+That is aimed directly at the v23 split: broad-world reproduction improved, but
+final rerank candidates stayed at zero carrion-only alive/viability across
+80/120 ticks. This remains search-time selection pressure only: runtime
+controllers still receive no fixture identity, wider field of view, or heuristic
+fallback. Use `--fixture-selection-top-k 0` to recover the previous post-hoc-only
+fixture path for audits.
+
+The first bounded v25 slice is diagnostic rather than promotion-grade:
+`output/mind/mind-v3-fixture-pressure-v25-top8-80-120-search.json` selected
+`g1-c5+repair-g0-c2`, a v4 repair candidate with zero heuristic actions. It
+reduced the combined 80/120 fixture blockers from v23's `12` to `9`, improved
+80-tick carrion-only alive from `0.0` to `0.5` inside the search rerank, and
+made blocker pressure observable in generation reports. Direct five-seed eval
+still fails the fixture gate: at 80 ticks it reaches `14.6` alive / `6.2` births
+against heuristic `29.4` / `15.6` with five blockers, and at 120 ticks it
+reaches `12.2` / `10.8` against heuristic `52.2` / `42.4` with six blockers.
+The remaining hard failure is still carrion-only terminal viability at the
+longer horizon, so the next slice should target controller credit/selection for
+sustained carrion-only survival rather than further broad-world scalar reward.
+
+The v26 slice adds one runtime-learning change and one fixture diagnostic:
+movement actions now receive a small capped reward when the action actually
+moves toward an already policy-visible need-gated navigation target, and
+fixture summaries record carrion-only alive-agent ticks per tick so extinction
+time is not hidden behind the terminal alive count. This keeps the controller
+honest: no fixture identity, no wider field of view, and no hidden global
+resource knowledge.
+
+`output/mind/mind-v3-visible-nav-v26-top8-80-120-search.json` selected
+`g0-c3`, still v4 and still zero-heuristic. The broad result improved:
+holdout reached `20.5` alive / `9.0` births, direct five-seed eval reached
+`17.8` / `8.2` at 80 ticks and `20.2` / `16.4` at 120 ticks. This is the
+first recent slice that improves the direct 120-tick broad eval over both v23
+and v25. The controlled fixture did not clear: combined 80/120 blockers stayed
+at `9`, direct evals still fail with `5` blockers at 80 and `6` at 120, and
+carrion-only terminal alive remains `0.0` at 120. The useful signal is that
+carrion-only consumption improved inside rerank (`16.5` animal-resource events,
+`3.5369` gained energy, `3.6667` alive-agent ticks/tick minimum), but energy is
+still the primary temporal readiness blocker and terminal carrion survival is
+not sustained. The next slice should separate "find/eat carrion" from "survive
+after carrion contact", likely by adding fixture pressure for hazard/occupant
+blocked carrion opportunity and post-contact survival, not by increasing the
+eat/carrion reward again.
+
+## May 11 Deep-System Audit Direction
+
+The deep system audit (`output/audits/deep-system-audit-2026-05-11.md`) changes
+the Mind v3 direction. Foundation, replay, viewer contracts, and the v1/v2
+guarded safety floor are strong enough to keep using as the measurement
+boundary. Mind v3 also remains the correct strategic track because it removes
+heuristic action selection from the agent runtime. The blocker is the controller
+class, not the absence of another scalar reward term.
+
+Current v3 founders use a hand-shaped twenty-four-feature projection and a
+linear action head with bounded selected-action updates. That architecture is
+useful for interpretable falsification, but the evidence now says it is
+underpowered for delayed ecological credit: long-horizon energy/hydration
+balance, carrion-only survival, reproduction timing, role specialization, and
+durable lineage diversity. The v23-v26 sequence improved broad five-seed
+survival/birth metrics and reduced action collapse, but it still split from the
+controlled fixture gate. In particular, v26 reached `20.2` alive / `16.4`
+births at `120` ticks while still failing the combined fixture gate with
+carrion-only terminal alive at `0.0`.
+
+The next v3 phase is therefore a deterministic autonomous-controller
+training/evolution platform:
+
+- keep the no-heuristic runtime boundary;
+- add `mind_horizon_labels_v1` and fixture blocker labels before changing the
+  promoted controller path;
+- split ecological policy inputs from controller diagnostics so private fields
+  such as `mind_inheritance_available` cannot leak into stronger learners;
+- add a small deterministic neural or compact recurrent v3 artifact beside the
+  current linear controller, with masked logits and horizon/readiness heads;
+- use the quality-diversity archive, fixture lanes, and rerank machinery as
+  selection infrastructure, not as a substitute for policy capacity.
+
+The next five implementation tasks are ordered to keep the transition
+measurable:
+
+1. Generate `mind_horizon_labels_v1` from existing trajectory/evaluation data:
+   survival by horizon, reproduced-by-horizon, terminal energy/hydration/health
+   and matched-diet viability, carrion-contact survival, and alive-agent ticks.
+2. Extract structured fixture blocker labels, including carrion opportunity,
+   hazard/occupant blocking, and post-contact survival.
+3. Split policy-visible ecological input from diagnostic/controller-private
+   fields and add contract tests for the split.
+4. Add a deterministic `MindV3NeuralArtifactPolicy` inference path as an
+   opt-in artifact type; keep the linear v3 controller as the baseline.
+5. Train/evolve the first tiny neural artifact against horizon and fixture
+   labels, then compare it against the current linear v3 on the same
+   `80`/`120` broad and controlled-fixture matrix.
+
+Do not treat this as permission to skip the current gates. The existing linear
+v3 controller remains the honest baseline until the stronger artifact improves
+held-out broad outcomes and fixture blocker pressure together.
+
+Initial implementation milestone:
+
+- `sim:mind:horizon-labels` writes `mind_horizon_labels_v1` reports from one or
+  more trajectory JSONL files. Labels include observed/censored survival and
+  reproduction outcomes at configured future horizons, terminal/target
+  energy-hydration-health viability, matched-diet when decodable from the
+  observation input, and post-contact animal-resource survival.
+- `sim:mind:fixture-labels` writes `mind_fixture_blocker_labels_v1` reports from
+  Mind v3 eval/search reports. Labels convert controlled fixture floors into
+  per-fixture metric gaps and pressure, including carrion-only and alive-floor
+  weighting.
+- `mind_ecological_policy_input_v1` defines the safe ecological policy vector
+  for stronger v3 artifacts by dropping controller-private diagnostics such as
+  `self.mind_inheritance_available` while retaining self ecology, local patch,
+  and navigation inputs.
+
+This milestone is complete when a v3 trajectory and a fixture-gated v3 report
+can produce loadable label reports, focused tests pass, and the next neural
+artifact consumes `mind_ecological_policy_input_v1` instead of the raw
+observation vector.
 
 ## Promotion Boundary
 
@@ -967,13 +1088,20 @@ come from one brittle terrain/diet/action niche only.
 
 ## Research Direction
 
-The next useful work is population-level controller search and selection
-pressure, not another small supervised loss. The closest research families are:
+The next useful work is policy capacity plus temporal-credit data, not another
+local hand-shaped reward tweak. The closest research families are:
 
+- deterministic small neural/recurrent policies with serialized artifact
+  inference;
+- horizon-labeled offline targets for survival, reproduction, and resource
+  balance;
+- fixture blocker objectives that turn controlled failures into trainable and
+  selectable signals;
 - neuroevolution and evolution strategies for scalable controller search;
 - quality diversity and open-endedness for maintaining varied controller
   lineages;
-- world-model control later, after honest autonomous rollouts exist.
+- world-model control later, after the controller/data contract and horizon
+  labels are stable.
 
 External checks that support this direction:
 
@@ -994,4 +1122,5 @@ External checks that support this direction:
 
 Mind v3 deliberately avoids in-tick gradient updates for now. The repo's
 deterministic replay contracts are valuable; v3 should earn autonomy first
-through bounded inherited controller state and observable ecological selection.
+through serialized deterministic artifacts, bounded inherited controller state,
+horizon-labeled outcomes, and observable ecological selection.

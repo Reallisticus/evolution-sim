@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from evolution_sim.cli import (
     collect_trajectory,
+    mind_fixture_labels,
+    mind_horizon_labels,
     mind_artifact_diagnostics,
     mind_gate,
     mind_policy_eval,
@@ -61,6 +63,23 @@ from evolution_sim.mind.diagnostics import (
 from evolution_sim.mind.evaluation import compare_heuristic_and_learned
 from evolution_sim.mind.feature_policy import feature_keys_from_observation
 from evolution_sim.mind.gates import build_mind_v1_gate_report
+from evolution_sim.mind.fixture_labels import (
+    MIND_FIXTURE_LABEL_SCHEMA_VERSION,
+    build_fixture_label_report,
+)
+from evolution_sim.mind.horizon_labels import (
+    MIND_HORIZON_LABEL_SCHEMA_VERSION,
+    build_horizon_label_records,
+    build_horizon_label_report,
+    parse_horizon_ticks,
+)
+from evolution_sim.mind.policy_inputs import (
+    CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
+    ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    ecological_policy_input_contract,
+    ecological_policy_values_from_decoded,
+)
 from evolution_sim.mind.learned_policy import (
     OnlineAdaptiveMindPolicy,
     LearnedPolicy,
@@ -677,6 +696,48 @@ class MindV1Tests(unittest.TestCase):
             MIND_V3_HOMEOSTATIC_FEATURE_FIELDS,
         )
 
+    def test_ecological_policy_input_contract_excludes_controller_diagnostics(
+        self,
+    ) -> None:
+        contract = ecological_policy_input_contract()
+
+        self.assertEqual(
+            contract["schema_version"],
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self.assertIn(
+            "self.mind_inheritance_available",
+            contract["excluded_controller_diagnostic_fields"],
+        )
+        self.assertEqual(
+            contract["ecological_vector_size"],
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+
+    def test_ecological_policy_input_is_invariant_to_mind_inheritance_bit(
+        self,
+    ) -> None:
+        from evolution_sim.env.runtime.observations import SELF_INPUT_FIELDS
+
+        unavailable = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        unavailable[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.4
+        unavailable[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.6
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+
+        self.assertEqual(
+            ecological_policy_values_from_decoded(unavailable),
+            ecological_policy_values_from_decoded(available),
+        )
+        self.assertEqual(
+            len(ecological_policy_values_from_decoded(available)),
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+        self.assertEqual(
+            CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
+            ("self.mind_inheritance_available",),
+        )
+
     def test_mind_v3_child_metadata_mutates_from_parent(self) -> None:
         from random import Random
 
@@ -1232,7 +1293,7 @@ class MindV1Tests(unittest.TestCase):
         self.assertIsNotNone(trace)
         self.assertEqual(
             trace["reward_signal_policy"],
-            "balanced_bottleneck_observed_carrion_readiness_signal_v7",
+            "balanced_bottleneck_visible_navigation_carrion_readiness_signal_v8",
         )
         self.assertEqual(trace["reward_total"], 1.0)
         self.assertGreater(trace["reward_signal"], 0.75)
@@ -1421,6 +1482,168 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertGreater(
             carrion_trace["reward_signal_components"]["action_outcome_signal"],
+            0.0,
+        )
+
+    def test_mind_v3_policy_credits_visible_carrion_navigation_move(
+        self,
+    ) -> None:
+        from random import Random
+
+        from evolution_sim.env.runtime.observations import (
+            NAVIGATION_INPUT_FIELDS,
+            NAVIGATION_TARGETS,
+            PATCH_CELL_COUNT,
+            PATCH_INPUT_FIELDS,
+            SELF_INPUT_FIELDS,
+        )
+        from evolution_sim.mind.evolution import founder_mind_v3_metadata
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        def observation_values() -> list[float]:
+            values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+            values[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.34
+            values[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.76
+            values[SELF_INPUT_FIELDS.index("health_ratio")] = 0.9
+            values[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.2
+            values[SELF_INPUT_FIELDS.index("meat_mode_code")] = 1.0
+            navigation_start = len(SELF_INPUT_FIELDS) + (
+                PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+            )
+            carrion_start = navigation_start + NAVIGATION_TARGETS.index(
+                "carrion"
+            ) * len(NAVIGATION_INPUT_FIELDS)
+            values[carrion_start + NAVIGATION_INPUT_FIELDS.index("dx")] = 1.0
+            values[carrion_start + NAVIGATION_INPUT_FIELDS.index("distance")] = 0.2
+            values[carrion_start + NAVIGATION_INPUT_FIELDS.index("strength")] = 0.9
+            return values
+
+        def run(action: str) -> dict[str, object]:
+            metadata = founder_mind_v3_metadata(agent_id=3, rng=Random(9))
+            policy = MindV3EvolutionPolicy(seed=9)
+            policy.register_agent_mind(agent_id=3, metadata=metadata)
+            trace = policy.observe_transition(
+                {
+                    "agent_id": 3,
+                    "observation_input": {"values": observation_values()},
+                    "action_mask": {
+                        candidate: candidate in {"stay", "move_east", "move_west"}
+                        for candidate in ACTION_NAMES
+                    },
+                    "requested_action": action,
+                    "resolved_action": action,
+                    "action_valid": True,
+                    "resolution_action_valid": True,
+                    "moved": True,
+                    "before": {
+                        "energy_ratio": 0.34,
+                        "hydration_ratio": 0.76,
+                        "health_ratio": 0.9,
+                    },
+                    "after": {
+                        "energy_ratio": 0.34,
+                        "hydration_ratio": 0.76,
+                        "health_ratio": 0.9,
+                    },
+                    "outcome": {
+                        "reproduction_ready_after": False,
+                        "reproduced": False,
+                        "died": False,
+                    },
+                    "reward": {
+                        "total": 0.0,
+                        "components": {"survival_continuation": 0.02},
+                    },
+                }
+            )
+            self.assertIsNotNone(trace)
+            return trace
+
+        toward = run("move_east")
+        away = run("move_west")
+
+        self.assertGreater(
+            toward["reward_signal_components"]["action_outcome_signal"],
+            0.0,
+        )
+        self.assertGreater(
+            toward["reward_signal_components"]["action_outcome_signal"],
+            away["reward_signal_components"]["action_outcome_signal"],
+        )
+        self.assertGreater(toward["reward_signal"], away["reward_signal"])
+
+    def test_mind_v3_policy_does_not_credit_navigation_move_without_need(
+        self,
+    ) -> None:
+        from random import Random
+
+        from evolution_sim.env.runtime.observations import (
+            NAVIGATION_INPUT_FIELDS,
+            NAVIGATION_TARGETS,
+            PATCH_CELL_COUNT,
+            PATCH_INPUT_FIELDS,
+            SELF_INPUT_FIELDS,
+        )
+        from evolution_sim.mind.evolution import founder_mind_v3_metadata
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        values[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.9
+        values[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.9
+        values[SELF_INPUT_FIELDS.index("health_ratio")] = 0.9
+        values[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.9
+        values[SELF_INPUT_FIELDS.index("meat_mode_code")] = 1.0
+        navigation_start = len(SELF_INPUT_FIELDS) + (
+            PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+        )
+        carrion_start = navigation_start + NAVIGATION_TARGETS.index(
+            "carrion"
+        ) * len(NAVIGATION_INPUT_FIELDS)
+        values[carrion_start + NAVIGATION_INPUT_FIELDS.index("dx")] = 1.0
+        values[carrion_start + NAVIGATION_INPUT_FIELDS.index("distance")] = 0.2
+        values[carrion_start + NAVIGATION_INPUT_FIELDS.index("strength")] = 0.9
+        metadata = founder_mind_v3_metadata(agent_id=3, rng=Random(9))
+        policy = MindV3EvolutionPolicy(seed=9)
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        trace = policy.observe_transition(
+            {
+                "agent_id": 3,
+                "observation_input": {"values": values},
+                "action_mask": {
+                    action: action in {"stay", "move_east"}
+                    for action in ACTION_NAMES
+                },
+                "requested_action": "move_east",
+                "resolved_action": "move_east",
+                "action_valid": True,
+                "resolution_action_valid": True,
+                "moved": True,
+                "before": {
+                    "energy_ratio": 0.9,
+                    "hydration_ratio": 0.9,
+                    "health_ratio": 0.9,
+                },
+                "after": {
+                    "energy_ratio": 0.9,
+                    "hydration_ratio": 0.9,
+                    "health_ratio": 0.9,
+                },
+                "outcome": {
+                    "reproduction_ready_after": False,
+                    "reproduced": False,
+                    "died": False,
+                },
+                "reward": {
+                    "total": 0.0,
+                    "components": {"survival_continuation": 0.02},
+                },
+            }
+        )
+
+        self.assertIsNotNone(trace)
+        self.assertEqual(
+            trace["reward_signal_components"]["action_outcome_signal"],
             0.0,
         )
 
@@ -2115,6 +2338,282 @@ class MindV1Tests(unittest.TestCase):
         )
 
         self.assertEqual(targets, (2.0, 3.0, 2.0))
+
+    def test_mind_horizon_labels_mark_survival_reproduction_and_censoring(self) -> None:
+        def record(
+            tick: int,
+            agent_id: int,
+            *,
+            before_energy: float,
+            after_energy: float,
+            alive_after: bool = True,
+            reproduced: bool = False,
+            food_source: str | None = None,
+        ) -> dict[str, object]:
+            feeding = (
+                {
+                    "ate": True,
+                    "food_source": food_source,
+                    "gained_energy": 0.2,
+                }
+                if food_source is not None
+                else {"ate": False}
+            )
+            return {
+                "tick": tick,
+                "agent_id": agent_id,
+                "lineage_id": agent_id,
+                "runtime_species_id": agent_id + 10,
+                "runtime_ecotype_id": None,
+                "before": {
+                    "alive": True,
+                    "energy_ratio": before_energy,
+                    "hydration_ratio": 0.7,
+                    "health_ratio": 0.8,
+                },
+                "after": {
+                    "alive": alive_after,
+                    "energy_ratio": after_energy,
+                    "hydration_ratio": 0.65 if alive_after else 0.1,
+                    "health_ratio": 0.75 if alive_after else 0.0,
+                },
+                "outcome": {
+                    "reproduced": reproduced,
+                    "died": not alive_after,
+                    "resource_gain": 0.2 if food_source is not None else 0.0,
+                    "feeding": feeding,
+                    "passive": {
+                        "hazard_damage_taken": 0.0,
+                        "attack_damage_taken": 0.0,
+                    },
+                },
+                "requested_action": "eat" if food_source is not None else "stay",
+                "resolved_action": "eat" if food_source is not None else "stay",
+                "action_source": "test_policy",
+                "policy_id": "test_policy",
+                "policy_version": "test_policy_v1",
+            }
+
+        records = (
+            record(0, 1, before_energy=0.6, after_energy=0.7, food_source="carcass"),
+            record(1, 1, before_energy=0.7, after_energy=0.8, reproduced=True),
+            record(2, 1, before_energy=0.8, after_energy=0.75),
+            record(3, 1, before_energy=0.75, after_energy=0.05, alive_after=False),
+            record(0, 2, before_energy=0.9, after_energy=0.85),
+            record(1, 2, before_energy=0.85, after_energy=0.8),
+        )
+
+        labels = build_horizon_label_records(records, horizons=(1, 2, 4))
+        agent_one_tick_zero = next(
+            label
+            for label in labels
+            if label["agent_id"] == 1 and label["tick"] == 0
+        )
+        agent_two_tick_zero = next(
+            label
+            for label in labels
+            if label["agent_id"] == 2 and label["tick"] == 0
+        )
+
+        self.assertEqual(
+            agent_one_tick_zero["schema_version"],
+            MIND_HORIZON_LABEL_SCHEMA_VERSION,
+        )
+        self.assertTrue(agent_one_tick_zero["horizons"]["1"]["observed"])
+        self.assertTrue(agent_one_tick_zero["horizons"]["1"]["survived"])
+        self.assertTrue(agent_one_tick_zero["horizons"]["1"]["reproduced"])
+        self.assertTrue(
+            agent_one_tick_zero["horizons"]["1"]["animal_resource"][
+                "animal_resource_consumed"
+            ]
+        )
+        self.assertTrue(agent_one_tick_zero["horizons"]["4"]["observed"])
+        self.assertFalse(agent_one_tick_zero["horizons"]["4"]["survived"])
+        self.assertFalse(
+            agent_one_tick_zero["horizons"]["4"]["animal_resource"][
+                "survived_after_first_contact"
+            ]
+        )
+        self.assertFalse(agent_two_tick_zero["horizons"]["2"]["observed"])
+        self.assertTrue(agent_two_tick_zero["horizons"]["2"]["censored"])
+
+    def test_mind_horizon_label_report_uses_trajectory_provenance(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+
+            report = build_horizon_label_report([dataset], horizons=(1, 2))
+
+        self.assertEqual(report["schema_version"], MIND_HORIZON_LABEL_SCHEMA_VERSION)
+        self.assertEqual(report["source"]["record_count"], dataset.record_count)
+        self.assertEqual(report["aggregate"]["label_count"], dataset.record_count)
+        self.assertEqual(
+            report["provenance"]["record_count"],
+            dataset.record_count,
+        )
+        self.assertEqual(report["label_contract"]["horizon_ticks"], [1, 2])
+        self.assertEqual(len(report["labels"]), dataset.record_count)
+
+    def test_mind_horizon_labels_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            output_path = tmp_path / "horizon-labels.json"
+            self._write_tiny_trajectory(trajectory_path)
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_horizon_labels",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--horizons",
+                        "1,2",
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_horizon_labels.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("schema_version=mind_horizon_labels_v1", stdout.getvalue())
+        self.assertEqual(report["schema_version"], MIND_HORIZON_LABEL_SCHEMA_VERSION)
+        self.assertEqual(report["label_contract"]["horizon_ticks"], [1, 2])
+
+    def test_mind_horizon_labels_reject_empty_horizon_list(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_horizon_ticks("1,,2")
+
+    def test_mind_fixture_labels_extract_floor_gaps_from_gate(self) -> None:
+        report = {
+            "schema_version": "mind_v3_evolution_search_v1",
+            "fixture_gate": {
+                "min_alive": 1.0,
+                "min_births": 0.0,
+                "min_mixed_stable_births": 1.0,
+                "min_energy_viability": 0.2,
+                "min_hydration_viability": 0.2,
+                "min_health_viability": 0.2,
+                "min_matched_diet_viability": 0.2,
+                "min_biologically_ready": 0.0,
+                "per_horizon": {
+                    "120": {
+                        "passed": False,
+                        "per_fixture": {
+                            "carrion_only": {
+                                "metrics": {
+                                    "alive_agents_mean": 0.0,
+                                    "births_mean": 2.0,
+                                    "energy_viability_share_mean": 0.0,
+                                    "hydration_viability_share_mean": 0.5,
+                                    "health_viability_share_mean": 0.5,
+                                    "matched_diet_viability_share_mean": 0.0,
+                                    "biologically_ready_agents_mean": 0.0,
+                                }
+                            },
+                            "mixed_stable": {
+                                "metrics": {
+                                    "alive_agents_mean": 5.0,
+                                    "births_mean": 0.0,
+                                    "energy_viability_share_mean": 0.4,
+                                    "hydration_viability_share_mean": 0.4,
+                                    "health_viability_share_mean": 0.4,
+                                    "matched_diet_viability_share_mean": 0.4,
+                                    "biologically_ready_agents_mean": 0.0,
+                                }
+                            },
+                        },
+                    }
+                },
+            },
+        }
+
+        labels = build_fixture_label_report([report])["labels"]
+        carrion_alive = next(
+            label
+            for label in labels
+            if label["fixture"] == "carrion_only"
+            and label["reason"] == "fixture_alive_floor"
+        )
+        mixed_birth = next(
+            label
+            for label in labels
+            if label["fixture"] == "mixed_stable"
+            and label["reason"] == "fixture_mixed_stable_birth_floor"
+        )
+
+        self.assertEqual(
+            carrion_alive["schema_version"],
+            MIND_FIXTURE_LABEL_SCHEMA_VERSION,
+        )
+        self.assertFalse(carrion_alive["passed"])
+        self.assertEqual(carrion_alive["ticks"], 120)
+        self.assertEqual(carrion_alive["gap"], 1.0)
+        self.assertEqual(carrion_alive["pressure"], 3.0)
+        self.assertFalse(mixed_birth["passed"])
+        self.assertEqual(mixed_birth["gap"], 1.0)
+
+    def test_mind_fixture_labels_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            input_path = tmp_path / "fixture-report.json"
+            output_path = tmp_path / "fixture-labels.json"
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "mind_v3_evaluation_v1",
+                        "fixture_gate": {
+                            "min_alive": 1.0,
+                            "min_births": 0.0,
+                            "min_mixed_stable_births": 0.0,
+                            "min_energy_viability": 0.2,
+                            "min_hydration_viability": 0.2,
+                            "min_health_viability": 0.2,
+                            "min_matched_diet_viability": 0.2,
+                            "min_biologically_ready": 0.0,
+                            "blockers": [
+                                {
+                                    "fixture": "carrion_only",
+                                    "ticks": 80,
+                                    "reason": "fixture_alive_floor",
+                                    "metric": "alive_agents_mean",
+                                    "value": 0.0,
+                                    "floor": 1.0,
+                                }
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_fixture_labels",
+                        "--report",
+                        str(input_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_fixture_labels.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("schema_version=mind_fixture_blocker_labels_v1", stdout.getvalue())
+        self.assertEqual(report["schema_version"], MIND_FIXTURE_LABEL_SCHEMA_VERSION)
+        self.assertEqual(report["aggregate"]["failed_label_count"], 1)
 
     def test_deterministic_seed_split_is_stable_and_disjoint(self) -> None:
         first = deterministic_seed_split(
@@ -5961,7 +6460,11 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(report["search"]["fixture_rerank_top_k"], 2)
         self.assertEqual(
             report["search"]["score_policy"],
-            "need_gated_navigation_fixture_in_loop_parent_selection_qd_v24",
+            "need_gated_navigation_visible_movement_fixture_selection_qd_v26",
+        )
+        self.assertEqual(
+            report["search"]["fixture_selection_nominee_policy"],
+            "generation_fixture_diverse_nominee_pool_v1",
         )
         self.assertNotIn("warm_start_policy", report["search"])
         self.assertIsNone(report["warm_start"])
@@ -6017,6 +6520,11 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             report["fixture_gate"]["suite"],
             "basic",
+        )
+        self.assertIn("fixture_selection", report["generations"][0])
+        self.assertIn(
+            "blocker_counts_by_fixture",
+            report["generations"][0]["fixture_selection"],
         )
 
     def test_mind_v3_fixture_rerank_prefers_gate_pass_over_search_score(
@@ -6348,7 +6856,10 @@ class MindV1Tests(unittest.TestCase):
     def test_mind_v3_generation_fixture_pressure_penalizes_blockers(
         self,
     ) -> None:
-        from evolution_sim.cli.mind_v3_evolve import _fixture_selection_score_delta
+        from evolution_sim.cli.mind_v3_evolve import (
+            _fixture_blocker_pressure_summary,
+            _fixture_selection_score_delta,
+        )
 
         passing = {
             "fixture_gate": {"passed": True, "blockers": []},
@@ -6395,6 +6906,139 @@ class MindV1Tests(unittest.TestCase):
         self.assertGreater(
             _fixture_selection_score_delta(passing),
             _fixture_selection_score_delta(blocked),
+        )
+        pressure = _fixture_blocker_pressure_summary(blocked["fixture_gate"])
+        self.assertEqual(pressure["carrion_only_blocker_count"], 6)
+        self.assertEqual(
+            pressure["blocker_counts_by_fixture"],
+            {"carrion_only": 6},
+        )
+
+    def test_mind_v3_fixture_blocker_pressure_weights_carrion_alive_gap(
+        self,
+    ) -> None:
+        from evolution_sim.cli.mind_v3_evolve import (
+            _fixture_blocker_pressure_summary,
+        )
+
+        pressure = _fixture_blocker_pressure_summary(
+            {
+                "blockers": [
+                    {
+                        "fixture": "carrion_only",
+                        "reason": "fixture_alive_floor",
+                        "metric": "alive_agents_mean",
+                        "floor": 1.0,
+                        "value": 0.0,
+                    },
+                    {
+                        "fixture": "carrion_only",
+                        "reason": "fixture_hydration_viability_floor",
+                        "metric": "hydration_viability_share_mean",
+                        "floor": 0.2,
+                        "value": 0.1,
+                    },
+                    {
+                        "fixture": "plant_only",
+                        "reason": "fixture_alive_floor",
+                        "metric": "alive_agents_mean",
+                        "floor": 1.0,
+                        "value": 0.9,
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(pressure["blocker_count"], 3)
+        self.assertEqual(pressure["carrion_only_blocker_count"], 2)
+        self.assertEqual(pressure["weighted_blocker_pressure"], 3.45)
+        self.assertEqual(
+            pressure["weighted_pressure_by_fixture"]["carrion_only"],
+            3.225,
+        )
+        self.assertEqual(pressure["worst_fixture"], "carrion_only")
+        self.assertEqual(pressure["worst_reason"], "fixture_alive_floor")
+
+    def test_mind_v3_fixture_selection_nominee_pool_keeps_current_arch_lane(
+        self,
+    ) -> None:
+        from evolution_sim.cli.mind_v3_evolve import (
+            _fixture_selection_candidate_pool,
+        )
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_ARCHITECTURE,
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+        )
+
+        def candidate(
+            candidate_id: str,
+            *,
+            score: float,
+            architecture: str,
+            profile: str = "forager",
+            warm_start: bool = False,
+            balance: float = 0.0,
+        ) -> dict[str, object]:
+            payload = {
+                "candidate_id": candidate_id,
+                "candidate_index": int(candidate_id.rsplit("c", 1)[-1]),
+                "score": score,
+                "alive_agents_mean": score / 10.0,
+                "births_mean": 1.0,
+                "deaths_mean": 1.0,
+                "alive_agent_ticks_per_tick_mean": 1.0,
+                "resource_event_rate": 0.1,
+                "movement_event_rate": 0.1,
+                "dominant_requested_action_share": 0.4,
+                "terminal_energy_hydration_balance_mean": balance,
+                "terminal_energy_requirement_satisfaction_mean": balance,
+                "terminal_energy_viability_share_mean": balance,
+                "terminal_hydration_viability_share_mean": balance,
+                "terminal_matched_diet_viability_share_mean": balance,
+                "terminal_balanced_reproduction_readiness_mean": balance,
+                "controller_metadata": {
+                    "architecture": architecture,
+                    "specialization_profile": profile,
+                },
+            }
+            if warm_start:
+                payload["warm_start"] = {
+                    "policy": "fixture_archive_report_warm_start_v1"
+                }
+            return payload
+
+        nominees = _fixture_selection_candidate_pool(
+            [
+                candidate(
+                    "g0-c0",
+                    score=100.0,
+                    architecture=MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+                    warm_start=True,
+                ),
+                candidate(
+                    "g0-c1",
+                    score=20.0,
+                    architecture=MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+                    profile="scavenger",
+                ),
+                candidate(
+                    "g0-c2",
+                    score=10.0,
+                    architecture=MIND_V3_CONTROLLER_ARCHITECTURE,
+                    balance=0.8,
+                ),
+                candidate(
+                    "g0-c3",
+                    score=5.0,
+                    architecture=MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+                ),
+            ],
+            limit=3,
+        )
+
+        self.assertEqual(
+            [candidate["candidate_id"] for candidate in nominees],
+            ["g0-c0", "g0-c1", "g0-c2"],
         )
 
     def test_mind_v3_archive_uses_fixture_selection_parent_lane(self) -> None:
@@ -6688,6 +7332,60 @@ class MindV1Tests(unittest.TestCase):
             _fixture_rerank_selection_key(short_pass_long_starves),
         )
 
+    def test_mind_v3_fixture_rerank_selection_uses_carrion_alive_ticks(
+        self,
+    ) -> None:
+        from evolution_sim.cli.mind_v3_evolve import _fixture_rerank_selection_key
+
+        base = {
+            "prefilter_rank": 0,
+            "search_score": 1.0,
+            "fixture_gate": {
+                "passed": False,
+                "blockers": [
+                    {"fixture": "carrion_only", "reason": "fixture_alive"}
+                ],
+            },
+            "fixture_summary": {},
+            "fixture_horizon_summary": {
+                "passed_horizon_count": 0,
+                "carrion_only_terminal_energy_requirement_satisfaction_min": 0.2,
+                "carrion_only_terminal_energy_viability_share_min": 0.0,
+                "carrion_only_terminal_hydration_viability_share_min": 0.0,
+                "carrion_only_terminal_matched_diet_viability_share_min": 0.25,
+                "carrion_only_animal_resource_consumption_events_min": 8.0,
+                "carrion_only_animal_resource_gained_energy_min": 2.0,
+                "carrion_only_dominant_requested_action_share_max": 0.5,
+                "carrion_only_alive_agents_min": 0.0,
+                "carrion_only_births_min": 2.0,
+                "terminal_energy_hydration_balance_min": 0.0,
+                "terminal_reproduction_viability_min": 0.0,
+                "mixed_stable_births_min": 1.0,
+                "births_min": 2.0,
+                "alive_agents_min": 0.0,
+            },
+            "holdout_aggregate": {},
+        }
+        short_survival = {
+            **base,
+            "fixture_horizon_summary": {
+                **base["fixture_horizon_summary"],
+                "carrion_only_alive_agent_ticks_per_tick_min": 0.5,
+            },
+        }
+        longer_survival = {
+            **base,
+            "fixture_horizon_summary": {
+                **base["fixture_horizon_summary"],
+                "carrion_only_alive_agent_ticks_per_tick_min": 2.0,
+            },
+        }
+
+        self.assertGreater(
+            _fixture_rerank_selection_key(longer_survival),
+            _fixture_rerank_selection_key(short_survival),
+        )
+
     def test_mind_v3_fixture_rerank_prefers_partial_horizon_pass_coverage(
         self,
     ) -> None:
@@ -6946,6 +7644,8 @@ class MindV1Tests(unittest.TestCase):
                         "mind_v3": {
                             "runs": [
                                 {
+                                    "ticks": 80,
+                                    "trajectory_record_count": 160,
                                     "fresh_kill_end": {
                                         "consumption_events": 1,
                                         "gained_energy": 0.2,
@@ -6956,6 +7656,8 @@ class MindV1Tests(unittest.TestCase):
                                     },
                                 },
                                 {
+                                    "ticks": 80,
+                                    "trajectory_record_count": 80,
                                     "fresh_kill_end": {
                                         "consumption_events": 0,
                                         "gained_energy": 0.0,
@@ -7004,6 +7706,11 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(
             carrion["terminal_energy_requirement_satisfaction_mean"],
             0.35,
+        )
+        self.assertEqual(carrion["alive_agent_ticks_per_tick_mean"], 1.5)
+        self.assertEqual(
+            summary["carrion_only_alive_agent_ticks_per_tick_mean"],
+            1.5,
         )
 
     def test_mind_v3_fixture_repair_builds_composite_template_pool(

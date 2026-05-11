@@ -19,8 +19,16 @@ Mind v3 is now the primary autonomous-controller direction, not another guarded
 artifact tweak. V2 remains the guarded offline artifact baseline for continuity
 and comparison. V3 removes heuristic action selection from the agent runtime and
 measures survival, births, deaths, inherited controller state, and action-source
-counts directly. Do not use v2 fallback-rate micro-optimizations as the main
-path for v3.
+counts directly.
+
+The May 11 deep-system audit keeps this boundary but changes the next
+implementation emphasis. The current v3 linear controller is underpowered for
+delayed ecological credit even though the no-heuristic runtime contract is
+correct. The next v3 work should add horizon/fixture labels, split ecological
+policy inputs from controller diagnostics, and introduce a stronger
+deterministic autonomous policy artifact. Do not use v2 fallback-rate
+micro-optimizations, scalar reward tuning, or wider heuristic bypasses as the
+main path for v3.
 
 ## Offline Versus Online
 
@@ -835,7 +843,17 @@ criteria before it can replace more heuristic behavior:
     broad five-seed births over v21 (`7.0` at `80`, `15.2` at `120`) but still
     failed the combined carrion fixture, so the next task is fixture-in-loop
     parent selection/search pressure.
-35. Add quality-diversity viewer diagnostics once policy lineages
+35. The May 11 deep-system audit changes the v3 frontier from more scalar
+    search pressure to stronger autonomous artifacts and temporal labels. V25
+    and v26 confirm why: fixture-in-loop pressure and visible-navigation credit
+    improved broad `80`/`120` evals, with v26 reaching `20.2` alive / `16.4`
+    births at `120`, but the combined controlled fixture gate still failed and
+    carrion-only terminal alive stayed `0.0` at the longer horizon. The next
+    durable v3 tasks are `mind_horizon_labels_v1`, fixture blocker labels,
+    policy-input/diagnostic split, and an opt-in deterministic neural or compact
+    recurrent v3 artifact compared against the current linear controller on the
+    same broad and controlled-fixture matrix.
+36. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

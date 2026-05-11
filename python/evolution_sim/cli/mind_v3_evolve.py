@@ -19,6 +19,7 @@ from evolution_sim.cli.mind_v3_evaluate import (
 )
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.mind.evolution import (
+    MIND_V3_CONTROLLER_ARCHITECTURE,
     MIND_V3_SPECIALIZATION_PROFILES,
     founder_mind_v3_metadata,
     inherit_mind_v3_metadata,
@@ -31,7 +32,7 @@ from evolution_sim.mind.v3_policy import (
 
 MIND_V3_EVOLUTION_SEARCH_SCHEMA_VERSION = "mind_v3_evolution_search_v1"
 MIND_V3_EVOLUTION_SCORE_POLICY = (
-    "need_gated_navigation_fixture_in_loop_parent_selection_qd_v24"
+    "need_gated_navigation_visible_movement_fixture_selection_qd_v26"
 )
 MIND_V3_ARCHIVE_POLICY = "quality_diversity_archive_v2"
 MIND_V3_CURRICULUM_POLICY = "holdout_gated_tick_curriculum_v1"
@@ -44,7 +45,10 @@ MIND_V3_FIXTURE_RERANK_POLICY = (
     "fixture_holdout_top_k_multi_horizon_scavenger_lane_rerank_v7"
 )
 MIND_V3_GENERATION_FIXTURE_SELECTION_POLICY = (
-    "generation_fixture_parent_selection_pressure_v1"
+    "generation_fixture_blocker_severity_parent_selection_pressure_v3"
+)
+MIND_V3_GENERATION_FIXTURE_SELECTION_NOMINEE_POLICY = (
+    "generation_fixture_diverse_nominee_pool_v1"
 )
 MIND_V3_FIXTURE_REPAIR_POLICY = "fixture_blocker_composite_founder_pool_repair_v5"
 MIND_V3_SUSTAINED_READINESS_POLICY = (
@@ -60,7 +64,7 @@ MIND_V3_FIXTURE_REPAIR_LIMIT = 4
 MIND_V3_FIXTURE_BRIDGE_REPAIR_LIMIT = 4
 MIND_V3_FIXTURE_BRIDGE_DONOR_TEMPLATE_LIMITS = (1, 2, 4)
 MIND_V3_FIXTURE_WARM_START_CANDIDATE_LIMIT = 4
-MIND_V3_GENERATION_FIXTURE_SELECTION_DEFAULT_TOP_K = 3
+MIND_V3_GENERATION_FIXTURE_SELECTION_DEFAULT_TOP_K = 4
 MIND_V3_FOUNDER_TEMPLATE_POOL_MIN_ALIVE_MEAN = 2.0
 MIND_V3_TERMINAL_REPRODUCTION_DEAD_END_PENALTY = 5.0
 MIND_V3_SEED_BRITTLE_BIRTH_PENALTY = 4.0
@@ -361,8 +365,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "When --fixture-suite is enabled, evaluate a bounded generation "
             "candidate set on controlled fixtures before archive/parent "
-            "selection. The set includes the top K plus required warm-start "
-            "and ecology-lane nominees. "
+            "selection. The set preserves broad-score, ecology-lane, "
+            "current-architecture, and controlled-readiness nominees before "
+            "filling by the scalar prefilter. "
             "Use 0 to disable fixture-in-generation pressure."
         ),
     )
@@ -538,15 +543,19 @@ def _run_search_stage(
                 -int(candidate["candidate_index"]),
             ),
         )
-        generations.append(
-            {
-                "generation_index": generation_index,
-                "best_candidate_id": generation_best["candidate_id"],
-                "best_score": generation_best["score"],
-                "candidates": evaluated,
-                "archive": _archive_from_candidates(evaluated),
-            }
+        generation_report = {
+            "generation_index": generation_index,
+            "best_candidate_id": generation_best["candidate_id"],
+            "best_score": generation_best["score"],
+            "candidates": evaluated,
+            "archive": _archive_from_candidates(evaluated),
+        }
+        fixture_selection_summary = _fixture_selection_generation_summary(
+            evaluated
         )
+        if fixture_selection_summary is not None:
+            generation_report["fixture_selection"] = fixture_selection_summary
+        generations.append(generation_report)
         archive = _archive_from_generations(generations)
         best_candidate = _best_candidate_from_archive(archive)
         if best_candidate is None:
@@ -1669,7 +1678,7 @@ def _apply_generation_fixture_selection_pressure(
 ) -> list[dict[str, object]]:
     if limit <= 0 or not candidates:
         return candidates
-    nominees = _fixture_rerank_candidate_pool(candidates, limit=limit)
+    nominees = _fixture_selection_candidate_pool(candidates, limit=limit)
     if not nominees:
         return candidates
     runtimes, worker_count = _evaluate_fixture_rerank_candidates(
@@ -1705,6 +1714,52 @@ def _apply_generation_fixture_selection_pressure(
     return updated
 
 
+def _fixture_selection_candidate_pool(
+    candidates: list[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def append_candidate(candidate: dict[str, object]) -> None:
+        if len(selected) >= limit:
+            return
+        candidate_id = str(candidate.get("candidate_id", ""))
+        if not candidate_id or candidate_id in seen:
+            return
+        seen.add(candidate_id)
+        selected.append(candidate)
+
+    if limit <= 0:
+        return selected
+    ordered_candidates = list(candidates)
+    if not ordered_candidates:
+        return selected
+
+    append_candidate(
+        max(ordered_candidates, key=_fixture_rerank_prefilter_key)
+    )
+    append_candidate(
+        max(ordered_candidates, key=_scavenger_lane_key)
+    )
+    append_candidate(
+        max(ordered_candidates, key=_fixture_current_architecture_key)
+    )
+    append_candidate(
+        max(ordered_candidates, key=_fixture_controlled_readiness_key)
+    )
+    for candidate in sorted(
+        ordered_candidates,
+        key=_fixture_rerank_prefilter_key,
+        reverse=True,
+    ):
+        append_candidate(candidate)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _candidate_with_fixture_selection_pressure(
     candidate: dict[str, object],
     *,
@@ -1724,6 +1779,12 @@ def _candidate_with_fixture_selection_pressure(
     fixture_gate = entry.get("fixture_gate")
     gate_payload = fixture_gate if isinstance(fixture_gate, Mapping) else {}
     blockers = gate_payload.get("blockers", [])
+    pressure_summary = entry.get("fixture_blocker_pressure")
+    pressure_payload = (
+        pressure_summary if isinstance(pressure_summary, Mapping) else {}
+    )
+    if not pressure_payload:
+        pressure_payload = _fixture_blocker_pressure_summary(gate_payload)
     horizon_summary = entry.get("fixture_horizon_summary")
     horizon_payload = (
         horizon_summary if isinstance(horizon_summary, Mapping) else {}
@@ -1740,6 +1801,27 @@ def _candidate_with_fixture_selection_pressure(
         "post_fixture_score": updated["score"],
         "fixture_gate_passed": bool(gate_payload.get("passed", False)),
         "blocker_count": len(blockers) if isinstance(blockers, list) else 0,
+        "weighted_blocker_pressure": float(
+            pressure_payload.get("weighted_blocker_pressure", 0.0)
+        ),
+        "carrion_only_blocker_count": int(
+            pressure_payload.get("carrion_only_blocker_count", 0)
+        ),
+        "carrion_only_weighted_blocker_pressure": float(
+            pressure_payload.get("carrion_only_weighted_blocker_pressure", 0.0)
+        ),
+        "worst_fixture": pressure_payload.get("worst_fixture", "unknown"),
+        "worst_reason": pressure_payload.get("worst_reason", "unknown"),
+        "blocker_counts_by_fixture": dict(
+            pressure_payload.get("blocker_counts_by_fixture", {})
+        )
+        if isinstance(pressure_payload.get("blocker_counts_by_fixture"), Mapping)
+        else {},
+        "blocker_counts_by_reason": dict(
+            pressure_payload.get("blocker_counts_by_reason", {})
+        )
+        if isinstance(pressure_payload.get("blocker_counts_by_reason"), Mapping)
+        else {},
         "passed_horizon_count": int(
             horizon_payload.get("passed_horizon_count", 0)
         ),
@@ -1750,11 +1832,84 @@ def _candidate_with_fixture_selection_pressure(
     return updated
 
 
+def _fixture_selection_generation_summary(
+    candidates: list[dict[str, object]],
+) -> dict[str, object] | None:
+    fixture_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate.get("fixture_selection"), Mapping)
+    ]
+    if not fixture_candidates:
+        return None
+    blocker_counts_by_fixture: Counter[str] = Counter()
+    blocker_counts_by_reason: Counter[str] = Counter()
+    candidate_entries: list[dict[str, object]] = []
+    passed_count = 0
+    for candidate in fixture_candidates:
+        fixture_selection = candidate["fixture_selection"]
+        payload = fixture_selection if isinstance(fixture_selection, Mapping) else {}
+        if bool(payload.get("fixture_gate_passed", False)):
+            passed_count += 1
+        fixture_counts = payload.get("blocker_counts_by_fixture")
+        if isinstance(fixture_counts, Mapping):
+            for key, value in fixture_counts.items():
+                blocker_counts_by_fixture[str(key)] += int(value)
+        reason_counts = payload.get("blocker_counts_by_reason")
+        if isinstance(reason_counts, Mapping):
+            for key, value in reason_counts.items():
+                blocker_counts_by_reason[str(key)] += int(value)
+        candidate_entries.append(
+            {
+                "candidate_id": str(candidate.get("candidate_id", "")),
+                "score_delta": float(payload.get("score_delta", 0.0)),
+                "fixture_gate_passed": bool(
+                    payload.get("fixture_gate_passed", False)
+                ),
+                "blocker_count": int(payload.get("blocker_count", 0)),
+                "weighted_blocker_pressure": float(
+                    payload.get("weighted_blocker_pressure", 0.0)
+                ),
+                "carrion_only_blocker_count": int(
+                    payload.get("carrion_only_blocker_count", 0)
+                ),
+                "carrion_only_weighted_blocker_pressure": float(
+                    payload.get(
+                        "carrion_only_weighted_blocker_pressure",
+                        0.0,
+                    )
+                ),
+                "worst_fixture": str(payload.get("worst_fixture", "unknown")),
+                "worst_reason": str(payload.get("worst_reason", "unknown")),
+            }
+        )
+    return {
+        "policy": MIND_V3_GENERATION_FIXTURE_SELECTION_POLICY,
+        "nominee_policy": MIND_V3_GENERATION_FIXTURE_SELECTION_NOMINEE_POLICY,
+        "candidate_count": len(fixture_candidates),
+        "candidate_ids": [
+            str(candidate.get("candidate_id", ""))
+            for candidate in fixture_candidates
+        ],
+        "fixture_gate_pass_count": passed_count,
+        "blocker_counts_by_fixture": dict(sorted(blocker_counts_by_fixture.items())),
+        "blocker_counts_by_reason": dict(sorted(blocker_counts_by_reason.items())),
+        "candidates": candidate_entries,
+    }
+
+
 def _fixture_selection_score_delta(entry: Mapping[str, object]) -> float:
     fixture_gate = entry.get("fixture_gate")
     gate_payload = fixture_gate if isinstance(fixture_gate, Mapping) else {}
     blockers = gate_payload.get("blockers", [])
     blocker_count = len(blockers) if isinstance(blockers, list) else 0
+    pressure_summary = _fixture_blocker_pressure_summary(gate_payload)
+    weighted_blocker_pressure = float(
+        pressure_summary["weighted_blocker_pressure"]
+    )
+    carrion_weighted_blocker_pressure = float(
+        pressure_summary["carrion_only_weighted_blocker_pressure"]
+    )
     horizon_summary = entry.get("fixture_horizon_summary")
     horizon_payload = (
         horizon_summary if isinstance(horizon_summary, Mapping) else {}
@@ -1814,6 +1969,12 @@ def _fixture_selection_score_delta(entry: Mapping[str, object]) -> float:
             carrion.get("alive_agents_mean", 0.0),
         )
     )
+    carrion_alive_ticks = float(
+        horizon_payload.get(
+            "carrion_only_alive_agent_ticks_per_tick_min",
+            carrion.get("alive_agent_ticks_per_tick_mean", 0.0),
+        )
+    )
     carrion_births = float(
         horizon_payload.get(
             "carrion_only_births_min",
@@ -1848,7 +2009,9 @@ def _fixture_selection_score_delta(entry: Mapping[str, object]) -> float:
         gate_bonus
         + 4.0 * passed_horizon_count
         + first_horizon_bonus
-        - 3.0 * blocker_count
+        - 1.5 * blocker_count
+        - 4.0 * weighted_blocker_pressure
+        - 2.0 * carrion_weighted_blocker_pressure
         + 4.0 * carrion_energy_requirement
         + 3.0 * carrion_energy_viability
         + 2.5 * carrion_hydration_viability
@@ -1856,12 +2019,94 @@ def _fixture_selection_score_delta(entry: Mapping[str, object]) -> float:
         + 0.25 * min(20.0, carrion_resource_events)
         + 0.1 * min(50.0, carrion_resource_gain)
         + 0.5 * carrion_alive
+        + 0.25 * carrion_alive_ticks
         + 0.3 * carrion_births
         + 2.0 * fixture_reproduction_viability
         + 2.0 * fixture_energy_hydration_balance
         + 0.2 * fixture_births
         + 0.1 * fixture_alive
     )
+
+
+def _fixture_blocker_pressure_summary(
+    fixture_gate: Mapping[str, object],
+) -> dict[str, object]:
+    raw_blockers = fixture_gate.get("blockers")
+    blockers = raw_blockers if isinstance(raw_blockers, list) else []
+    fixture_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    fixture_pressure: Counter[str] = Counter()
+    reason_pressure: Counter[str] = Counter()
+    weighted_pressure = 0.0
+    carrion_count = 0
+    carrion_weighted_pressure = 0.0
+    for raw_blocker in blockers:
+        if not isinstance(raw_blocker, Mapping):
+            continue
+        fixture = str(raw_blocker.get("fixture") or "unknown")
+        reason = str(raw_blocker.get("reason") or "unknown")
+        pressure = _fixture_blocker_floor_gap(raw_blocker)
+        weighted = pressure * _fixture_blocker_weight(raw_blocker)
+        fixture_counts.update([fixture])
+        reason_counts.update([reason])
+        fixture_pressure[fixture] += weighted
+        reason_pressure[reason] += weighted
+        weighted_pressure += weighted
+        if fixture == "carrion_only":
+            carrion_count += 1
+            carrion_weighted_pressure += weighted
+    return {
+        "blocker_count": sum(fixture_counts.values()),
+        "weighted_blocker_pressure": _round(weighted_pressure),
+        "carrion_only_blocker_count": carrion_count,
+        "carrion_only_weighted_blocker_pressure": _round(
+            carrion_weighted_pressure
+        ),
+        "blocker_counts_by_fixture": dict(sorted(fixture_counts.items())),
+        "blocker_counts_by_reason": dict(sorted(reason_counts.items())),
+        "weighted_pressure_by_fixture": {
+            key: _round(value)
+            for key, value in sorted(fixture_pressure.items())
+        },
+        "weighted_pressure_by_reason": {
+            key: _round(value)
+            for key, value in sorted(reason_pressure.items())
+        },
+        "worst_fixture": _dominant_counter_key(fixture_pressure),
+        "worst_reason": _dominant_counter_key(reason_pressure),
+    }
+
+
+def _fixture_blocker_floor_gap(blocker: Mapping[str, object]) -> float:
+    floor = _fixture_blocker_numeric_value(blocker.get("floor"))
+    value = _fixture_blocker_numeric_value(blocker.get("value"))
+    if floor is None or value is None:
+        return 0.0
+    return max(0.0, floor - value)
+
+
+def _fixture_blocker_numeric_value(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _fixture_blocker_weight(blocker: Mapping[str, object]) -> float:
+    fixture = str(blocker.get("fixture") or "")
+    reason = str(blocker.get("reason") or "")
+    weight = 1.0
+    if fixture == "carrion_only":
+        weight += 0.75
+    if reason == "fixture_alive_floor":
+        weight += 1.25
+    elif reason in {
+        "fixture_energy_viability_floor",
+        "fixture_hydration_viability_floor",
+        "fixture_health_viability_floor",
+        "fixture_matched_diet_viability_floor",
+    }:
+        weight += 0.5
+    return weight
 
 
 def _evaluate_candidate_task(task: dict[str, object]) -> dict[str, object]:
@@ -4747,6 +4992,43 @@ def _fixture_rerank_prefilter_key(candidate: Mapping[str, object]) -> tuple:
     )
 
 
+def _fixture_current_architecture_key(candidate: Mapping[str, object]) -> tuple:
+    return (
+        _candidate_controller_architecture(candidate)
+        == MIND_V3_CONTROLLER_ARCHITECTURE,
+        not isinstance(candidate.get("warm_start"), Mapping),
+        float(candidate.get("terminal_energy_hydration_balance_mean", 0.0)),
+        float(
+            candidate.get(
+                "terminal_balanced_reproduction_readiness_mean",
+                0.0,
+            )
+        ),
+        float(candidate.get("terminal_matched_diet_viability_share_mean", 0.0)),
+        float(candidate.get("score", 0.0)),
+        -int(candidate.get("candidate_index", 0)),
+    )
+
+
+def _fixture_controlled_readiness_key(candidate: Mapping[str, object]) -> tuple:
+    return (
+        float(candidate.get("terminal_energy_hydration_balance_mean", 0.0)),
+        float(
+            candidate.get(
+                "terminal_energy_requirement_satisfaction_mean",
+                0.0,
+            )
+        ),
+        float(candidate.get("terminal_energy_viability_share_mean", 0.0)),
+        float(candidate.get("terminal_hydration_viability_share_mean", 0.0)),
+        float(candidate.get("terminal_matched_diet_viability_share_mean", 0.0)),
+        float(candidate.get("movement_event_rate", 0.0)),
+        -float(candidate.get("dominant_requested_action_share", 1.0)),
+        float(candidate.get("score", 0.0)),
+        -int(candidate.get("candidate_index", 0)),
+    )
+
+
 def _fixture_rerank_entry(
     *,
     candidate: Mapping[str, object],
@@ -4835,6 +5117,9 @@ def _fixture_rerank_entry(
         "holdout_aggregate": holdout_aggregate,
         "fixture_summary": _fixture_rerank_fixture_summary(fixture_suite),
         "fixture_gate": fixture_gate,
+        "fixture_blocker_pressure": _fixture_blocker_pressure_summary(
+            fixture_gate
+        ),
     }
     if fixture_horizons is not None:
         entry["fixture_horizons"] = [
@@ -4993,6 +5278,11 @@ def _fixture_horizon_summary(
         else 0.0,
         "carrion_only_births_min": _round(
             min(values("births_mean", carrion_summaries))
+        )
+        if carrion_summaries
+        else 0.0,
+        "carrion_only_alive_agent_ticks_per_tick_min": _round(
+            min(values("alive_agent_ticks_per_tick_mean", carrion_summaries))
         )
         if carrion_summaries
         else 0.0,
@@ -5197,6 +5487,12 @@ def _fixture_rerank_selection_key(entry: Mapping[str, object]) -> tuple:
             carrion_fixture.get("alive_agents_mean", 0.0),
         )
     )
+    carrion_alive_ticks = float(
+        horizon_payload.get(
+            "carrion_only_alive_agent_ticks_per_tick_min",
+            carrion_fixture.get("alive_agent_ticks_per_tick_mean", 0.0),
+        )
+    )
     carrion_births = float(
         horizon_payload.get(
             "carrion_only_births_min",
@@ -5250,6 +5546,7 @@ def _fixture_rerank_selection_key(entry: Mapping[str, object]) -> tuple:
         carrion_blocker_pressure * carrion_resource_gain,
         carrion_blocker_pressure * -carrion_dominant_action_share,
         carrion_blocker_pressure * carrion_alive,
+        carrion_blocker_pressure * carrion_alive_ticks,
         carrion_blocker_pressure * fixture_energy_hydration_balance,
         carrion_blocker_pressure * fixture_reproduction_viability,
         carrion_blocker_pressure * carrion_births,
@@ -5370,6 +5667,42 @@ def _fixture_observed_animal_resource_summary(
     }
 
 
+def _fixture_alive_agent_tick_summary(
+    mind_v3: Mapping[str, object],
+) -> dict[str, float]:
+    aggregate = mind_v3.get("aggregate")
+    if isinstance(aggregate, Mapping):
+        aggregate_alive_ticks = aggregate.get("alive_agent_ticks_per_tick_mean")
+        if isinstance(aggregate_alive_ticks, (int, float)) and not isinstance(
+            aggregate_alive_ticks,
+            bool,
+        ):
+            return {
+                "alive_agent_ticks_per_tick_mean": _round(
+                    float(aggregate_alive_ticks)
+                )
+            }
+    raw_runs = mind_v3.get("runs")
+    runs = raw_runs if isinstance(raw_runs, list) else []
+    values: list[float] = []
+    for raw_run in runs:
+        if not isinstance(raw_run, Mapping):
+            continue
+        trajectory_record_count = raw_run.get("trajectory_record_count")
+        if isinstance(trajectory_record_count, bool) or not isinstance(
+            trajectory_record_count,
+            (int, float),
+        ):
+            continue
+        ticks_value = raw_run.get("ticks")
+        if isinstance(ticks_value, bool) or not isinstance(ticks_value, (int, float)):
+            ticks_value = raw_run.get("ticks_executed")
+        if isinstance(ticks_value, bool) or not isinstance(ticks_value, (int, float)):
+            continue
+        values.append(float(trajectory_record_count) / max(1.0, float(ticks_value)))
+    return {"alive_agent_ticks_per_tick_mean": _round(_mean(values))}
+
+
 def _fixture_rerank_fixture_summary(
     fixture_suite: Mapping[str, object],
 ) -> dict[str, object]:
@@ -5384,6 +5717,7 @@ def _fixture_rerank_fixture_summary(
     biologically_ready_values: list[float] = []
     animal_resource_event_values: list[float] = []
     animal_resource_gain_values: list[float] = []
+    alive_agent_ticks_per_tick_values: list[float] = []
     per_fixture: dict[str, object] = {}
     mixed_stable_births = 0.0
     carrion_only_summary: dict[str, float] = {}
@@ -5397,6 +5731,7 @@ def _fixture_rerank_fixture_summary(
         if not isinstance(aggregate, Mapping):
             continue
         animal_resources = _fixture_observed_animal_resource_summary(mind_v3)
+        alive_agent_ticks = _fixture_alive_agent_tick_summary(mind_v3)
         attribution = aggregate.get("reproduction_failure_attribution")
         attr_payload = attribution if isinstance(attribution, Mapping) else {}
         viability = attr_payload.get("terminal_viability_shares_mean")
@@ -5456,6 +5791,9 @@ def _fixture_rerank_fixture_summary(
         animal_resource_gain = float(
             animal_resources["animal_resource_gained_energy_mean"]
         )
+        alive_agent_ticks_per_tick = float(
+            alive_agent_ticks["alive_agent_ticks_per_tick_mean"]
+        )
         alive_values.append(alive)
         birth_values.append(births)
         viability_mins.append(viability_min)
@@ -5465,6 +5803,7 @@ def _fixture_rerank_fixture_summary(
         biologically_ready_values.append(biologically_ready)
         animal_resource_event_values.append(animal_resource_events)
         animal_resource_gain_values.append(animal_resource_gain)
+        alive_agent_ticks_per_tick_values.append(alive_agent_ticks_per_tick)
         if fixture_name == "mixed_stable":
             mixed_stable_births = births
         if fixture_name == "carrion_only":
@@ -5485,10 +5824,12 @@ def _fixture_rerank_fixture_summary(
                     animal_resource_events
                 ),
                 "animal_resource_gained_energy_mean": animal_resource_gain,
+                "alive_agent_ticks_per_tick_mean": alive_agent_ticks_per_tick,
             }
         per_fixture[fixture_name] = {
             "alive_agents_mean": _round(alive),
             "births_mean": _round(births),
+            **alive_agent_ticks,
             "terminal_reproduction_viability_min": _round(viability_min),
             "terminal_energy_viability_share_mean": _round(energy_viability),
             "terminal_hydration_viability_share_mean": _round(
@@ -5527,6 +5868,9 @@ def _fixture_rerank_fixture_summary(
         ),
         "carrion_only_births_mean": _round(
             carrion_only_summary.get("births_mean", 0.0)
+        ),
+        "carrion_only_alive_agent_ticks_per_tick_mean": _round(
+            carrion_only_summary.get("alive_agent_ticks_per_tick_mean", 0.0)
         ),
         "carrion_only_terminal_reproduction_viability_min": _round(
             carrion_only_summary.get("terminal_reproduction_viability_min", 0.0)
@@ -5578,6 +5922,9 @@ def _fixture_rerank_fixture_summary(
         ),
         "animal_resource_gained_energy_mean": _round(
             _mean(animal_resource_gain_values)
+        ),
+        "alive_agent_ticks_per_tick_mean": _round(
+            _mean(alive_agent_ticks_per_tick_values)
         ),
         "per_fixture": dict(sorted(per_fixture.items())),
     }
@@ -5823,6 +6170,9 @@ def _build_report(
     if fixture_selection_top_k > 0:
         search["fixture_selection_policy"] = (
             MIND_V3_GENERATION_FIXTURE_SELECTION_POLICY
+        )
+        search["fixture_selection_nominee_policy"] = (
+            MIND_V3_GENERATION_FIXTURE_SELECTION_NOMINEE_POLICY
         )
         search["fixture_selection_top_k"] = int(fixture_selection_top_k)
     return {

@@ -161,6 +161,13 @@ Owns:
 - optional communication head
 - later: external memory and sparse planner
 
+Current Mind note, 2026-05-11: the no-heuristic Mind v3 boundary is the correct
+controller direction, but the linear hand-shaped controller is now the known
+bottleneck. The next controller milestone should add horizon-labeled outcomes,
+controlled-fixture blocker labels, and a stronger deterministic policy artifact
+while preserving replay determinism and the heuristic safety floor as an
+external comparison baseline.
+
 ### 5.4 Memory And Culture
 
 Owns:
