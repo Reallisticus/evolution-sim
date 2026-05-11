@@ -1545,6 +1545,25 @@ should make the learner stronger and easier to evaluate.
     survive to 120 ticks; only then feed those labels into constrained
     torch/IQL. If no counterfactual sequence survives, audit fixture/world
     mechanics before doing learner work.
+50. The counterfactual carrion-water feasibility slice is complete. The new
+    `sim:mind:v3:carrion-counterfactual` command runs deterministic,
+    policy-visible scripts against the controlled `carrion_only` fixture and
+    writes `mind_v3_carrion_counterfactual_rollout_v1` reports with optional
+    trajectory exports. The v32 report
+    `output/mind/mind-v3-carrion-counterfactual-v32-120.json` used seeds
+    `29,37` at `120` ticks. `hydration_safe_carrion_cycle` kept `3` agents
+    alive on both seeds, for `3.0` alive / `11.0` births mean, zero heuristic
+    action sources, and dominant action share `0.2528`; `water_first_recovery`
+    and `conserve_after_carrion` also produced nonzero terminal alive on at
+    least one run. Autopsy of the hydration-cycle trajectories found `22`
+    post-contact episodes, `4` survived contact windows, `65` drinks, `87`
+    animal-resource events, and `21.825` animal-resource gain, though the
+    dominant remaining death path was still
+    `movement_energy_depletion_after_carrion_contact`. This resolves the
+    feasibility question: the fixture/world mechanics allow survival, and the
+    next implementation slice should convert these positive sequences into
+    constrained torch/IQL labels rather than continue residual-scale,
+    anchor-margin, or scalar-weight tuning.
 
 ### GPU / CUDA Boundary
 

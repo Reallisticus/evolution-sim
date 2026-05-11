@@ -936,7 +936,23 @@ criteria before it can replace more heuristic behavior:
     contact until energy death. Next task is a counterfactual rollout labeler
     from real carrion-fixture states; torch/IQL should consume those labels
     only after a legal survivable action sequence is demonstrated.
-43. Add quality-diversity viewer diagnostics once policy lineages
+43. The counterfactual rollout labeler is implemented as
+    `sim:mind:v3:carrion-counterfactual`. It runs deterministic,
+    policy-visible carrion-water recovery scripts in the `carrion_only`
+    fixture and writes `mind_v3_carrion_counterfactual_rollout_v1` reports.
+    The first v32 report,
+    `output/mind/mind-v3-carrion-counterfactual-v32-120.json`, used seeds
+    `29,37` at `120` ticks and found a legal survivable sequence:
+    `hydration_safe_carrion_cycle` reached `3.0` alive / `11.0` births, zero
+    heuristic action sources, and dominant action share `0.2528`. Its autopsy
+    report,
+    `output/mind/mind-v3-carrion-counterfactual-v32-hydration-cycle-autopsy.json`,
+    found `22` post-contact episodes, `4` survived contact windows, `65`
+    drinks, `87` animal-resource events, and `21.825` animal-resource gain.
+    This proves the fixture is mechanically survivable and moves the next work
+    to constrained torch/IQL labels, not more scalar weighting or anchor
+    leverage.
+44. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

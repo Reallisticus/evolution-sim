@@ -1385,10 +1385,10 @@ Tenth implementation milestone:
 
 Adjusted next tasks after the autopsy:
 
-1. Build a counterfactual rollout labeler from real carrion-fixture states. The
-   labeler should replay bounded action scripts such as eat-until-sated,
-   move-to-water, drink, stay/rest, and mixed carrion-water recovery from the
-   same policy-visible states. Acceptance: prove at least one legal sequence
+1. The counterfactual rollout labeler is now the active diagnostic slice. It
+   should replay bounded policy-visible scripts such as eat-until-sated,
+   move-to-water, drink, stay/rest, and mixed carrion-water recovery against
+   carrion fixture seeds. Acceptance: prove at least one legal sequence
    produces 120-tick carrion-only survival, or document that fixture mechanics
    make survival unreachable.
 2. If a survivable sequence exists, feed those counterfactual labels into the
@@ -1405,6 +1405,53 @@ Adjusted next tasks after the autopsy:
 5. If counterfactual survival exists but torch/IQL cannot learn it, move to
    vectorized rollout training or a model-based learner rather than another
    scalar weighting, residual-scale, or anchor-margin pass.
+
+Eleventh implementation milestone:
+
+- `sim:mind:v3:carrion-counterfactual` now runs deterministic, policy-visible
+  carrion-water recovery scripts against the controlled `carrion_only` fixture
+  and writes `mind_v3_carrion_counterfactual_rollout_v1` reports. The command
+  can also export trajectories for the scripted plans. This is a diagnostic
+  labeler, not a runtime policy promotion path.
+- The first v32 diagnostic report is
+  `output/mind/mind-v3-carrion-counterfactual-v32-120.json`, with trajectories
+  under `output/trajectories/mind-v3-carrion-counterfactual-v32/`. It used
+  fixture seeds `29,37`, horizon `120`, and recorded the v31 direct autopsy
+  report as source context.
+- The answer is clear: carrion-only survival is mechanically possible under
+  legal policy-visible action sequences. `hydration_safe_carrion_cycle` kept
+  `3` agents alive on both fixture seeds, with `3.0` alive mean, `11.0` births
+  mean, zero heuristic action sources, and dominant action share `0.2528`.
+  `water_first_recovery` and `conserve_after_carrion` also produced nonzero
+  terminal alive on at least one run, while naive `carrion_then_water` still
+  died out.
+- Autopsying the successful hydration-cycle trajectories produced
+  `output/mind/mind-v3-carrion-counterfactual-v32-hydration-cycle-autopsy.json`.
+  It found `22` post-contact episodes, `4` survived contact windows,
+  post-contact survival rate `0.1818`, `65` drinks, `87` animal-resource
+  events, and `21.825` animal-resource gain. The dominant remaining death path
+  is still `movement_energy_depletion_after_carrion_contact` (`15/18` deaths),
+  so the sequence is not "solved"; it is a positive feasibility label for
+  constrained learner training.
+
+Adjusted next tasks after the counterfactual result:
+
+1. Convert the successful counterfactual trajectories into explicit
+   action/value labels for the existing torch/IQL trainer. The label contract
+   must preserve source script, fixture seed, horizon, terminal alive, energy,
+   hydration, health, matched diet, action support, and animal-resource gain.
+2. Train an opt-in torch/IQL artifact on broad trajectories plus the
+   counterfactual carrion labels with constraints for terminal alive and
+   homeostatic state. Do not alter the default linear controller during this
+   slice.
+3. Evaluate linear default, anchored neural, and the torch/IQL candidate on the
+   same broad `120` and carrion fixture matrix. Acceptance stays: broad alive
+   within about `1.0` of linear, births not worse than linear, dominant action
+   share `<= 0.50`, zero heuristic runtime actions, and carrion-only blocker
+   count reduced or terminal alive nonzero.
+4. If torch/IQL cannot learn the hydration-cycle behavior despite positive
+   labels, move to vectorized rollout/model-based training. Do not return to
+   residual-scale, anchor-margin, or scalar trajectory-weight tuning.
 
 ## Promotion Boundary
 
