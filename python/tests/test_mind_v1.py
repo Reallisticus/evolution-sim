@@ -84,6 +84,7 @@ from evolution_sim.mind.policy_inputs import (
 )
 from evolution_sim.mind.v3_neural import (
     MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY,
     MIND_V3_NEURAL_INPUT_POLICY,
     load_mind_v3_neural_artifact,
     score_mind_v3_neural_artifact,
@@ -823,6 +824,14 @@ class MindV1Tests(unittest.TestCase):
             )
             self.assertGreater(artifact["fixture_action_bias_delta"]["eat"], 0.0)
             self.assertGreater(artifact["fixture_action_bias_delta"]["drink"], 0.0)
+            self.assertEqual(
+                artifact["fixture_context_bias"]["policy"],
+                MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY,
+            )
+            self.assertGreater(
+                artifact["fixture_context_bias"]["carrion_pressure"],
+                0.0,
+            )
             first_record = dataset.records[0]
             scores = score_mind_v3_neural_artifact(
                 artifact=artifact,
@@ -832,6 +841,126 @@ class MindV1Tests(unittest.TestCase):
 
         self.assertTrue(scores)
         self.assertTrue(set(scores).issubset(ACTION_NAMES))
+
+    def test_mind_v3_neural_fixture_context_bias_uses_visible_targets(
+        self,
+    ) -> None:
+        import base64
+        import struct
+        import zlib
+
+        from evolution_sim.env.runtime.observations import (
+            NAVIGATION_INPUT_FIELDS,
+            NAVIGATION_TARGETS,
+            OBSERVATION_ENCODER_VERSION,
+            OBSERVATION_INPUT_DTYPE,
+            OBSERVATION_INPUT_VALUE_RANGE,
+            OBSERVATION_QUANTIZATION_SCALE,
+            OBSERVATION_SCHEMA_VERSION,
+            OBSERVATION_STORAGE_DTYPE,
+            OBSERVATION_STORAGE_ENCODING,
+            PATCH_CELL_COUNT,
+            PATCH_INPUT_FIELDS,
+            SELF_INPUT_FIELDS,
+        )
+
+        def encoded(values: list[float]) -> dict[str, object]:
+            quantized = [
+                int(
+                    round(
+                        max(-1.0, min(1.0, value))
+                        * OBSERVATION_QUANTIZATION_SCALE
+                    )
+                )
+                for value in values
+            ]
+            packed = struct.pack(f"<{len(quantized)}h", *quantized)
+            return {
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "encoder_version": OBSERVATION_ENCODER_VERSION,
+                "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+                "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+                "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+                "shape": [len(values)],
+                "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+                "data": base64.b64encode(zlib.compress(packed, level=6)).decode(
+                    "ascii"
+                ),
+            }
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+            )
+
+        artifact["action_output_weights"] = {
+            action: [0.0] * int(artifact["hidden_units"]) for action in ACTION_NAMES
+        }
+        artifact["action_output_bias"] = {action: 0.0 for action in ACTION_NAMES}
+        artifact["fixture_action_bias_delta"] = {
+            action: 0.0 for action in ACTION_NAMES
+        }
+        artifact["fixture_context_bias"] = {
+            "policy": MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY,
+            "carrion_pressure": 8.0,
+            "mixed_birth_pressure": 0.0,
+            "max_scale": 0.18,
+        }
+        navigation_start = len(SELF_INPUT_FIELDS) + (
+            PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+        )
+
+        thirsty = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        thirsty[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.9
+        thirsty[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.2
+        thirsty[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.9
+        water_start = navigation_start + NAVIGATION_TARGETS.index("water") * len(
+            NAVIGATION_INPUT_FIELDS
+        )
+        thirsty[water_start + NAVIGATION_INPUT_FIELDS.index("dy")] = -1.0
+        thirsty[water_start + NAVIGATION_INPUT_FIELDS.index("strength")] = 1.0
+        water_scores = score_mind_v3_neural_artifact(
+            artifact=artifact,
+            observation_input=encoded(thirsty),
+            action_mask={
+                action: action in {"drink", "move_north", "stay"}
+                for action in ACTION_NAMES
+            },
+        )
+
+        scavenger = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        scavenger[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.25
+        scavenger[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.9
+        scavenger[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.2
+        center_start = len(SELF_INPUT_FIELDS) + (
+            PATCH_CELL_COUNT // 2
+        ) * len(PATCH_INPUT_FIELDS)
+        scavenger[center_start + PATCH_INPUT_FIELDS.index("carcass_energy")] = 0.8
+        carrion_start = navigation_start + NAVIGATION_TARGETS.index(
+            "carrion"
+        ) * len(NAVIGATION_INPUT_FIELDS)
+        scavenger[carrion_start + NAVIGATION_INPUT_FIELDS.index("dx")] = 1.0
+        scavenger[carrion_start + NAVIGATION_INPUT_FIELDS.index("strength")] = 1.0
+        carrion_scores = score_mind_v3_neural_artifact(
+            artifact=artifact,
+            observation_input=encoded(scavenger),
+            action_mask={
+                action: action in {"eat", "move_east", "stay"}
+                for action in ACTION_NAMES
+            },
+        )
+
+        self.assertGreater(water_scores["drink"], water_scores["stay"])
+        self.assertGreater(water_scores["move_north"], water_scores["stay"])
+        self.assertGreater(carrion_scores["eat"], carrion_scores["stay"])
+        self.assertGreater(carrion_scores["move_east"], carrion_scores["stay"])
 
     def test_mind_v3_neural_artifact_ignores_mind_inheritance_bit(
         self,

@@ -1177,6 +1177,41 @@ pure-Python residual scale; the next slice must either train against carrion
 fixture labels directly or move to the torch/IQL or vectorized rollout training
 path.
 
+Fifth implementation milestone:
+
+- Neural artifacts now record
+  `contextual_fixture_floor_gap_action_bias_v2`. It keeps the previous bounded
+  global fixture action delta for compatibility, and adds
+  `policy_visible_carrion_water_context_bias_v1`, a small context-gated action
+  bias derived only from the ecological policy input vector: energy,
+  hydration, matched-diet need, center-patch carcass/fresh-kill, and visible
+  water/carrion navigation vectors.
+- This is explicitly not fixture identity at runtime. The artifact stores only
+  aggregate fixture pressure from the training label report; per-decision
+  scoring still sees the ordinary policy-visible observation.
+
+Measured on the same v26 template/artifact inputs:
+
+- Artifact:
+  `output/mind/mind-v3-v26-neural-context-bias-artifact-v3.json`
+- Drilldown:
+  `output/mind/mind-v3-v26-neural-context-bias-carrion-120.json`
+- Broad `120`-tick comparison stayed at `19.0` alive / `16.0` births versus
+  linear `23.5` / `18.5`.
+- Carrion-only was unchanged: `0.0` alive / `2.5` births, five blockers
+  (`alive`, `energy`, `hydration`, `health`, `matched_diet`), and primary
+  temporal readiness blocker `energy`.
+- Neural top-action counts changed only marginally on carrion-only (`eat`
+  `160 -> 159`, `move_east` `470 -> 471`), so the context bias is not strong
+  enough to create the missing post-carrion survival sequence through the
+  current residual/anchor path.
+
+Keep the mechanism as a bounded artifact feature, but treat the measured result
+as a stop signal for this family of hand-shaped residual work. The next
+productive slice is to collect controlled fixture trajectories for horizon
+labels or run a stronger torch/vectorized learner that can train directly on
+carrion-only sequences.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains

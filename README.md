@@ -241,7 +241,11 @@ neural residual is shadowed when the artifact expresses the known collapsed
 `19.0` alive with births still `16.0`, but linear remained better at `23.5` /
 `18.5` and carrion-only still failed with `0.0` terminal alive. See
 `docs/mind-v3-autonomous-evolution.md` for the milestone boundary before
-reducing the anchor or moving to torch/vectorized training.
+reducing the anchor or moving to torch/vectorized training. A follow-up
+contextual fixture-bias artifact used the same policy-visible water/carrion
+inputs and reproduced the same `19.0` / `16.0` broad result with the same
+carrion blocker set, so the next useful step is controlled fixture trajectory
+data or a stronger learner, not another hand-shaped residual bias.
 
 ## Foundation Gate
 

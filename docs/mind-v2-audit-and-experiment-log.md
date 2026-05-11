@@ -1440,6 +1440,22 @@ should make the learner stronger and easier to evaluate.
     alive, five blockers), so this is diagnostic guardrail progress, not a path
     to promotion. Stop spending iterations on residual-scale tuning unless a
     new learner/training signal reduces the carrion blocker set.
+44. A follow-up contextual fixture-bias artifact tested the next obvious
+    pure-Python training signal. Neural artifacts now include
+    `contextual_fixture_floor_gap_action_bias_v2`, with
+    `policy_visible_carrion_water_context_bias_v1` derived only from ecological
+    policy input fields: energy/hydration/matched-diet need, center-patch
+    carcass/fresh-kill, and visible water/carrion navigation vectors. Artifact
+    `output/mind/mind-v3-v26-neural-context-bias-artifact-v3.json` and
+    drilldown `output/mind/mind-v3-v26-neural-context-bias-carrion-120.json`
+    reproduced the same broad result as the margin-guard slice (`19.0` alive /
+    `16.0` births versus linear `23.5` / `18.5`) and left carrion-only
+    unchanged (`0.0` alive, `2.5` births, five blockers, primary temporal
+    blocker `energy`). The neural top-action distribution barely moved on
+    carrion-only, so the current residual/anchor path is not exposing enough
+    controllable leverage. Next work should collect controlled fixture
+    trajectories for horizon labels or move to torch/vectorized rollout
+    training; another hand-shaped residual bias is not justified.
 
 ### GPU / CUDA Boundary
 

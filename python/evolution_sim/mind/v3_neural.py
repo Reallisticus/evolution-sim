@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import TextIO
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import (
+    NAVIGATION_INPUT_FIELDS,
+    NAVIGATION_TARGETS,
+    PATCH_CELL_COUNT,
+    PATCH_INPUT_FIELDS,
+    SELF_INPUT_FIELDS,
+)
 from evolution_sim.mind.dataset import (
     TrajectoryJsonlDataset,
     combined_dataset_provenance,
@@ -17,6 +24,7 @@ from evolution_sim.mind.dataset import (
 from evolution_sim.mind.fixture_labels import MIND_FIXTURE_LABEL_SCHEMA_VERSION
 from evolution_sim.mind.horizon_labels import MIND_HORIZON_LABEL_SCHEMA_VERSION
 from evolution_sim.mind.policy_inputs import (
+    CONTROLLER_DIAGNOSTIC_SELF_FIELDS,
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
     ecological_policy_input_contract,
@@ -32,10 +40,25 @@ MIND_V3_NEURAL_ARCHITECTURE = "fixed_projection_mlp_action_horizon_heads_v1"
 MIND_V3_NEURAL_INPUT_POLICY = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
 MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS = 32
 MIND_V3_NEURAL_DEFAULT_SEED = 43
-MIND_V3_NEURAL_FIXTURE_BIAS_POLICY = "global_fixture_floor_gap_action_bias_v1"
+MIND_V3_NEURAL_FIXTURE_BIAS_POLICY = (
+    "contextual_fixture_floor_gap_action_bias_v2"
+)
+MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY = (
+    "policy_visible_carrion_water_context_bias_v1"
+)
+MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE = 0.18
 MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY = "horizon_survival_reproduction_viability_v1"
 MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT = 0.18
 MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE = 2.0
+_ECOLOGICAL_SELF_FIELDS = tuple(
+    field
+    for field in SELF_INPUT_FIELDS
+    if field not in CONTROLLER_DIAGNOSTIC_SELF_FIELDS
+)
+_ECOLOGICAL_PATCH_START = len(_ECOLOGICAL_SELF_FIELDS)
+_ECOLOGICAL_NAVIGATION_START = _ECOLOGICAL_PATCH_START + (
+    PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+)
 
 
 class MindV3NeuralArtifactError(ValueError):
@@ -90,6 +113,7 @@ def train_mind_v3_neural_artifact(
     )
     action_output_bias = _action_output_bias(hidden_samples)
     fixture_bias_delta = _fixture_action_bias_delta(fixture_label_report)
+    fixture_context_bias = _fixture_context_bias(fixture_label_report)
     horizon_ticks = _horizon_ticks(horizon_label_report)
     survival_heads, reproduction_heads = _horizon_heads(
         hidden_samples,
@@ -175,6 +199,7 @@ def train_mind_v3_neural_artifact(
         "action_output_weights": action_output_weights,
         "action_output_bias": action_output_bias,
         "fixture_action_bias_delta": fixture_bias_delta,
+        "fixture_context_bias": fixture_context_bias,
         "survival_heads": survival_heads,
         "reproduction_heads": reproduction_heads,
     }
@@ -198,6 +223,10 @@ def score_mind_v3_neural_artifact(
     weights = compiled["action_output_weights"]
     bias = compiled["action_output_bias"]
     fixture_delta = compiled["fixture_action_bias_delta"]
+    fixture_context_delta = _fixture_context_action_bias(
+        compiled["fixture_context_bias"],  # type: ignore[arg-type]
+        values,
+    )
     scores: dict[str, float] = {}
     for action in ACTION_NAMES:
         if not bool(action_mask.get(action, False)):
@@ -205,6 +234,7 @@ def score_mind_v3_neural_artifact(
         scores[action] = _round(
             float(bias[action])
             + float(fixture_delta[action])
+            + float(fixture_context_delta[action])
             + _dot(weights[action], hidden)
         )
     return scores
@@ -303,6 +333,8 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
         artifact.get("fixture_action_bias_delta"),
         field="fixture_action_bias_delta",
     )
+    if "fixture_context_bias" in artifact:
+        _fixture_context_bias_payload(artifact.get("fixture_context_bias"))
     _head_mapping(
         artifact.get("survival_heads"),
         hidden_units=hidden_units,
@@ -597,21 +629,9 @@ def _fixture_action_bias_delta(
     fixture_label_report: Mapping[str, object] | None,
 ) -> dict[str, float]:
     deltas = {action: 0.0 for action in ACTION_NAMES}
-    if fixture_label_report is None:
-        return deltas
-    carrion_pressure = 0.0
-    mixed_birth_pressure = 0.0
-    labels = fixture_label_report.get("labels")
-    for label in labels if isinstance(labels, list) else []:
-        if not isinstance(label, Mapping) or bool(label.get("passed", False)):
-            continue
-        pressure = _optional_float(label.get("pressure")) or 0.0
-        fixture = str(label.get("fixture", ""))
-        reason = str(label.get("reason", ""))
-        if fixture == "carrion_only":
-            carrion_pressure += pressure
-        if fixture == "mixed_stable" and "birth" in reason:
-            mixed_birth_pressure += pressure
+    pressures = _fixture_pressures(fixture_label_report)
+    carrion_pressure = pressures["carrion_pressure"]
+    mixed_birth_pressure = pressures["mixed_birth_pressure"]
 
     carrion_scale = min(0.25, 0.03 * carrion_pressure)
     mixed_scale = min(0.18, 0.04 * mixed_birth_pressure)
@@ -628,6 +648,177 @@ def _fixture_action_bias_delta(
         deltas["signal_0_profile_0"] += 0.20 * mixed_scale
         deltas["signal_0_profile_1"] += 0.10 * mixed_scale
     return {action: _round(value) for action, value in deltas.items()}
+
+
+def _fixture_context_bias(
+    fixture_label_report: Mapping[str, object] | None,
+) -> dict[str, object]:
+    pressures = _fixture_pressures(fixture_label_report)
+    return {
+        "policy": MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY,
+        "carrion_pressure": _round(pressures["carrion_pressure"]),
+        "mixed_birth_pressure": _round(pressures["mixed_birth_pressure"]),
+        "max_scale": MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE,
+    }
+
+
+def _fixture_pressures(
+    fixture_label_report: Mapping[str, object] | None,
+) -> dict[str, float]:
+    if fixture_label_report is None:
+        return {"carrion_pressure": 0.0, "mixed_birth_pressure": 0.0}
+    carrion_pressure = 0.0
+    mixed_birth_pressure = 0.0
+    labels = fixture_label_report.get("labels")
+    for label in labels if isinstance(labels, list) else []:
+        if not isinstance(label, Mapping) or bool(label.get("passed", False)):
+            continue
+        pressure = _optional_float(label.get("pressure")) or 0.0
+        fixture = str(label.get("fixture", ""))
+        reason = str(label.get("reason", ""))
+        if fixture == "carrion_only":
+            carrion_pressure += pressure
+        if fixture == "mixed_stable" and "birth" in reason:
+            mixed_birth_pressure += pressure
+    return {
+        "carrion_pressure": carrion_pressure,
+        "mixed_birth_pressure": mixed_birth_pressure,
+    }
+
+
+def _fixture_context_action_bias(
+    fixture_context_bias: Mapping[str, object],
+    values: Sequence[float],
+) -> dict[str, float]:
+    deltas = {action: 0.0 for action in ACTION_NAMES}
+    carrion_pressure = _optional_float(
+        fixture_context_bias.get("carrion_pressure")
+    ) or 0.0
+    if carrion_pressure <= 0.0:
+        return deltas
+    max_scale = _optional_float(fixture_context_bias.get("max_scale"))
+    if max_scale is None:
+        max_scale = MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE
+    scale = min(max(0.0, max_scale), 0.015 * carrion_pressure)
+    if scale <= 0.0:
+        return deltas
+
+    energy_need = 1.0 - _unit_value(_self_value(values, "energy_ratio"))
+    hydration_need = 1.0 - _unit_value(_self_value(values, "hydration_ratio"))
+    matched_need = 1.0 - _unit_value(_self_value(values, "matched_diet_ratio"))
+    local_carrion = max(
+        _positive_value(_center_patch_value(values, "fresh_kill_energy")),
+        _positive_value(_center_patch_value(values, "carcass_energy")),
+    )
+    carrion_dx = _navigation_value(values, "carrion", "dx")
+    carrion_dy = _navigation_value(values, "carrion", "dy")
+    carrion_strength = _positive_value(
+        _navigation_value(values, "carrion", "strength")
+    )
+    water_dx = _navigation_value(values, "water", "dx")
+    water_dy = _navigation_value(values, "water", "dy")
+    water_strength = _positive_value(_navigation_value(values, "water", "strength"))
+    carrion_need = max(energy_need, matched_need) * max(carrion_strength, local_carrion)
+    water_need = hydration_need * water_strength
+    local_eat_need = max(energy_need, matched_need) * local_carrion
+
+    deltas["eat"] += 0.80 * scale * local_eat_need
+    deltas["drink"] += 0.75 * scale * hydration_need * max(water_strength, 0.25)
+    deltas["stay"] -= 0.35 * scale * max(carrion_need, water_need)
+    for action in ("move_north", "move_south", "move_east", "move_west"):
+        deltas[action] += scale * (
+            0.65 * carrion_need * _move_alignment(action, carrion_dx, carrion_dy)
+            + 0.75 * water_need * _move_alignment(action, water_dx, water_dy)
+        )
+    for action in ("attack_north", "attack_south", "attack_east", "attack_west"):
+        deltas[action] -= 0.10 * scale * max(carrion_need, water_need)
+    deltas["mate"] -= 0.20 * scale * max(carrion_need, water_need)
+    return {action: _round(value) for action, value in deltas.items()}
+
+
+def _move_alignment(action: str, dx: float, dy: float) -> float:
+    if action == "move_east":
+        return _positive_value(dx)
+    if action == "move_west":
+        return _positive_value(-dx)
+    if action == "move_south":
+        return _positive_value(dy)
+    if action == "move_north":
+        return _positive_value(-dy)
+    return 0.0
+
+
+def _fixture_context_bias_payload(payload: object) -> dict[str, object]:
+    if payload is None:
+        return _fixture_context_bias(None)
+    if not isinstance(payload, Mapping):
+        raise MindV3NeuralArtifactError("fixture_context_bias must be an object")
+    return {
+        "policy": str(
+            payload.get("policy", MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY)
+        ),
+        "carrion_pressure": _finite_float(
+            payload.get("carrion_pressure", 0.0),
+            "fixture_context_bias.carrion_pressure",
+        ),
+        "mixed_birth_pressure": _finite_float(
+            payload.get("mixed_birth_pressure", 0.0),
+            "fixture_context_bias.mixed_birth_pressure",
+        ),
+        "max_scale": _finite_float(
+            payload.get(
+                "max_scale",
+                MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE,
+            ),
+            "fixture_context_bias.max_scale",
+        ),
+    }
+
+
+def _self_value(values: Sequence[float], field: str) -> float:
+    try:
+        return _finite_value(values[_ECOLOGICAL_SELF_FIELDS.index(field)])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _center_patch_value(values: Sequence[float], field: str) -> float:
+    try:
+        index = (
+            _ECOLOGICAL_PATCH_START
+            + (PATCH_CELL_COUNT // 2) * len(PATCH_INPUT_FIELDS)
+            + PATCH_INPUT_FIELDS.index(field)
+        )
+        return _finite_value(values[index])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _navigation_value(values: Sequence[float], target: str, field: str) -> float:
+    try:
+        index = (
+            _ECOLOGICAL_NAVIGATION_START
+            + NAVIGATION_TARGETS.index(target) * len(NAVIGATION_INPUT_FIELDS)
+            + NAVIGATION_INPUT_FIELDS.index(field)
+        )
+        return _finite_value(values[index])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _unit_value(value: float) -> float:
+    return min(1.0, max(0.0, _finite_value(value)))
+
+
+def _positive_value(value: float) -> float:
+    return max(0.0, _finite_value(value))
+
+
+def _finite_value(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _fixture_pressure_summary(
@@ -708,6 +899,9 @@ def _compiled_artifact(artifact: Mapping[str, object]) -> dict[str, object]:
         "fixture_action_bias_delta": _action_vector(
             artifact.get("fixture_action_bias_delta"),
             field="fixture_action_bias_delta",
+        ),
+        "fixture_context_bias": _fixture_context_bias_payload(
+            artifact.get("fixture_context_bias")
         ),
         "survival_heads": _head_mapping(
             artifact.get("survival_heads"),

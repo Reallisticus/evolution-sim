@@ -864,7 +864,16 @@ criteria before it can replace more heuristic behavior:
     the carrion-only blocker set. Treat this as diagnostic closure: the next
     useful neural slice needs carrion fixture labels in training or a stronger
     torch/vectorized rollout learner, not more residual-scale tuning.
-37. Add quality-diversity viewer diagnostics once policy lineages
+37. The contextual fixture-bias artifact adds
+    `policy_visible_carrion_water_context_bias_v1`, using only ecological
+    policy input fields for energy/hydration/matched-diet need, center-patch
+    carcass/fresh-kill, and visible water/carrion navigation vectors. The
+    comparable v26 `120` drilldown stayed at `19.0` alive / `16.0` births and
+    left carrion-only unchanged at `0.0` alive with five blockers. This is a
+    stop signal for hand-shaped pure-Python residual work: the next useful
+    slice is controlled fixture trajectory data or a stronger learner that
+    trains on carrion-only sequences directly.
+38. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References
