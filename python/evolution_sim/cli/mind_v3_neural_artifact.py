@@ -5,6 +5,8 @@ from pathlib import Path
 
 from evolution_sim.mind.dataset import load_trajectory_jsonl
 from evolution_sim.mind.v3_neural import (
+    MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
+    MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
     MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS,
     MIND_V3_NEURAL_DEFAULT_SEED,
     MindV3NeuralArtifactError,
@@ -35,6 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional positive multiplier for each --trajectory in the same "
             "order. Repeat exactly once per trajectory."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-mode",
+        choices=[
+            MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
+            MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
+        ],
+        default=MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
+        help=(
+            "Artifact runtime mode. The default preserves the existing "
+            "linear-anchor neural residual; horizon-fixture writes an "
+            "experimental direct deterministic policy artifact."
         ),
     )
     parser.add_argument(
@@ -86,6 +101,7 @@ def main() -> None:
             hidden_units=int(args.hidden_units),
             seed=int(args.seed),
             trajectory_weight_multipliers=args.trajectory_weight,
+            artifact_mode=str(args.artifact_mode),
         )
         write_mind_v3_neural_artifact(artifact, args.output)
     except (OSError, ValueError, MindV3NeuralArtifactError) as exc:
@@ -93,6 +109,7 @@ def main() -> None:
 
     print(f"mind_v3_neural_artifact={args.output}")
     print(f"schema_version={artifact['schema_version']}")
+    print(f"artifact_mode={artifact['artifact_mode']}")
     print(f"model_type={artifact['model_type']}")
     print(f"trained_record_count={artifact['trained_record_count']}")
     print(f"hidden_units={artifact['hidden_units']}")

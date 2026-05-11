@@ -1504,6 +1504,26 @@ should make the learner stronger and easier to evaluate.
     as stop evidence for residual leverage and scalar weighting loops; the next
     useful implementation path is stronger deterministic controller capacity
     against horizon/fixture labels, or torch/IQL/vectorized rollout training.
+48. The stronger deterministic controller-capacity probe was implemented as
+    v31 and rejected. `deterministic_horizon_fixture_policy_v2` is an opt-in
+    direct artifact mode behind
+    `sim:mind:v3:train-neural --artifact-mode horizon-fixture`; it uses
+    ecological policy inputs, action-conditioned horizon utility, fixture
+    pressure, and behavior-support normalization, and it bypasses the
+    linear-margin anchor at runtime. The evaluator can now compare linear,
+    anchored neural, and direct experimental artifacts in one report via
+    `--anchored-neural-artifact`. The comparable v31 reports used the v26
+    founder template and same v29 source-balanced trajectories. At `80`, direct
+    v31 produced `1.5` alive / `0.0` births with dominant action share
+    `0.5155`, versus linear `20.5` / `9.0` and anchored neural `21.0` /
+    `10.5`; carrion-only had `0.5` alive / `5.5` births but still five
+    blockers. At `120`, direct v31 collapsed to `0.0` alive / `0.0` births
+    with dominant action share `0.5136`, while linear reached `23.0` / `17.5`
+    and anchored neural `20.5` / `18.0`; carrion-only stayed at `0.0` alive
+    with five blockers. Heuristic action sources were zero. Treat this as the
+    pure-Python artifact ceiling for now: the next useful track is torch/IQL or
+    vectorized rollout training with the same broad-plus-carrion acceptance
+    gate.
 
 ### GPU / CUDA Boundary
 

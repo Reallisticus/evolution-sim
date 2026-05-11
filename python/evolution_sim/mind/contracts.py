@@ -51,6 +51,9 @@ from evolution_sim.mind.evolution import (
 )
 from evolution_sim.mind.policy_inputs import ecological_policy_input_contract
 from evolution_sim.mind.v3_neural import (
+    MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
+    MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+    MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
     MIND_V3_NEURAL_ARCHITECTURE,
     MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
     MIND_V3_NEURAL_BACKEND,
@@ -304,5 +307,17 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
             "weights_mutable_during_run": False,
             "enabled_by_default": False,
             "promotion_status": "experiment_only",
+        },
+        "experimental_direct_policy_artifact": {
+            "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+            "model_type": MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+            "runtime_backend": MIND_V3_NEURAL_BACKEND,
+            "architecture": MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
+            "score_policy": MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
+            "input_contract": ecological_policy_input_contract(),
+            "linear_anchor_required": False,
+            "weights_mutable_during_run": False,
+            "enabled_by_default": False,
+            "promotion_status": "failed_v31_experiment_until_revalidated",
         },
     }

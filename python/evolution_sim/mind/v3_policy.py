@@ -24,8 +24,10 @@ from evolution_sim.mind.evolution import (
     score_mind_v3_metadata,
 )
 from evolution_sim.mind.v3_neural import (
+    MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
     MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
     MIND_V3_NEURAL_MODEL_TYPE,
+    is_horizon_fixture_neural_artifact,
     mind_v3_neural_head_predictions,
     score_mind_v3_neural_artifact,
     validate_mind_v3_neural_artifact,
@@ -44,6 +46,9 @@ MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY = (
 )
 MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY = (
     "linear_controller_margin_guarded_neural_residual_v2"
+)
+MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY = (
+    "direct_horizon_fixture_action_value_policy_v1"
 )
 MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
 MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.015
@@ -274,34 +279,47 @@ class MindV3EvolutionPolicy:
                 observation_input=observation_input,
                 action_mask=action_mask,
             )
-            linear_anchor_scores = score_mind_v3_metadata(
-                metadata=metadata,
-                observation_input=observation_values,
-                action_mask=action_mask,
-            )
-            scores = _blend_neural_with_linear_anchor(
-                neural_scores=neural_scores,
-                linear_scores=linear_anchor_scores,
-                action_mask=action_mask,
-            )
-            controller_backend = "frozen_neural_artifact_linear_anchor"
+            if is_horizon_fixture_neural_artifact(self._neural_artifact):
+                scores = neural_scores
+                controller_backend = "frozen_horizon_fixture_policy_artifact"
+                neural_anchor_diagnostics = {
+                    "horizon_fixture_policy": MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY,
+                    "horizon_fixture_policy_experimental": True,
+                    "horizon_fixture_anchor_bypassed": True,
+                    **_direct_artifact_diagnostics(
+                        scores=scores,
+                        action_mask=action_mask,
+                    ),
+                }
+            else:
+                linear_anchor_scores = score_mind_v3_metadata(
+                    metadata=metadata,
+                    observation_input=observation_values,
+                    action_mask=action_mask,
+                )
+                scores = _blend_neural_with_linear_anchor(
+                    neural_scores=neural_scores,
+                    linear_scores=linear_anchor_scores,
+                    action_mask=action_mask,
+                )
+                controller_backend = "frozen_neural_artifact_linear_anchor"
+                neural_anchor_diagnostics = {
+                    "neural_linear_anchor_policy": MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY,
+                    "neural_residual_scale": MIND_V3_NEURAL_RESIDUAL_SCALE,
+                    "neural_residual_max_linear_override_margin": (
+                        MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+                    ),
+                    **_neural_anchor_diagnostics(
+                        neural_scores=neural_scores,
+                        linear_scores=linear_anchor_scores,
+                        final_scores=scores,
+                        action_mask=action_mask,
+                    ),
+                }
             neural_head_predictions = mind_v3_neural_head_predictions(
                 artifact=self._neural_artifact,
                 observation_input=observation_input,
             )
-            neural_anchor_diagnostics = {
-                "neural_linear_anchor_policy": MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY,
-                "neural_residual_scale": MIND_V3_NEURAL_RESIDUAL_SCALE,
-                "neural_residual_max_linear_override_margin": (
-                    MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
-                ),
-                **_neural_anchor_diagnostics(
-                    neural_scores=neural_scores,
-                    linear_scores=linear_anchor_scores,
-                    final_scores=scores,
-                    action_mask=action_mask,
-                ),
-            }
         requested_action, score = _best_action(scores, action_mask)
         diagnostics: dict[str, object] = {
             "runtime_mode": "mind-v3-autonomous-evolution",
@@ -320,7 +338,14 @@ class MindV3EvolutionPolicy:
                     "neural_artifact_schema_version": (
                         MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION
                     ),
-                    "neural_model_type": MIND_V3_NEURAL_MODEL_TYPE,
+                    "neural_model_type": (
+                        MIND_V3_HORIZON_FIXTURE_MODEL_TYPE
+                        if self._neural_artifact is not None
+                        and is_horizon_fixture_neural_artifact(
+                            self._neural_artifact
+                        )
+                        else MIND_V3_NEURAL_MODEL_TYPE
+                    ),
                     "neural_head_predictions": neural_head_predictions,
                 }
             )
@@ -343,6 +368,10 @@ class MindV3EvolutionPolicy:
             return None
         agent_id = _record_agent_id(record)
         if agent_id is None:
+            return None
+        if self._neural_artifact is not None and is_horizon_fixture_neural_artifact(
+            self._neural_artifact
+        ):
             return None
         metadata = self._agent_metadata.get(agent_id)
         if metadata is None:
@@ -1198,6 +1227,24 @@ def _neural_anchor_diagnostics(
             and neural_top_action is not None
             and final_action == neural_top_action
         ),
+    }
+
+
+def _direct_artifact_diagnostics(
+    *,
+    scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, object]:
+    legal_scores = {
+        action: _finite_score(scores.get(action, 0.0))
+        for action in sorted(action_mask)
+        if bool(action_mask[action])
+    }
+    top_action, margin = _top_action_and_margin(legal_scores)
+    return {
+        "horizon_fixture_top_action": top_action or "none",
+        "horizon_fixture_score_margin": margin,
+        "horizon_fixture_legal_action_count": len(legal_scores),
     }
 
 

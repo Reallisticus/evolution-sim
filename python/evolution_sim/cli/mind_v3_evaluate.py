@@ -18,7 +18,10 @@ from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.evolution import load_mind_v3_founder_template
-from evolution_sim.mind.v3_neural import load_mind_v3_neural_artifact
+from evolution_sim.mind.v3_neural import (
+    MIND_V3_NEURAL_MODEL_TYPE,
+    load_mind_v3_neural_artifact,
+)
 from evolution_sim.mind.v3_policy import (
     MIND_V3_REPRODUCTION_READINESS_GOALS,
     MindV3EvolutionPolicy,
@@ -86,6 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Optional frozen Mind v3 neural policy artifact. The artifact "
             "uses ecological policy inputs and does not mutate neural weights "
             "inside a run."
+        ),
+    )
+    parser.add_argument(
+        "--anchored-neural-artifact",
+        type=Path,
+        help=(
+            "Optional current anchored neural artifact to evaluate beside the "
+            "primary --neural-artifact. This is intended for comparing an "
+            "experimental direct artifact against the existing linear-anchor "
+            "neural path in the same report."
         ),
     )
     parser.add_argument(
@@ -206,6 +219,19 @@ def main() -> None:
         if args.neural_artifact is not None
         else None
     )
+    anchored_neural_artifact = (
+        load_mind_v3_neural_artifact(args.anchored_neural_artifact)
+        if args.anchored_neural_artifact is not None
+        else None
+    )
+    if (
+        anchored_neural_artifact is not None
+        and anchored_neural_artifact.get("model_type") != MIND_V3_NEURAL_MODEL_TYPE
+    ):
+        raise SystemExit(
+            "--anchored-neural-artifact must use the current anchored neural "
+            f"model_type {MIND_V3_NEURAL_MODEL_TYPE}"
+        )
     if args.compare_linear_baseline and neural_artifact is None:
         raise SystemExit("--compare-linear-baseline requires --neural-artifact")
     heuristic_runs = [
@@ -267,6 +293,30 @@ def main() -> None:
         )
         for seed in seeds
     ]
+    anchored_neural_runs = (
+        [
+            _run_once(
+                seed=seed,
+                ticks=args.ticks,
+                policy=_mind_v3_policy(
+                    seed=seed,
+                    founder_template=founder_template,
+                    neural_artifact=anchored_neural_artifact,
+                ),
+                trajectory_output_path=_trajectory_output_path(
+                    args.trajectory_output_dir,
+                    "open",
+                    "mind_v3_anchored_neural",
+                    seed,
+                    args.ticks,
+                ),
+                trajectory_split_id="mind_v3_evaluate_open_anchored_neural",
+            )
+            for seed in seeds
+        ]
+        if anchored_neural_artifact is not None
+        else None
+    )
     report = {
         "schema_version": MIND_V3_EVALUATION_SCHEMA_VERSION,
         "policy": {
@@ -302,6 +352,16 @@ def main() -> None:
                 if isinstance(neural_artifact, dict)
                 else None
             ),
+            "anchored_neural_artifact_source": (
+                str(args.anchored_neural_artifact)
+                if args.anchored_neural_artifact is not None
+                else None
+            ),
+            "anchored_neural_model_type": (
+                anchored_neural_artifact.get("model_type")
+                if isinstance(anchored_neural_artifact, dict)
+                else None
+            ),
             "linear_baseline_compared": bool(args.compare_linear_baseline),
         },
         "comparison": {
@@ -320,6 +380,11 @@ def main() -> None:
             "runs": linear_runs,
             "aggregate": _aggregate_runs(linear_runs),
         }
+    if anchored_neural_runs is not None:
+        report["comparison"]["mind_v3_anchored_neural"] = {
+            "runs": anchored_neural_runs,
+            "aggregate": _aggregate_runs(anchored_neural_runs),
+        }
     report["comparison"]["delta"] = _comparison_delta(
         heuristic=report["comparison"]["heuristic"]["aggregate"],
         mind_v3=report["comparison"]["mind_v3"]["aggregate"],
@@ -328,6 +393,15 @@ def main() -> None:
         report["comparison"]["neural_vs_linear_delta"] = _comparison_delta(
             heuristic=report["comparison"]["mind_v3_linear"]["aggregate"],
             mind_v3=report["comparison"]["mind_v3"]["aggregate"],
+        )
+    if anchored_neural_runs is not None:
+        report["comparison"]["primary_vs_anchored_neural_delta"] = (
+            _comparison_delta(
+                heuristic=report["comparison"]["mind_v3_anchored_neural"][
+                    "aggregate"
+                ],
+                mind_v3=report["comparison"]["mind_v3"]["aggregate"],
+            )
         )
     if args.fixture_suite != "none":
         fixture_seeds = (
@@ -388,6 +462,27 @@ def main() -> None:
             report["neural_vs_linear_fixture_delta"] = (
                 _fixture_gate_comparison_delta(
                     linear_gate=report["linear_baseline_fixture_gate"],
+                    neural_gate=report["fixture_gate"],
+                )
+            )
+        if anchored_neural_artifact is not None:
+            report["anchored_neural_fixture_suite"] = run_mind_v3_fixture_suite(
+                suite=args.fixture_suite,
+                fixture_names=fixture_names,
+                seeds=fixture_seeds,
+                ticks=fixture_ticks,
+                founder_template=founder_template,
+                neural_artifact=anchored_neural_artifact,
+                trajectory_output_dir=args.trajectory_output_dir,
+                trajectory_prefix="fixture_anchored_neural",
+            )
+            report["anchored_neural_fixture_gate"] = mind_v3_fixture_gate_status(
+                fixture_suite=report["anchored_neural_fixture_suite"],
+                fixture_config=fixture_config,
+            )
+            report["primary_vs_anchored_neural_fixture_delta"] = (
+                _fixture_gate_comparison_delta(
+                    linear_gate=report["anchored_neural_fixture_gate"],
                     neural_gate=report["fixture_gate"],
                 )
             )

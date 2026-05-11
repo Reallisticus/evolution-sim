@@ -1309,6 +1309,44 @@ Eighth implementation milestone:
   unless it is part of that stronger learner path and has a predeclared
   carrion-fixture pass/fail threshold.
 
+Ninth implementation milestone:
+
+- v31 adds an opt-in direct deterministic artifact mode:
+  `deterministic_horizon_fixture_policy_v2`, trained by
+  `sim:mind:v3:train-neural --artifact-mode horizon-fixture`. The artifact
+  still uses ecological policy inputs only, immutable pure-Python JSON weights,
+  horizon labels, fixture labels, and the same source-balanced v29 trajectory
+  multipliers. It bypasses the linear-margin anchor at runtime and records
+  `frozen_horizon_fixture_policy_artifact` diagnostics. The default runtime
+  remains `linear_controller_margin_guarded_neural_residual_v2`.
+- `sim:mind:v3:evaluate` can now include `--anchored-neural-artifact` so one
+  report compares the current linear v3 controller, the existing anchored
+  neural path, and a primary experimental artifact on the same seeds, founder
+  template, and controlled fixture matrix.
+- The comparable v31 artifact is
+  `output/mind/mind-v3-v31-horizon-fixture-policy-artifact.json`, trained from
+  the same six source-balanced v29 trajectories with hidden width `64`. The
+  comparable reports are
+  `output/mind/mind-v3-v31-horizon-fixture-policy-80.json` and
+  `output/mind/mind-v3-v31-horizon-fixture-policy-120.json`, both using
+  founder template `output/mind/mind-v3-visible-nav-v26-top8-80-120-search.json`.
+- v31 is not accepted. At `80`, the direct policy produced `1.5` alive /
+  `0.0` births with dominant action share `0.5155`, versus linear `20.5` /
+  `9.0` and anchored neural `21.0` / `10.5`. Carrion-only had nonzero terminal
+  alive (`0.5`) and higher births (`5.5`), but still had five blockers. At
+  `120`, the direct policy collapsed to `0.0` alive / `0.0` births with
+  dominant action share `0.5136`, versus linear `23.0` / `17.5` and anchored
+  neural `20.5` / `18.0`. Carrion-only remained `0.0` alive with five blockers,
+  although births stayed at `5.5`. Heuristic runtime actions stayed zero.
+
+This closes the bounded pure-Python direct-artifact slice. It proves that
+stronger action-value capacity can touch carrion behavior, but the current
+horizon-fixture artifact cannot preserve broad ecology. Do not tune this v31
+artifact with another local score-weight loop. The next track should be
+torch/IQL or vectorized rollout training, where the learner can optimize
+temporal value and action support with stronger function approximation and a
+proper held-out broad-plus-fixture gate.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains

@@ -84,7 +84,10 @@ from evolution_sim.mind.policy_inputs import (
     ecological_policy_values_from_decoded,
 )
 from evolution_sim.mind.v3_neural import (
+    MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+    MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
     MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
     MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_BIAS_POLICY,
     MIND_V3_NEURAL_INPUT_POLICY,
     load_mind_v3_neural_artifact,
@@ -331,6 +334,15 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertFalse(
             contract["frozen_neural_artifact"]["weights_mutable_during_run"]
+        )
+        self.assertEqual(
+            contract["experimental_direct_policy_artifact"]["model_type"],
+            MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+        )
+        self.assertFalse(
+            contract["experimental_direct_policy_artifact"][
+                "linear_anchor_required"
+            ]
         )
         json.dumps(contract)
 
@@ -893,6 +905,31 @@ class MindV1Tests(unittest.TestCase):
             artifact["action_output_bias"]["eat"],
         )
 
+    def test_mind_v3_horizon_fixture_artifact_trains_direct_policy_values(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+                artifact_mode=MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
+            )
+
+        self.assertEqual(artifact["model_type"], MIND_V3_HORIZON_FIXTURE_MODEL_TYPE)
+        self.assertEqual(
+            artifact["action_value_summary"]["policy"],
+            MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
+        )
+        self.assertEqual(set(artifact["action_value_bias"]), set(ACTION_NAMES))
+        self.assertEqual(set(artifact["action_value_weights"]), set(ACTION_NAMES))
+
     def test_mind_v3_neural_fixture_context_bias_uses_visible_targets(
         self,
     ) -> None:
@@ -1145,6 +1182,63 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertIsNone(update)
 
+    def test_mind_v3_policy_can_use_direct_horizon_fixture_artifact(
+        self,
+    ) -> None:
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+                artifact_mode=MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
+            )
+            artifact["action_value_weights"] = {
+                action: [0.0] * int(artifact["hidden_units"])
+                for action in ACTION_NAMES
+            }
+            artifact["action_value_bias"] = {
+                action: (2.0 if action == "move_east" else 0.0)
+                for action in ACTION_NAMES
+            }
+            artifact["fixture_action_bias_delta"] = {
+                action: 0.0 for action in ACTION_NAMES
+            }
+            first_record = dataset.records[0]
+            policy = MindV3EvolutionPolicy(seed=7, neural_artifact=artifact)
+
+            decision = policy.decide(
+                {
+                    "metadata": {"agent_id": 3},
+                    "self": {"trophic_role": "herbivore", "meat_mode": "none"},
+                    "observation_input": first_record["observation_input"],
+                },
+                {
+                    action: action in {"stay", "move_east"}
+                    for action in ACTION_NAMES
+                },
+            )
+            update = policy.observe_transition(dict(first_record))
+
+        self.assertEqual(decision.requested_action, "move_east")
+        self.assertEqual(
+            decision.diagnostics["controller_backend"],
+            "frozen_horizon_fixture_policy_artifact",
+        )
+        self.assertEqual(
+            decision.diagnostics["neural_model_type"],
+            MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+        )
+        self.assertTrue(decision.diagnostics["horizon_fixture_anchor_bypassed"])
+        self.assertNotIn("neural_linear_anchor_policy", decision.diagnostics)
+        self.assertIsNone(update)
+
     def test_mind_v3_neural_linear_anchor_can_counter_collapsed_logits(
         self,
     ) -> None:
@@ -1310,6 +1404,8 @@ class MindV1Tests(unittest.TestCase):
                     "2",
                     "--neural-artifact",
                     str(artifact_path),
+                    "--anchored-neural-artifact",
+                    str(artifact_path),
                     "--compare-linear-baseline",
                     "--output",
                     str(report_path),
@@ -1329,7 +1425,9 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertTrue(report["policy"]["linear_baseline_compared"])
         self.assertIn("mind_v3_linear", report["comparison"])
+        self.assertIn("mind_v3_anchored_neural", report["comparison"])
         self.assertIn("neural_vs_linear_delta", report["comparison"])
+        self.assertIn("primary_vs_anchored_neural_delta", report["comparison"])
         anchor_diagnostics = report["comparison"]["mind_v3"]["aggregate"][
             "neural_anchor_diagnostics"
         ]

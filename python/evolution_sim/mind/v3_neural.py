@@ -33,10 +33,19 @@ from evolution_sim.mind.policy_inputs import (
 from evolution_sim.mind.provenance import stable_payload_digest
 
 MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION = "mind_v3_neural_policy_artifact_v1"
+MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED = "anchored-neural"
+MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE = "horizon-fixture"
 MIND_V3_NEURAL_MODEL_TYPE = "deterministic_ecological_mlp_policy_v1"
+MIND_V3_HORIZON_FIXTURE_MODEL_TYPE = "deterministic_horizon_fixture_policy_v2"
 MIND_V3_NEURAL_TRAINER = "horizon_fixture_weighted_ecological_mlp_v1"
+MIND_V3_HORIZON_FIXTURE_TRAINER = (
+    "horizon_fixture_action_value_projection_v1"
+)
 MIND_V3_NEURAL_BACKEND = "pure_python_deterministic_v1"
 MIND_V3_NEURAL_ARCHITECTURE = "fixed_projection_mlp_action_horizon_heads_v1"
+MIND_V3_HORIZON_FIXTURE_ARCHITECTURE = (
+    "fixed_projection_action_value_horizon_fixture_heads_v1"
+)
 MIND_V3_NEURAL_INPUT_POLICY = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
 MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS = 32
 MIND_V3_NEURAL_DEFAULT_SEED = 43
@@ -50,6 +59,13 @@ MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE = 0.18
 MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY = "horizon_survival_reproduction_viability_v1"
 MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT = 0.18
 MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE = 2.0
+MIND_V3_HORIZON_FIXTURE_SCORE_POLICY = (
+    "action_conditioned_horizon_fixture_value_v1"
+)
+MIND_V3_HORIZON_FIXTURE_ACTION_PRIOR_LOG_WEIGHT = 0.05
+MIND_V3_HORIZON_FIXTURE_VALUE_WEIGHT_SCALE = 1.65
+MIND_V3_HORIZON_FIXTURE_BIAS_SCALE = 0.75
+MIND_V3_HORIZON_FIXTURE_BEHAVIOR_SUPPORT_WEIGHT = 0.35
 _ECOLOGICAL_SELF_FIELDS = tuple(
     field
     for field in SELF_INPUT_FIELDS
@@ -73,6 +89,7 @@ def train_mind_v3_neural_artifact(
     hidden_units: int = MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS,
     seed: int = MIND_V3_NEURAL_DEFAULT_SEED,
     trajectory_weight_multipliers: Sequence[float] | None = None,
+    artifact_mode: str = MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
 ) -> dict[str, object]:
     if not datasets:
         raise MindV3NeuralArtifactError("at least one trajectory dataset is required")
@@ -81,6 +98,7 @@ def train_mind_v3_neural_artifact(
     _validate_horizon_label_report(horizon_label_report)
     if fixture_label_report is not None:
         _validate_fixture_label_report(fixture_label_report)
+    mode_config = _artifact_mode_config(artifact_mode)
 
     contextual_records = tuple(records_with_trajectory_context(datasets))
     trajectory_weights = _trajectory_weight_multipliers(
@@ -116,12 +134,23 @@ def train_mind_v3_neural_artifact(
         for sample in samples
     ]
     global_mean = _weighted_mean_hidden(hidden_samples)
+    global_utility = _weighted_mean_sample_utility(hidden_samples)
     action_output_weights = _action_output_weights(
         hidden_samples,
         global_mean=global_mean,
         hidden_units=hidden_units,
     )
     action_output_bias = _action_output_bias(hidden_samples)
+    action_value_weights = _action_value_weights(
+        hidden_samples,
+        global_mean=global_mean,
+        global_utility=global_utility,
+        hidden_units=hidden_units,
+    )
+    action_value_bias = _action_value_bias(
+        hidden_samples,
+        global_utility=global_utility,
+    )
     fixture_bias_delta = _fixture_action_bias_delta(fixture_label_report)
     fixture_context_bias = _fixture_context_bias(fixture_label_report)
     horizon_ticks = _horizon_ticks(horizon_label_report)
@@ -134,12 +163,17 @@ def train_mind_v3_neural_artifact(
     input_contract = ecological_policy_input_contract()
     training_contract = {
         "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
-        "model_type": MIND_V3_NEURAL_MODEL_TYPE,
-        "trainer": MIND_V3_NEURAL_TRAINER,
+        "artifact_mode": mode_config["artifact_mode"],
+        "model_type": mode_config["model_type"],
+        "trainer": mode_config["trainer"],
         "backend": MIND_V3_NEURAL_BACKEND,
-        "architecture": MIND_V3_NEURAL_ARCHITECTURE,
+        "architecture": mode_config["architecture"],
         "input_policy": MIND_V3_NEURAL_INPUT_POLICY,
         "sample_weight_policy": MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY,
+        "horizon_fixture_score_policy": MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
+        "horizon_fixture_behavior_support_weight": (
+            MIND_V3_HORIZON_FIXTURE_BEHAVIOR_SUPPORT_WEIGHT
+        ),
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
         "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
         "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
@@ -150,13 +184,18 @@ def train_mind_v3_neural_artifact(
     }
     artifact = {
         "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
-        "model_type": MIND_V3_NEURAL_MODEL_TYPE,
-        "trainer": MIND_V3_NEURAL_TRAINER,
+        "artifact_mode": mode_config["artifact_mode"],
+        "model_type": mode_config["model_type"],
+        "trainer": mode_config["trainer"],
         "backend": MIND_V3_NEURAL_BACKEND,
-        "architecture": MIND_V3_NEURAL_ARCHITECTURE,
+        "architecture": mode_config["architecture"],
         "input_policy": MIND_V3_NEURAL_INPUT_POLICY,
         "input_contract": input_contract,
         "sample_weight_policy": MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY,
+        "horizon_fixture_score_policy": MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
+        "horizon_fixture_behavior_support_weight": (
+            MIND_V3_HORIZON_FIXTURE_BEHAVIOR_SUPPORT_WEIGHT
+        ),
         "fixture_bias_policy": MIND_V3_NEURAL_FIXTURE_BIAS_POLICY,
         "action_prior_log_weight": MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT,
         "prototype_weight_scale": MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE,
@@ -210,6 +249,12 @@ def train_mind_v3_neural_artifact(
         "hidden_bias": hidden_bias,
         "action_output_weights": action_output_weights,
         "action_output_bias": action_output_bias,
+        "action_value_weights": action_value_weights,
+        "action_value_bias": action_value_bias,
+        "action_value_summary": _action_value_summary(
+            hidden_samples,
+            global_utility=global_utility,
+        ),
         "fixture_action_bias_delta": fixture_bias_delta,
         "fixture_context_bias": fixture_context_bias,
         "survival_heads": survival_heads,
@@ -232,6 +277,13 @@ def score_mind_v3_neural_artifact(
         compiled["hidden_weights"],  # type: ignore[arg-type]
         compiled["hidden_bias"],  # type: ignore[arg-type]
     )
+    if compiled["model_type"] == MIND_V3_HORIZON_FIXTURE_MODEL_TYPE:
+        return _score_horizon_fixture_artifact(
+            compiled=compiled,
+            values=values,
+            hidden=hidden,
+            action_mask=action_mask,
+        )
     weights = compiled["action_output_weights"]
     bias = compiled["action_output_bias"]
     fixture_delta = compiled["fixture_action_bias_delta"]
@@ -250,6 +302,10 @@ def score_mind_v3_neural_artifact(
             + _dot(weights[action], hidden)
         )
     return scores
+
+
+def is_horizon_fixture_neural_artifact(artifact: Mapping[str, object]) -> bool:
+    return artifact.get("model_type") == MIND_V3_HORIZON_FIXTURE_MODEL_TYPE
 
 
 def mind_v3_neural_head_predictions(
@@ -310,7 +366,11 @@ def write_mind_v3_neural_artifact(
 def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
     if artifact.get("schema_version") != MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION:
         raise MindV3NeuralArtifactError("Mind v3 neural artifact has stale schema")
-    if artifact.get("model_type") != MIND_V3_NEURAL_MODEL_TYPE:
+    model_type = artifact.get("model_type")
+    if model_type not in {
+        MIND_V3_NEURAL_MODEL_TYPE,
+        MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+    }:
         raise MindV3NeuralArtifactError("Mind v3 neural artifact has wrong model_type")
     if artifact.get("input_policy") != MIND_V3_NEURAL_INPUT_POLICY:
         raise MindV3NeuralArtifactError("Mind v3 neural artifact has wrong input_policy")
@@ -341,6 +401,21 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
         field="action_output_weights",
     )
     _action_vector(artifact.get("action_output_bias"), field="action_output_bias")
+    if model_type == MIND_V3_HORIZON_FIXTURE_MODEL_TYPE:
+        _action_matrix(
+            artifact.get("action_value_weights"),
+            length=hidden_units,
+            field="action_value_weights",
+        )
+        _action_vector(artifact.get("action_value_bias"), field="action_value_bias")
+    elif "action_value_weights" in artifact:
+        _action_matrix(
+            artifact.get("action_value_weights"),
+            length=hidden_units,
+            field="action_value_weights",
+        )
+    if "action_value_bias" in artifact:
+        _action_vector(artifact.get("action_value_bias"), field="action_value_bias")
     _action_vector(
         artifact.get("fixture_action_bias_delta"),
         field="fixture_action_bias_delta",
@@ -357,6 +432,25 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
         hidden_units=hidden_units,
         field="reproduction_heads",
     )
+
+
+def _artifact_mode_config(artifact_mode: str) -> dict[str, str]:
+    mode = str(artifact_mode).strip()
+    if mode == MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED:
+        return {
+            "artifact_mode": MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
+            "model_type": MIND_V3_NEURAL_MODEL_TYPE,
+            "trainer": MIND_V3_NEURAL_TRAINER,
+            "architecture": MIND_V3_NEURAL_ARCHITECTURE,
+        }
+    if mode == MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE:
+        return {
+            "artifact_mode": MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
+            "model_type": MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
+            "trainer": MIND_V3_HORIZON_FIXTURE_TRAINER,
+            "architecture": MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
+        }
+    raise MindV3NeuralArtifactError(f"unsupported Mind v3 artifact mode: {mode}")
 
 
 def _validate_horizon_label_report(report: Mapping[str, object]) -> None:
@@ -410,6 +504,7 @@ def _training_samples(
         if not horizons:
             continue
         horizon_weight = _sample_weight(horizons)
+        horizon_utility = _horizon_fixture_utility(horizons)
         trajectory_weight = (
             float(source_weight_by_index.get(source_index, 1.0))
             if source_weight_by_index is not None
@@ -422,6 +517,7 @@ def _training_samples(
                 "action": action,
                 "weight": _round(horizon_weight * trajectory_weight),
                 "horizon_weight": horizon_weight,
+                "horizon_utility": horizon_utility,
                 "trajectory_weight": trajectory_weight,
                 "horizons": horizons,
             }
@@ -521,6 +617,42 @@ def _sample_weight(horizons: Mapping[str, Mapping[str, object]]) -> float:
     return _round(max(0.05, sum(components) / float(len(components))))
 
 
+def _horizon_fixture_utility(
+    horizons: Mapping[str, Mapping[str, object]],
+) -> float:
+    utilities = []
+    for payload in horizons.values():
+        survived = 1.0 if payload.get("survived") is True else -1.0
+        reproduced = 1.0 if payload.get("reproduced") is True else 0.0
+        viability = payload.get("viability")
+        viability_payload = viability if isinstance(viability, Mapping) else {}
+        balanced = _optional_float(viability_payload.get("balanced_core_min"))
+        matched = viability_payload.get("matched_diet")
+        matched_score = 0.0
+        if matched is True:
+            matched_score = 1.0
+        elif matched is False:
+            matched_score = -1.0
+        animal = payload.get("animal_resource")
+        animal_payload = animal if isinstance(animal, Mapping) else {}
+        consumed_animal = animal_payload.get("animal_resource_consumed") is True
+        survived_after_contact = animal_payload.get("survived_after_first_contact")
+        animal_score = 0.0
+        if consumed_animal:
+            animal_score += 0.65
+            animal_score += 0.55 if survived_after_contact is True else -0.35
+        utilities.append(
+            0.90 * survived
+            + 1.20 * reproduced
+            + 0.75 * (balanced if balanced is not None else 0.0)
+            + 0.30 * matched_score
+            + animal_score
+        )
+    if not utilities:
+        return 0.0
+    return _round(sum(utilities) / float(len(utilities)))
+
+
 def _deterministic_hidden_weights(*, hidden_units: int, seed: int) -> list[list[float]]:
     return [
         [
@@ -579,6 +711,39 @@ def _weighted_mean_hidden(samples: Sequence[Mapping[str, object]]) -> list[float
     return [_round(value / weight_total) for value in total]
 
 
+def _weighted_mean_hidden_with_weights(
+    samples: Sequence[Mapping[str, object]],
+    weights: Sequence[float],
+    *,
+    hidden_units: int,
+) -> list[float]:
+    total = [0.0] * hidden_units
+    weight_total = 0.0
+    for sample, sample_weight in zip(samples, weights, strict=True):
+        weight = max(0.0, float(sample_weight))
+        if weight <= 0.0:
+            continue
+        hidden = sample["hidden"]
+        for index, value in enumerate(hidden):  # type: ignore[assignment]
+            total[index] += weight * float(value)
+        weight_total += weight
+    if weight_total <= 0.0:
+        return [0.0] * hidden_units
+    return [_round(value / weight_total) for value in total]
+
+
+def _weighted_mean_sample_utility(samples: Sequence[Mapping[str, object]]) -> float:
+    total = 0.0
+    weight_total = 0.0
+    for sample in samples:
+        weight = float(sample["weight"])
+        total += weight * float(sample.get("horizon_utility", 0.0))
+        weight_total += weight
+    if weight_total <= 0.0:
+        return 0.0
+    return _round(total / weight_total)
+
+
 def _action_output_weights(
     samples: Sequence[Mapping[str, object]],
     *,
@@ -617,6 +782,87 @@ def _action_output_bias(samples: Sequence[Mapping[str, object]]) -> dict[str, fl
         )
         for action in ACTION_NAMES
     }
+
+
+def _action_value_weights(
+    samples: Sequence[Mapping[str, object]],
+    *,
+    global_mean: Sequence[float],
+    global_utility: float,
+    hidden_units: int,
+) -> dict[str, list[float]]:
+    weights: dict[str, list[float]] = {}
+    for action in ACTION_NAMES:
+        action_samples = [sample for sample in samples if sample["action"] == action]
+        if not action_samples:
+            weights[action] = [0.0] * hidden_units
+            continue
+        positive_weights = [
+            float(sample["weight"])
+            * max(0.0, float(sample.get("horizon_utility", 0.0)) - global_utility)
+            for sample in action_samples
+        ]
+        negative_weights = [
+            float(sample["weight"])
+            * max(0.0, global_utility - float(sample.get("horizon_utility", 0.0)))
+            for sample in action_samples
+        ]
+        if sum(positive_weights) <= 0.0:
+            positive_weights = [float(sample["weight"]) for sample in action_samples]
+        if sum(negative_weights) <= 0.0:
+            negative_weights = [float(sample["weight"]) for sample in action_samples]
+        positive_mean = _weighted_mean_hidden_with_weights(
+            action_samples,
+            positive_weights,
+            hidden_units=hidden_units,
+        )
+        negative_mean = _weighted_mean_hidden_with_weights(
+            action_samples,
+            negative_weights,
+            hidden_units=hidden_units,
+        )
+        action_mean = _weighted_mean_hidden(action_samples)
+        weights[action] = [
+            _round(
+                MIND_V3_HORIZON_FIXTURE_VALUE_WEIGHT_SCALE
+                * (positive_mean[index] - negative_mean[index])
+                + 0.20 * (action_mean[index] - global_mean[index])
+            )
+            for index in range(hidden_units)
+        ]
+    return weights
+
+
+def _action_value_bias(
+    samples: Sequence[Mapping[str, object]],
+    *,
+    global_utility: float,
+) -> dict[str, float]:
+    totals = Counter()
+    utility_totals = Counter()
+    total = 0.0
+    for sample in samples:
+        weight = float(sample["weight"])
+        action = str(sample["action"])
+        totals[action] += weight
+        utility_totals[action] += weight * float(sample.get("horizon_utility", 0.0))
+        total += weight
+    denominator = total + 0.1 * len(ACTION_NAMES)
+    biases: dict[str, float] = {}
+    for action in ACTION_NAMES:
+        action_weight = float(totals.get(action, 0.0))
+        action_utility = (
+            float(utility_totals.get(action, 0.0)) / action_weight
+            if action_weight > 0.0
+            else global_utility - 0.75
+        )
+        prior = math.log((action_weight + 0.1) / denominator)
+        biases[action] = _round(
+            MIND_V3_HORIZON_FIXTURE_BIAS_SCALE
+            * (action_utility - global_utility)
+            + MIND_V3_HORIZON_FIXTURE_ACTION_PRIOR_LOG_WEIGHT * prior
+        )
+    return biases
 
 
 def _horizon_heads(
@@ -796,6 +1042,61 @@ def _fixture_context_action_bias(
     return {action: _round(value) for action, value in deltas.items()}
 
 
+def _score_horizon_fixture_artifact(
+    *,
+    compiled: Mapping[str, object],
+    values: Sequence[float],
+    hidden: Sequence[float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    value_weights = compiled["action_value_weights"]
+    value_bias = compiled["action_value_bias"]
+    support_weights = compiled["action_output_weights"]
+    support_bias = compiled["action_output_bias"]
+    fixture_delta = compiled["fixture_action_bias_delta"]
+    fixture_context_delta = _fixture_context_action_bias(
+        compiled["fixture_context_bias"],  # type: ignore[arg-type]
+        values,
+    )
+    value_scores: dict[str, float] = {}
+    support_scores: dict[str, float] = {}
+    for action in ACTION_NAMES:
+        if not bool(action_mask.get(action, False)):
+            continue
+        value_scores[action] = _round(
+            float(value_bias[action]) + _dot(value_weights[action], hidden)
+        )
+        support_scores[action] = _round(
+            float(support_bias[action]) + _dot(support_weights[action], hidden)
+        )
+    value_normalized = _centered_legal_scores(value_scores)
+    support_normalized = _centered_legal_scores(support_scores)
+    return {
+        action: _round(
+            value_normalized[action]
+            + MIND_V3_HORIZON_FIXTURE_BEHAVIOR_SUPPORT_WEIGHT
+            * support_normalized[action]
+            + float(fixture_delta[action])
+            + float(fixture_context_delta[action])
+        )
+        for action in value_scores
+    }
+
+
+def _centered_legal_scores(scores: Mapping[str, float]) -> dict[str, float]:
+    if not scores:
+        return {}
+    mean = sum(float(value) for value in scores.values()) / float(len(scores))
+    centered = {
+        action: _finite_value(float(value) - mean)
+        for action, value in scores.items()
+    }
+    scale = max((abs(value) for value in centered.values()), default=0.0)
+    if scale <= 1e-9:
+        return {action: 0.0 for action in scores}
+    return {action: _round(value / scale) for action, value in centered.items()}
+
+
 def _move_alignment(action: str, dx: float, dy: float) -> float:
     if action == "move_east":
         return _positive_value(dx)
@@ -944,6 +1245,40 @@ def _training_summary(samples: Sequence[Mapping[str, object]]) -> dict[str, obje
     }
 
 
+def _action_value_summary(
+    samples: Sequence[Mapping[str, object]],
+    *,
+    global_utility: float,
+) -> dict[str, object]:
+    utilities = [float(sample.get("horizon_utility", 0.0)) for sample in samples]
+    action_utility_totals = Counter()
+    action_weight_totals = Counter()
+    for sample in samples:
+        action = str(sample["action"])
+        weight = float(sample["weight"])
+        action_utility_totals[action] += weight * float(
+            sample.get("horizon_utility", 0.0)
+        )
+        action_weight_totals[action] += weight
+    return {
+        "policy": MIND_V3_HORIZON_FIXTURE_SCORE_POLICY,
+        "global_utility_mean": _round(global_utility),
+        "utility_min": _round(min(utilities) if utilities else 0.0),
+        "utility_max": _round(max(utilities) if utilities else 0.0),
+        "utility_mean": _round(
+            sum(utilities) / float(len(utilities)) if utilities else 0.0
+        ),
+        "action_utility_mean": {
+            action: _round(
+                float(action_utility_totals.get(action, 0.0))
+                / float(action_weight_totals[action])
+            )
+            for action in sorted(action_weight_totals)
+            if float(action_weight_totals[action]) > 0.0
+        },
+    }
+
+
 def _horizon_ticks(report: Mapping[str, object]) -> list[int]:
     contract = report.get("label_contract")
     ticks = contract.get("horizon_ticks") if isinstance(contract, Mapping) else None
@@ -959,7 +1294,10 @@ def _horizon_ticks(report: Mapping[str, object]) -> list[int]:
 def _compiled_artifact(artifact: Mapping[str, object]) -> dict[str, object]:
     validate_mind_v3_neural_artifact(artifact)
     hidden_units = int(artifact["hidden_units"])
+    action_value_weights = artifact.get("action_value_weights")
+    action_value_bias = artifact.get("action_value_bias")
     return {
+        "model_type": str(artifact.get("model_type")),
         "hidden_weights": _matrix(
             artifact.get("hidden_weights"),
             rows=hidden_units,
@@ -979,6 +1317,20 @@ def _compiled_artifact(artifact: Mapping[str, object]) -> dict[str, object]:
         "action_output_bias": _action_vector(
             artifact.get("action_output_bias"),
             field="action_output_bias",
+        ),
+        "action_value_weights": (
+            _action_matrix(
+                action_value_weights,
+                length=hidden_units,
+                field="action_value_weights",
+            )
+            if isinstance(action_value_weights, Mapping)
+            else {action: [0.0] * hidden_units for action in ACTION_NAMES}
+        ),
+        "action_value_bias": (
+            _action_vector(action_value_bias, field="action_value_bias")
+            if isinstance(action_value_bias, Mapping)
+            else {action: 0.0 for action in ACTION_NAMES}
         ),
         "fixture_action_bias_delta": _action_vector(
             artifact.get("fixture_action_bias_delta"),

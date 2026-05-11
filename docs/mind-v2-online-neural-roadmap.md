@@ -908,7 +908,21 @@ criteria before it can replace more heuristic behavior:
     stronger deterministic autonomous policy artifact trained on horizon and
     fixture labels, or torch/IQL/vectorized rollout training if that bounded
     artifact path does not move carrion.
-41. Add quality-diversity viewer diagnostics once policy lineages
+41. The bounded stronger deterministic artifact path was tested as v31 and is
+    not accepted. `sim:mind:v3:train-neural --artifact-mode horizon-fixture`
+    writes `deterministic_horizon_fixture_policy_v2`, a direct immutable JSON
+    artifact using ecological policy inputs, action-conditioned horizon utility,
+    fixture labels, and behavior-support regularization without the linear
+    margin anchor. `sim:mind:v3:evaluate --anchored-neural-artifact` now
+    compares linear v3, anchored neural, and the primary artifact in one report.
+    On the comparable founder-template matrix, v31 produced `1.5` alive /
+    `0.0` births at `80` and `0.0` / `0.0` at `120`, while carrion-only showed
+    only a partial short-horizon signal (`0.5` alive and `5.5` births at `80`)
+    and returned to `0.0` alive with five blockers at `120`. This is enough to
+    stop the pure-Python direct-artifact loop: the next learner work should be
+    torch/IQL or vectorized rollout training, not another local score-weight
+    pass.
+42. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References
