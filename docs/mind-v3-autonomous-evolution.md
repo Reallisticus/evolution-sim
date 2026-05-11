@@ -1093,7 +1093,8 @@ Second implementation milestone:
 - `MindV3EvolutionPolicy` now accepts this artifact as an opt-in frozen backend.
   The linear inherited controller remains the default and the baseline. Neural
   artifacts do not mutate weights inside simulation ticks; they can be used via
-  `sim:mind:v3:evaluate -- --neural-artifact ...`,
+  `sim:mind:v3:evaluate -- --neural-artifact ...` and can be compared against
+  the current linear controller with `--compare-linear-baseline`,
   `sim:run -- --mind-v3-autonomous-evolution --mind-v3-neural-artifact ...`,
   and `sim:trajectory -- --mind-v3-autonomous-evolution
   --mind-v3-neural-artifact ...`.

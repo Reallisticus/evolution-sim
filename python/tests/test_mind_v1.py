@@ -1027,6 +1027,7 @@ class MindV1Tests(unittest.TestCase):
                     "2",
                     "--neural-artifact",
                     str(artifact_path),
+                    "--compare-linear-baseline",
                     "--output",
                     str(report_path),
                 ],
@@ -1043,6 +1044,9 @@ class MindV1Tests(unittest.TestCase):
             report["policy"]["neural_input_policy"],
             MIND_V3_NEURAL_INPUT_POLICY,
         )
+        self.assertTrue(report["policy"]["linear_baseline_compared"])
+        self.assertIn("mind_v3_linear", report["comparison"])
+        self.assertIn("neural_vs_linear_delta", report["comparison"])
 
     def test_mind_v3_child_metadata_mutates_from_parent(self) -> None:
         from random import Random

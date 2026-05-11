@@ -84,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--compare-linear-baseline",
+        action="store_true",
+        help=(
+            "When --neural-artifact is set, also evaluate the current linear "
+            "Mind v3 controller on the same seeds/ticks and report "
+            "neural-minus-linear deltas."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("output/mind/mind-v3-autonomous-evolution-report.json"),
@@ -176,9 +185,26 @@ def main() -> None:
         if args.neural_artifact is not None
         else None
     )
+    if args.compare_linear_baseline and neural_artifact is None:
+        raise SystemExit("--compare-linear-baseline requires --neural-artifact")
     heuristic_runs = [
         _run_once(seed=seed, ticks=args.ticks, policy=None) for seed in seeds
     ]
+    linear_runs = (
+        [
+            _run_once(
+                seed=seed,
+                ticks=args.ticks,
+                policy=_mind_v3_policy(
+                    seed=seed,
+                    founder_template=founder_template,
+                ),
+            )
+            for seed in seeds
+        ]
+        if args.compare_linear_baseline
+        else None
+    )
     mind_v3_runs = [
         _run_once(
             seed=seed,
@@ -226,6 +252,7 @@ def main() -> None:
                 if isinstance(neural_artifact, dict)
                 else None
             ),
+            "linear_baseline_compared": bool(args.compare_linear_baseline),
         },
         "comparison": {
             "heuristic": {
@@ -238,10 +265,20 @@ def main() -> None:
             },
         },
     }
+    if linear_runs is not None:
+        report["comparison"]["mind_v3_linear"] = {
+            "runs": linear_runs,
+            "aggregate": _aggregate_runs(linear_runs),
+        }
     report["comparison"]["delta"] = _comparison_delta(
         heuristic=report["comparison"]["heuristic"]["aggregate"],
         mind_v3=report["comparison"]["mind_v3"]["aggregate"],
     )
+    if linear_runs is not None:
+        report["comparison"]["neural_vs_linear_delta"] = _comparison_delta(
+            heuristic=report["comparison"]["mind_v3_linear"]["aggregate"],
+            mind_v3=report["comparison"]["mind_v3"]["aggregate"],
+        )
     if args.fixture_suite != "none":
         fixture_seeds = (
             _parse_seeds(args.fixture_seeds)
@@ -277,6 +314,23 @@ def main() -> None:
             fixture_suite=report["fixture_suite"],
             fixture_config=fixture_config,
         )
+        if args.compare_linear_baseline:
+            report["linear_baseline_fixture_suite"] = run_mind_v3_fixture_suite(
+                suite=args.fixture_suite,
+                seeds=fixture_seeds,
+                ticks=fixture_ticks,
+                founder_template=founder_template,
+            )
+            report["linear_baseline_fixture_gate"] = mind_v3_fixture_gate_status(
+                fixture_suite=report["linear_baseline_fixture_suite"],
+                fixture_config=fixture_config,
+            )
+            report["neural_vs_linear_fixture_delta"] = (
+                _fixture_gate_comparison_delta(
+                    linear_gate=report["linear_baseline_fixture_gate"],
+                    neural_gate=report["fixture_gate"],
+                )
+            )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -302,6 +356,10 @@ def main() -> None:
         )
     if "fixture_gate" in report:
         print(f"mind_v3_fixture_gate_passed={report['fixture_gate']['passed']}")
+    if "comparison" in report and "neural_vs_linear_delta" in report["comparison"]:
+        delta = report["comparison"]["neural_vs_linear_delta"]
+        print(f"mind_v3_neural_minus_linear_alive={delta['alive_agents_mean']}")
+        print(f"mind_v3_neural_minus_linear_births={delta['births_mean']}")
 
 
 def _mind_v3_policy(
@@ -587,6 +645,28 @@ def mind_v3_fixture_gate_status(
         "passed": not blockers,
         "blockers": blockers,
         "per_fixture": dict(sorted(per_fixture.items())),
+    }
+
+
+def _fixture_gate_comparison_delta(
+    *,
+    linear_gate: Mapping[str, object],
+    neural_gate: Mapping[str, object],
+) -> dict[str, object]:
+    linear_blockers = linear_gate.get("blockers")
+    neural_blockers = neural_gate.get("blockers")
+    linear_blocker_count = (
+        len(linear_blockers) if isinstance(linear_blockers, list) else 0
+    )
+    neural_blocker_count = (
+        len(neural_blockers) if isinstance(neural_blockers, list) else 0
+    )
+    return {
+        "linear_passed": bool(linear_gate.get("passed", False)),
+        "neural_passed": bool(neural_gate.get("passed", False)),
+        "blocker_count_delta": int(neural_blocker_count - linear_blocker_count),
+        "linear_blocker_count": int(linear_blocker_count),
+        "neural_blocker_count": int(neural_blocker_count),
     }
 
 

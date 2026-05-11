@@ -227,6 +227,7 @@ npm run sim:mind:v3:evaluate -- \
   --seeds 5,13 \
   --ticks 80 \
   --neural-artifact output/mind/mind-v3-neural-artifact.json \
+  --compare-linear-baseline \
   --output output/mind/mind-v3-neural-80-eval.json
 ```
 
