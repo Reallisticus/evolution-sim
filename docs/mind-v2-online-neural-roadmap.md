@@ -922,7 +922,21 @@ criteria before it can replace more heuristic behavior:
     stop the pure-Python direct-artifact loop: the next learner work should be
     torch/IQL or vectorized rollout training, not another local score-weight
     pass.
-42. Add quality-diversity viewer diagnostics once policy lineages
+42. The first carrion failure autopsy slice is implemented. New command
+    `sim:mind:v3:carrion-autopsy` reads trajectory JSONL.gz files and reports
+    post-carcass/fresh-kill death paths with concrete sequence excerpts. On
+    fresh v31 carrion-only trajectories, direct v31 had seven post-contact
+    episodes and all died; its dominant path was
+    `low_gain_eat_energy_depletion_after_carrion_contact` (`3/7`), with zero
+    drinks, `337` post-contact eats, only `14` animal-resource events, and
+    total animal-resource gain `2.2928`. Anchored neural and linear both had
+    dominant `movement_energy_depletion_after_carrion_contact` at `7/7` and
+    `10/10`, also with zero drinks. The failure is now concrete: current paths
+    either eat low-gain food until energy death or keep moving after carrion
+    contact until energy death. Next task is a counterfactual rollout labeler
+    from real carrion-fixture states; torch/IQL should consume those labels
+    only after a legal survivable action sequence is demonstrated.
+43. Add quality-diversity viewer diagnostics once policy lineages
     are stable enough to compare.
 
 ## References

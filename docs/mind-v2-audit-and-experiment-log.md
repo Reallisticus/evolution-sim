@@ -1524,6 +1524,27 @@ should make the learner stronger and easier to evaluate.
     pure-Python artifact ceiling for now: the next useful track is torch/IQL or
     vectorized rollout training with the same broad-plus-carrion acceptance
     gate.
+49. The first carrion post-contact autopsy is complete. The new
+    `sim:mind:v3:carrion-autopsy` command builds
+    `mind_v3_carrion_failure_autopsy_v1` reports from trajectory JSONL.gz
+    files without changing simulator, reward, fixture, policy, or trainer
+    behavior. A fresh v31 trajectory export is
+    `output/mind/mind-v3-v31-carrion-autopsy-eval-120.json`, with reports
+    `output/mind/mind-v3-v31-carrion-autopsy-direct-120.json`,
+    `output/mind/mind-v3-v31-carrion-autopsy-anchored-120.json`, and
+    `output/mind/mind-v3-v31-carrion-autopsy-linear-120.json`. Direct v31 had
+    seven post-contact carrion episodes and all died; its dominant terminal
+    path was `low_gain_eat_energy_depletion_after_carrion_contact` (`3/7`),
+    with zero drinks, seven post-contact reproduction events, `337`
+    post-contact eats, and only `2.2928` total animal-resource gain. Anchored
+    neural and linear both died by
+    `movement_energy_depletion_after_carrion_contact` in every post-contact
+    episode (`7/7` and `10/10`), also with zero drinks. This validates the
+    audit direction but changes the task order: first build a counterfactual
+    rollout labeler and prove a legal carrion-water recovery sequence can
+    survive to 120 ticks; only then feed those labels into constrained
+    torch/IQL. If no counterfactual sequence survives, audit fixture/world
+    mechanics before doing learner work.
 
 ### GPU / CUDA Boundary
 

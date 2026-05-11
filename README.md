@@ -199,8 +199,10 @@ Mind v3 is the current no-heuristic autonomous-controller track. Its durable
 ledger and next direction are in `docs/mind-v3-autonomous-evolution.md`. The
 May 11 deep-system audit keeps v3 as the strategic path, but changes the next
 work from scalar reward/search tuning toward horizon labels, fixture blocker
-labels, a policy-input/diagnostic split, and a stronger deterministic v3 policy
-artifact evaluated against the existing linear controller.
+labels, a policy-input/diagnostic split, counterfactual carrion-fixture
+rollouts, and constrained torch/IQL or vectorized rollout training. The bounded
+v31 pure-Python direct artifact was tested and rejected; do not spend another
+slice on residual scale, anchor margin, or trajectory-weight tuning.
 
 Generate the first label reports with:
 
@@ -251,6 +253,13 @@ data or a stronger learner, not another hand-shaped residual bias.
 controlled-fixture runs as trajectory JSONL.gz files. Use this to turn
 carrion-only fixture failures into `mind_horizon_labels_v1` training data
 instead of relying only on aggregate fixture blocker labels.
+
+`sim:mind:v3:carrion-autopsy` builds a deterministic post-carrion-contact
+failure report from those trajectory files. The v31 autopsy shows the direct
+artifact mostly dies through low-gain eat loops after contact, while the
+linear/anchored paths die by post-contact movement energy depletion. The next
+accepted learner slice needs counterfactual carrion-water recovery labels
+before torch/IQL training.
 
 ## Foundation Gate
 

@@ -1347,6 +1347,65 @@ torch/IQL or vectorized rollout training, where the learner can optimize
 temporal value and action support with stronger function approximation and a
 proper held-out broad-plus-fixture gate.
 
+Tenth implementation milestone:
+
+- `sim:mind:v3:carrion-autopsy` now builds a deterministic post-carrion-contact
+  failure report from trajectory JSONL.gz files. It groups each agent timeline
+  after first carcass/fresh-kill consumption, records concrete action/state
+  excerpts, classifies the terminal path, and aggregates death causes,
+  terminal bottlenecks, post-contact action counts, drink counts, low-gain eat
+  loops, movement counts, and post-contact reproduction events. This is a
+  diagnostic surface only; it does not change policy, reward, replay, fixture,
+  or trainer behavior.
+- A fresh v31 carrion-only trajectory export is
+  `output/mind/mind-v3-v31-carrion-autopsy-eval-120.json`, with trajectories
+  under `output/trajectories/mind-v3-v31-carrion-autopsy/`. The direct v31
+  autopsy report is
+  `output/mind/mind-v3-v31-carrion-autopsy-direct-120.json`; anchored neural
+  and linear comparison reports are
+  `output/mind/mind-v3-v31-carrion-autopsy-anchored-120.json` and
+  `output/mind/mind-v3-v31-carrion-autopsy-linear-120.json`.
+- The concrete failure split is sharper than the aggregate fixture blockers.
+  Direct v31 had seven post-contact episodes, all dead within the 120-tick
+  window, zero drinks, seven post-contact reproduction events, and dominant
+  path `low_gain_eat_energy_depletion_after_carrion_contact` (`3/7`). Its
+  post-contact action counts were heavily `eat`-dominated (`337` eats, `10`
+  moves), but animal-resource gain totaled only `2.2928`; the first retained
+  example consumed fresh kill at tick `2`, reproduced, then repeatedly ate
+  low-gain plant food until energy depletion at tick `47`.
+- Anchored neural and linear did not share that exact failure. Anchored neural
+  had seven post-contact episodes, all energy-depletion deaths, zero drinks,
+  and dominant path `movement_energy_depletion_after_carrion_contact` (`7/7`).
+  Linear had ten post-contact episodes with the same dominant path (`10/10`).
+  This means the carrion fixture is exposing at least two failure modes:
+  direct v31 over-selects low-gain eating after contact, while the anchor
+  family continues movement after contact until energy death. Neither policy
+  sequence learns the needed "eat enough, stop spending energy, hydrate, then
+  survive" loop.
+
+Adjusted next tasks after the autopsy:
+
+1. Build a counterfactual rollout labeler from real carrion-fixture states. The
+   labeler should replay bounded action scripts such as eat-until-sated,
+   move-to-water, drink, stay/rest, and mixed carrion-water recovery from the
+   same policy-visible states. Acceptance: prove at least one legal sequence
+   produces 120-tick carrion-only survival, or document that fixture mechanics
+   make survival unreachable.
+2. If a survivable sequence exists, feed those counterfactual labels into the
+   existing torch/IQL path with explicit energy, hydration, health,
+   matched-diet, and terminal-alive constraints. Do not route them through the
+   v31 fixed-projection artifact.
+3. Keep the same hard gate for any learner artifact: broad 120 alive within
+   about `1.0` of linear, broad 120 births not worse than linear, dominant
+   action share `<= 0.50`, zero heuristic runtime actions, and carrion-only
+   blocker count reduced or terminal alive nonzero.
+4. If no bounded counterfactual plan can keep agents alive, stop learner work
+   and audit fixture/world mechanics directly. The blocker would then be the
+   environment/curriculum, not policy capacity.
+5. If counterfactual survival exists but torch/IQL cannot learn it, move to
+   vectorized rollout training or a model-based learner rather than another
+   scalar weighting, residual-scale, or anchor-margin pass.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
