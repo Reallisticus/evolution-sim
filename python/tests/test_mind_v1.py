@@ -5961,7 +5961,7 @@ class MindV1Tests(unittest.TestCase):
         self.assertEqual(report["search"]["fixture_rerank_top_k"], 2)
         self.assertEqual(
             report["search"]["score_policy"],
-            "need_gated_navigation_warm_started_contextual_template_scavenger_lane_qd_v23",
+            "need_gated_navigation_fixture_in_loop_parent_selection_qd_v24",
         )
         self.assertNotIn("warm_start_policy", report["search"])
         self.assertIsNone(report["warm_start"])
