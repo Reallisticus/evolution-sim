@@ -1667,6 +1667,27 @@ v37 branch-and-explore working slice:
   --trajectory-output-dir output/trajectories/mind-v3-v37-branch-explore-smoke
   --output output/mind/mind-v3-v37-branch-explore-smoke.json`.
 
+v38 recovery-archive working slice:
+
+- `sim:mind:v3:carrion-recovery-archive` builds the first quality-diverse
+  recovery archive on top of v37 branch reports. It can consume an existing
+  branch report or generate one, descriptors each branch continuation by
+  branch-tick band, contact energy/hydration bins, resource gain, terminal
+  alive bin, births bin, continuation script, and dominant requested action,
+  then keeps one quality elite per descriptor cell.
+- The archive also exports a balanced JSONL dataset of survivor and failure
+  elites for the future distillation step. This is not a learned policy yet;
+  it is the missing data-support surface: compact labeled recovery examples
+  with source trajectory paths, terminal outcome labels, descriptor metadata,
+  quality scores, and zero-heuristic checks.
+- Working example from the v37 smoke branch report:
+  `npm run sim:mind:v3:carrion-recovery-archive -- --branch-report
+  output/mind/mind-v3-v37-branch-explore-smoke.json --dataset-output
+  output/mind/mind-v3-v38-recovery-archive-dataset.jsonl --output
+  output/mind/mind-v3-v38-recovery-archive-smoke.json`. The smoke result has
+  `5` descriptor cells: `3` survivor cells, `2` failure cells, `5` dataset
+  records, and archive acceptance passed.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
