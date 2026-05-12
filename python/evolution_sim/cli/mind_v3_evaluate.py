@@ -18,6 +18,10 @@ from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.io import JsonlTrajectoryWriter
 from evolution_sim.mind.evolution import load_mind_v3_founder_template
+from evolution_sim.mind.outcome_metrics import (
+    aggregate_run_outcome_metrics,
+    build_run_outcome_metrics,
+)
 from evolution_sim.mind.v3_neural import (
     MIND_V3_NEURAL_MODEL_TYPE,
     load_mind_v3_neural_artifact,
@@ -613,6 +617,10 @@ def _run_world(
         "combat_end": _json_ready(summary.get("combat_end", {})),
         "fresh_kill_end": _json_ready(summary.get("fresh_kill_end", {})),
         "carcass_end": _json_ready(summary.get("carcass_end", {})),
+        "outcome_metrics": build_run_outcome_metrics(
+            summary=summary,
+            trajectory_records=world.trajectory_records,
+        ),
         "reproduction_failure_attribution": (
             _reproduction_failure_attribution(summary)
         ),
@@ -1651,6 +1659,7 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         "reproduction_failure_attribution": reproduction_attribution,
         "temporal_readiness_attribution": temporal_readiness,
         "neural_anchor_diagnostics": neural_anchor_diagnostics,
+        "outcome_metrics": aggregate_run_outcome_metrics(runs),
         "primary_temporal_readiness_blocker": temporal_readiness[
             "primary_temporal_readiness_blocker"
         ],

@@ -18,6 +18,7 @@ from evolution_sim.mind.carrion_counterfactual import (
     DEFAULT_CARRION_COUNTERFACTUAL_TICKS,
     DEFAULT_COUNTERFACTUAL_SCRIPTS,
 )
+from evolution_sim.mind.outcome_metrics import aggregate_run_outcome_metrics
 from evolution_sim.mind.provenance import stable_payload_digest
 
 MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION = (
@@ -343,6 +344,7 @@ def _dataset_record(
                 "heuristic_action_source_count"
             ),
         },
+        "outcome_metrics": elite.get("outcome_metrics"),
     }
     payload["record_id"] = stable_payload_digest(payload)
     return payload
@@ -369,6 +371,11 @@ def _archive_aggregate(
     descriptor_counts = Counter(
         str(cell.get("outcome_class", "unknown")) for cell in cells
     )
+    elite_runs = [
+        dict(cell["elite"])
+        for cell in cells
+        if isinstance(cell.get("elite"), Mapping)
+    ]
     return {
         "source_branch_run_count": len(branch_runs),
         "cell_count": len(cells),
@@ -387,6 +394,8 @@ def _archive_aggregate(
             for record in dataset_records
             if not bool(dict(record.get("label", {})).get("terminal_survivor", False))
         ),
+        "source_outcome_metrics": aggregate_run_outcome_metrics(branch_runs),
+        "outcome_metrics": aggregate_run_outcome_metrics(elite_runs),
         "best_survivor_elite": _best_elite(survivor_cells),
         "best_failure_elite": _best_elite(failure_cells),
     }
@@ -527,6 +536,7 @@ def _elite_payload(run: Mapping[str, object]) -> dict[str, object]:
             run.get("zero_heuristic_runtime_actions", False)
         ),
         "trajectory_path": run.get("trajectory_path"),
+        "outcome_metrics": run.get("outcome_metrics"),
         "quality_score": _quality_score(run),
     }
 

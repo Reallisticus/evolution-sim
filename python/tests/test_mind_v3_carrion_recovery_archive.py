@@ -50,9 +50,14 @@ class MindV3CarrionRecoveryArchiveTests(unittest.TestCase):
         self.assertGreaterEqual(report["aggregate"]["failure_cell_count"], 1)
         self.assertGreaterEqual(report["dataset"]["survivor_count"], 2)
         self.assertGreaterEqual(report["dataset"]["failure_count"], 1)
+        outcome = report["aggregate"]["outcome_metrics"]
+        self.assertEqual(outcome["terminal_survivor_run_count"], 3)
+        self.assertEqual(outcome["total_births"], 36)
+        self.assertIn("total_scavenger_animal_resource_events", outcome)
         self.assertEqual(len(lines), report["dataset"]["record_count"])
         first_record = json.loads(lines[0])
         self.assertIn("record_id", first_record)
+        self.assertIn("outcome_metrics", first_record)
         self.assertEqual(
             first_record["schema_version"],
             "mind_v3_carrion_recovery_dataset_record_v1",

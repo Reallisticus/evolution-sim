@@ -1688,6 +1688,41 @@ v38 recovery-archive working slice:
   `5` descriptor cells: `3` survivor cells, `2` failure cells, `5` dataset
   records, and archive acceptance passed.
 
+v39 outcome-telemetry working slice:
+
+- Branch, archive, and broad Mind v3 evaluator reports now include
+  `outcome_metrics`, a compact run/aggregate block that makes each rollout
+  auditable without reading trajectory JSONL by hand.
+- The metrics expose terminal survivor/extinction counts, total births and
+  deaths, births by parent/child meat mode, terminal alive agents by meat mode,
+  carcass and fresh-kill consumption counts, animal-resource energy gained,
+  scavenger-specific animal-resource consumption, and the number of runs with
+  reproduction or scavenging.
+- The carrion branch and recovery CLIs print those counters directly. The
+  recovery dataset records also carry the elite `outcome_metrics`, so the next
+  distillation step can filter or weight examples by actual ecological outcome,
+  not only by alive/birth labels.
+- Local working example:
+  `npm run sim:mind:v3:carrion-branch-explore -- --seeds 29,37 --ticks 120
+  --trajectory-output-dir output/trajectories/mind-v3-v39-outcome-branch
+  --output output/mind/mind-v3-v39-outcome-branch-explore.json`, followed by
+  `npm run sim:mind:v3:carrion-recovery-archive -- --branch-report
+  output/mind/mind-v3-v39-outcome-branch-explore.json --dataset-output
+  output/mind/mind-v3-v39-outcome-recovery-dataset.jsonl --output
+  output/mind/mind-v3-v39-outcome-recovery-archive.json`.
+- The branch example produced `8` branch runs: `5` terminal-survivor runs,
+  `3` extinct runs, `9` terminal alive agents total, `64` births, `151`
+  deaths, `256` carcass consumption events, and `210` scavenger carcass
+  consumption events, with zero fresh-kill consumption and replay acceptance
+  passed.
+- The archived elite dataset has `5` records: `3` survivor elites and `2`
+  failure elites. Across those elites it records `5` terminal alive agents,
+  `40` births, `95` deaths, `150` carcass consumption events, and `129`
+  scavenger carcass consumption events. The best survivor is still
+  `hydration_safe_carrion_cycle` on seed `29`: `3` terminal survivors, `12`
+  births, `39` scavenger carcass events, and `9.9947` scavenger carcass energy
+  gained.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -1749,7 +1784,10 @@ Major milestones from the current state:
   elites by recovery descriptors, and exports a balanced survivor/failure
   training set. Acceptance: temporal-credit audit passes on the exported data,
   and the archive contains more than one survivor niche.
-- v39: policy distillation from recovery data. Train and evaluate a learned
+- v39: outcome-audited policy distillation from recovery data. The first slice
+  adds explicit survival/reproduction/scavenging telemetry to branch, archive,
+  dataset, and evaluator reports so training examples can be inspected and
+  weighted by ecological outcome. The next slice trains and evaluates a learned
   controller against linear, anchored neural, and scripted references. This is
   where IQL, behavior cloning, sequence modeling, or a compact recurrent policy
   becomes useful again. Acceptance remains the broad-plus-carrion matrix above.

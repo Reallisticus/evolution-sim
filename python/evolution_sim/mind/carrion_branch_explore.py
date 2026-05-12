@@ -29,6 +29,10 @@ from evolution_sim.mind.carrion_counterfactual import (
     CarrionCounterfactualPolicy,
 )
 from evolution_sim.mind.horizon_labels import ANIMAL_RESOURCE_FOOD_SOURCES
+from evolution_sim.mind.outcome_metrics import (
+    aggregate_run_outcome_metrics,
+    build_run_outcome_metrics,
+)
 from evolution_sim.mind.provenance import stable_payload_digest
 
 MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION = (
@@ -396,6 +400,10 @@ def _summarize_branch_world(
         "combat_end": _json_ready(summary.get("combat_end", {})),
         "fresh_kill_end": _json_ready(summary.get("fresh_kill_end", {})),
         "carcass_end": _json_ready(summary.get("carcass_end", {})),
+        "outcome_metrics": build_run_outcome_metrics(
+            summary=summary,
+            trajectory_records=world.trajectory_records,
+        ),
         "reproduction_failure_attribution": _reproduction_failure_attribution(
             summary
         ),
@@ -473,6 +481,7 @@ def _aggregate_branch_runs(
         "combined": _aggregate_runs([dict(run) for run in branch_runs])
         if branch_runs
         else {},
+        "outcome_metrics": aggregate_run_outcome_metrics(branch_runs),
     }
 
 
@@ -525,6 +534,7 @@ def _continuation_script_summaries(
                 and int(run.get("heuristic_action_source_count", 1)) == 0
             ),
             "aggregate": _aggregate_runs(runs),
+            "outcome_metrics": aggregate_run_outcome_metrics(runs),
         }
         for script, runs in sorted(grouped.items())
     }
@@ -721,6 +731,7 @@ def _replay_digest_payload(run: Mapping[str, object]) -> dict[str, object]:
         "alive_agents": run.get("alive_agents"),
         "births": run.get("births"),
         "deaths": run.get("deaths"),
+        "outcome_metrics": run.get("outcome_metrics"),
         "requested_action_counts": run.get("requested_action_counts"),
         "resolved_action_counts": run.get("resolved_action_counts"),
         "action_source_counts": run.get("action_source_counts"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Mapping
 
 from evolution_sim.mind.carrion_branch_explore import (
     DEFAULT_CARRION_BRANCH_BASE_SCRIPT,
@@ -160,6 +161,34 @@ def main() -> None:
         "archive_acceptance_passed="
         f"{acceptance['archive_acceptance_passed']}"  # type: ignore[index]
     )
+    aggregate_payload = aggregate if isinstance(aggregate, Mapping) else {}
+    _print_outcome_metrics(
+        "archive",
+        aggregate_payload.get("outcome_metrics", {}),
+    )
+
+
+def _print_outcome_metrics(prefix: str, metrics: object) -> None:
+    payload = metrics if isinstance(metrics, Mapping) else {}
+    keys = (
+        "terminal_survivor_run_count",
+        "extinct_run_count",
+        "total_terminal_alive_agents",
+        "total_births",
+        "runs_with_births",
+        "total_deaths",
+        "total_scavenger_terminal_agents",
+        "total_scavenger_parent_births",
+        "total_scavenger_child_births",
+        "total_animal_resource_consumption_events",
+        "total_carcass_consumption_events",
+        "total_fresh_kill_consumption_events",
+        "total_scavenger_animal_resource_events",
+        "total_scavenger_carcass_events",
+        "total_scavenger_fresh_kill_events",
+    )
+    for key in keys:
+        print(f"{prefix}_{key}={payload.get(key, 0)}")
 
 
 def _parse_seeds(raw: str) -> tuple[int, ...]:

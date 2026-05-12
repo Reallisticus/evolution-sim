@@ -42,11 +42,17 @@ class MindV3CarrionBranchExploreTests(unittest.TestCase):
         self.assertEqual(report["aggregate"]["branch_run_count"], 1)
         self.assertEqual(report["aggregate"]["positive_seed_count"], 1)
         self.assertTrue(report["aggregate"]["replay_verified"])
+        outcome = report["aggregate"]["outcome_metrics"]
+        self.assertEqual(outcome["terminal_survivor_run_count"], 1)
+        self.assertGreater(outcome["total_terminal_alive_agents"], 0)
+        self.assertIn("total_scavenger_animal_resource_events", outcome)
         self.assertTrue(report["acceptance"]["diagnostic_acceptance_passed"])
         branch = report["branch_points"][0]
         self.assertEqual(branch["contact"]["food_source"], "carcass")
         run = report["branch_runs"][0]
         self.assertGreater(run["alive_agents"], 0)
+        self.assertIn("outcome_metrics", run)
+        self.assertIn("scavenging", run["outcome_metrics"])
         self.assertEqual(run["heuristic_action_source_count"], 0)
         self.assertTrue(run["replay_verification"]["verified"])
 
