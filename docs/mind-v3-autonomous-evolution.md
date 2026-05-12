@@ -1592,6 +1592,34 @@ RTX v34 result:
   existing boundary above: vectorized rollout/model-based training or a
   different credit/data path, not another local anchor or scalar-weight tweak.
 
+RTX v35 rollout-search scout:
+
+- A small RTX scout used the existing autonomous evolution CLI with process
+  rollout workers, basic controlled fixtures, and the `80,120` fixture rerank:
+  `sim:mind:v3:evolve --seeds 5,13,19 --holdout-seeds 29,37
+  --curriculum-ticks 80,120 --population-size 8 --generations 2
+  --rollout-workers 8 --fixture-suite basic --fixture-selection-top-k 4
+  --fixture-rerank-top-k 4 --fixture-rerank-ticks 80,120`.
+- The run completed on `gpu4070` and wrote
+  `output/mind/mind-v3-v35-rollout-search-smoke.json`. The selected candidate
+  was `g1-c1`: score `105.6799`, train-seed alive mean `15.6667`, births mean
+  `7.0`, zero heuristic action sources, dominant requested action `eat` at
+  `0.4444`, and `8.0` unique requested actions on average. Held-out seeds
+  `29,37` at `80` ticks stayed under the action-collapse cap (`eat` at
+  `0.4071`), with alive mean `8.5`, births mean `4.0`, and zero heuristic
+  action sources.
+- The fixture gate still failed. Every reranked candidate hit the
+  `carrion_only` alive floor at `120` ticks. The selected candidate passed the
+  `80`-tick fixture horizon, but `carrion_only@120` had `0.0` alive mean
+  despite `5.0` births mean, so the curriculum stopped at
+  `fixture_gate_floor`.
+- The v35 lesson is that broad heuristic-free survival and births are no
+  longer the only blocker; the hard target is now the `80 -> 120` carrion-only
+  survival transition. Next work should keep `carrion_only@120` as the smallest
+  acceptance target and move to policy capacity plus temporal-credit data,
+  vectorized rollout training, or a model-based learner rather than another
+  scalar-weight search.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
