@@ -1723,6 +1723,41 @@ v39 outcome-telemetry working slice:
   births, `39` scavenger carcass events, and `9.9947` scavenger carcass energy
   gained.
 
+v40 recovery-distillation working slice:
+
+- `sim:mind:v3:carrion-recovery-distill` is the first reproducible bridge from
+  the recovery archive into a runnable Mind v3 neural artifact. It loads the
+  archived elite trajectory paths, builds horizon labels, applies an
+  outcome-weighted trajectory policy, trains a deterministic artifact, and
+  evaluates that artifact beside the Mind v3 linear baseline on both broad
+  open-world seeds and the `carrion_only` fixture.
+- The default artifact mode is `anchored-neural`, not direct
+  `horizon-fixture`, because the direct archive-distilled controller collapses
+  in open evaluation. This slice is a working data/training/evaluation path,
+  not a promotion candidate.
+- Local working example:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v39-outcome-recovery-archive.json --horizon-output
+  output/mind/mind-v3-v40-recovery-distill-horizon-labels.json
+  --artifact-output output/mind/mind-v3-v40-recovery-distill-artifact.json
+  --evaluation-output output/mind/mind-v3-v40-recovery-distill-evaluation.json
+  --output output/mind/mind-v3-v40-recovery-distill-report.json`.
+- The run selected all `5` archived elite trajectories and trained on `2382`
+  records. Horizon labeling covered `2429` records; the 20-tick labels had
+  `2382` observed records, `0.292611` survival rate, and `0.266163`
+  reproduction rate, while 80/120-tick survival remained `0.0` and 120-tick
+  reproduction was `0.332481`.
+- Data-path acceptance passed: the artifact trained, evaluation completed, and
+  the candidate used `0` heuristic runtime actions. Promotion failed because
+  broad open-world performance regressed versus the linear baseline: candidate
+  `9.0` alive mean and `5.5` births mean versus linear `15.0` alive mean and
+  `12.5` births mean across seeds `29,37`.
+- The carrion-only fixture shows the useful local signal to preserve next:
+  candidate and linear both ended extinct across `2` fixture runs, but the
+  candidate produced `7` births versus linear `5`, `19` scavenger carcass
+  events versus linear `12`, and `5` scavenger parent/child births versus
+  linear `4`.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
