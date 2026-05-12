@@ -1547,7 +1547,9 @@ npm run sim:mind:gate -- \
   --extra-trajectory output/trajectories/mind-v3-carrion-counterfactual-v32/counterfactual-hydration_safe_carrion_cycle-seed-37.jsonl.gz \
   --torch-iql-counterfactual-labels output/mind/mind-v3-carrion-counterfactual-v33-hydration-cycle-labels.json \
   --artifact-output output/mind/mind-v3-v34-labeled-iql-artifact.json \
-  --output output/mind/mind-v3-v34-labeled-iql-train-gate.json
+  --output output/mind/mind-v3-v34-labeled-iql-train-gate.json \
+  --artifact-diagnostics-workers 8 \
+  --evaluation-workers 2
 
 npm run sim:mind:v3:labeled-iql-slice -- \
   --candidate-artifact output/mind/mind-v3-v34-labeled-iql-artifact.json \
@@ -1569,6 +1571,26 @@ apples-to-apples report. Omit `--founder-template` only when the goal is to
 evaluate against the current compiled linear default. Omit
 `--anchored-neural-artifact` only when the v29 anchored reference is not part of
 the question.
+
+RTX v34 result:
+
+- The CUDA train-gate completed on `gpu4070` and wrote
+  `output/mind/mind-v3-v34-labeled-iql-artifact.json` plus
+  `output/mind/mind-v3-v34-labeled-iql-train-gate.json`. The strict control
+  gate passed but remains not promoted: hard guard `0.0998`, heuristic delegate
+  `0.3716`, total fallback `0.4714`, safe deviation `0.0`, alive delta `0.0`,
+  births delta `0.0`.
+- The acceptance slice wrote
+  `output/mind/mind-v3-v34-labeled-iql-slice-report.json` and failed. Broad
+  `120` did not regress alive agents and improved births versus linear
+  (`+3.6`), with zero heuristic runtime actions, but requested actions were
+  over-concentrated (`0.6867` dominant share versus the `0.50` cap) and the
+  carrion-only fixture still did not move (`0.0` terminal alive, no blocker
+  reduction).
+- This closes the labeled torch/IQL counterfactual-label path as a controller
+  candidate for this milestone. The next productive slice should follow the
+  existing boundary above: vectorized rollout/model-based training or a
+  different credit/data path, not another local anchor or scalar-weight tweak.
 
 ## Promotion Boundary
 

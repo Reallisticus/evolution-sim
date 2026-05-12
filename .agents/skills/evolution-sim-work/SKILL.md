@@ -33,6 +33,37 @@ Use this as the default implementation workflow for this repository.
 - `package.json` npm scripts are the preferred command entrypoints.
 - Use `PYTHONHASHSEED=0` and `PYTHONPATH=python` when running raw simulator commands.
 
+## Remote RTX Trainer
+
+The project has a remote RTX 4070 SUPER trainer available over SSH as `gpu4070`.
+Use it for CUDA-backed training, long Mind gates, long seed sweeps, and heavier
+CPU-bound simulator runs that would block local Mac development. The full
+workflow is documented in `docs/remote-rtx-trainer.md`.
+
+Default workflow:
+
+1. Edit, review, and run quick checks on the Mac.
+2. Push source changes to GitHub.
+3. Fast-forward the trainer with `npm run trainer:pull`.
+4. Start long trainer jobs in remote `tmux` with `npm run trainer -- start ...`.
+5. Fetch only needed artifacts back with `npm run trainer -- fetch ...`.
+
+Useful commands:
+
+- `npm run trainer:status`
+- `npm run trainer:doctor`
+- `npm run trainer:gpu`
+- `npm run trainer -- run npm run sim:bench:quick`
+- `npm run trainer -- start mind-gate --pull -- npm run sim:mind:gate:extended`
+- `npm run trainer -- logs mind-gate`
+- `npm run trainer -- attach mind-gate`
+
+Known trainer caveats:
+
+- Ethernet currently negotiates at `100Mb/s`; training is fine, large transfers are slow.
+- `sim:golden:quick` has a known Mac/Linux last-bit viewer-float mismatch, so treat that as a repo determinism issue rather than a trainer setup failure.
+- Do not expose SSH directly to the public internet; use a VPN first for off-LAN access.
+
 ## Implementation Rules
 
 - Make the smallest coherent vertical change.
