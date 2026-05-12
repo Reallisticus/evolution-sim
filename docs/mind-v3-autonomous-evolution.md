@@ -1620,6 +1620,35 @@ RTX v35 rollout-search scout:
   vectorized rollout training, or a model-based learner rather than another
   scalar-weight search.
 
+v36 temporal-credit audit:
+
+- The first v36 diagnostic regenerated `carrion_only@120` trajectories for the
+  v35 selected candidate with `--trajectory-output-dir`, then built horizon
+  labels, fixture labels, and a carrion autopsy. The fixture reproduction signal
+  was not enough: candidate `g1-c1` still had `0.0` fixture alive mean at `120`
+  despite `5.0` births mean, and autopsy found `12/12` post-contact episodes
+  died after carrion contact, dominantly by
+  `movement_energy_depletion_after_carrion_contact`.
+- A small direct `horizon-fixture` neural artifact trained on the v35
+  carrion-failure trajectories plus the earlier hydration-cycle counterfactual
+  trajectories did not recover the target. It regressed open held-out seeds
+  from `6.5` alive and `6.5` births to `0.0/0.0`, and regressed
+  `carrion_only@120` births from `5.0` to `1.0`, with zero heuristic runtime
+  actions.
+- `sim:mind:v3:temporal-credit-audit` now gates this failure mode before
+  training. On `output/mind/mind-v3-v36-temporal-credit-horizon-labels.json`,
+  the audit wrote `output/mind/mind-v3-v36-temporal-credit-audit.json` and
+  failed readiness: `120`-tick survivor count `0`, `120` post-contact survivor
+  count `0`, while the `80` horizon still had `11` survivors. This means the
+  current data is not merely weak; it lacks positive `120`-horizon survival
+  support for the target transition.
+- The next implementation target is to create positive `carrion_only@120`
+  support before training again. Do not run another learner on this label set
+  unless the temporal-credit audit passes. The useful directions are exact or
+  approximate state-branching rollout data, a vectorized rollout/search loop
+  that can discover terminal carrion survivors, or a model-based learner that
+  can optimize the `80 -> 120` survival transition explicitly.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains

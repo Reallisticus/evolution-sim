@@ -14,6 +14,7 @@ from evolution_sim.cli import (
     collect_trajectory,
     mind_fixture_labels,
     mind_horizon_labels,
+    mind_v3_temporal_credit_audit,
     mind_v3_neural_artifact,
     mind_artifact_diagnostics,
     mind_gate,
@@ -83,6 +84,10 @@ from evolution_sim.mind.horizon_labels import (
     build_horizon_label_report,
     parse_horizon_ticks,
 )
+from evolution_sim.mind.temporal_credit_audit import (
+    MIND_V3_TEMPORAL_CREDIT_AUDIT_SCHEMA_VERSION,
+    build_temporal_credit_audit_report,
+)
 from evolution_sim.mind.policy_inputs import (
     CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
@@ -125,6 +130,62 @@ class MindV1Tests(unittest.TestCase):
             mode=RunMode.SUMMARY_ONLY,
             trajectory_sink=writer,
         )
+
+    def _temporal_credit_record(
+        self,
+        tick: int,
+        *,
+        food_source: str | None = None,
+        alive_after: bool = True,
+    ) -> dict[str, object]:
+        feeding = (
+            {"ate": True, "food_source": food_source, "gained_energy": 0.25}
+            if food_source is not None
+            else {"ate": False}
+        )
+        return {
+            "tick": tick,
+            "agent_id": 1,
+            "before": {
+                "alive": True,
+                "energy_ratio": 0.8,
+                "hydration_ratio": 0.75,
+                "health_ratio": 0.9,
+            },
+            "after": {
+                "alive": alive_after,
+                "energy_ratio": 0.75 if alive_after else 0.0,
+                "hydration_ratio": 0.7 if alive_after else 0.0,
+                "health_ratio": 0.85 if alive_after else 0.0,
+            },
+            "outcome": {
+                "reproduced": False,
+                "died": not alive_after,
+                "resource_gain": 0.25 if food_source is not None else 0.0,
+                "feeding": feeding,
+                "passive": {
+                    "hazard_damage_taken": 0.0,
+                    "attack_damage_taken": 0.0,
+                },
+            },
+            "requested_action": "eat" if food_source is not None else "stay",
+            "resolved_action": "eat" if food_source is not None else "stay",
+            "action_source": "test_policy",
+        }
+
+    def _temporal_credit_horizon_report(
+        self,
+        labels: list[dict[str, object]],
+        *,
+        horizons: tuple[int, ...],
+    ) -> dict[str, object]:
+        return {
+            "schema_version": MIND_HORIZON_LABEL_SCHEMA_VERSION,
+            "label_contract": {"horizon_ticks": list(horizons)},
+            "source": {"record_count": len(labels)},
+            "aggregate": {"label_count": len(labels)},
+            "labels": labels,
+        }
 
     def test_mind_v1_contract_declares_current_runtime_schemas_disabled_by_default(self) -> None:
         contract = mind_v1_data_contract()
@@ -3210,6 +3271,96 @@ class MindV1Tests(unittest.TestCase):
     def test_mind_horizon_labels_reject_empty_horizon_list(self) -> None:
         with self.assertRaises(ValueError):
             parse_horizon_ticks("1,,2")
+
+    def test_mind_v3_temporal_credit_audit_blocks_zero_primary_support(self) -> None:
+        labels = build_horizon_label_records(
+            (
+                self._temporal_credit_record(
+                    0,
+                    food_source="carcass",
+                    alive_after=True,
+                ),
+                self._temporal_credit_record(1, alive_after=True),
+                self._temporal_credit_record(2, alive_after=False),
+            ),
+            horizons=(1, 2),
+        )
+        horizon_report = self._temporal_credit_horizon_report(labels, horizons=(1, 2))
+
+        audit = build_temporal_credit_audit_report(
+            horizon_report,
+            primary_horizon=2,
+            comparison_horizon=1,
+            min_primary_survivor_count=1,
+            min_primary_post_contact_survivor_count=1,
+            max_primary_censored_share=1.0,
+        )
+
+        self.assertEqual(
+            audit["schema_version"],
+            MIND_V3_TEMPORAL_CREDIT_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertFalse(audit["readiness"]["ready"])
+        self.assertEqual(audit["horizons"]["2"]["survivor_count"], 0)
+        self.assertGreater(audit["horizons"]["1"]["survivor_count"], 0)
+        self.assertLess(audit["transition"]["survivor_count_delta"], 0)
+        self.assertIn(
+            "primary_survivor_count_floor",
+            {blocker["reason"] for blocker in audit["readiness"]["blockers"]},
+        )
+        self.assertIn("eat", audit["primary_action_support"])
+
+    def test_mind_v3_temporal_credit_audit_cli_writes_ready_report(self) -> None:
+        labels = build_horizon_label_records(
+            (
+                self._temporal_credit_record(
+                    0,
+                    food_source="carcass",
+                    alive_after=True,
+                ),
+                self._temporal_credit_record(1, alive_after=True),
+                self._temporal_credit_record(2, alive_after=True),
+            ),
+            horizons=(1, 2),
+        )
+        horizon_report = self._temporal_credit_horizon_report(labels, horizons=(1, 2))
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            horizon_path = tmp_path / "horizon-labels.json"
+            output_path = tmp_path / "temporal-credit-audit.json"
+            horizon_path.write_text(
+                json.dumps(horizon_report),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_temporal_credit_audit",
+                        "--horizon-labels",
+                        str(horizon_path),
+                        "--primary-horizon",
+                        "2",
+                        "--comparison-horizon",
+                        "1",
+                        "--max-primary-censored-share",
+                        "1.0",
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_v3_temporal_credit_audit.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("ready=True", stdout.getvalue())
+        self.assertTrue(report["readiness"]["ready"])
+        self.assertEqual(report["horizons"]["2"]["survivor_count"], 1)
+        self.assertEqual(report["horizons"]["2"]["post_contact_survivor_count"], 1)
 
     def test_mind_fixture_labels_extract_floor_gaps_from_gate(self) -> None:
         report = {
