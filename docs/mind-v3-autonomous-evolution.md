@@ -1649,6 +1649,24 @@ v36 temporal-credit audit:
   that can discover terminal carrion survivors, or a model-based learner that
   can optimize the `80 -> 120` survival transition explicitly.
 
+v37 branch-and-explore working slice:
+
+- `sim:mind:v3:carrion-branch-explore` adds the first exact simulator branch
+  surface for the carrion blocker. It replays the controlled `carrion_only`
+  fixture under a policy-visible base script until an animal-resource contact
+  record, deep-copies the exact post-contact simulator state in-process, fans
+  out continuation scripts from that branch, and can write per-branch trajectory
+  JSONL.gz files.
+- This is not yet the full quality-diverse archive. It is the smallest
+  reproducible v37 example: branch state digests, continuation run summaries,
+  zero-heuristic action checks, per-seed positive terminal survivor coverage,
+  and deterministic replay verification from each copied branch state in one
+  report.
+- Local working example:
+  `npm run sim:mind:v3:carrion-branch-explore -- --seeds 29,37 --ticks 120
+  --trajectory-output-dir output/trajectories/mind-v3-v37-branch-explore-smoke
+  --output output/mind/mind-v3-v37-branch-explore-smoke.json`.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -1659,36 +1677,109 @@ come from one brittle terrain/diet/action niche only.
 
 ## Research Direction
 
-The next useful work is policy capacity plus temporal-credit data, not another
-local hand-shaped reward tweak. The closest research families are:
+The next useful work is exact temporal-credit data generation, then policy
+capacity. The current v36 audit means the learner does not yet have positive
+`120`-horizon survival support on the target transition. Another offline
+learner run on the same label distribution would mostly test extrapolation, not
+learning.
 
-- deterministic small neural/recurrent policies with serialized artifact
-  inference;
-- horizon-labeled offline targets for survival, reproduction, and resource
-  balance;
-- fixture blocker objectives that turn controlled failures into trainable and
-  selectable signals;
-- neuroevolution and evolution strategies for scalable controller search;
-- quality diversity and open-endedness for maintaining varied controller
-  lineages;
-- world-model control later, after the controller/data contract and horizon
-  labels are stable.
+Research-backed direction after v36:
+
+1. Build an exact branch-and-explore data generator before training another
+   artifact. The immediate target is not a learned world model; this simulator
+   already provides deterministic dynamics. Use that advantage to branch from
+   promising carrion-contact or post-contact states, explore bounded
+   policy-visible macro actions, and archive terminal survivors. This follows
+   the Go-Explore principle of remembering promising states, returning to them,
+   then exploring from them in a deterministic simulator.
+2. Keep quality diversity as the search backbone, but move the archive from
+   "best whole-run controller" toward "best recovery continuations". Archive
+   cells should cover time since carrion contact, energy/hydration bins,
+   carrion and water reachability, movement spend, births, terminal alive, and
+   dominant action share. This matches MAP-Elites/QD: keep a diverse set of
+   high-performing behaviors rather than over-selecting one broad-score winner.
+3. Use vectorized/process rollout workers for the branch search. OpenAI ES and
+   related neuroevolution results support this for simulator-heavy work because
+   candidates can be evaluated in parallel with low communication. CUDA is not
+   the bottleneck until we train a neural policy or learned dynamics model.
+4. Distill only after the temporal-credit audit passes. A training dataset
+   should include positive `carrion_only@120` survivors and post-contact
+   survivors per fixture seed, plus enough failed continuations to define the
+   boundary. Then train a policy artifact with strict acceptance: broad `120`
+   alive within `1.0` of linear, broad births not worse, dominant requested
+   action share `<= 0.50`, zero heuristic runtime actions, and
+   `carrion_only@120` terminal alive nonzero or blocker reduction.
+5. Treat Dreamer/MuZero-style world models as the next major phase, not the
+   next implementation slice. They are relevant because they learn dynamics and
+   train or plan through imagined futures, but in this repo the first scalable
+   model is the exact simulator. A learned world model should start only after
+   exact branch rollouts have produced a validated curriculum and compact state
+   contract.
+
+Major milestones from the current state:
+
+- v37: deterministic branch-and-explore harness. It can replay or restore a
+  `carrion_only` fixture to a branch point, run candidate continuations from
+  there, and emit branch trajectory JSONL plus a `temporal-credit-audit` report.
+  Acceptance: at least one positive `120` terminal survivor per target fixture
+  seed, nonzero post-contact survivor count, and reproducible branch replay.
+- v38: quality-diverse recovery archive. It expands the branch harness into a
+  process-parallel search over recovery macros/controller mutations, stores
+  elites by recovery descriptors, and exports a balanced survivor/failure
+  training set. Acceptance: temporal-credit audit passes on the exported data,
+  and the archive contains more than one survivor niche.
+- v39: policy distillation from recovery data. Train and evaluate a learned
+  controller against linear, anchored neural, and scripted references. This is
+  where IQL, behavior cloning, sequence modeling, or a compact recurrent policy
+  becomes useful again. Acceptance remains the broad-plus-carrion matrix above.
+- v40: learned dynamics/world-model pilot. Only after v37-v39 prove the target
+  data and policy contract, train a compact dynamics/value model for short
+  observation-space rollouts or MuZero/Dreamer-style planning. Acceptance is
+  not promotion; it is matching exact branch decisions on held-out branch
+  states and improving search throughput without inventing invalid survivors.
+- v41: open-ended/autonomous curriculum. If v39 or v40 moves carrion, fold the
+  recovery task back into broader ecology with XLand-style dynamic task
+  distributions and PBT/QD scheduling so the policy does not overfit a single
+  fixture lane.
 
 External checks that support this direction:
 
-- OpenAI's Evolution Strategies work frames ES as a scalable black-box
-  alternative for RL-style agent search, useful when direct gradient signals are
-  inconvenient: <https://openai.com/index/evolution-strategies/>
+- Offline RL still needs support from the data distribution. IQL avoids direct
+  evaluation of out-of-dataset actions, and CQL explicitly addresses
+  overestimation under distribution shift, but neither removes the need for
+  successful target-horizon behavior in the dataset:
+  <https://arxiv.org/abs/2110.06169>,
+  <https://arxiv.org/abs/2006.04779>
+- Decision Transformer supports return-conditioned sequence modeling for
+  offline control, but it is also downstream of trajectory quality. It becomes
+  relevant once v38 has survivor continuations, not before:
+  <https://arxiv.org/abs/2106.01345>
+- Go-Explore is the closest match for the current failure mode: archive
+  promising states, return to them, explore from them, then robustify with
+  imitation or distillation. That maps directly to deterministic fixture branch
+  replay:
+  <https://arxiv.org/abs/1901.10995>
 - MAP-Elites explicitly argues against returning only one winner and instead
   maps diverse high-performing elites across behavior dimensions:
   <https://arxiv.org/abs/1504.04909>
+- OpenAI's Evolution Strategies work frames ES as a scalable black-box
+  alternative for RL-style agent search and shows why simulator-heavy candidate
+  evaluation can scale across many CPU workers:
+  <https://arxiv.org/abs/1703.03864>,
+  <https://openai.com/index/evolution-strategies/>
+- MuZero, EfficientZero, and DreamerV3 support the longer-term world-model
+  direction: learn or plan through predictive models for better sample
+  efficiency and farsighted control. They should not displace exact simulator
+  branching until v37-v39 prove the target data and policy contract:
+  <https://arxiv.org/abs/1911.08265>,
+  <https://arxiv.org/abs/2111.00210>,
+  <https://arxiv.org/abs/2301.04104>
 - DeepMind's XLand work emphasizes open-ended task generation, iterative
-  improvement, and generalization without human interaction data:
-  <https://deepmind.google/blog/generally-capable-agents-emerge-from-open-ended-play/>
-- DeepMind's SIMA 2 and Genie 3 releases keep pointing toward agents learning
-  across diverse interactive worlds and eventually training inside generated
-  world-model environments:
-  <https://deepmind.google/blog/sima-2-an-agent-that-plays-reasons-and-learns-with-you-in-virtual-3d-worlds/>,
+  improvement, and generalization without human interaction data. SIMA 2 and
+  Genie 3 point in the same long-horizon direction for embodied agents and
+  generated interactive worlds:
+  <https://arxiv.org/abs/2107.12808>,
+  <https://arxiv.org/abs/2512.04797>,
   <https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/>
 
 Mind v3 deliberately avoids in-tick gradient updates for now. The repo's
