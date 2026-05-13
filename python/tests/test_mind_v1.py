@@ -5,6 +5,7 @@ import io
 import importlib.util
 import json
 import math
+import copy
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +21,7 @@ from evolution_sim.cli import (
     mind_gate,
     mind_v3_evaluate,
     mind_v3_labeled_iql_slice,
+    mind_v3_rollout_context_audit,
     mind_policy_eval,
     mind_train,
     run_headless,
@@ -87,6 +89,10 @@ from evolution_sim.mind.horizon_labels import (
 from evolution_sim.mind.temporal_credit_audit import (
     MIND_V3_TEMPORAL_CREDIT_AUDIT_SCHEMA_VERSION,
     build_temporal_credit_audit_report,
+)
+from evolution_sim.mind.rollout_context_audit import (
+    MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+    build_rollout_context_audit_report,
 )
 from evolution_sim.mind.policy_inputs import (
     CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
@@ -3408,6 +3414,193 @@ class MindV1Tests(unittest.TestCase):
         self.assertTrue(report["readiness"]["ready"])
         self.assertEqual(report["horizons"]["2"]["survivor_count"], 1)
         self.assertEqual(report["horizons"]["2"]["post_contact_survivor_count"], 1)
+
+    def test_mind_v3_rollout_context_audit_separates_post_carrion_alias(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "base.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            base = dict(load_trajectory_jsonl(trajectory_path).records[0])
+
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        def record(
+            *,
+            seed: int,
+            episode: str,
+            index: int,
+            tick: int,
+            action: str,
+            ate: bool = False,
+            drank: bool = False,
+            moved: bool = False,
+            resource_gain: float = 0.0,
+            food_source: str | None = None,
+        ) -> dict[str, object]:
+            payload = copy.deepcopy(base)
+            payload.update(
+                {
+                    "tick": tick,
+                    "agent_id": 1,
+                    "requested_action": action,
+                    "resolved_action": action,
+                    "resolution_action_valid": True,
+                    "action_source": "test_policy",
+                    "moved": moved,
+                    "action_mask": dict(action_mask),
+                    TRAJECTORY_EPISODE_ID_FIELD: f"episode-seed-{seed}-{episode}",
+                    TRAJECTORY_SOURCE_PATH_FIELD: f"synthetic-seed-{seed}.jsonl.gz",
+                    TRAJECTORY_DATASET_RECORD_INDEX_FIELD: index,
+                    "before": {
+                        "alive": True,
+                        "energy_ratio": 0.5,
+                        "hydration_ratio": 0.5,
+                        "health_ratio": 0.9,
+                    },
+                    "after": {
+                        "alive": True,
+                        "energy_ratio": 0.5 + resource_gain,
+                        "hydration_ratio": 0.6 if drank else 0.5,
+                        "health_ratio": 0.9,
+                    },
+                }
+            )
+            outcome = copy.deepcopy(payload["outcome"])
+            outcome.update(
+                {
+                    "resource_gain": resource_gain,
+                    "feeding": {
+                        "ate": ate,
+                        "food_source": food_source,
+                        "gained_energy": resource_gain,
+                    },
+                    "drinking": {"drank": drank},
+                    "movement": {"moved": moved},
+                }
+            )
+            payload["outcome"] = outcome
+            return payload
+
+        records = [
+            record(
+                seed=1,
+                episode="context",
+                index=0,
+                tick=0,
+                action="eat",
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=1,
+                episode="context",
+                index=1,
+                tick=1,
+                action="move_north",
+                moved=True,
+            ),
+            record(
+                seed=1,
+                episode="context",
+                index=2,
+                tick=2,
+                action="drink",
+                drank=True,
+            ),
+            record(seed=1, episode="context", index=3, tick=3, action="stay"),
+            record(seed=2, episode="eat-heavy", index=4, tick=0, action="stay"),
+            record(seed=2, episode="eat-heavy", index=5, tick=1, action="eat"),
+            record(seed=2, episode="eat-heavy", index=6, tick=2, action="eat"),
+            record(seed=2, episode="eat-heavy", index=7, tick=3, action="eat"),
+            record(
+                seed=5,
+                episode="heldout",
+                index=8,
+                tick=0,
+                action="eat",
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                episode="heldout",
+                index=9,
+                tick=1,
+                action="move_north",
+                moved=True,
+            ),
+            record(
+                seed=5,
+                episode="heldout",
+                index=10,
+                tick=2,
+                action="drink",
+                drank=True,
+            ),
+            record(seed=5, episode="heldout", index=11, tick=3, action="stay"),
+        ]
+
+        report = build_rollout_context_audit_report(
+            records,
+            heldout_seed_values=(5,),
+            min_eat_overprediction_rate_reduction=0.1,
+        )
+
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+        )
+        matrix = report["confusion_matrices"]
+        ecological = matrix["ecological_only"]
+        context = matrix["ecological_plus_rollout_context"]
+        self.assertEqual(ecological["move_north"]["eat"], 1)
+        self.assertEqual(ecological["drink"]["eat"], 1)
+        self.assertEqual(ecological["stay"]["eat"], 1)
+        self.assertEqual(context["move_north"]["eat"], 0)
+        self.assertEqual(context["drink"]["eat"], 0)
+        self.assertEqual(context["stay"]["eat"], 0)
+        assessment = report["failure_mode_assessment"]
+        self.assertTrue(assessment["materially_improves_v62_failure_mode"])
+        self.assertGreater(
+            assessment["movement_drink_stay_absolute_rate_reduction"],
+            0.5,
+        )
+
+    def test_mind_v3_rollout_context_audit_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            output_path = tmp_path / "rollout-context-audit.json"
+            self._write_tiny_trajectory(trajectory_path)
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_rollout_context_audit",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_v3_rollout_context_audit.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("rollout_context_audit=", stdout.getvalue())
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertIn("feature_contract", report)
+        self.assertIn("confusion_matrices", report)
 
     def test_mind_fixture_labels_extract_floor_gaps_from_gate(self) -> None:
         report = {

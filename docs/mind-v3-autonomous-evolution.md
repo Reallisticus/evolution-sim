@@ -2500,6 +2500,37 @@ v57-v63 strict IQL audit, coefficient probes, and rollout calibration:
   control or Go-Explore-style archive replay/robustification, not another
   coefficient-only IQL variant on the same representation.
 
+v64 rollout-context audit:
+
+- `output/mind/mind-v3-v64-rollout-context-audit.json` added a deterministic
+  pre-training audit before opening any runtime or training branch. The audit
+  builds per-agent context only from previous trajectory rows: recent
+  requested/resolved actions, moved/drank/ate flags, resource gain,
+  energy/hydration/health deltas, no-gain eat streak, ticks since drink, ticks
+  since animal-resource gain, and derivable post-carrion recovery phase. It
+  uses no fixture identity, private world state, future row, heuristic action
+  source, or scalar IQL retuning.
+- Source data covered the locally available v51 counterfactual archive and
+  v51 branch archive (`150` trajectories total). The deterministic split held
+  out seeds `37,41,43` and trained on seeds `13,19,29`, producing `41,773`
+  train rows and `42,983` held-out rows.
+- The ecological+rollout-context lookup improved held-out accuracy
+  (`0.714469` versus `0.658702`) but did not materially improve the v62 failure
+  mode. True movement/drink/stay predicted as `eat` fell only from `0.040609`
+  to `0.028780` (`0.011829` absolute reduction), below the `0.05` audit floor.
+  The post-carrion subset fell only from `0.046532` to `0.042549`; `stay`
+  post-carrion slightly worsened (`+0.000791`).
+- First residual post-carrion pattern: held-out
+  `counterfactual-carrion_then_water-seed-37`, tick `16`, agent `8`, true
+  `drink`, predicted `eat`. The first residual movement/drink/stay pattern in
+  report order was seed `37`, tick `13`, agent `11`, true `move_west`,
+  predicted `eat`.
+- Result: the audit is negative, so no v64 promotion candidate was trained and
+  no opt-in runtime/training path was added. The next branch should not
+  compensate with scalar IQL tuning; it needs a stronger policy-owned temporal
+  model or archive/replay method with a reportable held-out aliasing win before
+  any heavy trainer run.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -2832,6 +2863,11 @@ Major milestones from the current state:
   and coefficient family as exhausted for promotion. The next slice should open a
   rollout-context policy branch, not another extraction, prior-blend, or global
   action-share variant against the same acceptance surface.
+- v64: rollout-context audit boundary. Deterministic previous-row context
+  improved held-out action-label accuracy but reduced movement/drink/stay
+  predicted-as-`eat` by only `0.011829`, below the audit floor, and left
+  post-carrion `drink`/`stay` aliases. Do not train a v64 rollout-context IQL
+  candidate from this audit result alone.
 
 External checks that support this direction:
 
