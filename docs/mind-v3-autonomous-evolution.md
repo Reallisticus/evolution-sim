@@ -2531,6 +2531,194 @@ v64 rollout-context audit:
   model or archive/replay method with a reportable held-out aliasing win before
   any heavy trainer run.
 
+v65 hydration-after-carrion intervention audit:
+
+- `output/mind/mind-v3-v65-hydration-after-carrion-audit.json` tested the
+  narrow next hypothesis from the v64 residual: maybe post-carrion true
+  `drink` predicted as `eat` is mostly a simple "drink now, then eat again"
+  hydration-deficit alias. The report reuses the v64 deterministic
+  ecological+rollout-context lookup and the same source split: `150`
+  trajectories, `41,773` train rows from seeds `13,19,29`, and `42,983`
+  held-out rows from seeds `37,41,43`.
+- Focus rows were held-out post-carrion states where both `drink` and `eat`
+  were legal and the true label was either `drink` or `eat`. There were
+  `2,372` such rows: `1,791` true `drink`, `581` true `eat`, and `160`
+  true-`drink` rows predicted as `eat`.
+- The best policy-visible hydration-threshold intervention was `0.9`, but it
+  reduced true-`drink` predicted-as-`eat` by only `0.018426`, below the `0.05`
+  materiality floor, and it changed `8` previously correct `eat` labels to
+  `drink` (`0.013769` eat-label damage, above the `0.01` cap).
+- Drink/eat cycle aliasing was real but not dominant. All `160` residual
+  true-`drink` rows successfully drank and none died on that row, but only
+  `71` (`0.44375`) had a same-agent resource-gain `eat` within the next two
+  rows, below the `0.6` floor. The seed `37`, tick `16`, agent `8` residual is
+  one of these cycle cases, but the broader residual set is not explained by
+  that pattern.
+- Result: audit failed on all three blockers, so no v65 policy/training path
+  was added and no RTX run is justified. The bottleneck is not a simple
+  hydration-after-carrion rule; the next diagnostic should move away from
+  threshold intervention and toward outcome/action-conditional labels or exact
+  branch replay for ambiguous post-carrion states.
+
+v66 branch-action oracle audit:
+
+- `output/mind/mind-v3-v66-branch-action-oracle-audit.json` tests exact
+  branch replay from ambiguous post-carrion states instead of copying the
+  logged next action. The diagnostic restores an in-process simulator snapshot
+  from immediately before the ambiguous decision tick, forces only the first
+  action for the target agent, then resumes with the deterministic
+  `carrion_then_water` continuation policy. This is diagnostic-only branch
+  replay, not a runtime policy path.
+- Scope: carrion-only seeds `37,41,43`, `120` ticks,
+  `1` ambiguous branch point per seed, candidate first actions
+  `drink,eat,stay`, and target logged labels `drink,eat`. The report includes
+  each branch point's serialized `mind_observation_v3` input and full action
+  mask, so the artifact is replayable and can be used as an explicit oracle
+  label source without fixture identity as a runtime input.
+- Result: `3` branch points, `9` action branches, `3` oracle-changed first
+  actions, `2` material oracle gains, `+5` total terminal-alive gain versus
+  the logged first action, `+4` total birth gain versus logged, deterministic
+  replay verified, and zero heuristic action-source count. The first material
+  gain is seed `37`, tick `16`, agent `10`: logged `drink`, oracle best `eat`,
+  `+4` terminal alive, `-1` births.
+- Interpretation: the failure mode is not mainly missing scalar context or a
+  simple hydration threshold. At least some post-carrion ambiguity is a bad
+  action-label / action-aliasing problem where the locally logged action is not
+  the best next action under exact branch replay. The next step is worth
+  pursuing as a branch-replay oracle label archive and distillation experiment;
+  do not return to scalar IQL tuning or rollout-context runtime from v64.
+
+v67/v68 branch-action oracle labels and expanded action audit:
+
+- `output/mind/mind-v3-v67-branch-action-oracle-labels.json` converts the v66
+  replay-verified branch audit into a deterministic policy-visible label
+  archive. Each label carries the serialized `mind_observation_v3` input,
+  observation digest, full action mask, oracle action, logged action, and
+  action-conditioned branch outcomes. The archive passes label acceptance with
+  `3` labels, `2` material oracle gains, `+5` terminal-alive gain versus
+  logged, and dominant oracle action share `0.333333`.
+- A wider `drink,eat,stay`-only preview over strict carrion seeds
+  `13,19,29,37,41,43` remained materially positive but failed the action-share
+  boundary: `24` labels, `+15` terminal alive, `+13` births, zero heuristic
+  action sources, but `stay` was the oracle action for `14/24` labels
+  (`0.583333`). This is an explicit negative control; do not relax the
+  dominant-action cap to accept it.
+- `output/mind/mind-v3-v68-branch-action-oracle-audit-expanded-actions.json`
+  expands the candidate first-action set to include policy-visible movement
+  actions: `stay,eat,drink,move_north,move_south,move_east,move_west`. With
+  replay verification enabled, the strict carrion seed bank produced `12`
+  branch points, `59` action branches, `12` oracle-changed labels, `9`
+  material oracle gains, `+19` terminal alive, `+14` births, deterministic
+  replay verified, and zero heuristic action-source count.
+- `output/mind/mind-v3-v68-branch-action-oracle-labels-expanded-actions.json`
+  passes label-archive acceptance: `12` complete policy-state labels, no
+  conflicting observation digests, no unsupported oracle actions, dominant
+  oracle action `move_west` at `5/12` (`0.416667`), under the `0.50` cap. This
+  is the current best branch-oracle supervision artifact.
+- The same v68 label archive includes a leave-one-source-seed-out nearest
+  policy-vector support probe. That probe is negative: `2/12` correct
+  (`0.166667` accuracy), predicted-action dominant share `0.5`, and
+  `materially_supports_runtime_classifier=false`. Interpretation: branch-replay
+  oracle labels are valuable and policy-visible, but this tiny archive does not
+  justify a direct runtime classifier or exact lookup candidate. The next useful
+  step is either a larger branch-label archive or a compact outcome/world-model
+  diagnostic before any RTX training.
+
+v69 expanded branch-label direction check:
+
+- `output/mind/mind-v3-v69-branch-action-oracle-audit-expanded-actions-preview.json`
+  is a no-replay-verification preview that doubles the movement-aware branch
+  budget to `4` ambiguous branch points per strict carrion seed. It is
+  materially positive as branch data: `24` branch points, `122` action
+  branches, `24` oracle-changed labels, `17` material oracle gains, `+36`
+  terminal alive, `+26` births, `+1` target alive, zero heuristic action
+  sources, and clean oracle action distribution (`move_west` dominant at
+  `7/24`, share `0.291667`). Because replay verification was deliberately
+  skipped, it is a preview artifact only and is not accepted as a label archive.
+- `output/mind/mind-v3-v69-branch-action-oracle-labels-expanded-actions-preview.json`
+  adds two deterministic support probes. The direct oracle-action classifier
+  remains negative: `4/24` correct (`0.166667`). The action-conditioned
+  nearest-value ranker improves but is still below the materiality floor:
+  best `8/24` correct (`0.333333`) at `k=3`, with
+  `materially_supports_action_value_model=false`.
+- Direction update: branch replay is confirmed as the right diagnostic/data
+  source, and movement actions are necessary to avoid artificial `stay`
+  collapse. However, simply adding more branch labels in this narrow state
+  representation is not enough to justify a runtime classifier or value ranker.
+  The next useful diagnostic should test a richer, policy-visible outcome model
+  for hydration/energy/death and local movement consequences, or expand branch
+  labels with additional serialized temporal/context features before any RTX
+  training.
+
+v70-v76 compact world-model and option decomposition diagnostics:
+
+- The branch-action oracle label archive now carries action-conditioned
+  first-action outcomes derived from replay records: energy/hydration/health
+  deltas, moved/drank/ate flags, resource gain, death flags, and movement
+  deltas. These are serialized diagnostic targets only; no runtime policy path
+  was added.
+- A compact, policy-visible world-model probe decodes each serialized
+  `mind_observation_v3` input into self vitals, current and adjacent resource
+  signals, local radius summaries, navigation signals, action mask state, and
+  action-specific movement/eat/drink affordances. It then runs
+  leave-one-source-seed-out nearest-neighbor support checks before any training.
+- Result on the replay-verified v68 12-label archive: exact terminal oracle
+  ranking reached only `0.333333`. Immediate first-step dynamics were easier
+  (`0.75` actual first-step accuracy), but those immediate outcomes aligned
+  with terminal oracle action only `0.25`; even an upper-bound probe using the
+  actual first-step outcomes reached only `0.333333` terminal accuracy.
+- Larger previews were not enough. The 24-label preview reached `0.416667`
+  exact terminal support, while the 36-label preview dropped to `0.277778`.
+  Option-mode prediction reached `0.625` on the 24-label preview but collapsed
+  to `reposition` for `23/24` rows; reposition direction itself reached
+  `0.714286`, but multi-move direction support stayed at or below `0.5`.
+- Result: first-step dynamics are learnable, but the terminal action choice is
+  delayed and multi-modal. Do not train a runtime policy from the compact
+  one-row world-model branch.
+
+v77-v85 long-horizon branch trace and population-world-model diagnostics:
+
+- The branch-action oracle audit now serializes deterministic target-agent and
+  population horizon traces for each forced branch at deltas
+  `0,1,2,3,5,8,13,21,34,55,89`. The population trace records alive agents,
+  births, deaths, target alive/vitals, tick resource gain, tick action counts,
+  and dominant requested-action share. These fields are replay artifacts, not
+  runtime policy inputs.
+- `output/mind/mind-v3-v80-branch-action-oracle-audit-long-horizon-trace.json`
+  and
+  `output/mind/mind-v3-v80-branch-action-oracle-labels-long-horizon-trace.json`
+  showed the first temporal-credit signal: actual future target trace at
+  horizon `21` and actual future population trace at horizon `55` each matched
+  the terminal oracle on `6/12` labels (`0.5`). This is diagnostic-only because
+  actual future traces are not available at decision time.
+- Decision-time trainability did not clear the floor. On the 12-label archive,
+  compact population-horizon ranking reached only `4/12` (`0.333333`), and the
+  full decoded policy observation plus action mask/action one-hot also reached
+  only `4/12`. This falsifies the hypothesis that a compact feature summary
+  alone caused the failure.
+- `output/mind/mind-v3-v83-branch-action-oracle-audit-expanded-replay-horizon-trace.json`
+  replay-verified the previously previewed larger branch set: strict
+  `carrion_only` seeds `13,19,29,37,41,43`, `4` branch points per seed,
+  `122` action branches, `24` oracle-changed labels, `17` material gains,
+  `+36` terminal alive, `+26` births, `+1` target alive, zero heuristic action
+  sources, and clean oracle distribution (`move_west` dominant at `7/24`,
+  share `0.291667`).
+- `output/mind/mind-v3-v85-branch-action-oracle-labels-material-horizon-model.json`
+  passes label acceptance on the expanded replay set, but the support probes
+  remain negative. Actual future population trace alignment drops to `9/24`
+  (`0.375`), actual future target trace alignment to `7/24` (`0.291667`),
+  compact population-horizon ranking to `6/24` (`0.25`), and full-observation
+  population-horizon ranking to `7/24` (`0.291667`). Filtering to the `17`
+  material-gain labels helps only slightly: material-only full-observation
+  population-horizon ranking reaches `7/17` (`0.411765`), still below the
+  `0.5` support floor.
+- Result: v83/v85 is a real data milestone, not a trainable runtime milestone.
+  The expanded replay archive is now accepted and stronger than v69, but the
+  pointwise one-row outcome/world-model path is not ready for RTX training.
+  The next useful slice should harden a deterministic public sequence/history
+  label contract for the target agent or an options/archive replay contract
+  that predicts delayed value after repositioning.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -2868,6 +3056,58 @@ Major milestones from the current state:
   predicted-as-`eat` by only `0.011829`, below the audit floor, and left
   post-carrion `drink`/`stay` aliases. Do not train a v64 rollout-context IQL
   candidate from this audit result alone.
+- v65: hydration-after-carrion audit boundary. A simple post-carrion hydration
+  threshold intervention did not materially reduce true-`drink` predicted-as-
+  `eat` and caused eat-label damage; drink-then-eat cycle aliasing explained
+  only `0.44375` of residual true-`drink`/predicted-`eat` cases. Stop before
+  training.
+- v66: exact branch-action oracle positive diagnostic. Ambiguous post-carrion
+  states can have a better first action than the logged action under exact
+  replay; the compact held-out carrion slice produced `+5` total terminal
+  alive, zero heuristic action sources, and replay-verified serialized
+  observation/action-mask labels. This justifies a small branch-oracle label
+  archive/distillation path before any RTX training.
+- v67/v68: branch-oracle label archive boundary. The expanded movement-aware
+  branch audit produced a replay-verified, action-share-clean label archive
+  with `12` labels and `+19` terminal alive versus logged. However, a
+  leave-one-source-seed-out nearest-vector probe reached only `0.166667`
+  accuracy, so the labels are not yet sufficient for a runtime classifier.
+  Continue with more branch labels or an outcome model; do not deploy a lookup
+  policy from this archive.
+- v69: larger branch-label preview confirms direction but not learnability.
+  Doubling branch points gives stronger oracle outcome deltas (`+36` terminal
+  alive, `+26` births) and clean action distribution, but classifier support is
+  still `0.166667` and action-conditioned value ranking is only `0.333333`.
+  Do not spend RTX on this label set as-is; test richer outcome features/model
+  capacity first.
+- v70-v76: compact world-model/option-mode diagnostic boundary. A
+  policy-visible compact outcome representation was added over serialized
+  observation inputs, action masks, local resources/navigation, first-action
+  action outcomes, and terminal branch values. The replay-verified 12-label
+  slice still ranked exact terminal oracle actions at only `0.333333`.
+  First-step dynamics were learnable (`0.75` immediate first-step accuracy),
+  but immediate outcomes aligned with terminal oracle actions only `0.25`, and
+  an upper-bound terminal model with actual first-step outcomes still reached
+  only `0.333333`. Larger unverified previews did not rescue the path:
+  24-label exact terminal support reached `0.416667`, while the 36-label preview
+  dropped to `0.277778`. Option-mode decomposition exposed a tempting but
+  collapsed signal: 24-label preview mode accuracy reached `0.625` by predicting
+  `reposition` for `23/24` rows, and 36-label mode accuracy fell to `0.416667`.
+  Reposition direction is partially learnable, but multi-move direction support
+  stayed below floor (`0.5` on the 24-label preview, `0.4` on the 36-label
+  preview). Do not train a runtime policy from this branch yet. The next
+  worthwhile slice is a longer-horizon branch value model or sequence/options
+  archive that predicts delayed value after repositioning, not a one-step
+  compact dynamics policy.
+- v77-v85: long-horizon branch trace boundary. Replay artifacts now serialize
+  target-agent and population horizon traces out to `89` ticks, and the larger
+  `24`-label branch archive is replay-verified and label-accepted with `+36`
+  terminal alive and `+26` births versus logged. Actual future traces expose a
+  delayed temporal-credit signal on the 12-label archive, but neither compact
+  nor full policy-visible one-row observations can predict that signal under
+  leave-one-source-seed-out support on the expanded archive. Stop before
+  training; the next branch needs public target-agent sequence/history or
+  option/archive state, not a pointwise horizon model.
 
 External checks that support this direction:
 

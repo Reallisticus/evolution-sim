@@ -20,6 +20,7 @@ from evolution_sim.cli import (
     mind_artifact_diagnostics,
     mind_gate,
     mind_v3_evaluate,
+    mind_v3_hydration_after_carrion_audit,
     mind_v3_labeled_iql_slice,
     mind_v3_rollout_context_audit,
     mind_policy_eval,
@@ -85,6 +86,10 @@ from evolution_sim.mind.horizon_labels import (
     build_horizon_label_records,
     build_horizon_label_report,
     parse_horizon_ticks,
+)
+from evolution_sim.mind.hydration_after_carrion_audit import (
+    MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+    build_hydration_after_carrion_audit_report,
 )
 from evolution_sim.mind.temporal_credit_audit import (
     MIND_V3_TEMPORAL_CREDIT_AUDIT_SCHEMA_VERSION,
@@ -3601,6 +3606,187 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertIn("feature_contract", report)
         self.assertIn("confusion_matrices", report)
+
+    def test_mind_v3_hydration_after_carrion_audit_rejects_high_hydration_alias(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "base.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            base = dict(load_trajectory_jsonl(trajectory_path).records[0])
+
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        def record(
+            *,
+            seed: int,
+            index: int,
+            tick: int,
+            action: str,
+            before_energy: float,
+            before_hydration: float,
+            after_energy: float,
+            after_hydration: float,
+            ate: bool = False,
+            drank: bool = False,
+            resource_gain: float = 0.0,
+            food_source: str | None = None,
+        ) -> dict[str, object]:
+            payload = copy.deepcopy(base)
+            payload.update(
+                {
+                    "tick": tick,
+                    "agent_id": 1,
+                    "requested_action": action,
+                    "resolved_action": action,
+                    "resolution_action_valid": True,
+                    "action_source": "test_policy",
+                    "moved": False,
+                    "action_mask": dict(action_mask),
+                    TRAJECTORY_EPISODE_ID_FIELD: f"episode-seed-{seed}",
+                    TRAJECTORY_SOURCE_PATH_FIELD: f"synthetic-seed-{seed}.jsonl.gz",
+                    TRAJECTORY_DATASET_RECORD_INDEX_FIELD: index,
+                    "before": {
+                        "alive": True,
+                        "energy_ratio": before_energy,
+                        "hydration_ratio": before_hydration,
+                        "health_ratio": 0.95,
+                    },
+                    "after": {
+                        "alive": True,
+                        "energy_ratio": after_energy,
+                        "hydration_ratio": after_hydration,
+                        "health_ratio": 0.95,
+                    },
+                }
+            )
+            outcome = copy.deepcopy(payload["outcome"])
+            outcome.update(
+                {
+                    "resource_gain": resource_gain,
+                    "feeding": {
+                        "ate": ate,
+                        "food_source": food_source,
+                        "gained_energy": resource_gain,
+                    },
+                    "drinking": {"drank": drank},
+                    "movement": {"moved": False},
+                }
+            )
+            payload["outcome"] = outcome
+            return payload
+
+        records = [
+            record(
+                seed=1,
+                index=0,
+                tick=0,
+                action="eat",
+                before_energy=0.3,
+                before_hydration=0.93,
+                after_energy=0.55,
+                after_hydration=0.91,
+                ate=True,
+                resource_gain=0.25,
+                food_source="carcass",
+            ),
+            record(
+                seed=1,
+                index=1,
+                tick=1,
+                action="eat",
+                before_energy=0.55,
+                before_hydration=0.91,
+                after_energy=0.75,
+                after_hydration=0.89,
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                index=2,
+                tick=0,
+                action="eat",
+                before_energy=0.3,
+                before_hydration=0.93,
+                after_energy=0.55,
+                after_hydration=0.91,
+                ate=True,
+                resource_gain=0.25,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                index=3,
+                tick=1,
+                action="drink",
+                before_energy=0.55,
+                before_hydration=0.91,
+                after_energy=0.5,
+                after_hydration=0.99,
+                drank=True,
+            ),
+        ]
+
+        report = build_hydration_after_carrion_audit_report(
+            records,
+            heldout_seed_values=(5,),
+            hydration_thresholds=(0.8, 0.9),
+            min_true_drink_eat_rate_reduction=0.5,
+            min_cycle_alias_share=0.6,
+        )
+
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            report["focus"]["true_drink_predicted_as_eat_count"],
+            1,
+        )
+        self.assertEqual(
+            report["best_hydration_intervention"][
+                "true_drink_predicted_eat_absolute_rate_reduction"
+            ],
+            0.0,
+        )
+        self.assertEqual(
+            report["failure_mode_assessment"]["status"],
+            "audit_fail",
+        )
+
+    def test_mind_v3_hydration_after_carrion_audit_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            output_path = tmp_path / "hydration-after-carrion-audit.json"
+            self._write_tiny_trajectory(trajectory_path)
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_hydration_after_carrion_audit",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_v3_hydration_after_carrion_audit.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("hydration_after_carrion_audit=", stdout.getvalue())
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertIn("failure_mode_assessment", report)
 
     def test_mind_fixture_labels_extract_floor_gaps_from_gate(self) -> None:
         report = {
