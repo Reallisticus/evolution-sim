@@ -33,6 +33,32 @@ Use this as the default implementation workflow for this repository.
 - `package.json` npm scripts are the preferred command entrypoints.
 - Use `PYTHONHASHSEED=0` and `PYTHONPATH=python` when running raw simulator commands.
 
+## Current Mind v3 Context
+
+Mind v3 is the active autonomous-controller track. Read
+`docs/mind-v3-autonomous-evolution.md` before touching Mind v3 policy,
+dataset, training, gate, artifact, ledger, or acceptance code.
+
+As of the v61-v63 closeout, the current single-observation IQL
+coefficient/prior/extraction family is exhausted for promotion. Do not spend a
+new slice on scalar IQL tuning, prior blends, action-share losses, risk
+extraction, or global actor-bias calibration unless the user explicitly asks for
+a negative-control probe.
+
+Preserve these boundaries:
+
+- no heuristic runtime action selection in autonomous Mind v3 candidates;
+- no fixture identity or private world state in policy inputs;
+- strict per-seed no-regression gates for alive and birth metrics;
+- dominant action and heuristic-action gates remain hard blockers;
+- controlled carrion fixture behavior is measured, not inferred from broad runs;
+- every new policy state, artifact field, or data contract gets diagnostics and
+  tests.
+
+The likely next useful branch is rollout-context policy capacity derived from
+public trajectory/action outcomes, or a genuinely distinct sequence, flow,
+world-model, or archive-replay path.
+
 ## Remote RTX Trainer
 
 The project has a remote RTX 4070 SUPER trainer available over SSH as `gpu4070`.
@@ -55,6 +81,7 @@ Useful commands:
 - `npm run trainer:gpu`
 - `npm run trainer -- run npm run sim:bench:quick`
 - `npm run trainer -- start mind-gate --pull -- npm run sim:mind:gate:extended`
+- `npm run trainer -- start mind-v3 --pull -- <mind-v3 command>`
 - `npm run trainer -- logs mind-gate`
 - `npm run trainer -- attach mind-gate`
 
@@ -108,3 +135,11 @@ Report:
 - validation commands and results
 - any checks skipped and why
 - remaining uncertainty or next slice
+
+For Mind v3 candidates, also report:
+
+- artifact/report paths
+- strict acceptance blockers
+- dominant requested-action share and heuristic action-source count
+- per-seed alive and birth deltas
+- controlled fixture result

@@ -1,12 +1,13 @@
 # Senior Developer Onboarding
 
-Date: 2026-05-02
-Audience: senior engineers joining the Foundation hardening work before Mind v1.
+Date: 2026-05-13
+Audience: senior engineers joining Foundation-boundary and Mind v3 autonomous-controller work.
 
-This repository is a deterministic artificial-life simulator. The current goal
-is not to start learned-controller work. The current goal is to stabilize the
-Foundation: ecology, reproduction, signals, action/observation/reward contracts,
-trajectory data, replay semantics, gates, and benchmark protocol.
+This repository is a deterministic artificial-life simulator. Foundation,
+replay, trajectory, viewer, and guarded Mind v1/v2 contracts are now the
+measurement boundary for Mind v3 autonomous-controller experiments. Mind v3 work
+is allowed, but it must stay opt-in, deterministic, replayable, and measured
+against strict held-out seed, fixture, action-source, and action-collapse gates.
 
 ## First Hour
 
@@ -15,10 +16,12 @@ Read in this order:
 1. `AGENTS.md` for repo-specific operating rules, determinism requirements, and
    validation ladder.
 2. `README.md` for command entrypoints and the current Foundation feature set.
-3. `docs/pre-mind-reproductive-and-signal-readiness-plan.md` for the staged
-   reproduction/signal plan that blocks Mind v1.
-4. `docs/mind-readiness-audit-2026-04-27.md` for historical findings, fixed
-   issues, and current remaining risk.
+3. `docs/mind-v3-autonomous-evolution.md` for the current autonomous-controller
+   ledger, latest non-promotable candidates, and next research boundary.
+4. `docs/pre-mind-reproductive-and-signal-readiness-plan.md`,
+   `docs/mind-readiness-audit-2026-04-27.md`, and
+   `output/audits/deep-system-audit-2026-05-11.md` for historical findings,
+   fixed issues, and remaining measurement risk.
 5. `docs/replay-invariants.md` and `docs/benchmark-protocol.md` for durable
    output contracts.
 
@@ -65,10 +68,10 @@ the runtime modules that now own specific behavior.
   materialization.
 - `python/evolution_sim/env/runtime/trajectory.py`: trajectory finalization and
   action-outcome data contract.
-- `python/evolution_sim/mind/`: disabled-by-default Mind v1 data tooling,
-  strict trajectory JSONL loading, deterministic seed splits, behavior-cloning
-  baseline artifacts, learned-policy adapter, and summary-only policy
-  evaluation gates.
+- `python/evolution_sim/mind/`: Mind data tooling, strict trajectory JSONL
+  loading, deterministic seed splits, guarded Mind v1/v2 safety-floor
+  artifacts, Mind v3 autonomous policy/runtime adapters, neural/IQL trainers,
+  diagnostics, and recovery/archive tools.
 
 ## Output And Gate Map
 
@@ -80,8 +83,13 @@ the runtime modules that now own specific behavior.
   Python contract expectations today; generated shared schemas remain future
   work.
 - `python/evolution_sim/cli/foundation_gate.py`: quick, ecology, and release
-  readiness profiles. The release profile is the real boundary before Mind
-  work.
+  readiness profiles. The release profile is the compatibility boundary for
+  Mind work.
+- `python/evolution_sim/cli/mind_v3_labeled_iql_slice.py`: labeled Mind v3
+  train/evaluation slice with strict broad seed and controlled fixture
+  acceptance surfaces.
+- `python/evolution_sim/cli/mind_gate.py`: Mind gate runner for guarded
+  learned-policy evaluation and blocker reporting.
 - `python/evolution_sim/cli/bench.py`: benchmark protocol runner. Successful
   reports set `complete: true`; timeout/error reports set `complete: false` and
   include partial scenario data plus an `error` object.
@@ -103,8 +111,10 @@ others.
 - Trajectory JSONL is independent of replay. Its header carries the trajectory,
   observation, action, reward, reproductive-group, recombination, and signal
   contracts. Its footer carries a trajectory summary plus the run summary. The
-  Mind v1 loader validates the header, every record, and the footer before a
-  dataset can be used for offline experiments.
+  Mind loader validates the header, every record, and the footer before a
+  dataset can be used for offline experiments. Policy-owned rollout context must
+  be replayable from public trajectory rows, policy actions, finalized outcomes,
+  or explicit update records.
 - Foundation gate JSON reports always include `complete`, `readiness`,
   `summary_gate_flags`, and `timings`. `readiness.blockers` contains error
   flags, `readiness.warnings` contains warning flags, and partial/incremental
@@ -141,7 +151,7 @@ npm run sim:run -- --seed 7 --ticks 300 --output output/sim-runs/species-check.j
 REPLAY_PATH=../output/sim-runs/species-check.json npm run viewer:smoke
 ```
 
-Latest validated Foundation boundary state:
+Latest validated boundary state:
 
 - 2026-05-04 Foundation-to-Mind hardening validation:
   `npm run sim:test:full` passed with 281 tests in 1857 seconds,
@@ -157,6 +167,13 @@ Latest validated Foundation boundary state:
 - Summary-only action-mask work is now a watched runtime-cost invariant:
   benchmark reports should stay near two action-mask builds per observation
   unless a later contract intentionally adds another mask phase.
+- 2026-05-13 Mind v3 v61-v63 boundary: v61, v62, and v63 are not promotable.
+  The current single-observation IQL coefficient/prior/extraction/global-bias
+  family is exhausted for promotion because strict deployment slices still show
+  action collapse, per-seed alive/birth regressions, and controlled carrion
+  movement failures. The next useful branch should add rollout-context policy
+  capacity or a distinct sequence, flow, world-model, or archive-replay path,
+  with the existing strict gates kept hard.
 
 ## Boundary Audit Snapshot
 
@@ -221,6 +238,7 @@ module that owns the behavior.
 - Keep every new world mechanic paired with metrics, replay/summary output,
   validation, and tests.
 - Prefer narrow, behavior-preserving extractions before semantic changes.
-- Learned-policy runtime remains disabled by default. Use `sim:mind:split` and
-  `sim:mind:evaluate -- --enable-mind` only after Foundation export contracts
-  are stable for the scenario being evaluated.
+- Learned-policy runtime remains disabled by default unless explicitly enabled.
+  Mind v3 experiments must stay opt-in, serialized, deterministic, and measured
+  against strict broad-seed, controlled-fixture, heuristic-action, action-share,
+  and per-seed no-regression gates.

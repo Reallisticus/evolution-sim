@@ -5,13 +5,18 @@ description: Use for Foundation-layer work in evolution-sim: ecology readiness, 
 
 # Foundation Gate Loop
 
-Use this skill when work affects whether Foundation is ready to support Mind v1.
+Use this skill when work affects the Foundation measurement boundary used by
+Mind v1/v2 safety floors and Mind v3 autonomous-controller experiments.
 
 ## Objective
 
-Foundation is not closed until the world has durable ecological pressure and the project can inspect, replay, gate, and benchmark that pressure reproducibly.
+Foundation is the current compatibility and safety boundary. The world must keep
+durable ecological pressure, and the project must inspect, replay, gate, and
+benchmark that pressure reproducibly.
 
-Do not start model-training work from this skill. Close the relevant Foundation contract first.
+Do not route model-training work through this skill. If a Mind experiment exposes
+Foundation ambiguity, close the relevant Foundation contract first, then return
+to the Mind workflow.
 
 ## Inspect First
 
@@ -20,6 +25,7 @@ Read the smallest relevant set:
 - `docs/evolution-simulator-blueprint.md`
 - `docs/foundation-readiness-audit.md`
 - `docs/mind-readiness-audit-2026-04-27.md`
+- `docs/senior-developer-onboarding.md`
 - `docs/two-gate-recovery-plan.md`
 - `docs/benchmark-protocol.md`
 - relevant runtime modules under `python/evolution_sim/env/`
@@ -90,4 +96,4 @@ Include:
 - metrics before/after when applicable
 - tests or gates changed
 - validation commands run
-- remaining blockers before Mind v1
+- remaining risk to Foundation or Mind measurement integrity

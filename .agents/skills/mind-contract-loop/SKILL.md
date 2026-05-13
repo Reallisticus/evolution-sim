@@ -1,17 +1,24 @@
 ---
 name: mind-contract-loop
-description: Use for pre-Mind and Mind-interface work in evolution-sim: observation schemas, action masks, policy interfaces, trajectory logging, reward components, trainable datasets, environment reset semantics, and learned-controller readiness. Do not use for model training until the controller boundary and data contract are enforceable.
+description: Use for Mind-interface work in evolution-sim: observation schemas, action masks, policy interfaces, trajectory logging, reward components, trainable datasets, policy-owned runtime state, replayable update traces, environment reset semantics, and learned-controller readiness. Do not use for model training until the controller boundary and data contract are enforceable.
 ---
 
 # Mind Contract Loop
 
-Use this skill for the interface between the simulator and future learned controllers.
+Use this skill for the interface between the simulator and learned controllers.
+Pair it with `mind-v3-autonomous-loop` when policy capacity, training behavior,
+or promotion evidence is in scope.
 
 ## Hard Rule
 
-Do not start model training, architecture selection, hyperparameter tuning, or policy optimization until all relevant controller-boundary and data-contract requirements are enforceable by tests and gates.
+Do not start model training, architecture selection, hyperparameter tuning, or
+policy optimization until all relevant controller-boundary and data-contract
+requirements are enforceable by tests and gates.
 
-Mind v1 needs a stable environment contract before it needs a better model.
+If a model needs new policy input, policy memory, update traces, artifact
+metadata, trajectory labels, or acceptance metrics, harden that contract first.
+The model must not smuggle private world state or fixture identity through the
+new surface.
 
 ## Inspect First
 
@@ -20,11 +27,14 @@ Read the smallest relevant set:
 - `docs/evolution-simulator-blueprint.md`
 - `docs/foundation-readiness-audit.md`
 - `docs/mind-readiness-audit-2026-04-27.md`
+- `docs/mind-v3-autonomous-evolution.md`
 - `python/evolution_sim/env/runtime/observations.py`
 - `python/evolution_sim/env/runtime/action_space.py`
 - `python/evolution_sim/env/runtime/actions.py`
 - `python/evolution_sim/env/runtime/trajectory.py`
 - `python/evolution_sim/env/world.py`
+- `python/evolution_sim/mind/dataset.py`
+- `python/evolution_sim/mind/policy_inputs.py`
 - relevant tests in `python/tests/`
 
 ## Contract Requirements
@@ -39,6 +49,9 @@ Before learned control, the repo needs:
 - Trajectory collection independent of full replay/viewer payload generation.
 - Reward or fitness components logged separately with tests for scale, terminal events, invalid actions, resource acquisition, and reproduction.
 - Reset or one-shot environment semantics that cannot silently mix episodes.
+- Policy-owned runtime state that is deterministic, serialized, or replayable
+  through update traces, and derived only from public observations, policy
+  actions, and finalized outcomes.
 
 ## Work Loop
 
@@ -90,4 +103,4 @@ Include:
 - privileged access or ambiguity removed
 - tests added or changed
 - validation commands run
-- what still blocks Mind v1
+- what still blocks safe learned-controller experimentation or promotion

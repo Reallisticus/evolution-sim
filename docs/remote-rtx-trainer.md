@@ -59,6 +59,12 @@ Fetch result artifacts back to the Mac only when needed:
 npm run trainer -- fetch /home/train/Projects/evolution-sim/output/mind/mind-v1-gate-extended-report.json
 ```
 
+For Mind v3 work, fetch the smallest set of artifacts needed to interpret the
+run: the trained artifact, strict slice report, train-gate report, diagnostics,
+and any ledger/report JSON that will be referenced in
+`docs/mind-v3-autonomous-evolution.md`. Do not bulk-transfer trajectory
+directories unless the next local step needs them.
+
 For complex shell commands with pipes, redirects, or multiple steps, wrap the
 remote command in `bash -lc`:
 
@@ -72,6 +78,8 @@ Prefer the trainer for:
 
 - CUDA-backed `sim:mind:train` runs.
 - Long `sim:mind:gate:*` runs.
+- Mind v3 strict candidate runs that need PyTorch, CUDA, or many seed/fixture
+  combinations.
 - Long seed sweeps and benchmark runs.
 - Any CPU-bound simulator run that would block local development.
 
