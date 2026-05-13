@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from random import Random
 
 from evolution_sim.env.runtime.observations import (
+    MEAT_MODE_VOCAB,
     NAVIGATION_INPUT_FIELDS,
     NAVIGATION_TARGETS,
     PATCH_CELL_COUNT,
@@ -26,7 +27,11 @@ from evolution_sim.mind.evolution import (
 from evolution_sim.mind.v3_neural import (
     MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
     MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_NEURAL_DEFAULT_RECOVERY_PHASE_TICKS,
     MIND_V3_NEURAL_MODEL_TYPE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER,
     is_horizon_fixture_neural_artifact,
     mind_v3_neural_head_predictions,
     score_mind_v3_neural_artifact,
@@ -46,6 +51,9 @@ MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY = (
 )
 MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY = (
     "linear_controller_margin_guarded_neural_residual_v2"
+)
+MIND_V3_NEURAL_RECOVERY_PHASE_POLICY = (
+    "animal_resource_post_contact_recovery_memory_v1"
 )
 MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY = (
     "direct_horizon_fixture_action_value_policy_v1"
@@ -128,6 +136,7 @@ class MindV3EvolutionPolicy:
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[int, list[tuple[str, list[float]]]] = {}
         self._no_gain_eat_streaks: dict[int, int] = {}
+        self._recovery_phase_ticks_remaining: dict[int, int] = {}
         self.controller_update_count = 0
 
     def register_agent_mind(
@@ -274,10 +283,17 @@ class MindV3EvolutionPolicy:
             neural_anchor_diagnostics = {}
         else:
             observation_values = _observation_values(observation)
+            neural_residual_recovery_phase_remaining = max(
+                0,
+                int(self._recovery_phase_ticks_remaining.get(agent_id, 0)),
+            )
             neural_scores = score_mind_v3_neural_artifact(
                 artifact=self._neural_artifact,
                 observation_input=observation_input,
                 action_mask=action_mask,
+                recovery_phase_remaining=(
+                    neural_residual_recovery_phase_remaining
+                ),
             )
             if is_horizon_fixture_neural_artifact(self._neural_artifact):
                 scores = neural_scores
@@ -300,16 +316,56 @@ class MindV3EvolutionPolicy:
                         self._neural_artifact
                     )
                 )
+                neural_residual_context_gate = _artifact_neural_residual_context_gate(
+                    self._neural_artifact
+                )
+                neural_residual_context_gate_status = (
+                    _neural_residual_context_gate_status(
+                        observation_values,
+                        gate=neural_residual_context_gate,
+                        recovery_phase_remaining=(
+                            neural_residual_recovery_phase_remaining
+                        ),
+                    )
+                )
+                neural_residual_context_gate_passed = bool(
+                    neural_residual_context_gate_status["passed"]
+                )
                 linear_anchor_scores = score_mind_v3_metadata(
                     metadata=metadata,
                     observation_input=observation_values,
                     action_mask=action_mask,
                 )
+                neural_residual_guard_reason = (
+                    _neural_residual_safety_guard_reason(
+                        observation_values,
+                        neural_scores=neural_scores,
+                        linear_scores=linear_anchor_scores,
+                        action_mask=action_mask,
+                    )
+                    if neural_residual_context_gate_passed
+                    else None
+                )
+                neural_residual_effective_scale = (
+                    neural_residual_scale
+                    if neural_residual_context_gate_passed
+                    and neural_residual_guard_reason is None
+                    else 0.0
+                )
+                neural_residual_shadow_reason_override = (
+                    neural_residual_guard_reason
+                    if neural_residual_guard_reason is not None
+                    else (
+                        None
+                        if neural_residual_context_gate_passed
+                        else f"context_gate:{neural_residual_context_gate}"
+                    )
+                )
                 scores = _blend_neural_with_linear_anchor(
                     neural_scores=neural_scores,
                     linear_scores=linear_anchor_scores,
                     action_mask=action_mask,
-                    residual_scale=neural_residual_scale,
+                    residual_scale=neural_residual_effective_scale,
                     max_linear_override_margin=(
                         neural_residual_max_linear_override_margin
                     ),
@@ -321,14 +377,30 @@ class MindV3EvolutionPolicy:
                     "neural_residual_max_linear_override_margin": (
                         neural_residual_max_linear_override_margin
                     ),
+                    "neural_residual_context_gate": neural_residual_context_gate,
+                    "neural_residual_context_gate_passed": (
+                        neural_residual_context_gate_passed
+                    ),
+                    "neural_residual_context_gate_reason": str(
+                        neural_residual_context_gate_status["reason"]
+                    ),
+                    "neural_residual_recovery_phase_policy": (
+                        MIND_V3_NEURAL_RECOVERY_PHASE_POLICY
+                    ),
+                    "neural_residual_recovery_phase_remaining": (
+                        neural_residual_recovery_phase_remaining
+                    ),
                     **_neural_anchor_diagnostics(
                         neural_scores=neural_scores,
                         linear_scores=linear_anchor_scores,
                         final_scores=scores,
                         action_mask=action_mask,
-                        residual_scale=neural_residual_scale,
+                        residual_scale=neural_residual_effective_scale,
                         max_linear_override_margin=(
                             neural_residual_max_linear_override_margin
+                        ),
+                        shadow_reason_override=(
+                            neural_residual_shadow_reason_override
                         ),
                     ),
                 }
@@ -434,6 +506,10 @@ class MindV3EvolutionPolicy:
             )
         else:
             self._no_gain_eat_streaks[agent_id] = 0
+        recovery_phase_trace = self._update_recovery_phase(
+            agent_id=agent_id,
+            record=record,
+        )
         self.controller_update_count += 1
         return {
             "schema_version": "mind_v3_controller_update_trace_v1",
@@ -454,6 +530,49 @@ class MindV3EvolutionPolicy:
             "heuristic_free": True,
             "neural_artifact_frozen": self._neural_artifact is not None,
             "anchor_controller_update": self._neural_artifact is not None,
+            **recovery_phase_trace,
+        }
+
+    def _update_recovery_phase(
+        self,
+        *,
+        agent_id: int,
+        record: Mapping[str, object],
+    ) -> dict[str, object]:
+        if self._neural_artifact is None:
+            return {}
+        if is_horizon_fixture_neural_artifact(self._neural_artifact):
+            return {}
+        gate = _artifact_neural_residual_context_gate(self._neural_artifact)
+        if gate != MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE:
+            return {}
+        previous = max(0, int(self._recovery_phase_ticks_remaining.get(agent_id, 0)))
+        alive_after = _record_alive_after(record)
+        activated = _record_consumed_animal_resource(record) and alive_after
+        if not alive_after:
+            remaining = 0
+            self._recovery_phase_ticks_remaining.pop(agent_id, None)
+        elif activated:
+            remaining = _artifact_neural_residual_recovery_phase_ticks(
+                self._neural_artifact
+            )
+            if remaining > 0:
+                self._recovery_phase_ticks_remaining[agent_id] = remaining
+            else:
+                self._recovery_phase_ticks_remaining.pop(agent_id, None)
+        else:
+            remaining = max(0, previous - 1)
+            if remaining > 0:
+                self._recovery_phase_ticks_remaining[agent_id] = remaining
+            else:
+                self._recovery_phase_ticks_remaining.pop(agent_id, None)
+        return {
+            "neural_residual_recovery_phase_policy": (
+                MIND_V3_NEURAL_RECOVERY_PHASE_POLICY
+            ),
+            "neural_residual_recovery_phase_activated": activated,
+            "neural_residual_recovery_phase_previous_ticks": previous,
+            "neural_residual_recovery_phase_remaining": remaining,
         }
 
 
@@ -1176,6 +1295,34 @@ def _best_action(
     return best_action, best_score
 
 
+def _neural_residual_safety_guard_reason(
+    observation_values: Sequence[float],
+    *,
+    neural_scores: Mapping[str, float],
+    linear_scores: Mapping[str, float],
+    action_mask: Mapping[str, bool],
+) -> str | None:
+    if not bool(action_mask.get("eat", False)):
+        return None
+    if _top_score_action(linear_scores) != "eat":
+        return None
+    local_animal_resource = max(
+        _vector_center_patch_feature(list(observation_values), "fresh_kill_energy"),
+        _vector_center_patch_feature(list(observation_values), "carcass_energy"),
+    )
+    if local_animal_resource <= 0.0:
+        return None
+    legal_actions = tuple(
+        action for action in sorted(action_mask) if bool(action_mask[action])
+    )
+    neural_top_action = _top_score_action(
+        _normalized_legal_scores(neural_scores, legal_actions)
+    )
+    if neural_top_action is None or neural_top_action == "eat":
+        return None
+    return "linear_local_animal_resource_eat_guard"
+
+
 def _blend_neural_with_linear_anchor(
     *,
     neural_scores: Mapping[str, float],
@@ -1197,7 +1344,7 @@ def _blend_neural_with_linear_anchor(
         max_linear_override_margin=max_linear_override_margin,
     )
     return {
-        action: _round(
+        action: (
             _finite_score(linear_scores.get(action, 0.0))
             + effective_residual_scale * neural_normalized[action]
         )
@@ -1213,6 +1360,7 @@ def _neural_anchor_diagnostics(
     action_mask: Mapping[str, bool],
     residual_scale: float,
     max_linear_override_margin: float,
+    shadow_reason_override: str | None = None,
 ) -> dict[str, object]:
     legal_actions = tuple(
         action for action in sorted(action_mask) if bool(action_mask[action])
@@ -1243,7 +1391,7 @@ def _neural_anchor_diagnostics(
         "neural_residual_applied": residual_scale > 0.0,
         "neural_residual_effective_scale": _round(residual_scale),
         "neural_residual_shadowed": residual_shadowed,
-        "neural_residual_shadow_reason": shadow_reason,
+        "neural_residual_shadow_reason": shadow_reason_override or shadow_reason,
         "neural_residual_changed_linear_action": (
             final_action is not None
             and linear_action is not None
@@ -1330,6 +1478,97 @@ def _artifact_neural_residual_max_linear_override_margin(
         "neural_residual_max_linear_override_margin",
         MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
     )
+
+
+def _artifact_neural_residual_context_gate(artifact: Mapping[str, object]) -> str:
+    value = artifact.get("neural_residual_context_gate")
+    if not isinstance(value, str) or not value.strip():
+        return MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE
+    return value.strip()
+
+
+def _artifact_neural_residual_recovery_phase_ticks(
+    artifact: Mapping[str, object],
+) -> int:
+    value = artifact.get("neural_residual_recovery_phase_ticks")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return MIND_V3_NEURAL_DEFAULT_RECOVERY_PHASE_TICKS
+    return max(0, int(value))
+
+
+def _neural_residual_context_gate_status(
+    observation_values: Sequence[float],
+    *,
+    gate: str,
+    recovery_phase_remaining: int = 0,
+) -> dict[str, object]:
+    if gate == MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE:
+        return {"passed": True, "reason": "none"}
+    if gate == MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER:
+        passed = _is_visible_carrion_scavenger_context(observation_values)
+        return {
+            "passed": passed,
+            "reason": "visible_carrion_scavenger" if passed else "context_missing",
+        }
+    if gate == MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE:
+        if _is_visible_carrion_scavenger_context(observation_values):
+            return {"passed": True, "reason": "visible_carrion_scavenger"}
+        if int(recovery_phase_remaining) > 0:
+            return {"passed": True, "reason": "recovery_phase"}
+        return {"passed": False, "reason": "context_missing"}
+    return {"passed": False, "reason": f"unsupported_gate:{gate}"}
+
+
+def _is_visible_carrion_scavenger_context(
+    observation_values: Sequence[float],
+) -> bool:
+    values = list(observation_values)
+    if not _vector_self_enum_matches(values, "meat_mode_code", "scavenger"):
+        return False
+    carrion_strength = max(
+        _vector_center_patch_feature(values, "fresh_kill_energy"),
+        _vector_center_patch_feature(values, "carcass_energy"),
+        _vector_center_patch_feature(values, "carrion_signal"),
+        _vector_navigation_feature(values, "carrion", "strength"),
+    )
+    return carrion_strength > 0.0
+
+
+def _vector_self_enum_matches(
+    values: Sequence[float],
+    field: str,
+    label: str,
+    *,
+    tolerance: float = 0.02,
+) -> bool:
+    try:
+        expected = MEAT_MODE_VOCAB.index(label) / max(len(MEAT_MODE_VOCAB) - 1, 1)
+    except ValueError:
+        return False
+    return abs(_vector_self_feature(list(values), field) - expected) <= tolerance
+
+
+def _record_alive_after(record: Mapping[str, object]) -> bool:
+    after = record.get("after")
+    if not isinstance(after, Mapping):
+        return True
+    return after.get("alive") is not False
+
+
+def _record_consumed_animal_resource(record: Mapping[str, object]) -> bool:
+    outcome = record.get("outcome")
+    outcome_payload = outcome if isinstance(outcome, Mapping) else {}
+    feeding = outcome_payload.get("feeding")
+    feeding_payload = feeding if isinstance(feeding, Mapping) else {}
+    food_source = feeding_payload.get("food_source")
+    if food_source not in {"carcass", "fresh_kill"}:
+        return False
+    feeding_gain = _number(feeding_payload.get("gained_energy")) or 0.0
+    resource_gain = _number(outcome_payload.get("resource_gain")) or 0.0
+    return bool(feeding_payload.get("ate", False)) or max(
+        feeding_gain,
+        resource_gain,
+    ) > 0.0
 
 
 def _artifact_nonnegative_float(

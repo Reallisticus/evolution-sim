@@ -338,6 +338,7 @@ def build_labeled_iql_acceptance_gate(
 ) -> dict[str, object]:
     linear_broad = _evaluation_broad_aggregate(evaluations, "linear_default")
     candidate_broad = _evaluation_broad_aggregate(evaluations, "candidate")
+    candidate_vs_linear_per_seed = _candidate_vs_linear_per_seed(evaluations)
     linear_fixture_gate = _evaluation_fixture_gate(evaluations, "linear_default")
     candidate_fixture_gate = _evaluation_fixture_gate(evaluations, "candidate")
     linear_alive = _float_metric(linear_broad.get("alive_agents_mean"))
@@ -351,6 +352,14 @@ def build_labeled_iql_acceptance_gate(
     )
     candidate_heuristic_actions = _int_metric(
         candidate_broad.get("heuristic_action_source_count")
+    )
+    min_seed_alive_delta = _min_seed_delta(
+        candidate_vs_linear_per_seed,
+        field="alive_delta_vs_linear",
+    )
+    min_seed_births_delta = _min_seed_delta(
+        candidate_vs_linear_per_seed,
+        field="births_delta_vs_linear",
     )
     linear_blocker_count = _blocker_count(linear_fixture_gate)
     candidate_blocker_count = _blocker_count(candidate_fixture_gate)
@@ -397,6 +406,28 @@ def build_labeled_iql_acceptance_gate(
                 limit=float(max_heuristic_action_source_count),
             )
         )
+    for seed_delta in candidate_vs_linear_per_seed:
+        seed = _int_metric(seed_delta.get("seed"))
+        alive_delta = _float_metric(seed_delta.get("alive_delta_vs_linear"))
+        births_delta = _float_metric(seed_delta.get("births_delta_vs_linear"))
+        if alive_delta < 0.0:
+            blockers.append(
+                _acceptance_blocker(
+                    reason=f"open_seed_{seed}_alive_regression_vs_linear",
+                    metric="candidate_seed_alive_delta_vs_linear",
+                    value=alive_delta,
+                    limit=0.0,
+                )
+            )
+        if births_delta < 0.0:
+            blockers.append(
+                _acceptance_blocker(
+                    reason=f"open_seed_{seed}_birth_regression_vs_linear",
+                    metric="candidate_seed_births_delta_vs_linear",
+                    value=births_delta,
+                    limit=0.0,
+                )
+            )
     carrion_moved = (
         candidate_carrion_alive > 0.0
         or candidate_blocker_count < linear_blocker_count
@@ -440,6 +471,9 @@ def build_labeled_iql_acceptance_gate(
             "candidate_births_delta_vs_linear": candidate_births_delta,
             "candidate_dominant_requested_action_share": candidate_dominant_share,
             "candidate_heuristic_action_source_count": candidate_heuristic_actions,
+            "candidate_min_seed_alive_delta_vs_linear": min_seed_alive_delta,
+            "candidate_min_seed_births_delta_vs_linear": min_seed_births_delta,
+            "candidate_vs_linear_per_seed": candidate_vs_linear_per_seed,
             "linear_fixture_blocker_count": linear_blocker_count,
             "candidate_fixture_blocker_count": candidate_blocker_count,
             "candidate_fixture_blocker_count_delta_vs_linear": (
@@ -556,6 +590,12 @@ def _build_ledger_entry(report: Mapping[str, object]) -> dict[str, object]:
         "candidate_heuristic_action_source_count": metrics.get(
             "candidate_heuristic_action_source_count"
         ),
+        "candidate_min_seed_alive_delta_vs_linear": metrics.get(
+            "candidate_min_seed_alive_delta_vs_linear"
+        ),
+        "candidate_min_seed_births_delta_vs_linear": metrics.get(
+            "candidate_min_seed_births_delta_vs_linear"
+        ),
         "candidate_fixture_blocker_count_delta_vs_linear": metrics.get(
             "candidate_fixture_blocker_count_delta_vs_linear"
         ),
@@ -586,6 +626,59 @@ def _evaluation_fixture_gate(
 ) -> Mapping[str, object]:
     evaluation = _mapping(evaluations.get(policy_key))
     return _mapping(evaluation.get("fixture_gate"))
+
+
+def _evaluation_broad_runs(
+    evaluations: Mapping[str, object],
+    policy_key: str,
+) -> list[Mapping[str, object]]:
+    evaluation = _mapping(evaluations.get(policy_key))
+    broad = _mapping(evaluation.get("broad"))
+    runs = broad.get("runs")
+    if not isinstance(runs, list):
+        return []
+    return [run for run in runs if isinstance(run, Mapping)]
+
+
+def _candidate_vs_linear_per_seed(
+    evaluations: Mapping[str, object],
+) -> list[dict[str, object]]:
+    linear_runs = {
+        _int_metric(run.get("seed")): run
+        for run in _evaluation_broad_runs(evaluations, "linear_default")
+    }
+    deltas: list[dict[str, object]] = []
+    for candidate_run in _evaluation_broad_runs(evaluations, "candidate"):
+        seed = _int_metric(candidate_run.get("seed"))
+        linear_run = linear_runs.get(seed)
+        if linear_run is None:
+            continue
+        candidate_alive = _int_metric(candidate_run.get("alive_agents"))
+        linear_alive = _int_metric(linear_run.get("alive_agents"))
+        candidate_births = _int_metric(candidate_run.get("births"))
+        linear_births = _int_metric(linear_run.get("births"))
+        deltas.append(
+            {
+                "seed": seed,
+                "candidate_alive_agents": candidate_alive,
+                "linear_alive_agents": linear_alive,
+                "alive_delta_vs_linear": candidate_alive - linear_alive,
+                "candidate_births": candidate_births,
+                "linear_births": linear_births,
+                "births_delta_vs_linear": candidate_births - linear_births,
+            }
+        )
+    return sorted(deltas, key=lambda item: _int_metric(item.get("seed")))
+
+
+def _min_seed_delta(
+    deltas: list[Mapping[str, object]],
+    *,
+    field: str,
+) -> float | None:
+    if not deltas:
+        return None
+    return min(_float_metric(delta.get(field)) for delta in deltas)
 
 
 def _fixture_metric(

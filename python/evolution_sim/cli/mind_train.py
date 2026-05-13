@@ -122,6 +122,63 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--torch-iql-contextual-behavior-prior-loss-weight",
+        type=float,
+        help=(
+            "Override the contextual behavior-prior actor loss weight for "
+            "torch-discrete-iql experiments."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-action-distribution-loss-weight",
+        type=float,
+        help=(
+            "Override the actor marginal-action distribution loss weight for "
+            "torch-discrete-iql experiments."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-action-distribution-temperature",
+        type=float,
+        help=(
+            "Override the actor marginal-action distribution softmax "
+            "temperature for torch-discrete-iql experiments."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-rollout-state-action-calibration",
+        action="store_true",
+        help=(
+            "Opt in to post-training actor-bias calibration that caps "
+            "deterministic top-1 action share on the calibration trajectory "
+            "bank for torch-discrete-iql experiments."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-rollout-state-action-max-share",
+        type=float,
+        help=(
+            "Override the rollout-state top-1 action share cap for "
+            "torch-discrete-iql actor-bias calibration."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-rollout-state-action-bias-step",
+        type=float,
+        help=(
+            "Override the per-iteration actor-bias decrement for "
+            "rollout-state top-1 action calibration."
+        ),
+    )
+    parser.add_argument(
+        "--torch-iql-rollout-state-action-max-bias-delta",
+        type=float,
+        help=(
+            "Override the maximum absolute actor-bias decrement applied by "
+            "rollout-state top-1 action calibration."
+        ),
+    )
+    parser.add_argument(
         "--torch-iql-constraint-aware-actor-extraction",
         action="store_true",
         help=(
@@ -254,6 +311,27 @@ def main() -> None:
         ),
         torch_iql_action_distribution_regularization=(
             args.torch_iql_action_distribution_regularization
+        ),
+        torch_iql_contextual_behavior_prior_loss_weight=(
+            args.torch_iql_contextual_behavior_prior_loss_weight
+        ),
+        torch_iql_action_distribution_loss_weight=(
+            args.torch_iql_action_distribution_loss_weight
+        ),
+        torch_iql_action_distribution_temperature=(
+            args.torch_iql_action_distribution_temperature
+        ),
+        torch_iql_rollout_state_action_calibration=(
+            args.torch_iql_rollout_state_action_calibration
+        ),
+        torch_iql_rollout_state_action_max_share=(
+            args.torch_iql_rollout_state_action_max_share
+        ),
+        torch_iql_rollout_state_action_bias_step=(
+            args.torch_iql_rollout_state_action_bias_step
+        ),
+        torch_iql_rollout_state_action_max_bias_delta=(
+            args.torch_iql_rollout_state_action_max_bias_delta
         ),
         torch_iql_neural_actor_prior_blend_weight=(
             args.torch_iql_neural_actor_prior_blend_weight

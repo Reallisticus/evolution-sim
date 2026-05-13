@@ -191,6 +191,9 @@ class SimulationWorld:
         self.trajectory_records: list[dict[str, object]] = []
         self.policy_decision_diagnostics_records: list[dict[str, object] | None] = []
         self.policy_update_trace_records: list[dict[str, object]] = []
+        self.policy_update_trace_records_by_trajectory_record: list[
+            dict[str, object] | None
+        ] = []
         self.record_trajectory = True
         self.retain_trajectory_records = True
         self.trajectory_sink: runtime_trajectory.TrajectorySink | None = None
@@ -3362,6 +3365,9 @@ class SimulationWorld:
             if self.retain_trajectory_records:
                 self.policy_decision_diagnostics_records.append(
                     dict(diagnostics) if isinstance(diagnostics, dict) else None
+                )
+                self.policy_update_trace_records_by_trajectory_record.append(
+                    dict(update_trace) if isinstance(update_trace, dict) else None
                 )
                 self.trajectory_records.append(record)
 

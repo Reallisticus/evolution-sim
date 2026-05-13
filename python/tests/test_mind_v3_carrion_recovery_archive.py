@@ -10,6 +10,9 @@ from evolution_sim.cli import mind_v3_carrion_recovery_archive
 from evolution_sim.mind.carrion_branch_explore import (
     MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION,
 )
+from evolution_sim.mind.carrion_counterfactual import (
+    MIND_V3_CARRION_COUNTERFACTUAL_SCHEMA_VERSION,
+)
 from evolution_sim.mind.carrion_recovery_archive import (
     MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
     build_carrion_recovery_archive_report,
@@ -100,6 +103,64 @@ class MindV3CarrionRecoveryArchiveTests(unittest.TestCase):
         self.assertTrue(payload["acceptance"]["archive_acceptance_passed"])
         self.assertEqual(len(dataset_lines), payload["dataset"]["record_count"])
 
+    def test_archive_can_append_counterfactual_fixture_survivor_records(
+        self,
+    ) -> None:
+        report = build_carrion_recovery_archive_report(
+            branch_report=_synthetic_branch_report(),
+            counterfactual_report=_synthetic_counterfactual_report(),
+            min_survivor_cells=2,
+            min_failure_cells=1,
+            min_counterfactual_survivor_seeds=2,
+        )
+
+        counterfactual_records = [
+            record
+            for record in report["dataset"]["records"]
+            if record["source"].get("source_type")
+            == "counterfactual_fixture_rollout"
+        ]
+
+        self.assertTrue(report["acceptance"]["archive_acceptance_passed"])
+        self.assertEqual(
+            report["aggregate"]["counterfactual_survivor_seed_count"],
+            2,
+        )
+        self.assertEqual(
+            report["aggregate"]["counterfactual_survivor_seeds"],
+            [13, 29],
+        )
+        self.assertEqual(len(counterfactual_records), 3)
+        self.assertGreaterEqual(report["dataset"]["survivor_count"], 4)
+
+    def test_archive_counts_only_trainable_counterfactual_survivor_seeds(
+        self,
+    ) -> None:
+        counterfactual_report = _synthetic_counterfactual_report()
+        counterfactual_report["scripts"][0]["runs"][1].pop("trajectory_path")
+
+        report = build_carrion_recovery_archive_report(
+            branch_report=_synthetic_branch_report(),
+            counterfactual_report=counterfactual_report,
+            min_survivor_cells=2,
+            min_failure_cells=1,
+            min_counterfactual_survivor_seeds=2,
+        )
+
+        self.assertFalse(report["acceptance"]["archive_acceptance_passed"])
+        self.assertIn(
+            "insufficient_counterfactual_survivor_seeds",
+            report["acceptance"]["blockers"],
+        )
+        self.assertEqual(
+            report["aggregate"]["counterfactual_report_survivor_seeds"],
+            [13, 29],
+        )
+        self.assertEqual(
+            report["aggregate"]["counterfactual_survivor_seeds"],
+            [13],
+        )
+
 
 def _synthetic_branch_report() -> dict[str, object]:
     return {
@@ -151,6 +212,28 @@ def _synthetic_branch_report() -> dict[str, object]:
     }
 
 
+def _synthetic_counterfactual_report() -> dict[str, object]:
+    return {
+        "schema_version": MIND_V3_CARRION_COUNTERFACTUAL_SCHEMA_VERSION,
+        "counterfactual_policy": "scripted_policy_visible_carrion_water_recovery_v1",
+        "counterfactual_contract": {
+            "seeds": [13, 29, 37],
+            "ticks": 120,
+            "fixture_name": "carrion_only",
+        },
+        "scripts": [
+            {
+                "script_name": "hydration_safe_carrion_cycle",
+                "runs": [
+                    _counterfactual_run(seed=13, alive=2, births=9),
+                    _counterfactual_run(seed=29, alive=3, births=12),
+                    _counterfactual_run(seed=37, alive=0, births=4),
+                ],
+            }
+        ],
+    }
+
+
 def _branch_run(
     *,
     seed: int,
@@ -185,6 +268,30 @@ def _branch_run(
         "heuristic_action_source_count": 0,
         "zero_heuristic_runtime_actions": True,
         "trajectory_path": f"output/branch-{seed}-{script}.jsonl.gz",
+    }
+
+
+def _counterfactual_run(
+    *,
+    seed: int,
+    alive: int,
+    births: int,
+) -> dict[str, object]:
+    return {
+        "seed": seed,
+        "fixture": "carrion_only",
+        "counterfactual_script": "hydration_safe_carrion_cycle",
+        "alive_agents": alive,
+        "births": births,
+        "deaths": 12 + births - alive,
+        "dominant_requested_action": "stay",
+        "dominant_requested_action_share": 0.24,
+        "unique_requested_actions": 7,
+        "heuristic_action_source_count": 0,
+        "trajectory_path": (
+            "output/mind/counterfactual-"
+            f"hydration-safe-carrion-cycle-seed-{seed}.jsonl.gz"
+        ),
     }
 
 

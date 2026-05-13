@@ -669,12 +669,41 @@ def _write_trajectory_records(
         contract=runtime_trajectory.trajectory_contract(world.config.signals),
     )
     try:
-        for record in world.trajectory_records:
+        for record in _trajectory_records_with_optional_metadata(world):
             writer.write_record(record)
         writer.finish(summary=dict(summary))
     except Exception:
         writer.abort()
         raise
+
+
+def _trajectory_records_with_optional_metadata(
+    world: SimulationWorld,
+) -> list[dict[str, object]]:
+    records = list(world.trajectory_records)
+    diagnostics = list(world.policy_decision_diagnostics_records)
+    update_traces = list(
+        getattr(world, "policy_update_trace_records_by_trajectory_record", [])
+    )
+    diagnostics_aligned = len(diagnostics) == len(records)
+    update_traces_aligned = len(update_traces) == len(records)
+    enriched_records: list[dict[str, object]] = []
+    for index, record in enumerate(records):
+        enriched = dict(record)
+        if (
+            "policy_decision_diagnostics" not in enriched
+            and diagnostics_aligned
+            and isinstance(diagnostics[index], dict)
+        ):
+            enriched["policy_decision_diagnostics"] = dict(diagnostics[index])
+        if (
+            "policy_update_trace" not in enriched
+            and update_traces_aligned
+            and isinstance(update_traces[index], dict)
+        ):
+            enriched["policy_update_trace"] = dict(update_traces[index])
+        enriched_records.append(enriched)
+    return enriched_records
 
 
 def _trajectory_output_path(

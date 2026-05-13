@@ -17,6 +17,7 @@ from evolution_sim.mind.carrion_counterfactual import (
     DEFAULT_CARRION_COUNTERFACTUAL_SEEDS,
     DEFAULT_CARRION_COUNTERFACTUAL_TICKS,
     DEFAULT_COUNTERFACTUAL_SCRIPTS,
+    MIND_V3_CARRION_COUNTERFACTUAL_SCHEMA_VERSION,
 )
 from evolution_sim.mind.outcome_metrics import aggregate_run_outcome_metrics
 from evolution_sim.mind.provenance import stable_payload_digest
@@ -52,6 +53,8 @@ def build_carrion_recovery_archive_report(
     *,
     branch_report: Mapping[str, object] | None = None,
     branch_report_path: str | Path | None = None,
+    counterfactual_report: Mapping[str, object] | None = None,
+    counterfactual_report_path: str | Path | None = None,
     seeds: Sequence[int] = DEFAULT_CARRION_COUNTERFACTUAL_SEEDS,
     ticks: int = DEFAULT_CARRION_COUNTERFACTUAL_TICKS,
     base_script: str = DEFAULT_CARRION_BRANCH_BASE_SCRIPT,
@@ -66,6 +69,7 @@ def build_carrion_recovery_archive_report(
     ),
     min_survivor_cells: int = DEFAULT_RECOVERY_ARCHIVE_MIN_SURVIVOR_CELLS,
     min_failure_cells: int = DEFAULT_RECOVERY_ARCHIVE_MIN_FAILURE_CELLS,
+    min_counterfactual_survivor_seeds: int = 0,
 ) -> dict[str, object]:
     if branch_report is None:
         if branch_report_path is not None:
@@ -94,7 +98,22 @@ def build_carrion_recovery_archive_report(
         min_failure_cells,
         field="min_failure_cells",
     )
+    min_counterfactual_seed_count = _nonnegative_int(
+        min_counterfactual_survivor_seeds,
+        field="min_counterfactual_survivor_seeds",
+    )
+    if counterfactual_report is None and counterfactual_report_path is not None:
+        counterfactual_report = load_carrion_recovery_json_report(
+            counterfactual_report_path
+        )
+    if counterfactual_report is not None:
+        _validate_counterfactual_report(counterfactual_report)
     branch_runs = _branch_runs(branch_report)
+    counterfactual_runs = (
+        _counterfactual_runs(counterfactual_report)
+        if counterfactual_report is not None
+        else []
+    )
     branch_digest = stable_payload_digest(
         {
             "schema_version": branch_report.get("schema_version"),
@@ -103,25 +122,51 @@ def build_carrion_recovery_archive_report(
             "branch_runs": branch_runs,
         }
     )
+    counterfactual_digest = (
+        stable_payload_digest(
+            {
+                "schema_version": counterfactual_report.get("schema_version"),
+                "counterfactual_contract": counterfactual_report.get(
+                    "counterfactual_contract"
+                ),
+                "runs": counterfactual_runs,
+            }
+        )
+        if counterfactual_report is not None
+        else None
+    )
     contract = _archive_contract(
         branch_report=branch_report,
+        counterfactual_report=counterfactual_report,
         max_dataset_records_per_class=max_records,
         min_survivor_cells=min_survivors,
         min_failure_cells=min_failures,
+        min_counterfactual_survivor_seeds=min_counterfactual_seed_count,
     )
     cells = _archive_cells(branch_runs)
-    dataset_records = _balanced_dataset_records(
+    branch_dataset_records = _balanced_dataset_records(
         cells,
         max_dataset_records_per_class=max_records,
     )
+    counterfactual_dataset_records = _counterfactual_dataset_records(
+        counterfactual_runs
+    )
+    dataset_records = branch_dataset_records + counterfactual_dataset_records
     if dataset_output_path is not None:
         write_carrion_recovery_dataset_records(dataset_records, dataset_output_path)
-    aggregate = _archive_aggregate(cells, branch_runs, dataset_records)
+    aggregate = _archive_aggregate(
+        cells,
+        branch_runs,
+        dataset_records,
+        counterfactual_runs=counterfactual_runs,
+        counterfactual_dataset_records=counterfactual_dataset_records,
+    )
     acceptance = _archive_acceptance(
         aggregate,
         branch_report=branch_report,
         min_survivor_cells=min_survivors,
         min_failure_cells=min_failures,
+        min_counterfactual_survivor_seeds=min_counterfactual_seed_count,
     )
     return {
         "schema_version": MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
@@ -130,6 +175,7 @@ def build_carrion_recovery_archive_report(
         "provenance": {
             "archive_contract_digest": stable_payload_digest(contract),
             "source_branch_report_digest": branch_digest,
+            "source_counterfactual_report_digest": counterfactual_digest,
         },
         "source": {
             "branch_report_path": (
@@ -138,6 +184,21 @@ def build_carrion_recovery_archive_report(
             "branch_schema_version": branch_report.get("schema_version"),
             "branch_policy": branch_report.get("branch_policy"),
             "branch_acceptance": branch_report.get("acceptance"),
+            "counterfactual_report_path": (
+                str(counterfactual_report_path)
+                if counterfactual_report_path is not None
+                else None
+            ),
+            "counterfactual_schema_version": (
+                counterfactual_report.get("schema_version")
+                if counterfactual_report is not None
+                else None
+            ),
+            "counterfactual_policy": (
+                counterfactual_report.get("counterfactual_policy")
+                if counterfactual_report is not None
+                else None
+            ),
         },
         "archive": {
             "cell_count": len(cells),
@@ -190,14 +251,21 @@ def write_carrion_recovery_dataset_records(
 def _archive_contract(
     *,
     branch_report: Mapping[str, object],
+    counterfactual_report: Mapping[str, object] | None,
     max_dataset_records_per_class: int,
     min_survivor_cells: int,
     min_failure_cells: int,
+    min_counterfactual_survivor_seeds: int,
 ) -> dict[str, object]:
     return {
         "schema_version": MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
         "policy": MIND_V3_CARRION_RECOVERY_ARCHIVE_POLICY,
         "source_branch_schema_version": branch_report.get("schema_version"),
+        "source_counterfactual_schema_version": (
+            counterfactual_report.get("schema_version")
+            if counterfactual_report is not None
+            else None
+        ),
         "descriptor_policy": (
             "branch_tick_band + contact_energy_bin + contact_hydration_bin + "
             "resource_gain_bin + terminal_alive_bin + births_bin + "
@@ -213,6 +281,9 @@ def _archive_contract(
         "max_dataset_records_per_class": int(max_dataset_records_per_class),
         "min_survivor_cells": int(min_survivor_cells),
         "min_failure_cells": int(min_failure_cells),
+        "min_counterfactual_survivor_seeds": int(
+            min_counterfactual_survivor_seeds
+        ),
     }
 
 
@@ -224,12 +295,43 @@ def _validate_branch_report(report: Mapping[str, object]) -> None:
         raise CarrionRecoveryArchiveError("branch report must include branch_runs")
 
 
+def _validate_counterfactual_report(report: Mapping[str, object]) -> None:
+    if report.get("schema_version") != MIND_V3_CARRION_COUNTERFACTUAL_SCHEMA_VERSION:
+        raise CarrionRecoveryArchiveError(
+            "counterfactual report has stale schema_version"
+        )
+    scripts = report.get("scripts")
+    if not isinstance(scripts, list) or not scripts:
+        raise CarrionRecoveryArchiveError(
+            "counterfactual report must include scripts"
+        )
+
+
 def _branch_runs(report: Mapping[str, object]) -> list[Mapping[str, object]]:
     return [
         run
         for run in list(report.get("branch_runs", []))
         if isinstance(run, Mapping)
     ]
+
+
+def _counterfactual_runs(
+    report: Mapping[str, object] | None,
+) -> list[Mapping[str, object]]:
+    if report is None:
+        return []
+    runs = []
+    scripts = report.get("scripts")
+    script_items = scripts if isinstance(scripts, list) else []
+    for script in script_items:
+        if not isinstance(script, Mapping):
+            continue
+        script_runs = script.get("runs")
+        run_items = script_runs if isinstance(script_runs, list) else []
+        for run in run_items:
+            if isinstance(run, Mapping):
+                runs.append(run)
+    return runs
 
 
 def _archive_cells(
@@ -290,6 +392,75 @@ def _balanced_dataset_records(
             continue
         records.append(_dataset_record(cell, elite))
     return records
+
+
+def _counterfactual_dataset_records(
+    runs: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    records = []
+    for run in runs:
+        if not _has_trajectory_path(run):
+            continue
+        records.append(_counterfactual_dataset_record(run))
+    records.sort(
+        key=lambda record: (
+            not bool(dict(record.get("label", {})).get("terminal_survivor")),
+            int(dict(record.get("source", {})).get("seed", 0)),
+            str(dict(record.get("source", {})).get("continuation_script", "")),
+        )
+    )
+    return records
+
+
+def _counterfactual_dataset_record(
+    run: Mapping[str, object],
+) -> dict[str, object]:
+    alive = _int_value(run.get("alive_agents"))
+    births = _int_value(run.get("births"))
+    heuristic_count = _int_value(run.get("heuristic_action_source_count"))
+    terminal_survivor = alive > 0 and heuristic_count == 0
+    script = str(run.get("counterfactual_script", "unknown"))
+    seed = _int_value(run.get("seed"))
+    payload = {
+        "schema_version": MIND_V3_CARRION_RECOVERY_DATASET_RECORD_SCHEMA_VERSION,
+        "source": {
+            "source_type": "counterfactual_fixture_rollout",
+            "branch_id": f"counterfactual-{script}-seed-{seed}",
+            "seed": seed,
+            "fixture": run.get("fixture"),
+            "branch_tick": None,
+            "base_script": None,
+            "continuation_script": script,
+            "trajectory_path": run.get("trajectory_path"),
+        },
+        "descriptor": {
+            "source_type": "counterfactual_fixture_rollout",
+            "fixture": run.get("fixture"),
+            "terminal_alive_bin": _alive_bin(alive),
+            "births_bin": _births_bin(births),
+            "continuation_script": script,
+            "dominant_requested_action": run.get("dominant_requested_action"),
+        },
+        "label": {
+            "outcome_class": "survivor" if terminal_survivor else "failure",
+            "terminal_survivor": terminal_survivor,
+            "alive_agents": alive,
+            "births": births,
+            "zero_heuristic_runtime_actions": heuristic_count == 0,
+        },
+        "metrics": {
+            "quality_score": _quality_score(run),
+            "dominant_requested_action": run.get("dominant_requested_action"),
+            "dominant_requested_action_share": run.get(
+                "dominant_requested_action_share"
+            ),
+            "unique_requested_actions": run.get("unique_requested_actions"),
+            "heuristic_action_source_count": heuristic_count,
+        },
+        "outcome_metrics": run.get("outcome_metrics"),
+    }
+    payload["record_id"] = stable_payload_digest(payload)
+    return payload
 
 
 def _select_dataset_cells(
@@ -354,6 +525,9 @@ def _archive_aggregate(
     cells: Sequence[Mapping[str, object]],
     branch_runs: Sequence[Mapping[str, object]],
     dataset_records: Sequence[Mapping[str, object]],
+    *,
+    counterfactual_runs: Sequence[Mapping[str, object]] = (),
+    counterfactual_dataset_records: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     survivor_cells = [
         cell for cell in cells if str(cell.get("outcome_class")) == "survivor"
@@ -376,6 +550,23 @@ def _archive_aggregate(
         for cell in cells
         if isinstance(cell.get("elite"), Mapping)
     ]
+    counterfactual_survivor_seeds = sorted(
+        {
+            _int_value(run.get("seed"))
+            for run in counterfactual_runs
+            if _has_trajectory_path(run)
+            and _int_value(run.get("alive_agents")) > 0
+            and _int_value(run.get("heuristic_action_source_count")) == 0
+        }
+    )
+    counterfactual_report_survivor_seeds = sorted(
+        {
+            _int_value(run.get("seed"))
+            for run in counterfactual_runs
+            if _int_value(run.get("alive_agents")) > 0
+            and _int_value(run.get("heuristic_action_source_count")) == 0
+        }
+    )
     return {
         "source_branch_run_count": len(branch_runs),
         "cell_count": len(cells),
@@ -384,6 +575,17 @@ def _archive_aggregate(
         "seeds_with_survivor_cells": seeds_with_survivor,
         "outcome_class_counts": dict(sorted(descriptor_counts.items())),
         "dataset_record_count": len(dataset_records),
+        "branch_dataset_record_count": (
+            len(dataset_records) - len(counterfactual_dataset_records)
+        ),
+        "counterfactual_dataset_record_count": len(counterfactual_dataset_records),
+        "counterfactual_source_run_count": len(counterfactual_runs),
+        "counterfactual_survivor_seed_count": len(counterfactual_survivor_seeds),
+        "counterfactual_survivor_seeds": counterfactual_survivor_seeds,
+        "counterfactual_report_survivor_seed_count": (
+            len(counterfactual_report_survivor_seeds)
+        ),
+        "counterfactual_report_survivor_seeds": counterfactual_report_survivor_seeds,
         "dataset_survivor_count": sum(
             1
             for record in dataset_records
@@ -395,10 +597,20 @@ def _archive_aggregate(
             if not bool(dict(record.get("label", {})).get("terminal_survivor", False))
         ),
         "source_outcome_metrics": aggregate_run_outcome_metrics(branch_runs),
+        "counterfactual_outcome_metrics": aggregate_run_outcome_metrics(
+            counterfactual_runs
+        )
+        if counterfactual_runs
+        else {},
         "outcome_metrics": aggregate_run_outcome_metrics(elite_runs),
         "best_survivor_elite": _best_elite(survivor_cells),
         "best_failure_elite": _best_elite(failure_cells),
     }
+
+
+def _has_trajectory_path(run: Mapping[str, object]) -> bool:
+    trajectory_path = run.get("trajectory_path")
+    return isinstance(trajectory_path, str) and bool(trajectory_path)
 
 
 def _archive_acceptance(
@@ -407,6 +619,7 @@ def _archive_acceptance(
     branch_report: Mapping[str, object],
     min_survivor_cells: int,
     min_failure_cells: int,
+    min_counterfactual_survivor_seeds: int,
 ) -> dict[str, object]:
     branch_acceptance = branch_report.get("acceptance")
     branch_acceptance_payload = (
@@ -424,6 +637,9 @@ def _archive_acceptance(
     failure_cells = int(aggregate.get("failure_cell_count", 0))
     dataset_survivors = int(aggregate.get("dataset_survivor_count", 0))
     dataset_failures = int(aggregate.get("dataset_failure_count", 0))
+    counterfactual_survivor_seeds = int(
+        aggregate.get("counterfactual_survivor_seed_count", 0)
+    )
     blockers = []
     if not branch_passed:
         blockers.append("source_branch_report_not_accepted")
@@ -437,6 +653,8 @@ def _archive_acceptance(
         blockers.append("dataset_missing_survivor_records")
     if min_failure_cells > 0 and dataset_failures <= 0:
         blockers.append("dataset_missing_failure_records")
+    if counterfactual_survivor_seeds < min_counterfactual_survivor_seeds:
+        blockers.append("insufficient_counterfactual_survivor_seeds")
     return {
         "archive_acceptance_passed": not blockers,
         "blockers": blockers,
@@ -448,6 +666,8 @@ def _archive_acceptance(
         "failure_cell_count": failure_cells,
         "dataset_survivor_count": dataset_survivors,
         "dataset_failure_count": dataset_failures,
+        "min_counterfactual_survivor_seeds": min_counterfactual_survivor_seeds,
+        "counterfactual_survivor_seed_count": counterfactual_survivor_seeds,
     }
 
 

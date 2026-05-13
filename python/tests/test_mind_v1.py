@@ -1387,6 +1387,17 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertEqual(margin_guard_scores["drink"], 1.0)
         self.assertEqual(margin_guard_scores["move_east"], 0.0)
+        shadowed_scores = _blend_neural_with_linear_anchor(
+            neural_scores={"eat": 10.0, "move_south": 0.0},
+            linear_scores={"eat": 0.0, "move_south": 0.000041},
+            action_mask={
+                action: action in {"eat", "move_south"}
+                for action in ACTION_NAMES
+            },
+            residual_scale=0.0,
+        )
+
+        self.assertGreater(shadowed_scores["move_south"], shadowed_scores["eat"])
 
     def test_mind_v3_neural_policy_updates_anchor_controller_only(
         self,
@@ -5617,6 +5628,8 @@ class MindV1Tests(unittest.TestCase):
                 provenance=dataset_provenance(dataset),
                 trainer="torch-discrete-iql",
                 torch_iql_action_distribution_regularization=True,
+                torch_iql_action_distribution_loss_weight=0.9,
+                torch_iql_action_distribution_temperature=0.11,
             ).to_artifact()
 
         training_metrics = artifact["model"]["neural_network"]["training_metrics"]
@@ -5631,12 +5644,22 @@ class MindV1Tests(unittest.TestCase):
             training_metrics["actor_action_distribution_loss_weight"],
             0.0,
         )
+        self.assertEqual(
+            training_metrics["actor_action_distribution_loss_weight"],
+            0.9,
+        )
         self.assertIn("final_action_distribution_loss", training_metrics)
         self.assertEqual(
             training_metrics["actor_action_distribution"][
                 "schema_version"
             ],
             "mind_action_distribution_actor_regularization_v1",
+        )
+        self.assertEqual(
+            training_metrics["actor_action_distribution"][
+                "action_distribution_temperature"
+            ],
+            0.11,
         )
 
     def test_torch_discrete_iql_action_distribution_regularization_rejects_other_trainers(
@@ -5655,6 +5678,127 @@ class MindV1Tests(unittest.TestCase):
                     provenance=dataset_provenance(dataset),
                     trainer="contextual-prior",
                     torch_iql_action_distribution_regularization=True,
+                )
+            with self.assertRaisesRegex(
+                ValueError,
+                "torch_iql_action_distribution_temperature",
+            ):
+                train_baseline_with_trainer(
+                    dataset.records,
+                    provenance=dataset_provenance(dataset),
+                    trainer="contextual-prior",
+                    torch_iql_action_distribution_temperature=0.11,
+                )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("torch"),
+        "PyTorch is an optional Mind ML dependency",
+    )
+    def test_torch_discrete_iql_rollout_state_action_calibration_is_opt_in(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            calibration_path = Path(tmpdir) / "calibration.jsonl.gz"
+            calibration_validation_path = (
+                Path(tmpdir) / "calibration-validation.jsonl.gz"
+            )
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            self._write_tiny_trajectory(calibration_path, seed=8)
+            self._write_tiny_trajectory(calibration_validation_path, seed=9)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            calibration_dataset = load_trajectory_jsonl(calibration_path)
+            calibration_validation_dataset = load_trajectory_jsonl(
+                calibration_validation_path
+            )
+            artifact = train_baseline_with_trainer(
+                dataset.records,
+                provenance=dataset_provenance(dataset),
+                trainer="torch-discrete-iql",
+                torch_iql_rollout_state_action_calibration=True,
+                torch_iql_rollout_state_action_max_share=0.1,
+                torch_iql_rollout_state_action_bias_step=0.2,
+                torch_iql_rollout_state_action_max_bias_delta=0.4,
+                torch_iql_actor_calibration_records=calibration_dataset.records,
+                torch_iql_actor_calibration_validation_records=(
+                    calibration_validation_dataset.records
+                ),
+            ).to_artifact()
+
+        training_metrics = artifact["model"]["neural_network"]["training_metrics"]
+        self.assertTrue(
+            training_metrics["actor_rollout_state_action_calibration_enabled"]
+        )
+        self.assertIn(
+            "calibration_bank_top1_actor_bias_control_v1",
+            training_metrics["actor_weighting_policy"],
+        )
+        self.assertEqual(
+            training_metrics["actor_rollout_state_action_calibration_policy"],
+            "calibration_bank_top1_actor_bias_control_v1",
+        )
+        self.assertEqual(
+            training_metrics["actor_rollout_state_action_calibration_max_share"],
+            0.1,
+        )
+        report = training_metrics["actor_rollout_state_action_calibration"]
+        self.assertEqual(
+            report["schema_version"],
+            "mind_rollout_state_action_calibration_v1",
+        )
+        self.assertGreater(report["calibration_transition_count"], 0)
+        self.assertGreaterEqual(report["iteration_count"], 0)
+        self.assertIn("before", report)
+        self.assertIn("after", report)
+        self.assertEqual(
+            report["before"]["schema_version"],
+            "mind_rollout_state_action_top1_report_v1",
+        )
+        self.assertTrue(
+            any(abs(float(value)) > 0.0 for value in report["action_bias_delta"].values())
+        )
+        validation = training_metrics[
+            "actor_rollout_state_action_calibration_validation"
+        ]
+        self.assertGreater(validation["row_count"], 0)
+        json.dumps(artifact)
+
+    def test_torch_discrete_iql_rollout_state_action_calibration_rejects_invalid_use(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "trajectory.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            with self.assertRaisesRegex(
+                ValueError,
+                "torch_iql_rollout_state_action_calibration",
+            ):
+                train_baseline_with_trainer(
+                    dataset.records,
+                    provenance=dataset_provenance(dataset),
+                    trainer="contextual-prior",
+                    torch_iql_rollout_state_action_calibration=True,
+                )
+            with self.assertRaisesRegex(
+                ValueError,
+                "torch_iql_actor_calibration_records",
+            ):
+                train_baseline_with_trainer(
+                    dataset.records,
+                    provenance=dataset_provenance(dataset),
+                    trainer="torch-discrete-iql",
+                    torch_iql_rollout_state_action_calibration=True,
+                )
+            with self.assertRaisesRegex(
+                ValueError,
+                "torch_iql_rollout_state_action_max_share",
+            ):
+                train_baseline_with_trainer(
+                    dataset.records,
+                    provenance=dataset_provenance(dataset),
+                    trainer="contextual-prior",
+                    torch_iql_rollout_state_action_max_share=0.5,
                 )
 
     @unittest.skipUnless(
@@ -7304,12 +7448,30 @@ class MindV1Tests(unittest.TestCase):
             )
             open_trajectory_exists = open_trajectory_path.exists()
             fixture_trajectory_exists = fixture_trajectory_path.exists()
-            open_trajectory_record_count = load_trajectory_jsonl(
-                open_trajectory_path
-            ).record_count
-            fixture_trajectory_record_count = load_trajectory_jsonl(
-                fixture_trajectory_path
-            ).record_count
+            open_trajectory = load_trajectory_jsonl(open_trajectory_path)
+            fixture_trajectory = load_trajectory_jsonl(fixture_trajectory_path)
+            open_trajectory_record_count = open_trajectory.record_count
+            fixture_trajectory_record_count = fixture_trajectory.record_count
+            open_diagnostic_record_count = sum(
+                1
+                for record in open_trajectory.records
+                if isinstance(record.get("policy_decision_diagnostics"), dict)
+            )
+            fixture_diagnostic_record_count = sum(
+                1
+                for record in fixture_trajectory.records
+                if isinstance(record.get("policy_decision_diagnostics"), dict)
+            )
+            open_update_trace_record_count = sum(
+                1
+                for record in open_trajectory.records
+                if isinstance(record.get("policy_update_trace"), dict)
+            )
+            fixture_update_trace_record_count = sum(
+                1
+                for record in fixture_trajectory.records
+                if isinstance(record.get("policy_update_trace"), dict)
+            )
 
         self.assertIn("mind_v3_fixture_count=1", stdout.getvalue())
         self.assertEqual(fixture_suite["fixture_names"], ["carrion_only"])
@@ -7336,6 +7498,10 @@ class MindV1Tests(unittest.TestCase):
                 "trajectory_record_count"
             ],
         )
+        self.assertGreater(open_diagnostic_record_count, 0)
+        self.assertGreater(fixture_diagnostic_record_count, 0)
+        self.assertGreater(open_update_trace_record_count, 0)
+        self.assertGreater(fixture_update_trace_record_count, 0)
 
     def test_mind_v3_fixture_gate_blocks_mixed_stable_birth_floor(
         self,
@@ -7561,6 +7727,88 @@ class MindV1Tests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertIn(
             "broad_alive_regression_vs_linear",
+            {blocker["reason"] for blocker in gate["blockers"]},
+        )
+
+    def test_labeled_iql_acceptance_blocks_per_seed_regression(
+        self,
+    ) -> None:
+        evaluations = {
+            "linear_default": {
+                "broad": {
+                    "runs": [
+                        {"seed": 5, "alive_agents": 8, "births": 7},
+                        {"seed": 13, "alive_agents": 19, "births": 16},
+                    ],
+                    "aggregate": {
+                        "alive_agents_mean": 13.5,
+                        "births_mean": 11.5,
+                        "dominant_requested_action_share": 0.42,
+                        "heuristic_action_source_count": 0,
+                    },
+                },
+                "fixture_gate": {
+                    "blockers": [{}],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 0.0,
+                            }
+                        }
+                    },
+                },
+            },
+            "candidate": {
+                "broad": {
+                    "runs": [
+                        {"seed": 5, "alive_agents": 24, "births": 23},
+                        {"seed": 13, "alive_agents": 18, "births": 15},
+                    ],
+                    "aggregate": {
+                        "alive_agents_mean": 21.0,
+                        "births_mean": 19.0,
+                        "dominant_requested_action_share": 0.49,
+                        "heuristic_action_source_count": 0,
+                    },
+                },
+                "fixture_gate": {
+                    "blockers": [{}],
+                    "per_fixture": {
+                        "carrion_only": {
+                            "metrics": {
+                                "alive_agents_mean": 1.0,
+                            }
+                        }
+                    },
+                },
+            },
+        }
+
+        gate = mind_v3_labeled_iql_slice.build_labeled_iql_acceptance_gate(
+            evaluations=evaluations,
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["metrics"]["candidate_min_seed_alive_delta_vs_linear"], -1)
+        self.assertEqual(gate["metrics"]["candidate_min_seed_births_delta_vs_linear"], -1)
+        self.assertIn(
+            {
+                "seed": 13,
+                "candidate_alive_agents": 18,
+                "linear_alive_agents": 19,
+                "alive_delta_vs_linear": -1,
+                "candidate_births": 15,
+                "linear_births": 16,
+                "births_delta_vs_linear": -1,
+            },
+            gate["metrics"]["candidate_vs_linear_per_seed"],
+        )
+        self.assertIn(
+            "open_seed_13_alive_regression_vs_linear",
+            {blocker["reason"] for blocker in gate["blockers"]},
+        )
+        self.assertIn(
+            "open_seed_13_birth_regression_vs_linear",
             {blocker["reason"] for blocker in gate["blockers"]},
         )
 

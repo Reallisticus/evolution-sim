@@ -524,6 +524,13 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
     contextual_behavior_supported_actor_extraction: bool = False,
     contextual_behavior_prior_regularization: bool = False,
     action_distribution_regularization: bool = False,
+    rollout_state_action_calibration: bool = False,
+    contextual_behavior_prior_loss_weight: float | None = None,
+    action_distribution_loss_weight: float | None = None,
+    action_distribution_temperature: float | None = None,
+    rollout_state_action_max_share: float | None = None,
+    rollout_state_action_bias_step: float | None = None,
+    rollout_state_action_max_bias_delta: float | None = None,
     calibration_records: Iterable[dict[str, object]] | None = None,
     calibration_validation_records: Iterable[dict[str, object]] | None = None,
     return_calibration: bool = False,
@@ -547,6 +554,7 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
         calibrated_supported_actor_extraction
         or contextual_behavior_supported_actor_extraction
         or contextual_behavior_prior_regularization
+        or rollout_state_action_calibration
     ) and not materialized_calibration_records:
         raise ValueError(
             "torch_iql_calibrated_supported_actor_extraction requires "
@@ -586,6 +594,15 @@ def train_torch_discrete_iql_behavior_cloning_baseline(
             action_distribution_regularization=(
                 action_distribution_regularization
             ),
+            rollout_state_action_calibration=rollout_state_action_calibration,
+            contextual_behavior_prior_loss_weight=(
+                contextual_behavior_prior_loss_weight
+            ),
+            action_distribution_loss_weight=action_distribution_loss_weight,
+            action_distribution_temperature=action_distribution_temperature,
+            rollout_state_action_max_share=rollout_state_action_max_share,
+            rollout_state_action_bias_step=rollout_state_action_bias_step,
+            rollout_state_action_max_bias_delta=rollout_state_action_max_bias_delta,
             calibration_validation_records=(
                 materialized_calibration_validation_records
             ),
@@ -798,6 +815,13 @@ def train_baseline_with_trainer(
     torch_iql_contextual_behavior_supported_actor_extraction: bool = False,
     torch_iql_contextual_behavior_prior_regularization: bool = False,
     torch_iql_action_distribution_regularization: bool = False,
+    torch_iql_rollout_state_action_calibration: bool = False,
+    torch_iql_contextual_behavior_prior_loss_weight: float | None = None,
+    torch_iql_action_distribution_loss_weight: float | None = None,
+    torch_iql_action_distribution_temperature: float | None = None,
+    torch_iql_rollout_state_action_max_share: float | None = None,
+    torch_iql_rollout_state_action_bias_step: float | None = None,
+    torch_iql_rollout_state_action_max_bias_delta: float | None = None,
     torch_iql_actor_calibration_validation_records: (
         Iterable[dict[str, object]] | None
     ) = None,
@@ -907,11 +931,71 @@ def train_baseline_with_trainer(
             f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
         )
     if (
-        torch_iql_contextual_behavior_prior_regularization
+        torch_iql_rollout_state_action_calibration
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_rollout_state_action_calibration is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_contextual_behavior_prior_loss_weight is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_contextual_behavior_prior_loss_weight is only "
+            f"supported by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_action_distribution_loss_weight is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_action_distribution_loss_weight is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_action_distribution_temperature is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_action_distribution_temperature is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_rollout_state_action_max_share is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_rollout_state_action_max_share is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_rollout_state_action_bias_step is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_rollout_state_action_bias_step is only supported by "
+            f"{TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        torch_iql_rollout_state_action_max_bias_delta is not None
+        and trainer != TORCH_DISCRETE_IQL_TRAINER
+    ):
+        raise ValueError(
+            "torch_iql_rollout_state_action_max_bias_delta is only supported "
+            f"by {TORCH_DISCRETE_IQL_TRAINER!r}"
+        )
+    if (
+        (
+            torch_iql_contextual_behavior_prior_regularization
+            or torch_iql_rollout_state_action_calibration
+        )
         and not materialized_actor_calibration_records
     ):
         raise ValueError(
-            "torch_iql_contextual_behavior_prior_regularization requires "
+            "torch_iql_contextual_behavior_prior_regularization and "
+            "torch_iql_rollout_state_action_calibration require "
             "torch_iql_actor_calibration_records"
         )
     if (
@@ -968,6 +1052,36 @@ def train_baseline_with_trainer(
         _validate_counterfactual_label_weight_scale(
             torch_iql_counterfactual_label_weight_scale,
             option_name="torch_iql_counterfactual_label_weight_scale",
+        )
+    if torch_iql_contextual_behavior_prior_loss_weight is not None:
+        _validate_nonnegative_float(
+            torch_iql_contextual_behavior_prior_loss_weight,
+            option_name="torch_iql_contextual_behavior_prior_loss_weight",
+        )
+    if torch_iql_action_distribution_loss_weight is not None:
+        _validate_nonnegative_float(
+            torch_iql_action_distribution_loss_weight,
+            option_name="torch_iql_action_distribution_loss_weight",
+        )
+    if torch_iql_action_distribution_temperature is not None:
+        _validate_positive_float(
+            torch_iql_action_distribution_temperature,
+            option_name="torch_iql_action_distribution_temperature",
+        )
+    if torch_iql_rollout_state_action_max_share is not None:
+        _validate_probability_float(
+            torch_iql_rollout_state_action_max_share,
+            option_name="torch_iql_rollout_state_action_max_share",
+        )
+    if torch_iql_rollout_state_action_bias_step is not None:
+        _validate_positive_float(
+            torch_iql_rollout_state_action_bias_step,
+            option_name="torch_iql_rollout_state_action_bias_step",
+        )
+    if torch_iql_rollout_state_action_max_bias_delta is not None:
+        _validate_nonnegative_float(
+            torch_iql_rollout_state_action_max_bias_delta,
+            option_name="torch_iql_rollout_state_action_max_bias_delta",
         )
     if trainer == CONTEXTUAL_PRIOR_TRAINER:
         return train_behavior_cloning_baseline(records, provenance=provenance)
@@ -1034,6 +1148,27 @@ def train_baseline_with_trainer(
             action_distribution_regularization=(
                 torch_iql_action_distribution_regularization
             ),
+            rollout_state_action_calibration=(
+                torch_iql_rollout_state_action_calibration
+            ),
+            contextual_behavior_prior_loss_weight=(
+                torch_iql_contextual_behavior_prior_loss_weight
+            ),
+            action_distribution_loss_weight=(
+                torch_iql_action_distribution_loss_weight
+            ),
+            action_distribution_temperature=(
+                torch_iql_action_distribution_temperature
+            ),
+            rollout_state_action_max_share=(
+                torch_iql_rollout_state_action_max_share
+            ),
+            rollout_state_action_bias_step=(
+                torch_iql_rollout_state_action_bias_step
+            ),
+            rollout_state_action_max_bias_delta=(
+                torch_iql_rollout_state_action_max_bias_delta
+            ),
             calibration_validation_records=(
                 materialized_actor_calibration_validation_records
             ),
@@ -1088,6 +1223,39 @@ def _validate_counterfactual_label_weight_scale(
         raise ValueError(f"{option_name} must be finite")
     if float(value) < 0.0:
         raise ValueError(f"{option_name} must be non-negative")
+
+
+def _validate_nonnegative_float(
+    value: float,
+    *,
+    option_name: str,
+) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{option_name} must be a finite number")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{option_name} must be finite")
+    if float(value) < 0.0:
+        raise ValueError(f"{option_name} must be non-negative")
+
+
+def _validate_positive_float(
+    value: float,
+    *,
+    option_name: str,
+) -> None:
+    _validate_nonnegative_float(value, option_name=option_name)
+    if float(value) <= 0.0:
+        raise ValueError(f"{option_name} must be positive")
+
+
+def _validate_probability_float(
+    value: float,
+    *,
+    option_name: str,
+) -> None:
+    _validate_positive_float(value, option_name=option_name)
+    if float(value) > 1.0:
+        raise ValueError(f"{option_name} must be less than or equal to 1")
 
 
 def _train_contextual_prior_baseline(

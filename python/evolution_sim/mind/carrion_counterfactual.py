@@ -36,6 +36,7 @@ DEFAULT_COUNTERFACTUAL_SCRIPTS: tuple[str, ...] = (
     "water_first_recovery",
     "conserve_after_carrion",
     "hydration_safe_carrion_cycle",
+    "water_rescue_carrion_cycle",
 )
 DEFAULT_CARRION_COUNTERFACTUAL_SEEDS: tuple[int, ...] = (29, 37)
 DEFAULT_CARRION_COUNTERFACTUAL_TICKS = 120
@@ -98,6 +99,8 @@ class CarrionCounterfactualPolicy:
             return _conserve_after_carrion(facts, action_mask)
         if self.script_name == "hydration_safe_carrion_cycle":
             return _hydration_safe_carrion_cycle(facts, action_mask)
+        if self.script_name == "water_rescue_carrion_cycle":
+            return _water_rescue_carrion_cycle(facts, action_mask)
         raise CarrionCounterfactualError(
             f"unsupported counterfactual script: {self.script_name}"
         )
@@ -456,6 +459,31 @@ def _hydration_safe_carrion_cycle(
     if _valid(action_mask, "eat") and facts.energy < 0.22:
         return "eat", "cycle_critical_fallback_eat"
     return "stay", "cycle_conserve"
+
+
+def _water_rescue_carrion_cycle(
+    facts: _PolicyVisibleFacts,
+    action_mask: dict[str, bool],
+) -> tuple[str, str]:
+    if _valid(action_mask, "drink") and facts.hydration < 0.99:
+        return "drink", "rescue_drink_when_accessible"
+    if facts.hydration < 0.84 and facts.energy > 0.14:
+        water_move = _move_to_water(facts, action_mask)
+        if water_move is not None:
+            return water_move, "rescue_move_to_water_before_conserving"
+    if facts.center_animal_resource > 0.02 and facts.energy < 0.98:
+        return "eat", "rescue_eat_local_animal_resource"
+    if facts.energy < 0.68 and facts.hydration > 0.7:
+        carrion_move = _move_to_carrion(facts, action_mask)
+        if carrion_move is not None:
+            return carrion_move, "rescue_move_to_carrion_with_hydration_buffer"
+    if facts.hydration < 0.94 and facts.energy > 0.2:
+        water_move = _move_to_water(facts, action_mask)
+        if water_move is not None:
+            return water_move, "rescue_top_up_water"
+    if _valid(action_mask, "eat") and facts.energy < 0.2:
+        return "eat", "rescue_critical_fallback_eat"
+    return "stay", "rescue_conserve"
 
 
 def _move_to_water(

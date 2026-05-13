@@ -1792,6 +1792,714 @@ v41 residual-safe recovery-distillation slice:
   stronger carrion fixture births but broke broad survival; v41 shows the
   acceptance surface can catch that tradeoff.
 
+v42 held-out recovery-distillation validation slice:
+
+- Command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v39-outcome-recovery-archive.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds 29,37,41
+  --eval-ticks 120 --fixture-ticks 120 --horizon-output
+  output/mind/mind-v3-v42-heldout-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v42-heldout-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v42-heldout-recovery-distill-evaluation.json --output
+  output/mind/mind-v3-v42-heldout-recovery-distill-report.json`.
+- Outputs:
+  `output/mind/mind-v3-v42-heldout-recovery-distill-horizon-labels.json`,
+  `output/mind/mind-v3-v42-heldout-recovery-distill-artifact.json`,
+  `output/mind/mind-v3-v42-heldout-recovery-distill-evaluation.json`, and
+  `output/mind/mind-v3-v42-heldout-recovery-distill-report.json`.
+- Data-path acceptance passed and promotion-candidate acceptance passed under
+  the current broad-plus-fixture criteria. The candidate used `0` heuristic
+  runtime actions.
+- The training data did not change: `5` selected recovery trajectories,
+  `2382` trained records, `3` survivor records, `2` failure records, and
+  survivor cells only from seed `29`.
+- Broad open-world held-out result across seeds `5,13,19,29,37,41` at `120`
+  ticks: candidate `17.8333` alive mean, `14.8333` births mean, and `17.0`
+  deaths mean versus linear `13.8333` alive mean, `12.3333` births mean, and
+  `18.5` deaths mean. The candidate beat or matched linear on alive and births
+  for every tested seed. The weakest broad seed was `41`, where candidate and
+  linear tied at `8` alive and `8` births.
+- Carrion-only fixture result across seeds `29,37,41` at `120` ticks:
+  candidate and linear both ended extinct on all `3` runs. Candidate births
+  mean was `2.6667` versus linear `2.0`; candidate scavenger carcass events
+  totaled `21` versus linear `16`; candidate animal-resource events totaled
+  `28` versus linear `26`.
+- The first fixture break is `carrion_only@29`: candidate and linear both ended
+  at `0` alive, candidate matched linear on births (`3` each), matched
+  scavenger carcass events (`9` each), and had fewer total animal-resource
+  events (`12` versus `15`). This is the clearest signal that the current
+  recovery archive is under-covered rather than under-tuned.
+- v42 confirms the v41 conclusion on a broader matrix: residual-safe anchoring
+  protects broad open-world behavior, but it does not produce held-out
+  carrion-only terminal survivors. The next slice should be archive expansion,
+  not residual tuning or RTX torch/IQL on the current five-trajectory archive.
+
+v43 recovery-archive expansion slice:
+
+- Command:
+  `npm run sim:mind:v3:carrion-recovery-archive -- --seeds 29,37,41
+  --ticks 120 --max-branch-points-per-seed 3 --trajectory-output-dir
+  output/trajectories/mind-v3-v43-archive-expansion-branch
+  --max-dataset-records-per-class 12 --min-survivor-cells 2
+  --min-failure-cells 1 --dataset-output
+  output/mind/mind-v3-v43-archive-expansion-dataset.jsonl --output
+  output/mind/mind-v3-v43-archive-expansion-report.json`.
+- Outputs:
+  `output/mind/mind-v3-v43-archive-expansion-report.json`,
+  `output/mind/mind-v3-v43-archive-expansion-dataset.jsonl`, and branch
+  trajectories under
+  `output/trajectories/mind-v3-v43-archive-expansion-branch/`.
+- Archive acceptance passed with replay verification. The archive contains
+  `23` cells, `20` survivor cells, `3` failure cells, and `15` dataset records
+  (`12` survivor, `3` failure).
+- This expands the v39 recovery archive from `8` source branch runs to `36`,
+  from `5` cells to `23`, and from survivor support on seed `29` only to
+  survivor cells on seeds `29`, `37`, and `41`.
+- Source branch outcomes: `32/36` runs ended with terminal survivors, `4/36`
+  ended extinct, all `36` runs produced births and animal-resource
+  consumption, and all animal-resource use was carcass use (`1345` carcass
+  events, `0` fresh-kill events). Source runs produced `65` terminal alive
+  agents, `327` births, and `1114` scavenger carcass events.
+- Archived elite outcomes: `20/23` elites ended with terminal survivors,
+  `3/23` ended extinct, with `39` terminal alive agents, `196` births, and
+  `666` scavenger carcass events. Terminal survivors were all scavengers.
+- Best survivor elite: seed `29`, branch
+  `carrion-only-seed-29-branch-2-tick-2-agent-12`,
+  `conserve_after_carrion`, `3` alive agents, `14` births, `36` scavenger
+  carcass events, `0` heuristic runtime actions.
+- Best failure elite: seed `37`, branch
+  `carrion-only-seed-37-branch-0-tick-0-agent-9`, `carrion_then_water`,
+  `0` alive agents, `13` births, `45` scavenger carcass events, `0`
+  heuristic runtime actions. This is now a useful contrast case rather than
+  the only seed-specific signal.
+- v43 satisfies the archive-expansion prerequisite for re-distillation: positive
+  `carrion_only@120` survivor support now exists from more than one seed. The
+  next step is to distill from this expanded archive under the same
+  residual-safe defaults and broad-plus-carrion acceptance matrix.
+
+v43 expanded-archive recovery-distillation slice:
+
+- Command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v43-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds 29,37,41
+  --eval-ticks 120 --fixture-ticks 120 --horizon-output
+  output/mind/mind-v3-v43-expanded-archive-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v43-expanded-archive-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v43-expanded-archive-recovery-distill-evaluation.json
+  --output
+  output/mind/mind-v3-v43-expanded-archive-recovery-distill-report.json`.
+- Outputs:
+  `output/mind/mind-v3-v43-expanded-archive-recovery-distill-horizon-labels.json`,
+  `output/mind/mind-v3-v43-expanded-archive-recovery-distill-artifact.json`,
+  `output/mind/mind-v3-v43-expanded-archive-recovery-distill-evaluation.json`,
+  and
+  `output/mind/mind-v3-v43-expanded-archive-recovery-distill-report.json`.
+- Data-path acceptance passed, but promotion-candidate acceptance failed with
+  blockers `open_alive_regression_vs_linear` and
+  `open_birth_regression_vs_linear`. The candidate still used `0` heuristic
+  runtime actions.
+- Training used `15` selected recovery trajectories and `7796` trained records,
+  versus v42's `5` selected trajectories and `2382` trained records.
+- Broad open-world result across seeds `5,13,19,29,37,41` at `120` ticks:
+  candidate `12.3333` alive mean, `10.6667` births mean, and `18.3333`
+  deaths mean versus linear `13.8333` alive mean, `12.3333` births mean, and
+  `18.5` deaths mean. The candidate regressed by `-1.5` alive mean and
+  `-1.6666` births mean versus linear. It also regressed versus the v42
+  candidate by `-5.5` alive mean and `-4.1666` births mean.
+- Broad seed deltas versus linear: seed `5` `+2` alive / `+2` births, seed
+  `13` `+7` alive / `+6` births, seed `19` `-6` alive / `-7` births, seed
+  `29` `-3` alive / `-2` births, seed `37` `-8` alive / `-8` births, seed
+  `41` `-1` alive / `-1` births. The first broad break is seed `19`; the
+  worst broad break is seed `37`.
+- Carrion-only fixture result across seeds `29,37,41` at `120` ticks:
+  candidate and linear both ended extinct on all `3` runs. Candidate births
+  mean matched linear at `2.0`, candidate scavenger carcass events totaled
+  `18` versus linear `16`, and candidate animal-resource events totaled `25`
+  versus linear `26`.
+- Carrion-only seed details: seed `29` matched linear on alive and births but
+  had fewer animal-resource events (`12` versus `15`); seed `37` matched alive
+  and births and improved scavenger carcass events (`5` versus `3`); seed `41`
+  matched linear on alive, births, and scavenger carcass events. The fixture
+  first break remains terminal extinction, not lack of branch survivor support.
+- Anchor diagnostics show the failure is not a large runtime takeover. On broad
+  open seeds, only `401/11192` candidate decisions changed the linear anchor
+  (`3.58%`). Those changes shifted action mix toward `drink` (`+96`) and
+  `stay` (`+58`) while reducing movement (`-158` combined cardinal moves),
+  enough to hurt broad survival and births on seeds `19`, `29`, `37`, and
+  `41`.
+- Interpretation: archive expansion succeeded, but direct residual
+  distillation from the expanded carrion recovery archive is now too
+  fixture-shaped for broad open-world acceptance. The next slice should add
+  training/evaluation separation or context-gated residual selection, not
+  increase residual strength and not train RTX torch/IQL blindly on the same
+  mixed archive.
+
+v44 context-gated expanded-archive recovery-distillation slice:
+
+- Code change:
+  recovery-distilled anchored-neural artifacts can now carry an artifact-scoped
+  `neural_residual_context_gate`. The default recovery-distill gate is
+  `visible_carrion_scavenger_v1`, which applies the residual only for
+  policy-visible scavenger/carrion contexts. Older artifacts without the field
+  keep the previous unrestricted anchored-residual behavior.
+- Command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v43-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds 29,37,41
+  --eval-ticks 120 --fixture-ticks 120 --neural-residual-context-gate
+  visible_carrion_scavenger_v1 --horizon-output
+  output/mind/mind-v3-v44-context-gated-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v44-context-gated-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v44-context-gated-recovery-distill-evaluation.json
+  --output
+  output/mind/mind-v3-v44-context-gated-recovery-distill-report.json`.
+- Outputs:
+  `output/mind/mind-v3-v44-context-gated-recovery-distill-horizon-labels.json`,
+  `output/mind/mind-v3-v44-context-gated-recovery-distill-artifact.json`,
+  `output/mind/mind-v3-v44-context-gated-recovery-distill-evaluation.json`,
+  and `output/mind/mind-v3-v44-context-gated-recovery-distill-report.json`.
+- Data-path acceptance passed and promotion-candidate acceptance passed under
+  the current broad-plus-fixture criteria. The candidate used `0` heuristic
+  runtime actions.
+- Training data stayed the same as v43 expanded-distill: `15` selected recovery
+  trajectories and `7796` trained records from an archive with `12` survivor
+  records, `3` failure records, and survivor cells on seeds `29`, `37`, and
+  `41`.
+- Broad open-world result across seeds `5,13,19,29,37,41` at `120` ticks:
+  candidate `14.3333` alive mean, `12.6667` births mean, and `18.3333`
+  deaths mean versus linear `13.8333` alive mean, `12.3333` births mean, and
+  `18.5` deaths mean. The candidate is `+0.5` alive mean and `+0.3334` births
+  mean versus linear.
+- Broad seed deltas versus linear: seed `5` `0` alive / `0` births, seed `13`
+  `0` alive / `-1` births, seed `19` `0` alive / `0` births, seed `29` `0`
+  alive / `0` births, seed `37` `+3` alive / `+3` births, seed `41` `0`
+  alive / `0` births. The current aggregate gate passes, but seed `13` is a
+  residual birth regression that should remain visible in the next stricter
+  seed-level acceptance check.
+- Carrion-only fixture result across seeds `29,37,41` at `120` ticks:
+  candidate and linear both ended extinct on all `3` runs. Candidate births
+  mean matched linear at `2.0`; candidate animal-resource events totaled `35`
+  versus linear `26`; candidate scavenger carcass events totaled `28` versus
+  linear `16`.
+- Carrion-only seed details: seed `29` matched linear on alive and births and
+  improved scavenger carcass events (`10` versus `9`) while reducing total
+  animal-resource events (`13` versus `15`); seed `37` matched alive and births
+  while improving animal-resource events (`18` versus `7`) and scavenger
+  carcass events (`14` versus `3`); seed `41` matched linear exactly on alive,
+  births, and scavenger carcass events.
+- Anchor diagnostics show the gate did what it was meant to do. In broad open
+  seeds, changed-linear decisions fell from v43's `401/11192` (`3.58%`) to
+  `38/11519` (`0.33%`). The residual was shadowed by the context gate on
+  `10582` broad decisions and applied on `157`. In the carrion-only fixture,
+  it applied on `8` decisions and lifted scavenger carcass events without
+  broad open-world regression.
+- Interpretation: v44 repairs the v43 negative-transfer failure by making the
+  recovery residual context-selective. It still does not solve terminal
+  carrion-only survival, so the next task is stricter acceptance and better
+  recovery-state carryover or policy memory, not a larger ungated residual.
+
+v45 strict seed-level recovery-distillation acceptance slice:
+
+- Code change:
+  recovery-distill evaluation now records paired open-seed deltas versus the
+  linear baseline under `candidate_vs_linear_per_seed`. Promotion acceptance
+  now blocks any broad open seed with negative alive or birth delta, even when
+  aggregate means are positive. The CLI also prints minimum per-seed alive and
+  birth deltas.
+- Command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v43-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds 29,37,41
+  --eval-ticks 120 --fixture-ticks 120 --neural-residual-context-gate
+  visible_carrion_scavenger_v1 --horizon-output
+  output/mind/mind-v3-v45-strict-acceptance-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v45-strict-acceptance-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v45-strict-acceptance-recovery-distill-evaluation.json
+  --output
+  output/mind/mind-v3-v45-strict-acceptance-recovery-distill-report.json`.
+- Outputs:
+  `output/mind/mind-v3-v45-strict-acceptance-recovery-distill-horizon-labels.json`,
+  `output/mind/mind-v3-v45-strict-acceptance-recovery-distill-artifact.json`,
+  `output/mind/mind-v3-v45-strict-acceptance-recovery-distill-evaluation.json`,
+  and `output/mind/mind-v3-v45-strict-acceptance-recovery-distill-report.json`.
+- Data-path acceptance passed, but promotion-candidate acceptance failed under
+  the stricter seed-level gate. The blocker is
+  `open_seed_13_birth_regression_vs_linear`. The candidate still used `0`
+  heuristic runtime actions.
+- Training stayed unchanged from v44: `15` selected recovery trajectories,
+  `7796` trained records, anchored-neural artifact mode, residual scale
+  `0.03`, override margin `0.008`, and context gate
+  `visible_carrion_scavenger_v1`.
+- Broad open-world aggregate result across seeds `5,13,19,29,37,41` at `120`
+  ticks remains positive versus linear: candidate `14.3333` alive mean and
+  `12.6667` births mean versus linear `13.8333` alive mean and `12.3333`
+  births mean. Aggregate deltas are `+0.5` alive and `+0.3334` births.
+- Broad seed deltas versus linear: seed `5` `0` alive / `0` births, seed `13`
+  `0` alive / `-1` births, seed `19` `0` alive / `0` births, seed `29` `0`
+  alive / `0` births, seed `37` `+3` alive / `+3` births, seed `41` `0`
+  alive / `0` births. Minimum alive delta is `0`; minimum birth delta is `-1`.
+- Carrion-only fixture result remains unchanged from v44 in aggregate:
+  candidate and linear both ended extinct on all `3` fixture seeds, births mean
+  matched at `2.0`, and candidate scavenger carcass events totaled `28` versus
+  linear `16`.
+- Carrion-only seed details: seed `29` candidate `0` alive / `3` births with
+  `10` scavenger carcass events versus linear `0` / `3` and `9`; seed `37`
+  candidate `0` / `2` with `14` scavenger carcass events versus linear `0` /
+  `2` and `3`; seed `41` matched linear at `0` / `1` and `4` scavenger
+  carcass events.
+- Interpretation: v45 is a gate-hardening success and a candidate-promotion
+  failure. The aggregate v44 candidate was useful, but the stricter acceptance
+  now correctly prevents a seed-specific birth regression from being hidden by
+  seed `37` gains. The next candidate work should not tune residual scale; it
+  should either make the gate/support criterion more selective or expand the
+  archive so recovery behavior does not borrow survival from a narrow seed
+  niche while still failing terminal carrion-only survival.
+
+v46 strict-gate hardening and archive-expansion slice:
+
+- Code changes:
+  strict recovery-distill acceptance now requires paired per-seed delta coverage
+  for every open evaluation seed; missing, duplicate, or unexpected seed rows
+  block promotion. Neural artifacts now reject unknown
+  `neural_residual_context_gate` values instead of silently shadowing all
+  residuals. A new `water_rescue_carrion_cycle` continuation script was added
+  to expand the recovery archive with a water-first rescue behavior for
+  critically dehydrated states.
+- Seed `13` diagnosis:
+  `output/mind/mind-v3-v46-seed13-diagnosis.json` compared the v45 candidate
+  against linear with trajectory diagnostics. The candidate changed only `9`
+  current-anchor decisions; the first cumulative birth divergence happened at
+  tick `53`. The late changed decisions clustered on agent `18`, where the
+  candidate stayed around the map edge while the pure linear run reached water.
+  This supports adding water-rescue continuation support, but does not explain
+  the failure as broad heuristic delegation or a large residual takeover.
+- Archive command:
+  `npm run sim:mind:v3:carrion-recovery-archive -- --seeds
+  13,19,29,37,41,43 --ticks 120 --max-branch-points-per-seed 4
+  --trajectory-output-dir
+  output/trajectories/mind-v3-v46-strict-archive-expansion-branch
+  --max-dataset-records-per-class 16 --min-survivor-cells 4
+  --min-failure-cells 1 --dataset-output
+  output/mind/mind-v3-v46-strict-archive-expansion-dataset.jsonl --output
+  output/mind/mind-v3-v46-strict-archive-expansion-report.json`.
+- Archive result:
+  acceptance passed with replay verification. The archive has `55` cells,
+  `43` survivor cells, `12` failure cells, and `28` exported dataset records
+  (`16` survivor, `12` failure). Survivor cells now exist for all six fixture
+  seeds `13,19,29,37,41,43`. The source branch acceptance reports `103`
+  successful branch runs across all `6` target seeds.
+- Distill command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v46-strict-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds
+  13,19,29,37,41,43 --eval-ticks 120 --fixture-ticks 120
+  --neural-residual-context-gate visible_carrion_scavenger_v1 --horizon-output
+  output/mind/mind-v3-v46-strict-archive-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v46-strict-archive-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v46-strict-archive-recovery-distill-evaluation.json
+  --output
+  output/mind/mind-v3-v46-strict-archive-recovery-distill-report.json`.
+- Distill result:
+  data-path acceptance passed, but promotion failed. The blockers are
+  `open_seed_5_alive_regression_vs_linear`,
+  `open_seed_5_birth_regression_vs_linear`, and
+  `open_seed_13_birth_regression_vs_linear`. Broad aggregate deltas stayed
+  positive versus linear (`+0.3334` alive mean, `+0.1667` births mean), but the
+  strict per-seed floor caught seed `5` and seed `13` regressions.
+- Carrion-only fixture result:
+  expanded fixture seeds still ended extinct for both candidate and linear on
+  all `6` runs. Candidate births mean was `2.3333` versus linear `2.1667`;
+  candidate scavenger carcass events totaled `56` versus linear `45`.
+- Interpretation:
+  v46 proves the archive can now hold broad multi-seed survivor continuations,
+  but the current feed-forward residual distill still cannot convert those
+  branch-state survivors into terminal `carrion_only@120` survivors from
+  initial fixture state. Do not run RTX/IQL yet; the next slice should add
+  recovery-phase/state carryover or branch-state-conditioned policy inputs, then
+  repeat the strict seed-level gate.
+
+v47 recovery-phase carryover slice:
+
+- Code changes:
+  neural artifacts now support a serialized
+  `visible_carrion_or_recovery_phase_v1` residual context gate plus
+  `neural_residual_recovery_phase_ticks`. The runtime policy tracks a
+  policy-visible post-contact recovery phase after actual carcass or fresh-kill
+  consumption and exposes gate reason/remaining-tick diagnostics. The recovery
+  distill CLI now accepts and reports the recovery-phase duration.
+- Distill command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v46-strict-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds
+  13,19,29,37,41,43 --eval-ticks 120 --fixture-ticks 120
+  --neural-residual-context-gate visible_carrion_or_recovery_phase_v1
+  --neural-residual-recovery-phase-ticks 8 --horizon-output
+  output/mind/mind-v3-v47-recovery-phase-distill-horizon-labels.json
+  --artifact-output output/mind/mind-v3-v47-recovery-phase-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v47-recovery-phase-distill-evaluation.json --output
+  output/mind/mind-v3-v47-recovery-phase-distill-report.json`.
+- Distill result:
+  data-path acceptance passed, but promotion still failed. The blockers stayed
+  `open_seed_5_alive_regression_vs_linear`,
+  `open_seed_5_birth_regression_vs_linear`, and
+  `open_seed_13_birth_regression_vs_linear`. Broad aggregate deltas remained
+  positive versus linear (`+0.3334` alive mean, `+0.1667` births mean), with
+  `0` heuristic runtime actions, but the strict per-seed floor remained
+  negative (`-1` alive, `-1` births).
+- Carrion-only fixture result:
+  expanded fixture seeds still ended extinct for both candidate and linear on
+  all `6` runs. Candidate births mean was `2.3333` versus linear `2.1667`;
+  candidate scavenger carcass events totaled `56` versus linear `45`.
+- Diagnostics:
+  `output/mind/mind-v3-v47-regression-diagnosis.json` rechecked failing open
+  seeds `5` and `13` with the v47 artifact. The two-seed slice remained
+  negative versus linear (`-0.5` alive mean, `-1.0` births mean). Runtime
+  residual application increased only modestly under the carryover gate, so
+  the missing piece is not simply remembering that carrion contact happened.
+- Interpretation:
+  v47 is a contract/observability improvement and a candidate-promotion
+  failure. The next useful slice should make the branch-state condition itself
+  visible to scoring, for example a compact branch-state-conditioned
+  value/support head or recovery-phase action-value bias derived from survivor
+  continuations. Do not start RTX/IQL until that branch-state-conditioned
+  surface passes the strict seed-level gate and produces positive
+  `carrion_only@120` terminal survivors.
+
+v48 branch-state-conditioned recovery action bias:
+
+- Code changes:
+  neural artifacts now accept a serialized `recovery_phase_action_bias` payload
+  with policy `branch_survivor_failure_action_log_odds_v1`. The carrion
+  distiller derives this payload from survivor-vs-failure action frequencies
+  during post-contact recovery windows and the runtime scorer applies it only
+  when `neural_residual_recovery_phase_remaining > 0`. Validation now rejects
+  unknown recovery-bias policies. During audit, the log-odds centering was
+  fixed to ignore unobserved action-contract entries so inactive
+  attack/mate/signal actions cannot clamp all observed recovery actions
+  positive.
+- Distill command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v46-strict-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds
+  13,19,29,37,41,43 --eval-ticks 120 --fixture-ticks 120
+  --neural-residual-context-gate visible_carrion_or_recovery_phase_v1
+  --neural-residual-recovery-phase-ticks 8 --horizon-output
+  output/mind/mind-v3-v48-branch-state-bias-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v48-branch-state-bias-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v48-branch-state-bias-distill-evaluation.json --output
+  output/mind/mind-v3-v48-branch-state-bias-distill-report.json`.
+- Distill result:
+  data-path acceptance passed, but strict promotion failed with the same open
+  blockers as v47: `open_seed_5_alive_regression_vs_linear`,
+  `open_seed_5_birth_regression_vs_linear`, and
+  `open_seed_13_birth_regression_vs_linear`. Broad aggregate deltas versus
+  linear remained positive (`+0.3334` alive mean, `+0.1667` births mean) with
+  `0` heuristic runtime actions, but the minimum seed deltas stayed negative
+  (`-1` alive, `-1` births).
+- Recovery-bias payload:
+  `record_count=3291`, `survivor_total_weight=10013.03`, and
+  `failure_total_weight=192.5`. The final action-bias vector was small and
+  differentiated: `move_east +0.044308`, `stay +0.039837`,
+  `move_west +0.036883`, `drink +0.001513`, `eat -0.005664`,
+  `move_north -0.03084`, and `move_south -0.086037`; unobserved actions stayed
+  at `0`.
+- Carrion-only fixture result:
+  all `6` candidate and linear fixture runs still ended extinct. Candidate
+  births mean was `2.3333` versus linear `2.1667`; candidate scavenger carcass
+  events totaled `56` versus linear `45`.
+- Diagnosis:
+  `output/mind/mind-v3-v48-regression-diagnosis.json` rechecked seeds `5` and
+  `13`. The two-seed slice stayed negative versus linear (`-0.5` alive mean,
+  `-1.0` births mean). Seed `5` shifted agent `5`'s first birth from tick `49`
+  to tick `52`, and the linear-only offspring birth at tick `83` did not occur.
+  Seed `13` was not one isolated lost birth; the candidate shifted the timing
+  and positions of several births, with linear-only births at ticks `53`, `79`,
+  `85`, `95`, `103`, `108`, `112`, and `115` and candidate-only births at
+  ticks `54`, `77`, `84`, `105`, `107`, `107`, and `114`.
+- Interpretation:
+  v48 proves the artifact/scorer can carry a branch-conditioned action prior,
+  but the learned bias is too weak and too indirect to repair strict
+  open-seed regressions or terminal carrion-only extinction. The next audit
+  should determine whether residual overrides near local animal resources are
+  causing delayed reproduction; if not, stop adding small residual nudges and
+  expand the exact branch archive toward positive `carrion_only@120` terminal
+  survivors.
+
+v49 local-resource eat guard audit:
+
+- Code changes:
+  the anchored neural policy now suppresses residual overrides when the linear
+  anchor's top action is `eat`, `eat` is legal, and current-tile carcass or
+  fresh-kill energy is visible. The guard reports
+  `linear_local_animal_resource_eat_guard` as the residual shadow reason.
+- Distill command:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v46-strict-archive-expansion-report.json --eval-seeds
+  5,13,19,29,37,41 --fixture-names carrion_only --fixture-seeds
+  13,19,29,37,41,43 --eval-ticks 120 --fixture-ticks 120
+  --neural-residual-context-gate visible_carrion_or_recovery_phase_v1
+  --neural-residual-recovery-phase-ticks 8 --horizon-output
+  output/mind/mind-v3-v49-local-resource-eat-guard-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v49-local-resource-eat-guard-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v49-local-resource-eat-guard-distill-evaluation.json
+  --output output/mind/mind-v3-v49-local-resource-eat-guard-distill-report.json`.
+- Distill result:
+  data-path acceptance passed, but strict promotion still failed with the same
+  blockers and same aggregate metrics as v48. The guard fired only once across
+  the broad-open run (`linear_local_animal_resource_eat_guard: 1`), while
+  residual application stayed at `168` applied and `11289` shadowed decisions.
+  Therefore the v48/v49 regressions are not primarily caused by overriding a
+  linear `eat` on current-tile animal resource.
+- Diagnosis:
+  `output/mind/mind-v3-v49-regression-diagnosis.json` repeated the paired
+  seed `5` and `13` diagnosis. The two-seed slice remained `-0.5` alive mean
+  and `-1.0` births mean versus linear. The same birth-timing pattern remained:
+  seed `5` lost one downstream offspring birth after delaying agent `5`, and
+  seed `13` shifted multiple branch positions/timings rather than exposing one
+  protected local-eat decision.
+- Interpretation:
+  v49 is a useful negative audit: a narrow local-resource eat guard is
+  behaviorally correct and tested, but it does not solve the strict gate. The
+  next cycle should return to data generation: expand branch points,
+  continuation scripts, and fixture seeds until the archive contains positive
+  terminal `carrion_only@120` survivors from multiple seeds. Do not start
+  RTX/IQL yet.
+
+v50 audit and shadowed-residual repair:
+
+- Project-wide audit finding:
+  post-run trajectory exports from `mind_v3_evaluate --trajectory-output-dir`
+  were writing retained `world.trajectory_records` without reattaching
+  retained `policy_decision_diagnostics` or per-record `policy_update_trace`.
+  That made v48/v49 diagnosis trajectories weaker than the JSON aggregate
+  implied. The evaluator now enriches retained records before writing, and the
+  world keeps update traces aligned with retained trajectory records.
+- Scorer bug:
+  `_blend_neural_with_linear_anchor` rounded blended scores to four decimals
+  before action selection. With `neural_residual_effective_scale=0`, tiny
+  linear-anchor margins could collapse to ties and flip to alphabetical
+  actions, so diagnostics could report a shadowed residual while behavior still
+  changed. The blend now preserves raw score precision for action selection,
+  and tests cover the zero-scale low-margin case.
+- Re-run:
+  `output/mind/mind-v3-v50-shadowed-residual-fix-report.json` used the same
+  v46 archive and strict six-seed matrix after the scorer repair. Data-path
+  acceptance passed, seed `13` was repaired, and the only open strict blocker
+  left was seed `5` (`-1` alive, `-1` birth versus linear). Aggregate broad
+  deltas stayed positive (`+0.3334` alive mean, `+0.3334` births mean).
+- Fixture result:
+  `carrion_only@120` still had zero terminal survivors on all six fixture
+  seeds. This made the next step data support, not another local residual
+  guard.
+
+v51 counterfactual-augmented archive slice:
+
+- Counterfactual coverage:
+  `output/mind/mind-v3-v51-counterfactual.json` ran all five scripted
+  counterfactual policies on fixture seeds `13,19,29,37,41,43`. The
+  `hydration_safe_carrion_cycle` script survived all six seeds
+  (`2.5` alive mean, `10.5` births mean), and the combined report had `19`
+  survivor runs out of `30`. This satisfies the "positive
+  `carrion_only@120` survivors from multiple seeds" data-support condition for
+  an experimental learner.
+- Archive code:
+  recovery archives can now append full counterfactual fixture trajectories via
+  `--counterfactual-report` and can require a minimum number of distinct
+  counterfactual survivor seeds via `--min-counterfactual-survivor-seeds`.
+  The v51 archive
+  `output/mind/mind-v3-v51-counterfactual-augmented-archive-report.json`
+  passed with `55` branch cells plus `30` counterfactual full-fixture records:
+  `74` dataset records total, `51` survivor records, `23` failure records, and
+  counterfactual survivor coverage on all six target fixture seeds.
+- Distill result:
+  `output/mind/mind-v3-v51-counterfactual-augmented-distill-report.json`
+  trained on `39,128` records from `74` selected trajectories. Data-path
+  acceptance passed, but promotion failed on seed `5` (`-1` alive, `-1` birth)
+  and a `carrion_only` scavenger-event regression. The fixture still had zero
+  terminal survivors.
+- Interpretation:
+  adding full survivor scripts to the supervised residual dataset is not enough
+  for the current feed-forward anchored residual. The residual changed only a
+  small number of fixture decisions and did not reproduce the long water/carrion
+  cycle.
+
+v52 recovery-window probe:
+
+- Probe:
+  `output/mind/mind-v3-v52-recovery32-probe-artifact.json` changed only
+  `neural_residual_recovery_phase_ticks` from `8` to `32` on the v51 artifact
+  and evaluated it in
+  `output/mind/mind-v3-v52-recovery32-probe-evaluation.json`.
+- Result:
+  broad aggregate deltas stayed positive (`+0.3334` alive mean and births
+  mean), but seed `5` still regressed (`-1` alive, `-1` birth), seed `13`
+  regressed by `-1` alive, and `carrion_only@120` still had zero terminal
+  survivors.
+- Boundary:
+  this is the practical RTX/IQL boundary, not a promotion boundary. The data now
+  contains multiple full-horizon carrion-only survivor trajectories, and the
+  deterministic residual path has failed after the scoring bug fix, archive
+  augmentation, and longer recovery-memory probe. The next work should be an
+  offline value/sequence learner over this expanded archive, with the same
+  strict seed-level and fixture gates before any promotion.
+
+v53-v56 RTX/IQL pilot:
+
+- Counterfactual labels:
+  `output/mind/mind-v3-v53-counterfactual-labels.json` generated `16,112`
+  label records from the `30` full-horizon v51 counterfactual trajectories.
+  The primary horizon remained `120`, and the labels were used only by the
+  opt-in torch/IQL path.
+- v53 base IQL:
+  `output/mind/mind-v3-v53-counterfactual-augmented-iql-train-gate.json`
+  trained `torch-discrete-iql` on the expanded archive using the RTX trainer.
+  The train gate passed but was not promotable (`hard_guard=0.1144`,
+  `heuristic_delegate=0.3683`, `total_fallback=0.4827`, no alive/birth
+  deltas). The labeled autonomous slice
+  `output/mind/mind-v3-v53-counterfactual-augmented-iql-slice-report.json`
+  improved broad open outcomes (`14.6667` alive, `15.0` births versus linear
+  `13.8333`/`12.3333`) and produced nonzero `carrion_only` terminal survivors
+  (`0.6667` alive mean), but failed acceptance because dominant requested
+  `eat` share was `0.6644` above the `0.5` cap.
+- v54 action-distribution IQL:
+  `output/mind/mind-v3-v54-action-distribution-iql-train-gate.json` enabled
+  `--torch-iql-action-distribution-regularization`. The train gate again
+  passed but was not promotable (`hard_guard=0.096`, `total_fallback=0.4827`).
+  The slice improved broad outcomes further (`15.3333` alive, `15.5` births)
+  and retained slight carrion movement (`0.1667` alive mean), but still failed
+  only on dominant `eat` share (`0.641`).
+- v55 contextual-prior IQL:
+  `output/mind/mind-v3-v55-contextual-prior-iql-train-gate.json` kept action
+  distribution regularization and added contextual behavior-prior
+  regularization with a clean split: the `30` full counterfactual trajectories
+  stayed in training, while `44` branch trajectories were used as calibration
+  records. The train gate passed but was not promotable
+  (`hard_guard=0.0979`, `total_fallback=0.4794`). The slice had the strongest
+  broad gains (`18.5` alive, `19.3333` births) and nonzero carrion movement
+  (`0.1667` alive mean), but failed on dominant `eat` share (`0.6307`).
+- v56 blend probe:
+  `output/mind/mind-v3-v56-blend97-iql-slice-report.json` changed only the v55
+  artifact's `neural_actor_prior_blend_weight` to `0.97`. It did not fix
+  action concentration (`eat` share `0.6326`) and removed carrion movement
+  (`0.0` alive mean), so higher prior blending is not the right acceptance
+  path.
+- Interpretation:
+  the project is now past the "ready for RTX/IQL" boundary. RTX/IQL learned a
+  behaviorally useful signal that the deterministic residual could not:
+  nonzero terminal survivors on the `carrion_only@120` fixture plus broad open
+  gains without heuristic runtime actions. The blocker has changed from data
+  support to learner-side action concentration. The next cycle should improve
+  the IQL actor/extraction objective or support constraints to reduce dominant
+  `eat` share below `0.5` while preserving positive carrion-only survivors;
+  do not relax the acceptance gate.
+
+v57-v63 strict IQL audit, coefficient probes, and rollout calibration:
+
+- Audit fixes before continuing:
+  the recovery archive now distinguishes counterfactual survivor rows that have
+  trainable trajectory paths from report-only survivor evidence. The
+  `counterfactual_survivor_seeds` acceptance input is now path-backed, while
+  `counterfactual_report_survivor_seed_count` keeps report coverage visible.
+  The labeled IQL slice also inherited the v45 per-seed no-regression rule, so
+  broad open promotion is blocked by any held-out seed with a negative alive or
+  birth delta versus linear.
+- v57 contextual-supported IQL:
+  `output/mind/mind-v3-v57-contextual-supported-iql-train-gate.json` passed the
+  train gate but was not promotable. The strict recomputed slice
+  `output/mind/mind-v3-v57-contextual-supported-iql-slice-report.json` failed
+  on dominant `eat` share `0.6444` and seed-level regressions on seeds `13`,
+  `37`, and `41` (`min_alive_delta=-16`, `min_births_delta=-8`). Broad means
+  were `13.6667` alive and `13.3333` births versus linear `13.8333`/`12.3333`;
+  `carrion_only` alive mean was `0.1667`.
+- v58 margin-contextual IQL:
+  `output/mind/mind-v3-v58-margin-contextual-iql-train-gate.json` passed the
+  train gate but was not promotable. The strict recomputed slice
+  `output/mind/mind-v3-v58-margin-contextual-iql-slice-report.json` improved
+  broad means to `19.8333` alive and `20.0` births, but failed on dominant
+  `eat` share `0.6453` and seed `37` alive/birth regression
+  (`min_alive_delta=-18`, `min_births_delta=-13`). `carrion_only` alive mean
+  remained `0.1667`.
+- v59 sharp-action IQL:
+  `output/mind/mind-v3-v59-sharp-action-iql-train-gate.json` used the new
+  action-distribution loss-weight and temperature overrides
+  (`loss_weight=1.25`, `temperature=0.08`). It passed the train gate but was
+  not promotable. The strict recomputed slice
+  `output/mind/mind-v3-v59-sharp-action-iql-slice-report.json` lowered
+  dominant `eat` share only to `0.6315`, improved broad means to `16.5` alive
+  and `18.5` births, and moved the fixture to `0.3333` alive mean, but failed
+  seeds `19`, `37`, and `41` (`min_alive_delta=-6`,
+  `min_births_delta=-3`).
+- v60 prior-100 probe:
+  `output/mind/mind-v3-v60-prior100-iql-slice-report.json` changed only the
+  v59 artifact's `neural_actor_prior_blend_weight` to `1.0`. It made action
+  concentration worse (`eat` share `0.6507`) and still failed seed-level
+  blockers on seeds `19` and `37` (`min_alive_delta=-4`,
+  `min_births_delta=-1`). Higher prior blending is now explicitly ruled out as
+  the next path.
+- v61 risk-sharp IQL:
+  `output/mind/mind-v3-v61-sharp-action-iql-train-gate.json` added
+  risk-adjusted actor extraction on top of the v59 sharp action-distribution
+  setup. The train gate passed but was not promotable
+  (`hard_guard=0.1035`, `heuristic_delegate=0.3754`,
+  `total_fallback=0.4789`, strict control target failed). The strict slice
+  `output/mind/mind-v3-v61-sharp-action-iql-slice-report.json` failed with
+  dominant `eat` share `0.6509`, broad means `13.0` alive and `13.3333`
+  births versus linear `13.8333`/`12.3333`, and zero `carrion_only` movement.
+  Per-seed blockers were seed `5` alive/birth regression, seed `19` birth
+  regression, and seed `37` alive/birth regression
+  (`min_alive_delta=-8`, `min_births_delta=-6`).
+- v62 rollout-state top-1 actor-bias calibration:
+  `output/mind/mind-v3-v62-rollout-calibrated-iql-train-gate.json` added
+  opt-in `calibration_bank_top1_actor_bias_control_v1` with a `0.45`
+  calibration-bank top-1 cap, `0.08` bias step, and `1.25` max bias delta. The
+  full RTX train gate passed but was not promotable
+  (`hard_guard=0.1035`, `heuristic_delegate=0.3751`,
+  `total_fallback=0.4786`). The calibration report was the key diagnostic:
+  branch-calibration actor top-1 was dominated by `stay` (`0.5852` before,
+  `0.5824` after) and `move_north` (`0.4148`), not by `eat`; the only saturated
+  bias adjustment was `stay=-1.25`. The strict slice
+  `output/mind/mind-v3-v62-rollout-calibrated-iql-slice-report.json` therefore
+  failed the same acceptance surface: dominant `eat` share `0.6507`, broad means
+  `13.0` alive and `13.3333` births versus linear `13.8333`/`12.3333`, zero
+  `carrion_only` movement, and seed-level blockers on seed `5` alive/birth,
+  seed `19` birth, and seed `37` alive/birth (`min_alive_delta=-8`,
+  `min_births_delta=-6`).
+- v63 low-prior posthoc probe:
+  `output/mind/mind-v3-v63-low-prior-rollout-calibrated-iql-slice-report.json`
+  changed only the v62 artifact's `neural_actor_prior_blend_weight` to `0.5`.
+  This falsified the low-prior scalar-blend hypothesis: dominant `eat` share
+  rose to `0.7718`, broad means fell to `6.0` alive and `6.5` births, the strict
+  slice produced `13` blockers, and `carrion_only` still had `0.0` alive mean.
+  Together with the v60 prior-`1.0` probe, this rules out scalar prior blending
+  as the next useful control axis.
+- Interpretation:
+  the current IQL family is producing real broad and fixture signal, but it is
+  not acceptance-ready. v62 shows that the deployed `eat` concentration is not a
+  simple raw-actor top-1 imbalance on the branch calibration bank, and v63 shows
+  that lowering contextual-prior blend weight makes the accepted slice worse.
+  The exhausted axes are aggregate action regularization, scalar prior blending,
+  extraction risk adjustment, and global actor-bias calibration. The next useful
+  branch is a rollout-context policy class such as sequence/flow/world-model
+  control or Go-Explore-style archive replay/robustification, not another
+  coefficient-only IQL variant on the same representation.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -1839,6 +2547,200 @@ Research-backed direction after v41:
    exact branch rollouts have produced a validated curriculum and compact state
    contract.
 
+Research-validation loop for subsequent Mind v3 runs:
+
+- After every candidate run, record the exact command, output artifact paths,
+  acceptance status, broad open-world deltas versus linear, fixture deltas,
+  heuristic action counts, and the first seed or fixture that breaks.
+- After every candidate run, do one lightweight research pass against primary
+  sources or lab reports relevant to the observed failure mode. The research
+  pass should not override local data. It should test whether the next proposed
+  code or data change is consistent with current evidence about offline RL data
+  coverage, world models, quality diversity, open-ended curricula, or
+  foundation-model-assisted search.
+- Prefer research-grade implementations only when they fit the repo contracts:
+  deterministic replay, summary-only lightweight sweeps, explicit held-out
+  gates, serialized artifacts, and no hidden heuristic action selection. Do not
+  import large frameworks or training dependencies just because a paper uses
+  them; first prove the local data and acceptance surface.
+- Keep run artifacts in `output/mind/` and durable interpretation in this file
+  so future sessions can compare results without relying on chat history.
+
+May 13, 2026 research synthesis before v42:
+
+- AdA/XLand-style adaptation work points toward broad task distributions,
+  held-out dynamics, memory, and automated curricula. That supports validating
+  v41 on the broader `5,13,19,29,37,41` seed matrix before tuning another
+  residual.
+- DreamerV3, Genie, Sora, and V-JEPA keep world models strategically relevant,
+  but they do not remove the need for data support and exact held-out gates.
+  For this simulator, exact branch rollouts are the first world model.
+- VPT, RT-2, and SIMA reinforce the same data-coverage lesson: action-grounded
+  agents improve when the training distribution covers the behaviors and
+  contexts they must execute. The current recovery archive has only `5`
+  trajectories and survivor cells only from seed `29`, so it is not enough for
+  a serious torch/IQL run.
+- ASAL, FunSearch, and AlphaEvolve support quality-diverse search with automated
+  evaluators. The repo should expand the recovery archive across fixture seeds,
+  branch points, and survivor niches before trying to learn a stronger policy.
+- IQL remains relevant only after the archive contains enough supported
+  successful target-horizon behavior. Its conservative policy-improvement
+  design does not make a five-trajectory archive solve held-out carrion
+  survival.
+
+Post-v42 research check:
+
+- The v42 result matches the offline-RL data-coverage warning: the candidate can
+  safely improve broad behavior where the anchored linear policy already has
+  support, but it does not invent positive terminal carrion survivors for
+  under-covered fixture seeds. Recent offline RL work on distribution shift and
+  partial data coverage keeps pointing at coverage and support constraints as
+  the limiting factor, not at another local residual adjustment:
+  <https://arxiv.org/abs/2310.18434>.
+- The aggregate fixture scavenging lift with no terminal survivors matches the
+  Go-Explore/QD diagnosis: useful stepping-stone behaviors have been found, but
+  the archive must preserve more recovery continuations across seed-specific
+  descriptors before distillation can generalize:
+  <https://arxiv.org/abs/1901.10995>,
+  <https://www.ijcai.org/proceedings/2024/773>.
+- ASAL-style artificial-life search reinforces the same next step: use
+  automated evaluators to illuminate a diverse simulation behavior space. For
+  this repo, that means expanding the exact carrion recovery archive across
+  fixture seeds and branch points before using foundation-model or torch-heavy
+  machinery:
+  <https://arxiv.org/abs/2412.17799>.
+
+Post-v43 research check:
+
+- The expanded archive result is aligned with recent offline RL coverage work:
+  adding branch coverage and survivor continuations changed the data support
+  directly, instead of asking a learner to extrapolate the missing
+  `carrion_only@120` survivor behavior. That is consistent with partial
+  coverage and distribution-shift warnings in offline RL:
+  <https://openreview.net/forum?id=AfXq3x3X16>.
+- Go-Explore remains the closest procedural template for this slice: archive
+  promising states, return to them deterministically, explore continuations,
+  then robustify or distill. The v43 result is exactly the missing Phase 1
+  support that v42 lacked:
+  <https://arxiv.org/abs/1901.10995>.
+- Quality-diversity artificial-life work supports retaining multiple behavior
+  descriptors rather than only the single best recovery trajectory. The
+  seed/branch/continuation spread in v43 is therefore more valuable than the
+  best survivor alone:
+  <https://arxiv.org/abs/2406.04235>.
+- DeepMind's 2024 open-endedness position paper reinforces the broader
+  milestone order: do not collapse immediately to one narrow distill if the
+  goal is autonomous ecological competence. Use the expanded archive as a
+  curriculum and keep measuring diversity under held-out seeds:
+  <https://arxiv.org/abs/2406.04268>.
+
+Post-v43 expanded-distill research check:
+
+- The v43 distill failure matches multi-task/offline data-sharing warnings:
+  adding more data can hurt the target policy when the shared dataset changes
+  the deployment distribution without uncertainty or relevance gating. That is
+  exactly what happened here: the expanded carrion recovery archive improved
+  local support, but the broad open-world policy regressed:
+  <https://arxiv.org/abs/2404.19346>.
+- Recent robust offline imitation work argues for selecting or weighting
+  high-quality auxiliary transitions instead of directly cloning all diverse
+  auxiliary data. For this repo, that means the expanded archive should feed a
+  gated or relevance-weighted residual, not a single undifferentiated residual
+  over every broad state:
+  <https://arxiv.org/abs/2410.03626>.
+- Behavior-cloning imbalance work reinforces the action-level symptom in this
+  run: small residual changes shifted the broad policy toward more `drink` and
+  `stay` and less movement. The next code change should expose and control
+  behavior/action-balance by context, not only aggregate survivor quality:
+  <https://arxiv.org/abs/2508.06319>.
+- Google DeepMind's 2024 large-scale offline actor-critic result supports the
+  eventual RTX/IQL direction because offline actor-critic can outperform pure
+  supervised cloning on mixed-quality multi-task data. It does not support
+  skipping the current acceptance failure; it supports moving beyond naive
+  residual distillation once the dataset and broad acceptance surface are
+  stable:
+  <https://arxiv.org/abs/2402.05546>.
+
+Post-v44 research check:
+
+- v44 is consistent with robust offline imitation research: diverse auxiliary
+  data is useful when high-quality or relevant transitions are selected or
+  weighted, but unsafe when blindly cloned. The local context gate is a simple
+  deterministic version of that relevance filter:
+  <https://arxiv.org/abs/2410.03626>.
+- The result also matches multi-task offline data-sharing work: adding related
+  data can help or hurt depending on distribution shift and uncertainty. v43
+  was negative transfer; v44 constrained transfer to states where the recovery
+  archive is relevant:
+  <https://arxiv.org/abs/2404.19346>.
+- DeepMind's offline actor-critic scaling result remains the strongest argument
+  for eventually moving beyond supervised residual distillation on mixed
+  expert/suboptimal data. The v44 result says that future RTX/IQL should start
+  from a context-aware acceptance surface, not from the ungated v43 policy:
+  <https://arxiv.org/abs/2402.05546>.
+- The remaining terminal-extinction failure looks less like broad negative
+  transfer and more like missing state/history: the residual sees visible
+  carrion context, but cannot remember post-contact recovery phase once the
+  immediate carrion signal disappears. The next research-aligned slice is
+  either explicit recovery-phase features/memory or a branch-state-conditioned
+  value model, with stricter seed-level broad gates.
+
+Post-v45 research check:
+
+- v45 follows the RLiable/Google Research evaluation warning that aggregate
+  point estimates can mislead in small-seed RL comparisons. The new
+  `candidate_vs_linear_per_seed` payload keeps paired seed deltas visible and
+  makes the promotion gate fail when one seed regresses despite positive mean
+  deltas:
+  <https://research.google/blog/rliable-towards-reliable-evaluation-reporting-in-reinforcement-learning/>.
+- The underlying NeurIPS 2021 "statistical precipice" paper argues for
+  exposing variability across runs and avoiding conclusions from means alone.
+  The local analogue is strict no-regression over each held-out seed before a
+  recovery-distilled policy can be promoted:
+  <https://arxiv.org/abs/2108.13264>.
+- The result also stays aligned with robust offline imitation/data-sharing
+  work: the context gate reduced broad negative transfer, but v45 shows that
+  relevance filtering must be validated at the seed level, not only by fixture
+  averages or aggregate open-world means.
+
+Post-v60 research check:
+
+- 2025-2026 offline RL work still treats behavior support and OOD value/action
+  control as core failure modes. Support-constraint work explicitly frames
+  offline RL errors as distribution shift between learned and behavior
+  policies, while newer neighborhood constraints classify density, support, and
+  sample constraints as the main families for controlling extrapolation:
+  <https://arxiv.org/abs/2503.05207>,
+  <https://arxiv.org/abs/2511.02567>.
+- The newest flow-policy line is relevant because it attacks the same local
+  symptom: complex or multi-modal behavior distributions are poorly represented
+  by simple actor heads. Flow Q-Learning, Flow Actor-Critic, and the May 2026
+  Flow-Anchored Noise-conditioned Q-Learning paper all point toward expressive
+  policies plus conservative/behavior-regularized value learning, not toward
+  relaxing held-out gates:
+  <https://arxiv.org/abs/2502.02538>,
+  <https://arxiv.org/abs/2602.18015>,
+  <https://arxiv.org/abs/2605.01663>.
+- 2026 behavior-regularized RL is also exploring implicit transport/flow-style
+  policy updates. Value Gradient Flow keeps a reference distribution and
+  controls the transport budget, which is conceptually closer to a rollout-state
+  support regularizer than to the v60 full-prior blend:
+  <https://arxiv.org/abs/2604.14265>.
+- World-model work is relevant as the next major architecture branch, but it
+  should stay behind exact simulator evidence. Differentiable world-model MPC
+  for offline RL uses inference-time imagined rollouts to adapt the policy, and
+  contextual latent world models use temporal consistency for generalization:
+  <https://arxiv.org/abs/2603.22430>,
+  <https://arxiv.org/abs/2603.02935>.
+- Local conclusion:
+  the repo is aligned with current research on evaluation rigor, behavior
+  support, and conservative offline learning. The mismatch is that the current
+  discrete IQL actor is still accepted or rejected mostly by deployment
+  rollout diagnostics after training, while the regularizers are train-batch
+  marginals. The next serious implementation should constrain or train on
+  rollout-state top-1 action behavior, or move to a sequence/flow/world-model
+  branch with the same strict seed-level acceptance matrix.
+
 Major milestones from the current state:
 
 - v37: deterministic branch-and-explore harness. It can replay or restore a
@@ -1859,15 +2761,77 @@ Major milestones from the current state:
   and repeat the same acceptance matrix on held-out seeds. This is where IQL,
   behavior cloning, sequence modeling, or a compact recurrent policy becomes
   useful again.
-- v42: learned dynamics/world-model pilot. Only after v37-v41 prove the target
+- v42: held-out recovery-distill validation. Run the v41 residual-safe
+  distillation path against broad open seeds `5,13,19,29,37,41` and
+  `carrion_only` fixture seeds `29,37,41`. Acceptance questions: does the
+  candidate match or beat linear on broad open survival and births, keep `0`
+  heuristic runtime actions, retain fixture scavenging lift, and show which
+  seed or fixture breaks first? This is a validation slice, not a tuning slice.
+- v43: recovery-archive expansion. If v42 passes broad open but carrion-only
+  remains extinct, expand archive coverage across more fixture seeds, branch
+  points, continuation scripts, and survivor niches. Require positive
+  `carrion_only@120` survivors from more than one seed before re-distilling or
+  training RTX torch/IQL.
+- v44: context-gated recovery residual. The expanded archive can be distilled
+  without broad open-world regression only when the recovery residual is
+  context-selective. Acceptance: no aggregate broad alive/birth regression
+  versus linear, `0` heuristic actions, and fixture scavenging lift without
+  fixture birth/scavenging regression. The next hardening step is seed-level
+  broad no-regression plus a path toward terminal carrion-only survivors.
+- v45: strict seed-level recovery acceptance. Aggregate broad open gains are
+  insufficient; each held-out open seed must avoid alive and birth regression
+  versus linear. The current context-gated candidate fails this stricter gate
+  on seed `13` births.
+- v46: targeted archive expansion under the strict gate. Archive expansion
+  succeeded with survivor support across six carrion-only fixture seeds, but
+  re-distillation still failed strict open-seed promotion on seeds `5` and `13`
+  and still produced no terminal carrion-only survivors.
+- v47: recovery-phase/state carryover. A policy-visible post-carrion-contact
+  memory gate was added and validated, but the strict candidate still failed on
+  seeds `5` and `13` and still produced no terminal carrion-only survivors.
+- v48: branch-state-conditioned scoring. Add a compact value/support signal or
+  recovery-phase action-value bias derived from survivor continuations. This
+  artifact/scoring path is implemented and validated, but the strict candidate
+  still fails on seeds `5` and `13` and no `carrion_only@120` fixture survivor
+  appears.
+- v49: local-resource eat guard audit. Protecting linear `eat` on current-tile
+  animal resource is implemented and tested, but it fired only once in the
+  broad-open run and did not change strict outcomes. The next slice must expand
+  branch archive data rather than add another tiny residual guard.
+- v50: learned dynamics/world-model pilot. Only after v37-v49 prove the target
   data and policy contract, train a compact dynamics/value model for short
   observation-space rollouts or MuZero/Dreamer-style planning. Acceptance is
   not promotion; it is matching exact branch decisions on held-out branch
   states and improving search throughput without inventing invalid survivors.
-- v43: open-ended/autonomous curriculum. If v41 or v42 moves carrion, fold the
-  recovery task back into broader ecology with XLand-style dynamic task
+- v51: open-ended/autonomous curriculum. If the recovery path moves carrion,
+  fold the task back into broader ecology with XLand-style dynamic task
   distributions and PBT/QD scheduling so the policy does not overfit a single
   fixture lane.
+- v52: deterministic residual boundary. Recovery-window extension did not
+  repair strict open-seed regressions or produce terminal carrion-only
+  survivors, so the archive became ready for a value/sequence learner but not
+  for promotion.
+- v53-v56: first RTX/IQL boundary. IQL produced the first nonzero terminal
+  `carrion_only@120` survivors and broad open gains without heuristic runtime
+  actions, but failed the action-diversity cap through dominant `eat`
+  concentration.
+- v57-v60: strict IQL audit boundary. Archive acceptance now counts only
+  trainable counterfactual survivor trajectories, labeled IQL acceptance now
+  blocks per-seed alive/birth regressions, and coefficient/prior probes still
+  failed dominant-action and seed-level gates. The next IQL work must train or
+  constrain rollout-state top-1 action behavior instead of repeating aggregate
+  marginal or prior-blend tuning.
+- v61: risk-adjusted extraction boundary. Adding risk-adjusted actor extraction
+  to the sharp action-distribution IQL setup passed the train gate but failed
+  the strict slice worse than v59: no carrion-only movement, dominant `eat`
+  share above cap, and open-seed regressions on seeds `5`, `19`, and `37`.
+- v62-v63: rollout-state calibration boundary. Global actor-bias calibration
+  found the calibration-bank actor was dominated by `stay`/`move_north`, while
+  strict deployment still concentrated on `eat`; lowering scalar contextual-prior
+  blend made the slice substantially worse. Treat the current IQL representation
+  and coefficient family as exhausted for promotion. The next slice should open a
+  rollout-context policy branch, not another extraction, prior-blend, or global
+  action-share variant against the same acceptance surface.
 
 External checks that support this direction:
 

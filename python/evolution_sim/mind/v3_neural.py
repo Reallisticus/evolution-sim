@@ -59,6 +59,26 @@ MIND_V3_NEURAL_CONTEXTUAL_FIXTURE_MAX_SCALE = 0.18
 MIND_V3_NEURAL_SAMPLE_WEIGHT_POLICY = "horizon_survival_reproduction_viability_v1"
 MIND_V3_NEURAL_ACTION_PRIOR_LOG_WEIGHT = 0.18
 MIND_V3_NEURAL_PROTOTYPE_WEIGHT_SCALE = 2.0
+MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE = "none"
+MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER = (
+    "visible_carrion_scavenger_v1"
+)
+MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE = (
+    "visible_carrion_or_recovery_phase_v1"
+)
+MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATES = frozenset(
+    {
+        MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+        MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER,
+        MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE,
+    }
+)
+MIND_V3_NEURAL_DEFAULT_RECOVERY_PHASE_TICKS = 8
+MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY = (
+    "branch_survivor_failure_action_log_odds_v1"
+)
+MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_SCALE = 0.18
+MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_MAX_ABS = 0.16
 MIND_V3_HORIZON_FIXTURE_SCORE_POLICY = (
     "action_conditioned_horizon_fixture_value_v1"
 )
@@ -92,6 +112,9 @@ def train_mind_v3_neural_artifact(
     artifact_mode: str = MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
     neural_residual_scale: float | None = None,
     neural_residual_max_linear_override_margin: float | None = None,
+    neural_residual_context_gate: str | None = None,
+    neural_residual_recovery_phase_ticks: int | None = None,
+    recovery_phase_action_bias: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if not datasets:
         raise MindV3NeuralArtifactError("at least one trajectory dataset is required")
@@ -162,11 +185,18 @@ def train_mind_v3_neural_artifact(
         horizon_ticks=horizon_ticks,
     )
     fixture_summary = _fixture_pressure_summary(fixture_label_report)
+    recovery_phase_action_bias_payload = _recovery_phase_action_bias_payload(
+        recovery_phase_action_bias
+    )
     input_contract = ecological_policy_input_contract()
     residual_config = _neural_residual_config(
         neural_residual_scale=neural_residual_scale,
         neural_residual_max_linear_override_margin=(
             neural_residual_max_linear_override_margin
+        ),
+        neural_residual_context_gate=neural_residual_context_gate,
+        neural_residual_recovery_phase_ticks=(
+            neural_residual_recovery_phase_ticks
         ),
     )
     training_contract = {
@@ -191,6 +221,10 @@ def train_mind_v3_neural_artifact(
         "horizon_ticks": horizon_ticks,
         **residual_config,
     }
+    if recovery_phase_action_bias is not None:
+        training_contract["recovery_phase_action_bias"] = (
+            recovery_phase_action_bias_payload
+        )
     artifact = {
         "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
         "artifact_mode": mode_config["artifact_mode"],
@@ -270,6 +304,8 @@ def train_mind_v3_neural_artifact(
         "survival_heads": survival_heads,
         "reproduction_heads": reproduction_heads,
     }
+    if recovery_phase_action_bias is not None:
+        artifact["recovery_phase_action_bias"] = recovery_phase_action_bias_payload
     validate_mind_v3_neural_artifact(artifact)
     return artifact
 
@@ -279,6 +315,7 @@ def score_mind_v3_neural_artifact(
     artifact: Mapping[str, object],
     observation_input: Mapping[str, object],
     action_mask: Mapping[str, bool],
+    recovery_phase_remaining: int = 0,
 ) -> dict[str, float]:
     compiled = _compiled_artifact(artifact)
     values = ecological_policy_input_values(dict(observation_input))
@@ -301,6 +338,11 @@ def score_mind_v3_neural_artifact(
         compiled["fixture_context_bias"],  # type: ignore[arg-type]
         values,
     )
+    recovery_phase_delta = _recovery_phase_action_bias_scores(
+        compiled["recovery_phase_action_bias"],  # type: ignore[arg-type]
+        recovery_phase_remaining=recovery_phase_remaining,
+        action_mask=action_mask,
+    )
     scores: dict[str, float] = {}
     for action in ACTION_NAMES:
         if not bool(action_mask.get(action, False)):
@@ -309,6 +351,7 @@ def score_mind_v3_neural_artifact(
             float(bias[action])
             + float(fixture_delta[action])
             + float(fixture_context_delta[action])
+            + float(recovery_phase_delta[action])
             + _dot(weights[action], hidden)
         )
     return scores
@@ -432,6 +475,10 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
     )
     if "fixture_context_bias" in artifact:
         _fixture_context_bias_payload(artifact.get("fixture_context_bias"))
+    if "recovery_phase_action_bias" in artifact:
+        _recovery_phase_action_bias_payload(
+            artifact.get("recovery_phase_action_bias")
+        )
     if "neural_residual_scale" in artifact:
         _nonnegative_finite_float(
             artifact.get("neural_residual_scale"),
@@ -441,6 +488,15 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
         _nonnegative_finite_float(
             artifact.get("neural_residual_max_linear_override_margin"),
             "neural_residual_max_linear_override_margin",
+        )
+    if "neural_residual_context_gate" in artifact:
+        _neural_residual_context_gate_value(
+            artifact.get("neural_residual_context_gate")
+        )
+    if "neural_residual_recovery_phase_ticks" in artifact:
+        _required_non_negative_int(
+            artifact.get("neural_residual_recovery_phase_ticks"),
+            "neural_residual_recovery_phase_ticks",
         )
     _head_mapping(
         artifact.get("survival_heads"),
@@ -477,8 +533,10 @@ def _neural_residual_config(
     *,
     neural_residual_scale: float | None,
     neural_residual_max_linear_override_margin: float | None,
-) -> dict[str, float]:
-    config: dict[str, float] = {}
+    neural_residual_context_gate: str | None,
+    neural_residual_recovery_phase_ticks: int | None,
+) -> dict[str, object]:
+    config: dict[str, object] = {}
     if neural_residual_scale is not None:
         config["neural_residual_scale"] = _round(
             _nonnegative_finite_float(
@@ -491,6 +549,17 @@ def _neural_residual_config(
             _nonnegative_finite_float(
                 neural_residual_max_linear_override_margin,
                 "neural_residual_max_linear_override_margin",
+            )
+        )
+    if neural_residual_context_gate is not None:
+        config["neural_residual_context_gate"] = _neural_residual_context_gate_value(
+            neural_residual_context_gate
+        )
+    if neural_residual_recovery_phase_ticks is not None:
+        config["neural_residual_recovery_phase_ticks"] = (
+            _required_non_negative_int(
+                neural_residual_recovery_phase_ticks,
+                "neural_residual_recovery_phase_ticks",
             )
         )
     return config
@@ -1179,6 +1248,102 @@ def _fixture_context_bias_payload(payload: object) -> dict[str, object]:
     }
 
 
+def _recovery_phase_action_bias_payload(payload: object) -> dict[str, object]:
+    if payload is None:
+        return {
+            "policy": MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY,
+            "scale": 0.0,
+            "max_abs_bias": 0.0,
+            "action_bias": {action: 0.0 for action in ACTION_NAMES},
+            "survivor_action_weight": {action: 0.0 for action in ACTION_NAMES},
+            "failure_action_weight": {action: 0.0 for action in ACTION_NAMES},
+            "survivor_total_weight": 0.0,
+            "failure_total_weight": 0.0,
+            "record_count": 0,
+        }
+    if not isinstance(payload, Mapping):
+        raise MindV3NeuralArtifactError("recovery_phase_action_bias must be an object")
+    policy = str(payload.get("policy", "")).strip()
+    if policy != MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY:
+        raise MindV3NeuralArtifactError(
+            "recovery_phase_action_bias has unsupported policy"
+        )
+    return {
+        "policy": policy,
+        "scale": _round(
+            _nonnegative_finite_float(
+                payload.get("scale", 0.0),
+                "recovery_phase_action_bias.scale",
+            )
+        ),
+        "max_abs_bias": _round(
+            _nonnegative_finite_float(
+                payload.get("max_abs_bias", 0.0),
+                "recovery_phase_action_bias.max_abs_bias",
+            )
+        ),
+        "action_bias": _action_vector(
+            payload.get("action_bias"),
+            field="recovery_phase_action_bias.action_bias",
+        ),
+        "survivor_action_weight": _action_weight_vector(
+            payload.get("survivor_action_weight"),
+            field="recovery_phase_action_bias.survivor_action_weight",
+        ),
+        "failure_action_weight": _action_weight_vector(
+            payload.get("failure_action_weight"),
+            field="recovery_phase_action_bias.failure_action_weight",
+        ),
+        "survivor_total_weight": _round(
+            _nonnegative_finite_float(
+                payload.get("survivor_total_weight", 0.0),
+                "recovery_phase_action_bias.survivor_total_weight",
+            )
+        ),
+        "failure_total_weight": _round(
+            _nonnegative_finite_float(
+                payload.get("failure_total_weight", 0.0),
+                "recovery_phase_action_bias.failure_total_weight",
+            )
+        ),
+        "record_count": _required_non_negative_int(
+            payload.get("record_count", 0),
+            "recovery_phase_action_bias.record_count",
+        ),
+    }
+
+
+def _recovery_phase_action_bias_scores(
+    payload: Mapping[str, object],
+    *,
+    recovery_phase_remaining: int,
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    if int(recovery_phase_remaining) <= 0:
+        return {action: 0.0 for action in ACTION_NAMES}
+    action_bias = payload.get("action_bias")
+    bias = action_bias if isinstance(action_bias, Mapping) else {}
+    return {
+        action: _round(float(bias.get(action, 0.0)))
+        if bool(action_mask.get(action, False))
+        else 0.0
+        for action in ACTION_NAMES
+    }
+
+
+def _action_weight_vector(payload: object, *, field: str) -> dict[str, float]:
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, Mapping):
+        raise MindV3NeuralArtifactError(f"{field} must be an object")
+    return {
+        action: _round(
+            _nonnegative_finite_float(payload.get(action, 0.0), f"{field}.{action}")
+        )
+        for action in ACTION_NAMES
+    }
+
+
 def _self_value(values: Sequence[float], field: str) -> float:
     try:
         return _finite_value(values[_ECOLOGICAL_SELF_FIELDS.index(field)])
@@ -1382,6 +1547,9 @@ def _compiled_artifact(artifact: Mapping[str, object]) -> dict[str, object]:
         "fixture_context_bias": _fixture_context_bias_payload(
             artifact.get("fixture_context_bias")
         ),
+        "recovery_phase_action_bias": _recovery_phase_action_bias_payload(
+            artifact.get("recovery_phase_action_bias")
+        ),
         "survival_heads": _head_mapping(
             artifact.get("survival_heads"),
             hidden_units=hidden_units,
@@ -1509,6 +1677,21 @@ def _nonnegative_finite_float(value: object, field: str) -> float:
     if parsed < 0.0:
         raise MindV3NeuralArtifactError(f"{field} must be non-negative")
     return parsed
+
+
+def _string_value(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MindV3NeuralArtifactError("neural_residual_context_gate must be a string")
+    return value.strip()
+
+
+def _neural_residual_context_gate_value(value: object) -> str:
+    gate = _string_value(value)
+    if gate not in MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATES:
+        raise MindV3NeuralArtifactError(
+            f"unsupported neural_residual_context_gate: {gate}"
+        )
+    return gate
 
 
 def _optional_float(value: object) -> float | None:

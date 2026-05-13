@@ -160,6 +160,9 @@ TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_REGULARIZATION_POLICY = (
 TORCH_IQL_ACTION_DISTRIBUTION_REGULARIZATION_POLICY = (
     "batch_logged_sharp_action_marginal_kl_v2"
 )
+TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY = (
+    "calibration_bank_top1_actor_bias_control_v1"
+)
 TORCH_IQL_GUARD_FEEDBACK_FINETUNE_POLICY = (
     "runtime_suppressed_learned_action_margin_finetune_carryover_v1"
 )
@@ -167,6 +170,10 @@ TORCH_IQL_CALIBRATED_SUPPORTED_ACTOR_LOSS_WEIGHT = 0.18
 TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_LOSS_WEIGHT = 0.08
 TORCH_IQL_ACTION_DISTRIBUTION_LOSS_WEIGHT = 0.35
 TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE = 0.25
+TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_SHARE = 0.5
+TORCH_IQL_ROLLOUT_STATE_ACTION_BIAS_STEP = 0.08
+TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_BIAS_DELTA = 1.25
+TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_ITERATIONS = 64
 TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_MIN_MASS = 1e-6
 TORCH_IQL_CALIBRATED_SUPPORTED_ACTOR_EPOCHS = 64
 TORCH_IQL_CALIBRATED_SUPPORTED_MIN_ACTION_SUPPORT = 16
@@ -236,6 +243,13 @@ def train_torch_discrete_iql_network(
     contextual_behavior_supported_actor_extraction: bool = False,
     contextual_behavior_prior_regularization: bool = False,
     action_distribution_regularization: bool = False,
+    rollout_state_action_calibration: bool = False,
+    contextual_behavior_prior_loss_weight: float | None = None,
+    action_distribution_loss_weight: float | None = None,
+    action_distribution_temperature: float | None = None,
+    rollout_state_action_max_share: float | None = None,
+    rollout_state_action_bias_step: float | None = None,
+    rollout_state_action_max_bias_delta: float | None = None,
     calibration_records: tuple[dict[str, object], ...] | None = None,
     calibration_validation_records: tuple[dict[str, object], ...] | None = None,
     return_calibration: bool = False,
@@ -269,11 +283,12 @@ def train_torch_discrete_iql_network(
     if (
         uses_calibrated_supported_extraction
         or uses_contextual_prior_regularization
+        or rollout_state_action_calibration
     ) and not calibration_records:
         raise ValueError(
             "calibrated supported actor extraction and contextual behavior "
-            "prior regularization require a separate calibration trajectory "
-            "bank"
+            "prior regularization and rollout-state action calibration "
+            "require a separate calibration trajectory bank"
         )
     if (
         contextual_behavior_supported_actor_extraction
@@ -283,6 +298,36 @@ def train_torch_discrete_iql_network(
             "contextual behavior supported actor extraction requires a "
             "separate calibration validation trajectory bank"
         )
+    resolved_contextual_behavior_prior_loss_weight = _nonnegative_float_override(
+        contextual_behavior_prior_loss_weight,
+        default=TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_LOSS_WEIGHT,
+        field="contextual_behavior_prior_loss_weight",
+    )
+    resolved_action_distribution_loss_weight = _nonnegative_float_override(
+        action_distribution_loss_weight,
+        default=TORCH_IQL_ACTION_DISTRIBUTION_LOSS_WEIGHT,
+        field="action_distribution_loss_weight",
+    )
+    resolved_action_distribution_temperature = _positive_float_override(
+        action_distribution_temperature,
+        default=TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE,
+        field="action_distribution_temperature",
+    )
+    resolved_rollout_state_action_max_share = _probability_float_override(
+        rollout_state_action_max_share,
+        default=TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_SHARE,
+        field="rollout_state_action_max_share",
+    )
+    resolved_rollout_state_action_bias_step = _positive_float_override(
+        rollout_state_action_bias_step,
+        default=TORCH_IQL_ROLLOUT_STATE_ACTION_BIAS_STEP,
+        field="rollout_state_action_bias_step",
+    )
+    resolved_rollout_state_action_max_bias_delta = _nonnegative_float_override(
+        rollout_state_action_max_bias_delta,
+        default=TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_BIAS_DELTA,
+        field="rollout_state_action_max_bias_delta",
+    )
 
     torch.manual_seed(TORCH_NEURAL_SEED)
     try:
@@ -555,7 +600,16 @@ def train_torch_discrete_iql_network(
         _empty_contextual_behavior_prior_stats()
     )
     action_distribution_stats: dict[str, object] = (
-        _empty_action_distribution_stats(row_count=len(transitions))
+        _empty_action_distribution_stats(
+            row_count=len(transitions),
+            temperature=resolved_action_distribution_temperature,
+        )
+    )
+    rollout_state_action_calibration_report: dict[str, object] = (
+        _empty_rollout_state_action_calibration_report()
+    )
+    rollout_state_action_calibration_validation_report: dict[str, object] = (
+        _empty_rollout_state_action_top1_report()
     )
     final_actor_weight_mean = 0.0
     final_actor_weight_min = 0.0
@@ -652,6 +706,7 @@ def train_torch_discrete_iql_network(
                 mask_tensor,
                 y,
                 replay_weight_tensor,
+                temperature=resolved_action_distribution_temperature,
             )
         )
         guard_feedback_loss = _guard_feedback_loss(
@@ -795,7 +850,7 @@ def train_torch_discrete_iql_network(
             )
             * behavior_margin_anchor_loss
             + (
-                TORCH_IQL_ACTION_DISTRIBUTION_LOSS_WEIGHT
+                resolved_action_distribution_loss_weight
                 if action_distribution_regularization
                 else 0.0
             )
@@ -1111,6 +1166,7 @@ def train_torch_discrete_iql_network(
                     mask_tensor,
                     y,
                     replay_weight_tensor,
+                    temperature=resolved_action_distribution_temperature,
                 )
             )
             actor_finetune_guard_feedback_loss = _guard_feedback_loss(
@@ -1136,7 +1192,7 @@ def train_torch_discrete_iql_network(
                 0.35 * actor_loss
                 + TORCH_IQL_CALIBRATED_SUPPORTED_ACTOR_LOSS_WEIGHT
                 * calibrated_supported_actor_loss
-                + TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_LOSS_WEIGHT
+                + resolved_contextual_behavior_prior_loss_weight
                 * contextual_behavior_prior_loss
                 + TORCH_IQL_GUARD_FEEDBACK_LOSS_WEIGHT
                 * actor_finetune_guard_feedback_loss
@@ -1147,7 +1203,7 @@ def train_torch_discrete_iql_network(
                 )
                 * actor_finetune_behavior_margin_anchor_loss
                 + (
-                    TORCH_IQL_ACTION_DISTRIBUTION_LOSS_WEIGHT
+                    resolved_action_distribution_loss_weight
                     if action_distribution_regularization
                     else 0.0
                 )
@@ -1171,6 +1227,30 @@ def train_torch_discrete_iql_network(
             )
             final_action_distribution_loss = float(
                 action_distribution_loss.detach().cpu().item()
+            )
+
+    if rollout_state_action_calibration:
+        rollout_state_action_calibration_report = (
+            _apply_rollout_state_action_bias_calibration(
+                torch,
+                model,
+                tuple(calibration_records or ()),
+                action_index=action_index,
+                device=device,
+                max_action_share=resolved_rollout_state_action_max_share,
+                bias_step=resolved_rollout_state_action_bias_step,
+                max_bias_delta=resolved_rollout_state_action_max_bias_delta,
+            )
+        )
+        if calibration_validation_records:
+            rollout_state_action_calibration_validation_report = (
+                _rollout_state_action_top1_report(
+                    torch,
+                    model,
+                    tuple(calibration_validation_records),
+                    action_index=action_index,
+                    device=device,
+                )
             )
 
     training_metrics = {
@@ -1321,6 +1401,9 @@ def train_torch_discrete_iql_network(
             action_distribution_regularization=(
                 action_distribution_regularization
             ),
+            rollout_state_action_calibration=(
+                rollout_state_action_calibration
+            ),
         ),
         "actor_advantage_calibration_enabled": calibrated_actor_extraction,
         "actor_advantage_calibration_policy": (
@@ -1437,7 +1520,7 @@ def train_torch_discrete_iql_network(
             TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_REGULARIZATION_POLICY
         ),
         "actor_contextual_behavior_prior_regularization_loss_weight": (
-            TORCH_IQL_CONTEXTUAL_BEHAVIOR_PRIOR_LOSS_WEIGHT
+            resolved_contextual_behavior_prior_loss_weight
             if uses_contextual_prior_regularization
             else 0.0
         ),
@@ -1457,11 +1540,35 @@ def train_torch_discrete_iql_network(
             TORCH_IQL_ACTION_DISTRIBUTION_REGULARIZATION_POLICY
         ),
         "actor_action_distribution_loss_weight": (
-            TORCH_IQL_ACTION_DISTRIBUTION_LOSS_WEIGHT
+            resolved_action_distribution_loss_weight
             if action_distribution_regularization
             else 0.0
         ),
         "actor_action_distribution": action_distribution_stats,
+        "actor_rollout_state_action_calibration_enabled": (
+            rollout_state_action_calibration
+        ),
+        "actor_rollout_state_action_calibration_policy": (
+            TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY
+        ),
+        "actor_rollout_state_action_calibration_max_share": (
+            resolved_rollout_state_action_max_share
+        ),
+        "actor_rollout_state_action_calibration_bias_step": (
+            resolved_rollout_state_action_bias_step
+        ),
+        "actor_rollout_state_action_calibration_max_bias_delta": (
+            resolved_rollout_state_action_max_bias_delta
+        ),
+        "actor_rollout_state_action_calibration_max_iterations": (
+            TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_ITERATIONS
+        ),
+        "actor_rollout_state_action_calibration": (
+            rollout_state_action_calibration_report
+        ),
+        "actor_rollout_state_action_calibration_validation": (
+            rollout_state_action_calibration_validation_report
+        ),
         "actor_finetune_guard_feedback_enabled": uses_actor_finetune,
         "actor_finetune_guard_feedback_policy": (
             TORCH_IQL_GUARD_FEEDBACK_FINETUNE_POLICY
@@ -2374,6 +2481,48 @@ def _validate_counterfactual_weight_scale(value: float) -> None:
         raise ValueError("counterfactual_label_weight_scale must be non-negative")
 
 
+def _nonnegative_float_override(
+    value: float | None,
+    *,
+    default: float,
+    field: str,
+) -> float:
+    if value is None:
+        return float(default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a finite number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field} must be finite")
+    if parsed < 0.0:
+        raise ValueError(f"{field} must be non-negative")
+    return parsed
+
+
+def _positive_float_override(
+    value: float | None,
+    *,
+    default: float,
+    field: str,
+) -> float:
+    parsed = _nonnegative_float_override(value, default=default, field=field)
+    if parsed <= 0.0:
+        raise ValueError(f"{field} must be positive")
+    return parsed
+
+
+def _probability_float_override(
+    value: float | None,
+    *,
+    default: float,
+    field: str,
+) -> float:
+    parsed = _positive_float_override(value, default=default, field=field)
+    if parsed > 1.0:
+        raise ValueError(f"{field} must be less than or equal to 1")
+    return parsed
+
+
 def _actor_weighting_policy(
     *,
     calibrated_actor_extraction: bool,
@@ -2383,6 +2532,7 @@ def _actor_weighting_policy(
     contextual_behavior_supported_actor_extraction: bool,
     contextual_behavior_prior_regularization: bool,
     action_distribution_regularization: bool,
+    rollout_state_action_calibration: bool,
 ) -> str:
     policies = [
         TORCH_IQL_CALIBRATED_ACTOR_WEIGHTING_POLICY
@@ -2405,6 +2555,8 @@ def _actor_weighting_policy(
         )
     if action_distribution_regularization:
         policies.append(TORCH_IQL_ACTION_DISTRIBUTION_REGULARIZATION_POLICY)
+    if rollout_state_action_calibration:
+        policies.append(TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY)
     return "+".join(policies)
 
 
@@ -4648,14 +4800,19 @@ def _action_distribution_actor_loss(
     action_masks: Any,
     labels: Any,
     replay_weights: Any,
+    *,
+    temperature: float = TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE,
 ) -> tuple[Any, dict[str, object]]:
     row_count = int(labels.shape[0])
     if row_count <= 0:
-        return masked_logits.new_zeros(()), _empty_action_distribution_stats()
+        return (
+            masked_logits.new_zeros(()),
+            _empty_action_distribution_stats(temperature=temperature),
+        )
     weights = replay_weights.to(dtype=masked_logits.dtype).clamp_min(0.0)
     weight_total = weights.sum().clamp_min(1e-9)
     probabilities = torch.nn.functional.softmax(
-        masked_logits / TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE,
+        masked_logits / float(temperature),
         dim=1,
     )
     predicted_distribution = (
@@ -4682,9 +4839,7 @@ def _action_distribution_actor_loss(
         "policy": TORCH_IQL_ACTION_DISTRIBUTION_REGULARIZATION_POLICY,
         "row_count": row_count,
         "active_action_count": int(active_actions.sum().detach().cpu().item()),
-        "action_distribution_temperature": (
-            TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE
-        ),
+        "action_distribution_temperature": _round(float(temperature)),
         "action_distribution_kl": _round(float(loss.detach().cpu().item())),
         "action_distribution_tvd": _round(float(tvd.detach().cpu().item())),
         "target_distribution": {
@@ -4699,6 +4854,226 @@ def _action_distribution_actor_loss(
             )
             for index, action in enumerate(ACTION_NAMES)
         },
+    }
+
+
+def _apply_rollout_state_action_bias_calibration(
+    torch: Any,
+    model: Any,
+    records: tuple[dict[str, object], ...],
+    *,
+    action_index: Mapping[str, int],
+    device: Any,
+    max_action_share: float,
+    bias_step: float,
+    max_bias_delta: float,
+) -> dict[str, object]:
+    tensors = _rollout_state_action_tensors(
+        torch,
+        records,
+        action_index=action_index,
+        device=device,
+    )
+    if tensors is None:
+        return _empty_rollout_state_action_calibration_report()
+    x, action_masks, labels = tensors
+    original_bias = model.actor.bias.detach().clone()
+    before = _rollout_state_action_top1_report_from_tensors(
+        torch,
+        model,
+        x,
+        action_masks,
+        labels,
+    )
+    iteration_count = 0
+    converged = bool(before["dominant_action_share"] <= max_action_share)
+    with torch.no_grad():
+        for iteration in range(TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_ITERATIONS):
+            current = _rollout_state_action_top1_report_from_tensors(
+                torch,
+                model,
+                x,
+                action_masks,
+                labels,
+            )
+            over_cap = [
+                action
+                for action, share in current["top1_action_shares"].items()
+                if float(share) > max_action_share
+            ]
+            if not over_cap:
+                converged = True
+                iteration_count = iteration
+                break
+            changed = False
+            for action in over_cap:
+                action_idx = int(action_index[action])
+                current_delta = float(
+                    (model.actor.bias[action_idx] - original_bias[action_idx])
+                    .detach()
+                    .cpu()
+                    .item()
+                )
+                remaining = max_bias_delta + current_delta
+                if remaining <= 0.0:
+                    continue
+                model.actor.bias[action_idx] -= min(float(bias_step), remaining)
+                changed = True
+            iteration_count = iteration + 1
+            if not changed:
+                break
+        after = _rollout_state_action_top1_report_from_tensors(
+            torch,
+            model,
+            x,
+            action_masks,
+            labels,
+        )
+    bias_delta = {
+        action: _round(
+            float(
+                (
+                    model.actor.bias[int(action_index[action])]
+                    - original_bias[int(action_index[action])]
+                )
+                .detach()
+                .cpu()
+                .item()
+            )
+        )
+        for action in ACTION_NAMES
+    }
+    return {
+        "schema_version": "mind_rollout_state_action_calibration_v1",
+        "policy": TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY,
+        "calibration_record_count": len(records),
+        "calibration_transition_count": int(before["row_count"]),
+        "max_action_share": _round(max_action_share),
+        "bias_step": _round(bias_step),
+        "max_bias_delta": _round(max_bias_delta),
+        "max_iterations": TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_ITERATIONS,
+        "iteration_count": iteration_count,
+        "converged": bool(after["dominant_action_share"] <= max_action_share),
+        "initially_converged": converged and iteration_count == 0,
+        "action_bias_delta": bias_delta,
+        "before": before,
+        "after": after,
+    }
+
+
+def _rollout_state_action_top1_report(
+    torch: Any,
+    model: Any,
+    records: tuple[dict[str, object], ...],
+    *,
+    action_index: Mapping[str, int],
+    device: Any,
+) -> dict[str, object]:
+    tensors = _rollout_state_action_tensors(
+        torch,
+        records,
+        action_index=action_index,
+        device=device,
+    )
+    if tensors is None:
+        return _empty_rollout_state_action_top1_report()
+    x, action_masks, labels = tensors
+    return _rollout_state_action_top1_report_from_tensors(
+        torch,
+        model,
+        x,
+        action_masks,
+        labels,
+    )
+
+
+def _rollout_state_action_tensors(
+    torch: Any,
+    records: tuple[dict[str, object], ...],
+    *,
+    action_index: Mapping[str, int],
+    device: Any,
+) -> tuple[Any, Any, Any] | None:
+    transitions = build_trajectory_transitions(records)
+    if not transitions:
+        return None
+    features = [
+        decode_observation_input(transition.observation_input)
+        for transition in transitions
+    ]
+    action_masks = [
+        _action_mask_values(transition.action_mask)
+        for transition in transitions
+    ]
+    labels = [int(action_index[transition.action]) for transition in transitions]
+    return (
+        torch.tensor(features, dtype=torch.float32, device=device),
+        torch.tensor(action_masks, dtype=torch.bool, device=device),
+        torch.tensor(labels, dtype=torch.long, device=device),
+    )
+
+
+def _rollout_state_action_top1_report_from_tensors(
+    torch: Any,
+    model: Any,
+    x: Any,
+    action_masks: Any,
+    labels: Any,
+) -> dict[str, object]:
+    row_count = int(labels.shape[0])
+    if row_count <= 0:
+        return _empty_rollout_state_action_top1_report()
+    with torch.no_grad():
+        hidden = torch.tanh(model.hidden(x))
+        masked_logits = _masked_logits(torch, model.actor(hidden), action_masks)
+        has_legal_action = action_masks.any(dim=1)
+        active_rows = torch.nonzero(has_legal_action, as_tuple=False).squeeze(1)
+        active_count = int(active_rows.numel())
+        if active_count <= 0:
+            return _empty_rollout_state_action_top1_report(row_count=row_count)
+        top_actions = masked_logits[active_rows].argmax(dim=1)
+        active_labels = labels[active_rows]
+        top_counts = {action: 0 for action in ACTION_NAMES}
+        logged_counts = {action: 0 for action in ACTION_NAMES}
+        for action_idx in top_actions.detach().cpu().tolist():
+            top_counts[ACTION_NAMES[int(action_idx)]] += 1
+        for action_idx in active_labels.detach().cpu().tolist():
+            logged_counts[ACTION_NAMES[int(action_idx)]] += 1
+        top_shares = {
+            action: _round(count / float(active_count))
+            for action, count in top_counts.items()
+        }
+        logged_shares = {
+            action: _round(count / float(active_count))
+            for action, count in logged_counts.items()
+        }
+        dominant_action = max(
+            ACTION_NAMES,
+            key=lambda action: (top_counts[action], action),
+        )
+        match_rate = float(
+            (top_actions == active_labels)
+            .to(dtype=masked_logits.dtype)
+            .mean()
+            .detach()
+            .cpu()
+            .item()
+        )
+    return {
+        "schema_version": "mind_rollout_state_action_top1_report_v1",
+        "policy": TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY,
+        "row_count": row_count,
+        "active_row_count": active_count,
+        "top1_action_counts": top_counts,
+        "top1_action_shares": top_shares,
+        "logged_action_counts": logged_counts,
+        "logged_action_shares": logged_shares,
+        "dominant_action": dominant_action,
+        "dominant_action_share": top_shares[dominant_action],
+        "top1_logged_match_rate": _round(match_rate),
+        "top1_distribution_tvd_from_logged": _round(
+            _action_distribution_tvd(top_counts, logged_counts)
+        ),
     }
 
 
@@ -5359,17 +5734,57 @@ def _empty_contextual_behavior_prior_stats(
 def _empty_action_distribution_stats(
     *,
     row_count: int = 0,
+    temperature: float = TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE,
 ) -> dict[str, object]:
     return {
         "schema_version": "mind_action_distribution_actor_regularization_v1",
         "policy": TORCH_IQL_ACTION_DISTRIBUTION_REGULARIZATION_POLICY,
         "row_count": row_count,
         "active_action_count": 0,
-        "action_distribution_temperature": TORCH_IQL_ACTION_DISTRIBUTION_TEMPERATURE,
+        "action_distribution_temperature": _round(float(temperature)),
         "action_distribution_kl": 0.0,
         "action_distribution_tvd": 0.0,
         "target_distribution": {action: 0.0 for action in ACTION_NAMES},
         "predicted_distribution": {action: 0.0 for action in ACTION_NAMES},
+    }
+
+
+def _empty_rollout_state_action_calibration_report() -> dict[str, object]:
+    return {
+        "schema_version": "mind_rollout_state_action_calibration_v1",
+        "policy": TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY,
+        "calibration_record_count": 0,
+        "calibration_transition_count": 0,
+        "max_action_share": TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_SHARE,
+        "bias_step": TORCH_IQL_ROLLOUT_STATE_ACTION_BIAS_STEP,
+        "max_bias_delta": TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_BIAS_DELTA,
+        "max_iterations": TORCH_IQL_ROLLOUT_STATE_ACTION_MAX_ITERATIONS,
+        "iteration_count": 0,
+        "converged": False,
+        "initially_converged": False,
+        "action_bias_delta": {action: 0.0 for action in ACTION_NAMES},
+        "before": _empty_rollout_state_action_top1_report(),
+        "after": _empty_rollout_state_action_top1_report(),
+    }
+
+
+def _empty_rollout_state_action_top1_report(
+    *,
+    row_count: int = 0,
+) -> dict[str, object]:
+    return {
+        "schema_version": "mind_rollout_state_action_top1_report_v1",
+        "policy": TORCH_IQL_ROLLOUT_STATE_ACTION_CALIBRATION_POLICY,
+        "row_count": row_count,
+        "active_row_count": 0,
+        "top1_action_counts": {action: 0 for action in ACTION_NAMES},
+        "top1_action_shares": {action: 0.0 for action in ACTION_NAMES},
+        "logged_action_counts": {action: 0 for action in ACTION_NAMES},
+        "logged_action_shares": {action: 0.0 for action in ACTION_NAMES},
+        "dominant_action": None,
+        "dominant_action_share": 0.0,
+        "top1_logged_match_rate": 0.0,
+        "top1_distribution_tvd_from_logged": 0.0,
     }
 
 

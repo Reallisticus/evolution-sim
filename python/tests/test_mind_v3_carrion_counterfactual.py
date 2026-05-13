@@ -48,6 +48,27 @@ class MindV3CarrionCounterfactualTests(unittest.TestCase):
         )
         self.assertNotIn("heuristic", decision.source)
 
+    def test_water_rescue_script_moves_to_visible_water_before_conserving(self) -> None:
+        policy = CarrionCounterfactualPolicy("water_rescue_carrion_cycle")
+
+        decision = policy.decide(
+            _observation(
+                energy=0.32,
+                hydration=0.05,
+                center_animal_resource=0.0,
+                water_dx=0,
+                water_dy=-1,
+                water_distance=1,
+            ),
+            _action_mask(drink=False),
+        )
+
+        self.assertEqual(decision.requested_action, "move_north")
+        self.assertEqual(
+            decision.diagnostics["reason"],
+            "rescue_move_to_water_before_conserving",
+        )
+
     def test_report_records_same_fixture_seed_scope(self) -> None:
         report = build_carrion_counterfactual_report(
             seeds=(29,),

@@ -10,7 +10,9 @@ from evolution_sim.mind.carrion_recovery_distill import (
     DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_TICKS,
     DEFAULT_CARRION_RECOVERY_DISTILL_FIXTURES,
     DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS,
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_CONTEXT_GATE,
     DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_RECOVERY_PHASE_TICKS,
     DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
     MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
     MIND_V3_CARRION_RECOVERY_DISTILL_UNIFORM_WEIGHT_POLICY,
@@ -18,6 +20,11 @@ from evolution_sim.mind.carrion_recovery_distill import (
     CarrionRecoveryDistillError,
     build_carrion_recovery_distillation_report,
     write_carrion_recovery_distillation_report,
+)
+from evolution_sim.mind.v3_policy import (
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER,
 )
 from evolution_sim.mind.horizon_labels import (
     DEFAULT_HORIZON_TICKS,
@@ -92,6 +99,31 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum linear-anchor score margin that the neural residual may "
             "override."
+        ),
+    )
+    parser.add_argument(
+        "--neural-residual-context-gate",
+        choices=[
+            MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+            MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER,
+            (
+                MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE
+            ),
+        ],
+        default=DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_CONTEXT_GATE,
+        help=(
+            "Artifact-scoped context gate for anchored-neural residuals. The "
+            "default applies recovery residuals for visible carrion and a "
+            "short post-contact recovery phase."
+        ),
+    )
+    parser.add_argument(
+        "--neural-residual-recovery-phase-ticks",
+        type=int,
+        default=DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_RECOVERY_PHASE_TICKS,
+        help=(
+            "Number of post-animal-resource decisions that keep the recovery "
+            "residual context gate open."
         ),
     )
     parser.add_argument(
@@ -185,6 +217,10 @@ def main() -> None:
             neural_residual_max_linear_override_margin=float(
                 args.neural_residual_max_linear_override_margin
             ),
+            neural_residual_context_gate=str(args.neural_residual_context_gate),
+            neural_residual_recovery_phase_ticks=int(
+                args.neural_residual_recovery_phase_ticks
+            ),
             weight_policy=str(args.weight_policy),
             eval_seeds=eval_seeds,
             eval_ticks=int(args.eval_ticks),
@@ -215,6 +251,9 @@ def _print_report_summary(
     linear = _aggregate(comparison, "mind_v3_linear")
     heuristic = _aggregate(comparison, "heuristic")
     candidate_delta = _mapping(comparison.get("candidate_vs_linear_delta"))
+    seed_regression_summary = _mapping(
+        acceptance.get("open_per_seed_regression_summary")
+    )
 
     print(f"carrion_recovery_distill={args.output}")
     print(f"horizon_labels={args.horizon_output}")
@@ -226,6 +265,23 @@ def _print_report_summary(
     print(
         "neural_residual_max_linear_override_margin="
         f"{training.get('neural_residual_max_linear_override_margin')}"
+    )
+    print(
+        "neural_residual_context_gate="
+        f"{training.get('neural_residual_context_gate')}"
+    )
+    print(
+        "neural_residual_recovery_phase_ticks="
+        f"{training.get('neural_residual_recovery_phase_ticks', 0)}"
+    )
+    recovery_bias = _mapping(training.get("recovery_phase_action_bias"))
+    print(
+        "recovery_phase_action_bias_policy="
+        f"{recovery_bias.get('policy')}"
+    )
+    print(
+        "recovery_phase_action_bias_record_count="
+        f"{recovery_bias.get('record_count', 0)}"
     )
     print(f"weight_policy={_mapping(report.get('contract')).get('weight_policy')}")
     print(f"selected_trajectory_count={training.get('selected_trajectory_count')}")
@@ -248,6 +304,14 @@ def _print_report_summary(
     print(
         "open_candidate_vs_linear_births_mean_delta="
         f"{candidate_delta.get('births_mean', 0)}"
+    )
+    print(
+        "open_candidate_vs_linear_min_seed_alive_agents_delta="
+        f"{seed_regression_summary.get('min_alive_agents_delta', 0)}"
+    )
+    print(
+        "open_candidate_vs_linear_min_seed_births_delta="
+        f"{seed_regression_summary.get('min_births_delta', 0)}"
     )
     fixture = _mapping(evaluation.get("fixture"))
     for label, suite_key in (

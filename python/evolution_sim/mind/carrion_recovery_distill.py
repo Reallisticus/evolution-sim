@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.cli.mind_v3_evaluate import (
     _aggregate_runs,
     _comparison_delta,
@@ -31,10 +34,18 @@ from evolution_sim.mind.v3_neural import (
     MIND_V3_NEURAL_ARTIFACT_MODE_HORIZON_FIXTURE,
     MIND_V3_NEURAL_DEFAULT_HIDDEN_UNITS,
     MIND_V3_NEURAL_DEFAULT_SEED,
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_MAX_ABS,
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_SCALE,
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY,
     train_mind_v3_neural_artifact,
     write_mind_v3_neural_artifact,
 )
-from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+from evolution_sim.mind.v3_policy import (
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE,
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_SCAVENGER,
+    MindV3EvolutionPolicy,
+)
 
 MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION = (
     "mind_v3_carrion_recovery_distill_v1"
@@ -52,6 +63,19 @@ DEFAULT_CARRION_RECOVERY_DISTILL_ARTIFACT_MODE = (
 DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS = 16
 DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE = 0.03
 DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.008
+DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_CONTEXT_GATE = (
+    MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_VISIBLE_CARRION_OR_RECOVERY_PHASE
+)
+DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_RECOVERY_PHASE_TICKS = 8
+MIND_V3_CARRION_RECOVERY_PHASE_ACTION_BIAS_POLICY = (
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY
+)
+DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_SCALE = (
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_SCALE
+)
+DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_MAX_ABS = (
+    MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_DEFAULT_MAX_ABS
+)
 DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_SEEDS: tuple[int, ...] = (29, 37)
 DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_TICKS = 120
 DEFAULT_CARRION_RECOVERY_DISTILL_FIXTURES: tuple[str, ...] = ("carrion_only",)
@@ -74,6 +98,12 @@ def build_carrion_recovery_distillation_report(
     ),
     neural_residual_max_linear_override_margin: float | None = (
         DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+    ),
+    neural_residual_context_gate: str | None = (
+        DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_CONTEXT_GATE
+    ),
+    neural_residual_recovery_phase_ticks: int | None = (
+        DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_RECOVERY_PHASE_TICKS
     ),
     weight_policy: str = MIND_V3_CARRION_RECOVERY_DISTILL_WEIGHT_POLICY,
     eval_seeds: Sequence[int] = DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_SEEDS,
@@ -114,6 +144,12 @@ def build_carrion_recovery_distillation_report(
     horizon_report = build_horizon_label_report(datasets, horizons=horizon_ticks)
     if horizon_output_path is not None:
         write_horizon_label_report(horizon_report, horizon_output_path)
+    recovery_phase_action_bias = _recovery_phase_action_bias(
+        datasets=datasets,
+        selected=selected,
+        trajectory_weights=trajectory_weights,
+        recovery_phase_ticks=int(neural_residual_recovery_phase_ticks or 0),
+    )
     artifact = train_mind_v3_neural_artifact(
         datasets,
         horizon_label_report=horizon_report,
@@ -125,6 +161,11 @@ def build_carrion_recovery_distillation_report(
         neural_residual_max_linear_override_margin=(
             neural_residual_max_linear_override_margin
         ),
+        neural_residual_context_gate=neural_residual_context_gate,
+        neural_residual_recovery_phase_ticks=(
+            neural_residual_recovery_phase_ticks
+        ),
+        recovery_phase_action_bias=recovery_phase_action_bias,
     )
     if artifact_output_path is not None:
         write_mind_v3_neural_artifact(artifact, artifact_output_path)
@@ -149,6 +190,17 @@ def build_carrion_recovery_distillation_report(
         "neural_residual_scale": artifact.get("neural_residual_scale"),
         "neural_residual_max_linear_override_margin": artifact.get(
             "neural_residual_max_linear_override_margin"
+        ),
+        "neural_residual_context_gate": artifact.get(
+            "neural_residual_context_gate",
+            MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+        ),
+        "neural_residual_recovery_phase_ticks": artifact.get(
+            "neural_residual_recovery_phase_ticks",
+            0,
+        ),
+        "recovery_phase_action_bias_policy": (
+            _mapping(artifact.get("recovery_phase_action_bias")).get("policy")
         ),
         "weight_policy": weight_policy,
         "eval_seeds": list(eval_seed_values),
@@ -194,6 +246,17 @@ def build_carrion_recovery_distillation_report(
             "neural_residual_scale": artifact.get("neural_residual_scale"),
             "neural_residual_max_linear_override_margin": artifact.get(
                 "neural_residual_max_linear_override_margin"
+            ),
+            "neural_residual_context_gate": artifact.get(
+                "neural_residual_context_gate",
+                MIND_V3_NEURAL_RESIDUAL_CONTEXT_GATE_NONE,
+            ),
+            "neural_residual_recovery_phase_ticks": artifact.get(
+                "neural_residual_recovery_phase_ticks",
+                0,
+            ),
+            "recovery_phase_action_bias": artifact.get(
+                "recovery_phase_action_bias"
             ),
             "model_type": artifact.get("model_type"),
             "trained_record_count": artifact.get("trained_record_count"),
@@ -305,6 +368,182 @@ def _trajectory_weight(
     return _round(min(4.0, 1.0 + alive * 0.5 + births * 0.15 + scavenger_events * 0.01))
 
 
+def _recovery_phase_action_bias(
+    *,
+    datasets: Sequence[object],
+    selected: Sequence[Mapping[str, object]],
+    trajectory_weights: Sequence[float],
+    recovery_phase_ticks: int,
+) -> dict[str, object]:
+    survivor_counts = {action: 0.0 for action in ACTION_NAMES}
+    failure_counts = {action: 0.0 for action in ACTION_NAMES}
+    record_count = 0
+    if recovery_phase_ticks > 0:
+        for dataset, meta, weight in zip(
+            datasets,
+            selected,
+            trajectory_weights,
+            strict=True,
+        ):
+            parsed_weight = _positive_finite_weight(weight)
+            if parsed_weight <= 0.0:
+                continue
+            outcome_class = str(meta.get("outcome_class", ""))
+            if outcome_class == "survivor":
+                target_counts = survivor_counts
+            elif outcome_class == "failure":
+                target_counts = failure_counts
+            else:
+                continue
+            active_remaining_by_agent: dict[int, int] = {}
+            records = getattr(dataset, "records", ())
+            for record in records:
+                if not isinstance(record, Mapping):
+                    continue
+                agent_id = _record_agent_id(record)
+                if agent_id is None:
+                    continue
+                previous = max(0, int(active_remaining_by_agent.get(agent_id, 0)))
+                if previous > 0:
+                    action = _record_action(record)
+                    if action in target_counts:
+                        target_counts[action] += parsed_weight
+                        record_count += 1
+                alive_after = _record_alive_after(record)
+                activated = _record_consumed_animal_resource(record) and alive_after
+                if not alive_after:
+                    active_remaining_by_agent.pop(agent_id, None)
+                elif activated:
+                    active_remaining_by_agent[agent_id] = int(recovery_phase_ticks)
+                elif previous > 1:
+                    active_remaining_by_agent[agent_id] = previous - 1
+                else:
+                    active_remaining_by_agent.pop(agent_id, None)
+
+    action_bias = _branch_action_log_odds_bias(
+        survivor_counts=survivor_counts,
+        failure_counts=failure_counts,
+        scale=DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_SCALE,
+        max_abs_bias=DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_MAX_ABS,
+    )
+    survivor_total = sum(survivor_counts.values())
+    failure_total = sum(failure_counts.values())
+    return {
+        "policy": MIND_V3_CARRION_RECOVERY_PHASE_ACTION_BIAS_POLICY,
+        "scale": DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_SCALE,
+        "max_abs_bias": DEFAULT_CARRION_RECOVERY_PHASE_ACTION_BIAS_MAX_ABS,
+        "action_bias": action_bias,
+        "survivor_action_weight": {
+            action: _round(value) for action, value in survivor_counts.items()
+        },
+        "failure_action_weight": {
+            action: _round(value) for action, value in failure_counts.items()
+        },
+        "survivor_total_weight": _round(survivor_total),
+        "failure_total_weight": _round(failure_total),
+        "record_count": record_count,
+    }
+
+
+def _branch_action_log_odds_bias(
+    *,
+    survivor_counts: Mapping[str, float],
+    failure_counts: Mapping[str, float],
+    scale: float,
+    max_abs_bias: float,
+) -> dict[str, float]:
+    action_domain = [
+        action
+        for action in ACTION_NAMES
+        if (
+            float(survivor_counts.get(action, 0.0))
+            + float(failure_counts.get(action, 0.0))
+        )
+        > 0.0
+    ]
+    if not action_domain:
+        return {action: 0.0 for action in ACTION_NAMES}
+    survivor_total = sum(
+        float(survivor_counts.get(action, 0.0)) for action in action_domain
+    )
+    failure_total = sum(
+        float(failure_counts.get(action, 0.0)) for action in action_domain
+    )
+    if survivor_total <= 0.0 or failure_total <= 0.0:
+        return {action: 0.0 for action in ACTION_NAMES}
+    prior = 1.0
+    action_count = float(len(action_domain))
+    raw = {}
+    for action in action_domain:
+        survivor_rate = (
+            float(survivor_counts.get(action, 0.0)) + prior
+        ) / (survivor_total + action_count * prior)
+        failure_rate = (
+            float(failure_counts.get(action, 0.0)) + prior
+        ) / (failure_total + action_count * prior)
+        raw[action] = math.log(survivor_rate) - math.log(failure_rate)
+    mean = sum(raw.values()) / float(len(raw))
+    result = {action: 0.0 for action in ACTION_NAMES}
+    result.update({
+        action: _round(_clamp((raw[action] - mean) * scale, -max_abs_bias, max_abs_bias))
+        for action in action_domain
+    })
+    return result
+
+
+def _record_agent_id(record: Mapping[str, object]) -> int | None:
+    value = record.get("agent_id")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return int(value)
+
+
+def _record_action(record: Mapping[str, object]) -> str:
+    resolved = record.get("resolved_action")
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    requested = record.get("requested_action")
+    if isinstance(requested, str):
+        return requested
+    return ""
+
+
+def _record_alive_after(record: Mapping[str, object]) -> bool:
+    after = record.get("after")
+    if not isinstance(after, Mapping):
+        return True
+    return after.get("alive") is not False
+
+
+def _record_consumed_animal_resource(record: Mapping[str, object]) -> bool:
+    outcome = record.get("outcome")
+    outcome_payload = outcome if isinstance(outcome, Mapping) else {}
+    feeding = outcome_payload.get("feeding")
+    feeding_payload = feeding if isinstance(feeding, Mapping) else {}
+    food_source = feeding_payload.get("food_source")
+    if food_source not in {"carcass", "fresh_kill"}:
+        return False
+    feeding_gain = _metric(feeding_payload, "gained_energy")
+    resource_gain = _metric(outcome_payload, "resource_gain")
+    return bool(feeding_payload.get("ate", False)) or max(
+        feeding_gain,
+        resource_gain,
+    ) > 0.0
+
+
+def _positive_finite_weight(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return 0.0
+    return parsed
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
 def _label_value(record: Mapping[str, object], key: str) -> object:
     label = record.get("label")
     payload = label if isinstance(label, Mapping) else {}
@@ -402,6 +641,10 @@ def _evaluate_artifact(
                     heuristic=linear_aggregate,
                     mind_v3=candidate_aggregate,
                 ),
+                "candidate_vs_linear_per_seed": _open_seed_delta_rows(
+                    candidate_runs=candidate_runs,
+                    linear_runs=linear_runs,
+                ),
                 "candidate_vs_heuristic_delta": _comparison_delta(
                     heuristic=heuristic_aggregate,
                     mind_v3=candidate_aggregate,
@@ -477,6 +720,47 @@ def _fixture_aggregate_by_name(
     return result
 
 
+def _open_seed_delta_rows(
+    *,
+    candidate_runs: Sequence[Mapping[str, object]],
+    linear_runs: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    linear_by_seed = {
+        int(run["seed"]): run
+        for run in linear_runs
+        if isinstance(run, Mapping) and "seed" in run
+    }
+    rows = []
+    for candidate in candidate_runs:
+        if not isinstance(candidate, Mapping) or "seed" not in candidate:
+            continue
+        seed = int(candidate["seed"])
+        linear = linear_by_seed.get(seed)
+        if linear is None:
+            continue
+        candidate_alive = _int(candidate.get("alive_agents"))
+        linear_alive = _int(linear.get("alive_agents"))
+        candidate_births = _int(candidate.get("births"))
+        linear_births = _int(linear.get("births"))
+        candidate_deaths = _int(candidate.get("deaths"))
+        linear_deaths = _int(linear.get("deaths"))
+        rows.append(
+            {
+                "seed": seed,
+                "candidate_alive_agents": candidate_alive,
+                "linear_alive_agents": linear_alive,
+                "alive_agents_delta": candidate_alive - linear_alive,
+                "candidate_births": candidate_births,
+                "linear_births": linear_births,
+                "births_delta": candidate_births - linear_births,
+                "candidate_deaths": candidate_deaths,
+                "linear_deaths": linear_deaths,
+                "deaths_delta": candidate_deaths - linear_deaths,
+            }
+        )
+    return sorted(rows, key=lambda row: int(row["seed"]))
+
+
 def _acceptance(report: Mapping[str, object]) -> dict[str, object]:
     training = _mapping(report.get("training"))
     evaluation = _mapping(report.get("evaluation"))
@@ -506,6 +790,22 @@ def _acceptance(report: Mapping[str, object]) -> dict[str, object]:
         "births_mean",
     ):
         promotion_blockers.append("open_birth_regression_vs_linear")
+    open_seed_summary = _open_per_seed_regression_summary(
+        comparison.get("candidate_vs_linear_per_seed"),
+        expected_seeds=_seed_values(open_eval.get("seeds")),
+    )
+    if not bool(open_seed_summary["coverage_passed"]):
+        promotion_blockers.append("open_per_seed_delta_coverage_mismatch")
+    for row in open_seed_summary["regressions"]:
+        seed = int(row["seed"])
+        if _metric(row, "alive_agents_delta") < 0:
+            promotion_blockers.append(
+                f"open_seed_{seed}_alive_regression_vs_linear"
+            )
+        if _metric(row, "births_delta") < 0:
+            promotion_blockers.append(
+                f"open_seed_{seed}_birth_regression_vs_linear"
+            )
     for fixture_name, delta in fixture_summary.items():
         delta_payload = delta if isinstance(delta, Mapping) else {}
         if _metric(delta_payload, "terminal_survivor_run_count_delta") < 0:
@@ -523,9 +823,66 @@ def _acceptance(report: Mapping[str, object]) -> dict[str, object]:
         "data_path_blockers": blockers,
         "promotion_candidate_passed": not promotion_blockers,
         "promotion_blockers": promotion_blockers,
+        "open_per_seed_regression_summary": open_seed_summary,
         "requires_zero_heuristic_runtime_actions": True,
         "promotion_requires_no_open_alive_or_birth_regression_vs_linear": True,
+        "promotion_requires_no_open_per_seed_alive_or_birth_regression_vs_linear": (
+            True
+        ),
         "promotion_requires_no_fixture_birth_or_scavenger_regression_vs_linear": True,
+    }
+
+
+def _open_per_seed_regression_summary(
+    value: object,
+    *,
+    expected_seeds: Sequence[int] = (),
+) -> dict[str, object]:
+    rows = (
+        [row for row in value if isinstance(row, Mapping)]
+        if isinstance(value, list)
+        else []
+    )
+    row_seeds = [_int(row.get("seed")) for row in rows]
+    row_seed_counts = Counter(row_seeds)
+    expected_seed_values = tuple(int(seed) for seed in expected_seeds)
+    expected_seed_set = set(expected_seed_values)
+    row_seed_set = set(row_seeds)
+    missing_seeds = sorted(expected_seed_set - row_seed_set)
+    unexpected_seeds = sorted(row_seed_set - expected_seed_set)
+    duplicate_seeds = sorted(seed for seed, count in row_seed_counts.items() if count > 1)
+    coverage_passed = (
+        not expected_seed_values
+        or (
+            not missing_seeds
+            and not unexpected_seeds
+            and not duplicate_seeds
+            and len(row_seeds) == len(expected_seed_values)
+        )
+    )
+    regressions = [
+        {
+            "seed": _int(row.get("seed")),
+            "alive_agents_delta": _metric(row, "alive_agents_delta"),
+            "births_delta": _metric(row, "births_delta"),
+        }
+        for row in rows
+        if _metric(row, "alive_agents_delta") < 0
+        or _metric(row, "births_delta") < 0
+    ]
+    alive_deltas = [_metric(row, "alive_agents_delta") for row in rows]
+    birth_deltas = [_metric(row, "births_delta") for row in rows]
+    return {
+        "expected_seed_count": len(expected_seed_values),
+        "seed_count": len(rows),
+        "coverage_passed": coverage_passed,
+        "missing_seeds": missing_seeds,
+        "unexpected_seeds": unexpected_seeds,
+        "duplicate_seeds": duplicate_seeds,
+        "min_alive_agents_delta": min(alive_deltas) if alive_deltas else 0.0,
+        "min_births_delta": min(birth_deltas) if birth_deltas else 0.0,
+        "regression_count": len(regressions),
+        "regressions": regressions,
     }
 
 
@@ -572,6 +929,20 @@ def _positive_int(value: int | None, *, field: str) -> int:
 
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _seed_values(value: object) -> tuple[int, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return ()
+    parsed = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        try:
+            parsed.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(parsed)
 
 
 def _metric(payload: Mapping[str, object], key: str) -> float:

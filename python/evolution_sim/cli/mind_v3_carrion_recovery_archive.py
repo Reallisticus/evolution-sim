@@ -41,6 +41,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--counterfactual-report",
+        type=Path,
+        default=None,
+        help=(
+            "Optional carrion counterfactual rollout report whose full "
+            "fixture trajectories are appended to the recovery dataset."
+        ),
+    )
+    parser.add_argument(
         "--seeds",
         default=",".join(str(seed) for seed in DEFAULT_CARRION_COUNTERFACTUAL_SEEDS),
         help="Comma-separated carrion fixture seeds used when generating branches.",
@@ -108,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum failure descriptor cells required for archive acceptance.",
     )
     parser.add_argument(
+        "--min-counterfactual-survivor-seeds",
+        type=int,
+        default=0,
+        help=(
+            "Minimum distinct seeds with terminal survivors in the optional "
+            "--counterfactual-report."
+        ),
+    )
+    parser.add_argument(
         "--dataset-output",
         type=Path,
         default=Path("output/mind/mind-v3-carrion-recovery-dataset.jsonl"),
@@ -132,6 +150,7 @@ def main() -> None:
     try:
         report = build_carrion_recovery_archive_report(
             branch_report_path=args.branch_report,
+            counterfactual_report_path=args.counterfactual_report,
             seeds=_parse_seeds(args.seeds),
             ticks=int(args.ticks),
             base_script=str(args.base_script),
@@ -144,6 +163,9 @@ def main() -> None:
             max_dataset_records_per_class=int(args.max_dataset_records_per_class),
             min_survivor_cells=int(args.min_survivor_cells),
             min_failure_cells=int(args.min_failure_cells),
+            min_counterfactual_survivor_seeds=int(
+                args.min_counterfactual_survivor_seeds
+            ),
         )
         write_carrion_recovery_archive_report(report, args.output)
     except (OSError, ValueError, CarrionRecoveryArchiveError) as exc:
@@ -157,6 +179,10 @@ def main() -> None:
     print(f"survivor_cell_count={aggregate['survivor_cell_count']}")  # type: ignore[index]
     print(f"failure_cell_count={aggregate['failure_cell_count']}")  # type: ignore[index]
     print(f"dataset_record_count={aggregate['dataset_record_count']}")  # type: ignore[index]
+    print(
+        "counterfactual_survivor_seed_count="
+        f"{aggregate.get('counterfactual_survivor_seed_count', 0)}"
+    )
     print(
         "archive_acceptance_passed="
         f"{acceptance['archive_acceptance_passed']}"  # type: ignore[index]
