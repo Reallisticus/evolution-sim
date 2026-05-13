@@ -10,6 +10,8 @@ from evolution_sim.mind.carrion_recovery_distill import (
     DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_TICKS,
     DEFAULT_CARRION_RECOVERY_DISTILL_FIXTURES,
     DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS,
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
     MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
     MIND_V3_CARRION_RECOVERY_DISTILL_UNIFORM_WEIGHT_POLICY,
     MIND_V3_CARRION_RECOVERY_DISTILL_WEIGHT_POLICY,
@@ -70,6 +72,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=MIND_V3_NEURAL_DEFAULT_SEED,
         help="Deterministic neural projection seed.",
+    )
+    parser.add_argument(
+        "--neural-residual-scale",
+        type=float,
+        default=DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
+        help=(
+            "Artifact-scoped anchored-neural residual scale. This is lower "
+            "than the generic anchored-neural default to reduce broad "
+            "open-world regressions for recovery-distilled artifacts."
+        ),
+    )
+    parser.add_argument(
+        "--neural-residual-max-linear-override-margin",
+        type=float,
+        default=(
+            DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+        ),
+        help=(
+            "Maximum linear-anchor score margin that the neural residual may "
+            "override."
+        ),
     )
     parser.add_argument(
         "--weight-policy",
@@ -158,6 +181,10 @@ def main() -> None:
             artifact_mode=str(args.artifact_mode),
             hidden_units=int(args.hidden_units),
             seed=int(args.seed),
+            neural_residual_scale=float(args.neural_residual_scale),
+            neural_residual_max_linear_override_margin=float(
+                args.neural_residual_max_linear_override_margin
+            ),
             weight_policy=str(args.weight_policy),
             eval_seeds=eval_seeds,
             eval_ticks=int(args.eval_ticks),
@@ -195,6 +222,11 @@ def _print_report_summary(
     print(f"evaluation={args.evaluation_output}")
     print(f"schema_version={MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION}")
     print(f"artifact_mode={training.get('artifact_mode')}")
+    print(f"neural_residual_scale={training.get('neural_residual_scale')}")
+    print(
+        "neural_residual_max_linear_override_margin="
+        f"{training.get('neural_residual_max_linear_override_margin')}"
+    )
     print(f"weight_policy={_mapping(report.get('contract')).get('weight_policy')}")
     print(f"selected_trajectory_count={training.get('selected_trajectory_count')}")
     print(f"trained_record_count={training.get('trained_record_count')}")

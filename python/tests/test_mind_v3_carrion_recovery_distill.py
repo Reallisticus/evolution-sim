@@ -14,6 +14,8 @@ from evolution_sim.mind.carrion_recovery_archive import (
     write_carrion_recovery_archive_report,
 )
 from evolution_sim.mind.carrion_recovery_distill import (
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
+    DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
     MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
     build_carrion_recovery_distillation_report,
 )
@@ -60,9 +62,24 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
             self.assertTrue(report["acceptance"]["data_path_acceptance_passed"])
             self.assertGreater(report["training"]["selected_trajectory_count"], 0)
             self.assertGreater(report["training"]["trained_record_count"], 0)
+            self.assertEqual(
+                report["training"]["neural_residual_scale"],
+                DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
+            )
+            self.assertEqual(
+                report["training"][
+                    "neural_residual_max_linear_override_margin"
+                ],
+                DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
+            )
             self.assertTrue(horizon_path.exists())
             self.assertTrue(artifact_path.exists())
             self.assertTrue(evaluation_path.exists())
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                artifact["neural_residual_scale"],
+                DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE,
+            )
             candidate = report["evaluation"]["open"]["comparison"][
                 "mind_v3_recovery_distilled"
             ]["aggregate"]
@@ -126,6 +143,11 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
         )
         self.assertTrue(payload["acceptance"]["data_path_acceptance_passed"])
         self.assertIn("open_candidate_total_births=", stdout.getvalue())
+        self.assertIn(
+            "neural_residual_scale="
+            f"{DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE}",
+            stdout.getvalue(),
+        )
         self.assertIn(
             "open_candidate_vs_linear_alive_agents_mean_delta=",
             stdout.getvalue(),

@@ -1758,6 +1758,40 @@ v40 recovery-distillation working slice:
   events versus linear `12`, and `5` scavenger parent/child births versus
   linear `4`.
 
+v41 residual-safe recovery-distillation slice:
+
+- Recovery-distilled artifacts now carry artifact-scoped anchored-neural
+  residual controls. Existing generic anchored-neural artifacts keep the global
+  `0.05` residual scale and `0.015` linear-override margin; the recovery
+  distillation path defaults to a safer `0.03` scale and `0.008` override
+  margin.
+- Local working example:
+  `npm run sim:mind:v3:carrion-recovery-distill -- --archive-report
+  output/mind/mind-v3-v39-outcome-recovery-archive.json --horizon-output
+  output/mind/mind-v3-v41-residual-safe-recovery-distill-horizon-labels.json
+  --artifact-output
+  output/mind/mind-v3-v41-residual-safe-recovery-distill-artifact.json
+  --evaluation-output
+  output/mind/mind-v3-v41-residual-safe-recovery-distill-evaluation.json
+  --output
+  output/mind/mind-v3-v41-residual-safe-recovery-distill-report.json`.
+- This removes the v40 broad-regression blocker on the same seeds and archive:
+  local data-path acceptance passed, local promotion-candidate acceptance
+  passed, and the candidate used `0` heuristic runtime actions. Open-world
+  candidate performance was `19.5` alive mean and `17.5` births mean versus
+  linear `15.0` alive mean and `12.5` births mean, a `+4.5` alive and `+5.0`
+  births delta across seeds `29,37`.
+- The carrion-only fixture still ends extinct across both candidate and linear
+  runs, so the full carrion blocker is not solved. The safer residual keeps a
+  narrower positive scavenging signal: candidate and linear both produced `5`
+  births, while the candidate produced `23` animal-resource events versus
+  linear `22`, `19` carcass events versus linear `18`, and `16` scavenger
+  carcass events versus linear `12`.
+- The next target is larger recovery-archive coverage and held-out seed
+  validation, not simply increasing residual strength. The v40 setting had
+  stronger carrion fixture births but broke broad survival; v41 shows the
+  acceptance surface can catch that tradeoff.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -1774,7 +1808,7 @@ capacity. The current v36 audit means the learner does not yet have positive
 learner run on the same label distribution would mostly test extrapolation, not
 learning.
 
-Research-backed direction after v36:
+Research-backed direction after v41:
 
 1. Build an exact branch-and-explore data generator before training another
    artifact. The immediate target is not a learned world model; this simulator
@@ -1793,13 +1827,11 @@ Research-backed direction after v36:
    related neuroevolution results support this for simulator-heavy work because
    candidates can be evaluated in parallel with low communication. CUDA is not
    the bottleneck until we train a neural policy or learned dynamics model.
-4. Distill only after the temporal-credit audit passes. A training dataset
-   should include positive `carrion_only@120` survivors and post-contact
-   survivors per fixture seed, plus enough failed continuations to define the
-   boundary. Then train a policy artifact with strict acceptance: broad `120`
-   alive within `1.0` of linear, broad births not worse, dominant requested
-   action share `<= 0.50`, zero heuristic runtime actions, and
-   `carrion_only@120` terminal alive nonzero or blocker reduction.
+4. Keep distillation behind a broad-plus-fixture acceptance matrix. The v41
+   local slice proves the bridge can beat linear on broad seeds while retaining
+   a carrion scavenging lift, but the training data still needs positive
+   `carrion_only@120` terminal survivors and post-contact survivor coverage on
+   held-out fixture seeds before this becomes a real promotion candidate.
 5. Treat Dreamer/MuZero-style world models as the next major phase, not the
    next implementation slice. They are relevant because they learn dynamics and
    train or plan through imagined futures, but in this repo the first scalable
@@ -1819,19 +1851,20 @@ Major milestones from the current state:
   elites by recovery descriptors, and exports a balanced survivor/failure
   training set. Acceptance: temporal-credit audit passes on the exported data,
   and the archive contains more than one survivor niche.
-- v39: outcome-audited policy distillation from recovery data. The first slice
-  adds explicit survival/reproduction/scavenging telemetry to branch, archive,
-  dataset, and evaluator reports so training examples can be inspected and
-  weighted by ecological outcome. The next slice trains and evaluates a learned
-  controller against linear, anchored neural, and scripted references. This is
-  where IQL, behavior cloning, sequence modeling, or a compact recurrent policy
-  becomes useful again. Acceptance remains the broad-plus-carrion matrix above.
-- v40: learned dynamics/world-model pilot. Only after v37-v39 prove the target
+- v39-v41: outcome-audited policy distillation from recovery data. The current
+  slice adds explicit survival/reproduction/scavenging telemetry, trains a
+  deterministic anchored-neural artifact from recovery elites, and stores
+  artifact-scoped residual controls so broad survival is not sacrificed for a
+  fixture-specific carrion gain. The next slice should expand archive coverage
+  and repeat the same acceptance matrix on held-out seeds. This is where IQL,
+  behavior cloning, sequence modeling, or a compact recurrent policy becomes
+  useful again.
+- v42: learned dynamics/world-model pilot. Only after v37-v41 prove the target
   data and policy contract, train a compact dynamics/value model for short
   observation-space rollouts or MuZero/Dreamer-style planning. Acceptance is
   not promotion; it is matching exact branch decisions on held-out branch
   states and improving search throughput without inventing invalid survivors.
-- v41: open-ended/autonomous curriculum. If v39 or v40 moves carrion, fold the
+- v43: open-ended/autonomous curriculum. If v41 or v42 moves carrion, fold the
   recovery task back into broader ecology with XLand-style dynamic task
   distributions and PBT/QD scheduling so the policy does not overfit a single
   fixture lane.

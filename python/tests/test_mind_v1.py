@@ -1262,6 +1262,42 @@ class MindV1Tests(unittest.TestCase):
         )
         self.assertIsNone(update)
 
+    def test_mind_v3_policy_uses_artifact_scoped_residual_controls(
+        self,
+    ) -> None:
+        from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
+
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "train.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path, seed=7)
+            dataset = load_trajectory_jsonl(trajectory_path)
+            horizon_report = build_horizon_label_report([dataset], horizons=(1,))
+            artifact = train_mind_v3_neural_artifact(
+                [dataset],
+                horizon_label_report=horizon_report,
+                hidden_units=6,
+                seed=5,
+                neural_residual_scale=0.03,
+                neural_residual_max_linear_override_margin=0.008,
+            )
+            first_record = dataset.records[0]
+            policy = MindV3EvolutionPolicy(seed=7, neural_artifact=artifact)
+
+            decision = policy.decide(
+                {
+                    "metadata": {"agent_id": 3},
+                    "self": {"trophic_role": "herbivore", "meat_mode": "none"},
+                    "observation_input": first_record["observation_input"],
+                },
+                dict(first_record["action_mask"]),
+            )
+
+        self.assertEqual(decision.diagnostics["neural_residual_scale"], 0.03)
+        self.assertEqual(
+            decision.diagnostics["neural_residual_max_linear_override_margin"],
+            0.008,
+        )
+
     def test_mind_v3_policy_can_use_direct_horizon_fixture_artifact(
         self,
     ) -> None:

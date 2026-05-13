@@ -90,6 +90,8 @@ def train_mind_v3_neural_artifact(
     seed: int = MIND_V3_NEURAL_DEFAULT_SEED,
     trajectory_weight_multipliers: Sequence[float] | None = None,
     artifact_mode: str = MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED,
+    neural_residual_scale: float | None = None,
+    neural_residual_max_linear_override_margin: float | None = None,
 ) -> dict[str, object]:
     if not datasets:
         raise MindV3NeuralArtifactError("at least one trajectory dataset is required")
@@ -161,6 +163,12 @@ def train_mind_v3_neural_artifact(
     )
     fixture_summary = _fixture_pressure_summary(fixture_label_report)
     input_contract = ecological_policy_input_contract()
+    residual_config = _neural_residual_config(
+        neural_residual_scale=neural_residual_scale,
+        neural_residual_max_linear_override_margin=(
+            neural_residual_max_linear_override_margin
+        ),
+    )
     training_contract = {
         "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
         "artifact_mode": mode_config["artifact_mode"],
@@ -181,6 +189,7 @@ def train_mind_v3_neural_artifact(
         "hidden_units": hidden_units,
         "seed": seed,
         "horizon_ticks": horizon_ticks,
+        **residual_config,
     }
     artifact = {
         "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,
@@ -204,6 +213,7 @@ def train_mind_v3_neural_artifact(
         "seed": seed,
         "trained_record_count": len(samples),
         "horizon_ticks": horizon_ticks,
+        **residual_config,
         "provenance": {
             **combined_dataset_provenance(datasets),
             "horizon_label_schema_version": horizon_label_report.get(
@@ -422,6 +432,16 @@ def validate_mind_v3_neural_artifact(artifact: Mapping[str, object]) -> None:
     )
     if "fixture_context_bias" in artifact:
         _fixture_context_bias_payload(artifact.get("fixture_context_bias"))
+    if "neural_residual_scale" in artifact:
+        _nonnegative_finite_float(
+            artifact.get("neural_residual_scale"),
+            "neural_residual_scale",
+        )
+    if "neural_residual_max_linear_override_margin" in artifact:
+        _nonnegative_finite_float(
+            artifact.get("neural_residual_max_linear_override_margin"),
+            "neural_residual_max_linear_override_margin",
+        )
     _head_mapping(
         artifact.get("survival_heads"),
         hidden_units=hidden_units,
@@ -451,6 +471,29 @@ def _artifact_mode_config(artifact_mode: str) -> dict[str, str]:
             "architecture": MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
         }
     raise MindV3NeuralArtifactError(f"unsupported Mind v3 artifact mode: {mode}")
+
+
+def _neural_residual_config(
+    *,
+    neural_residual_scale: float | None,
+    neural_residual_max_linear_override_margin: float | None,
+) -> dict[str, float]:
+    config: dict[str, float] = {}
+    if neural_residual_scale is not None:
+        config["neural_residual_scale"] = _round(
+            _nonnegative_finite_float(
+                neural_residual_scale,
+                "neural_residual_scale",
+            )
+        )
+    if neural_residual_max_linear_override_margin is not None:
+        config["neural_residual_max_linear_override_margin"] = _round(
+            _nonnegative_finite_float(
+                neural_residual_max_linear_override_margin,
+                "neural_residual_max_linear_override_margin",
+            )
+        )
+    return config
 
 
 def _validate_horizon_label_report(report: Mapping[str, object]) -> None:
@@ -1458,6 +1501,13 @@ def _finite_float(value: object, field: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed):
         raise MindV3NeuralArtifactError(f"{field} must be finite")
+    return parsed
+
+
+def _nonnegative_finite_float(value: object, field: str) -> float:
+    parsed = _finite_float(value, field)
+    if parsed < 0.0:
+        raise MindV3NeuralArtifactError(f"{field} must be non-negative")
     return parsed
 
 

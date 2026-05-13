@@ -292,6 +292,14 @@ class MindV3EvolutionPolicy:
                     ),
                 }
             else:
+                neural_residual_scale = _artifact_neural_residual_scale(
+                    self._neural_artifact
+                )
+                neural_residual_max_linear_override_margin = (
+                    _artifact_neural_residual_max_linear_override_margin(
+                        self._neural_artifact
+                    )
+                )
                 linear_anchor_scores = score_mind_v3_metadata(
                     metadata=metadata,
                     observation_input=observation_values,
@@ -301,19 +309,27 @@ class MindV3EvolutionPolicy:
                     neural_scores=neural_scores,
                     linear_scores=linear_anchor_scores,
                     action_mask=action_mask,
+                    residual_scale=neural_residual_scale,
+                    max_linear_override_margin=(
+                        neural_residual_max_linear_override_margin
+                    ),
                 )
                 controller_backend = "frozen_neural_artifact_linear_anchor"
                 neural_anchor_diagnostics = {
                     "neural_linear_anchor_policy": MIND_V3_NEURAL_LINEAR_ANCHOR_POLICY,
-                    "neural_residual_scale": MIND_V3_NEURAL_RESIDUAL_SCALE,
+                    "neural_residual_scale": neural_residual_scale,
                     "neural_residual_max_linear_override_margin": (
-                        MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+                        neural_residual_max_linear_override_margin
                     ),
                     **_neural_anchor_diagnostics(
                         neural_scores=neural_scores,
                         linear_scores=linear_anchor_scores,
                         final_scores=scores,
                         action_mask=action_mask,
+                        residual_scale=neural_residual_scale,
+                        max_linear_override_margin=(
+                            neural_residual_max_linear_override_margin
+                        ),
                     ),
                 }
             neural_head_predictions = mind_v3_neural_head_predictions(
@@ -1165,19 +1181,25 @@ def _blend_neural_with_linear_anchor(
     neural_scores: Mapping[str, float],
     linear_scores: Mapping[str, float],
     action_mask: Mapping[str, bool],
+    residual_scale: float = MIND_V3_NEURAL_RESIDUAL_SCALE,
+    max_linear_override_margin: float = (
+        MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+    ),
 ) -> dict[str, float]:
     legal_actions = tuple(
         action for action in sorted(action_mask) if bool(action_mask[action])
     )
     neural_normalized = _normalized_legal_scores(neural_scores, legal_actions)
-    residual_scale = _neural_residual_scale(
+    effective_residual_scale = _neural_residual_scale(
         neural_normalized,
         linear_scores=linear_scores,
+        residual_scale=residual_scale,
+        max_linear_override_margin=max_linear_override_margin,
     )
     return {
         action: _round(
             _finite_score(linear_scores.get(action, 0.0))
-            + residual_scale * neural_normalized[action]
+            + effective_residual_scale * neural_normalized[action]
         )
         for action in legal_actions
     }
@@ -1189,6 +1211,8 @@ def _neural_anchor_diagnostics(
     linear_scores: Mapping[str, float],
     final_scores: Mapping[str, float],
     action_mask: Mapping[str, bool],
+    residual_scale: float,
+    max_linear_override_margin: float,
 ) -> dict[str, object]:
     legal_actions = tuple(
         action for action in sorted(action_mask) if bool(action_mask[action])
@@ -1197,10 +1221,13 @@ def _neural_anchor_diagnostics(
     residual_scale = _neural_residual_scale(
         neural_normalized,
         linear_scores=linear_scores,
+        residual_scale=residual_scale,
+        max_linear_override_margin=max_linear_override_margin,
     )
     shadow_reason = _neural_residual_shadow_reason(
         neural_normalized,
         linear_scores=linear_scores,
+        max_linear_override_margin=max_linear_override_margin,
     )
     neural_top_action, neural_margin = _top_action_and_margin(neural_scores)
     linear_action, linear_margin = _top_action_and_margin(linear_scores)
@@ -1252,22 +1279,26 @@ def _neural_residual_scale(
     neural_normalized_scores: Mapping[str, float],
     *,
     linear_scores: Mapping[str, float],
+    residual_scale: float,
+    max_linear_override_margin: float,
 ) -> float:
     if (
         _neural_residual_shadow_reason(
             neural_normalized_scores,
             linear_scores=linear_scores,
+            max_linear_override_margin=max_linear_override_margin,
         )
         != "none"
     ):
         return 0.0
-    return MIND_V3_NEURAL_RESIDUAL_SCALE
+    return max(0.0, float(residual_scale))
 
 
 def _neural_residual_shadow_reason(
     neural_normalized_scores: Mapping[str, float],
     *,
     linear_scores: Mapping[str, float],
+    max_linear_override_margin: float,
 ) -> str:
     neural_top_action = _top_score_action(neural_normalized_scores)
     if neural_top_action in MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS:
@@ -1277,10 +1308,42 @@ def _neural_residual_shadow_reason(
         neural_top_action is not None
         and linear_top_action is not None
         and neural_top_action != linear_top_action
-        and linear_margin > MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+        and linear_margin > max(0.0, float(max_linear_override_margin))
     ):
         return "linear_margin_guard"
     return "none"
+
+
+def _artifact_neural_residual_scale(artifact: Mapping[str, object]) -> float:
+    return _artifact_nonnegative_float(
+        artifact,
+        "neural_residual_scale",
+        MIND_V3_NEURAL_RESIDUAL_SCALE,
+    )
+
+
+def _artifact_neural_residual_max_linear_override_margin(
+    artifact: Mapping[str, object],
+) -> float:
+    return _artifact_nonnegative_float(
+        artifact,
+        "neural_residual_max_linear_override_margin",
+        MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN,
+    )
+
+
+def _artifact_nonnegative_float(
+    artifact: Mapping[str, object],
+    key: str,
+    default: float,
+) -> float:
+    value = artifact.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float(default)
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        return float(default)
+    return _round(parsed)
 
 
 def _normalized_legal_scores(

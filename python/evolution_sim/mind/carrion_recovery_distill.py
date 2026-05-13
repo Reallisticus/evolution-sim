@@ -50,6 +50,8 @@ DEFAULT_CARRION_RECOVERY_DISTILL_ARTIFACT_MODE = (
     MIND_V3_NEURAL_ARTIFACT_MODE_ANCHORED
 )
 DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS = 16
+DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE = 0.03
+DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.008
 DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_SEEDS: tuple[int, ...] = (29, 37)
 DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_TICKS = 120
 DEFAULT_CARRION_RECOVERY_DISTILL_FIXTURES: tuple[str, ...] = ("carrion_only",)
@@ -67,6 +69,12 @@ def build_carrion_recovery_distillation_report(
     artifact_mode: str = DEFAULT_CARRION_RECOVERY_DISTILL_ARTIFACT_MODE,
     hidden_units: int = DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS,
     seed: int = MIND_V3_NEURAL_DEFAULT_SEED,
+    neural_residual_scale: float | None = (
+        DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_SCALE
+    ),
+    neural_residual_max_linear_override_margin: float | None = (
+        DEFAULT_CARRION_RECOVERY_DISTILL_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN
+    ),
     weight_policy: str = MIND_V3_CARRION_RECOVERY_DISTILL_WEIGHT_POLICY,
     eval_seeds: Sequence[int] = DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_SEEDS,
     eval_ticks: int = DEFAULT_CARRION_RECOVERY_DISTILL_EVAL_TICKS,
@@ -113,6 +121,10 @@ def build_carrion_recovery_distillation_report(
         seed=int(seed),
         trajectory_weight_multipliers=trajectory_weights,
         artifact_mode=mode,
+        neural_residual_scale=neural_residual_scale,
+        neural_residual_max_linear_override_margin=(
+            neural_residual_max_linear_override_margin
+        ),
     )
     if artifact_output_path is not None:
         write_mind_v3_neural_artifact(artifact, artifact_output_path)
@@ -134,6 +146,10 @@ def build_carrion_recovery_distillation_report(
         "artifact_mode": mode,
         "hidden_units": int(hidden_units),
         "seed": int(seed),
+        "neural_residual_scale": artifact.get("neural_residual_scale"),
+        "neural_residual_max_linear_override_margin": artifact.get(
+            "neural_residual_max_linear_override_margin"
+        ),
         "weight_policy": weight_policy,
         "eval_seeds": list(eval_seed_values),
         "eval_ticks": int(eval_tick_count),
@@ -175,6 +191,10 @@ def build_carrion_recovery_distillation_report(
                 str(artifact_output_path) if artifact_output_path is not None else None
             ),
             "artifact_mode": artifact.get("artifact_mode"),
+            "neural_residual_scale": artifact.get("neural_residual_scale"),
+            "neural_residual_max_linear_override_margin": artifact.get(
+                "neural_residual_max_linear_override_margin"
+            ),
             "model_type": artifact.get("model_type"),
             "trained_record_count": artifact.get("trained_record_count"),
             "artifact_training_summary": artifact.get("training_summary"),
@@ -492,6 +512,12 @@ def _acceptance(report: Mapping[str, object]) -> dict[str, object]:
             promotion_blockers.append(
                 f"{fixture_name}_terminal_survivor_regression_vs_linear"
             )
+        if _metric(delta_payload, "births_mean_delta") < 0:
+            promotion_blockers.append(f"{fixture_name}_birth_regression_vs_linear")
+        if _metric(delta_payload, "scavenger_animal_resource_events_delta") < 0:
+            promotion_blockers.append(
+                f"{fixture_name}_scavenger_event_regression_vs_linear"
+            )
     return {
         "data_path_acceptance_passed": not blockers,
         "data_path_blockers": blockers,
@@ -499,6 +525,7 @@ def _acceptance(report: Mapping[str, object]) -> dict[str, object]:
         "promotion_blockers": promotion_blockers,
         "requires_zero_heuristic_runtime_actions": True,
         "promotion_requires_no_open_alive_or_birth_regression_vs_linear": True,
+        "promotion_requires_no_fixture_birth_or_scavenger_regression_vs_linear": True,
     }
 
 
