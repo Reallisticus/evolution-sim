@@ -73,6 +73,14 @@ DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY = "first_eligible_v1"
 MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
     "mode_balanced_post_carrion_v1"
 )
+FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
+    "failure_frontier_mode_balanced_v1"
+)
+_FULL_SCAN_BRANCH_SELECTION_POLICIES = {
+    MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+    FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+}
+_MOVE_ACTIONS = ("move_north", "move_south", "move_east", "move_west")
 DEFAULT_TARGET_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     0,
     1,
@@ -410,11 +418,23 @@ def _discover_branch_points(
             "branch_selection_policy": branch_selection_policy,
             "scanned_all_eligible_rows": (
                 branch_selection_policy
-                == MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+                in _FULL_SCAN_BRANCH_SELECTION_POLICIES
             ),
             "ticks_requested": int(ticks),
             "ticks_executed": int(ticks_executed),
             "eligible_row_count": len(eligible_rows),
+            "eligible_multi_move_reposition_row_count": sum(
+                1 for row in eligible_rows if _has_multiple_legal_moves(row)
+            ),
+            "selected_multi_move_reposition_row_count": sum(
+                1 for row in selected_rows if _has_multiple_legal_moves(row)
+            ),
+            "selected_failure_frontier_score_summary": (
+                _failure_frontier_score_summary(selected_rows)
+                if branch_selection_policy
+                == FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+                else None
+            ),
             "skipped_row_counts": dict(sorted(skipped_counts.items())),
             "selected_bucket_counts": {
                 "|".join(key): count for key, count in sorted(bucket_counts.items())
@@ -835,7 +855,7 @@ def _branch_row_skip_reason(
         return "logged_action_not_candidate_action"
     if (
         branch_selection_policy
-        == MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+        in _FULL_SCAN_BRANCH_SELECTION_POLICIES
         and len({_action_option_mode(action) for action in valid_candidates}) < 2
     ):
         return "no_cross_mode_candidate_alternative"
@@ -853,6 +873,8 @@ def _select_branch_rows(
     rows = sorted(eligible_rows, key=_row_sort_key)
     if branch_selection_policy == DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
         return rows[:max_branch_points]
+    if branch_selection_policy == FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
+        return _select_failure_frontier_rows(rows, max_branch_points=max_branch_points)
     selected: list[object] = []
     remaining = list(rows)
     bucket_counts: Counter[tuple[str, str, str, str, str]] = Counter()
@@ -874,6 +896,141 @@ def _select_branch_rows(
         seed_counts[_row_seed(best)] += 1
         mode_counts[_action_option_mode(str(getattr(best, "label", "")))] += 1
     return selected
+
+
+def _select_failure_frontier_rows(
+    rows: Sequence[object],
+    *,
+    max_branch_points: int,
+) -> list[object]:
+    ranked = sorted(rows, key=_failure_frontier_sort_key)
+    selected: list[object] = []
+    selected_ids: set[int] = set()
+    desired_multi_move = min(len(ranked), max(0, (int(max_branch_points) * 3) // 4))
+    selected.extend(
+        _take_diverse_failure_frontier_rows(
+            [row for row in ranked if _has_multiple_legal_moves(row)],
+            limit=desired_multi_move,
+            selected_ids=selected_ids,
+        )
+    )
+    selected.extend(
+        _take_diverse_failure_frontier_rows(
+            ranked,
+            limit=max(0, int(max_branch_points) - len(selected)),
+            selected_ids=selected_ids,
+        )
+    )
+    return selected[: max(0, int(max_branch_points))]
+
+
+def _take_diverse_failure_frontier_rows(
+    rows: Sequence[object],
+    *,
+    limit: int,
+    selected_ids: set[int],
+) -> list[object]:
+    selected: list[object] = []
+    remaining = [row for row in rows if id(row) not in selected_ids]
+    bucket_counts: Counter[tuple[str, str, str, str, str, str, str]] = Counter()
+    mode_counts: Counter[str] = Counter()
+    while remaining and len(selected) < limit:
+        best = min(
+            remaining,
+            key=lambda row: (
+                bucket_counts[_failure_frontier_bucket(row)],
+                mode_counts[_action_option_mode(str(getattr(row, "label", "")))],
+                _failure_frontier_sort_key(row),
+            ),
+        )
+        remaining.remove(best)
+        selected.append(best)
+        selected_ids.add(id(best))
+        bucket_counts[_failure_frontier_bucket(best)] += 1
+        mode_counts[_action_option_mode(str(getattr(best, "label", "")))] += 1
+    return selected
+
+
+def _failure_frontier_sort_key(row: object) -> tuple[float, int, int, int, str]:
+    record = _mapping(getattr(row, "record", {}))
+    tick = _optional_int(record.get("tick"))
+    frontier_score = _failure_frontier_score(row)
+    return (
+        -frontier_score,
+        -tick,
+        _optional_int(record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD)),
+        _optional_int(record.get("agent_id")),
+        str(getattr(row, "label", "")),
+    )
+
+
+def _failure_frontier_bucket(row: object) -> tuple[str, str, str, str, str, str, str]:
+    record = _mapping(getattr(row, "record", {}))
+    before = _mapping(record.get("before"))
+    return (
+        _action_option_mode(str(getattr(row, "label", ""))),
+        _ratio_bin(before.get("energy_ratio")),
+        _ratio_bin(before.get("hydration_ratio")),
+        _distance_bin(_navigation_distance(record.get("observation_input"), "water")),
+        _distance_bin(_navigation_distance(record.get("observation_input"), "carrion")),
+        _legal_move_count_bin(_legal_move_count(row)),
+        _tick_bin(_optional_int(record.get("tick"))),
+    )
+
+
+def _failure_frontier_score(row: object) -> float:
+    record = _mapping(getattr(row, "record", {}))
+    before = _mapping(record.get("before"))
+    tick = float(_optional_int(record.get("tick")))
+    energy = _optional_float(before.get("energy_ratio"))
+    hydration = _optional_float(before.get("hydration_ratio"))
+    health = _optional_float(before.get("health_ratio"))
+    energy_debt = max(0.0, 1.0 - (energy if energy is not None else 1.0))
+    hydration_debt = max(0.0, 1.0 - (hydration if hydration is not None else 1.0))
+    health_debt = max(0.0, 1.0 - (health if health is not None else 1.0))
+    observation_input = record.get("observation_input")
+    water_distance = _distance_or_default(
+        _navigation_distance(observation_input, "water")
+    )
+    carrion_distance = _distance_or_default(
+        _navigation_distance(observation_input, "carrion")
+    )
+    plant_distance = _distance_or_default(
+        _navigation_distance(observation_input, "plant")
+    )
+    water_strength = _navigation_strength(observation_input, "water")
+    carrion_strength = _navigation_strength(observation_input, "carrion")
+    plant_strength = _navigation_strength(observation_input, "plant")
+    resource_distance = min(carrion_distance, plant_distance)
+    recovery_opportunity = (
+        hydration_debt * water_strength * (1.0 - min(water_distance, 1.0))
+        + energy_debt
+        * max(carrion_strength, plant_strength)
+        * (1.0 - min(resource_distance, 1.0))
+    )
+    frontier_pressure = (
+        energy_debt * 2.0 + hydration_debt * 2.0 + health_debt * 1.5
+    )
+    distance_pressure = hydration_debt * water_distance + energy_debt * resource_distance
+    move_pressure = min(float(_legal_move_count(row)), 4.0) / 4.0
+    cross_mode_pressure = min(float(_legal_option_mode_count(row)), 4.0) / 4.0
+    disagreement_proxy = (
+        1.0
+        if _action_option_mode(str(getattr(row, "label", ""))) != _frontier_need_mode(row)
+        else 0.0
+    )
+    reproduction_blocker = _reproduction_blocker_proxy(observation_input, before)
+    return round(
+        tick * 0.02
+        + frontier_pressure * 4.0
+        + distance_pressure * 2.0
+        + recovery_opportunity * 3.0
+        + move_pressure * 1.5
+        + cross_mode_pressure
+        + disagreement_proxy
+        + reproduction_blocker,
+        6,
+    )
 
 
 def _row_sort_key(row: object) -> tuple[int, int, int, str]:
@@ -904,6 +1061,19 @@ def _selection_bucket(row: object) -> tuple[str, str, str, str, str]:
 
 
 def _navigation_distance(observation_input: object, target: str) -> float | None:
+    return _navigation_field(observation_input, target, "distance")
+
+
+def _navigation_strength(observation_input: object, target: str) -> float:
+    value = _navigation_field(observation_input, target, "strength")
+    return max(0.0, value if value is not None else 0.0)
+
+
+def _navigation_field(
+    observation_input: object,
+    target: str,
+    field: str,
+) -> float | None:
     if target not in NAVIGATION_TARGETS:
         return None
     try:
@@ -912,11 +1082,113 @@ def _navigation_distance(observation_input: object, target: str) -> float | None
         return None
     navigation_start = len(SELF_INPUT_FIELDS) + PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
     target_index = NAVIGATION_TARGETS.index(target)
-    distance_index = NAVIGATION_INPUT_FIELDS.index("distance")
-    index = navigation_start + target_index * len(NAVIGATION_INPUT_FIELDS) + distance_index
+    field_index = NAVIGATION_INPUT_FIELDS.index(field)
+    index = navigation_start + target_index * len(NAVIGATION_INPUT_FIELDS) + field_index
     if index >= len(values):
         return None
     return float(values[index])
+
+
+def _observation_self_field(observation_input: object, field: str) -> float | None:
+    if field not in SELF_INPUT_FIELDS:
+        return None
+    try:
+        values = decode_observation_input(dict(_mapping(observation_input)))
+    except (TypeError, ValueError):
+        return None
+    index = SELF_INPUT_FIELDS.index(field)
+    if index >= len(values):
+        return None
+    return float(values[index])
+
+
+def _distance_or_default(value: float | None) -> float:
+    if value is None:
+        return 1.0
+    return max(0.0, min(float(value), 1.0))
+
+
+def _legal_move_actions(row: object) -> list[str]:
+    valid_actions = set(getattr(row, "valid_actions", ()))
+    return [action for action in _MOVE_ACTIONS if action in valid_actions]
+
+
+def _legal_move_count(row: object) -> int:
+    return len(_legal_move_actions(row))
+
+
+def _has_multiple_legal_moves(row: object) -> bool:
+    return _legal_move_count(row) > 1
+
+
+def _legal_option_mode_count(row: object) -> int:
+    return len(
+        {
+            _action_option_mode(action)
+            for action in set(getattr(row, "valid_actions", ()))
+            if action in ACTION_NAMES
+        }
+    )
+
+
+def _frontier_need_mode(row: object) -> str:
+    record = _mapping(getattr(row, "record", {}))
+    before = _mapping(record.get("before"))
+    energy = _optional_float(before.get("energy_ratio"))
+    hydration = _optional_float(before.get("hydration_ratio"))
+    if hydration is not None and (energy is None or hydration < energy - 0.05):
+        return "recover_hydration"
+    if energy is not None and (hydration is None or energy <= hydration):
+        return "exploit_resource"
+    if _legal_move_count(row) > 1:
+        return "reposition"
+    return "conserve"
+
+
+def _reproduction_blocker_proxy(
+    observation_input: object,
+    before: Mapping[str, object],
+) -> float:
+    reproduction_ready = _observation_self_field(
+        observation_input,
+        "reproduction_ready",
+    )
+    sexual_unlocked = _observation_self_field(
+        observation_input,
+        "sexual_reproduction_unlocked",
+    )
+    energy = _optional_float(before.get("energy_ratio"))
+    hydration = _optional_float(before.get("hydration_ratio"))
+    near_ready_vitals = 1.0 if (energy or 0.0) > 0.45 and (hydration or 0.0) > 0.45 else 0.0
+    not_ready = 1.0 if reproduction_ready is not None and reproduction_ready <= 0.0 else 0.0
+    sexual_pressure = 0.5 if sexual_unlocked is not None and sexual_unlocked > 0.0 else 0.0
+    return (not_ready + sexual_pressure) * near_ready_vitals
+
+
+def _legal_move_count_bin(count: int) -> str:
+    if count <= 1:
+        return "single_or_none"
+    if count == 2:
+        return "two"
+    if count == 3:
+        return "three"
+    return "four"
+
+
+def _tick_bin(tick: int) -> str:
+    return f"{(int(tick) // 10) * 10:03d}-{(int(tick) // 10) * 10 + 9:03d}"
+
+
+def _failure_frontier_score_summary(rows: Sequence[object]) -> dict[str, object]:
+    scores = [_failure_frontier_score(row) for row in rows]
+    if not scores:
+        return {"count": 0, "mean": 0.0, "min": 0.0, "max": 0.0}
+    return {
+        "count": len(scores),
+        "mean": _round(sum(scores) / float(len(scores))),
+        "min": _round(min(scores)),
+        "max": _round(max(scores)),
+    }
 
 
 def _ratio_bin(value: object) -> str:
@@ -1240,6 +1512,7 @@ def _validated_selection_policy(policy: str) -> str:
     allowed = {
         DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
         MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     }
     if value not in allowed:
         raise BranchActionOracleAuditError(

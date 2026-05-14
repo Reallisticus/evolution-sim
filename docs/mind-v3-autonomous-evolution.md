@@ -2836,6 +2836,47 @@ v90 mode-balanced target-local objective diagnostic:
   a follow-up diagnostic can lift multi-move reposition direction above floor
   without collapsing the option-mode head.
 
+v91 failure-frontier reposition diagnostic:
+
+- `output/mind/mind-v3-v91-failure-frontier-branch-action-oracle-audit.json`
+  adds the opt-in `failure_frontier_mode_balanced_v1` selector. It scans all
+  eligible post-carrion rows, preserves six-seed carrion fixture coverage, and
+  prefers later/vital-debt/frontier rows with multi-move ambiguity and
+  policy-visible water/carrion/resource context. Replay verification stays on.
+  The archive itself accepts diagnostically with `48` branch points, `263`
+  action branches, `45` oracle/logged disagreements, `+61` terminal alive,
+  zero heuristic runtime action sources, and replay verification passing.
+- `output/mind/mind-v3-v91-failure-frontier-branch-action-oracle-labels.json`
+  produces `48` labels, `27` material oracle-gain labels, dominant oracle
+  action share `0.333333`, and clean label-archive acceptance. Coverage is
+  balanced by seed (`8` labels each), but the target-local option oracle shifts
+  sharply away from reposition on the actual frontier:
+  `exploit_resource=33`, `reposition=9`, `recover_hydration=4`, `conserve=2`.
+  The source selector proved enough candidate coverage (`1280` eligible rows,
+  `1201` eligible multi-move rows, `46` selected multi-move rows), so the low
+  actual reposition label count is an objective result, not an eligibility
+  shortage.
+- `output/mind/mind-v3-v91-reposition-frontier-audit.json` decomposes the v90
+  blocker. Best reposition-direction decoder accuracy is `5/8` (`0.625`) via
+  `current_value_k5`, above the `0.60` direction floor, with errors split as
+  `wrong_axis=2` and `opposite_axis=1`. That improvement is not enough:
+  option-mode support collapses on the failure-frontier slice (`0.583333`,
+  floor `0.70`), material-only option-mode support is just below floor
+  (`0.592593`, floor `0.60`), and only `8` option-mode reposition multi-move
+  labels remain against the `36` floor.
+- Branch utility blocks runtime work. Option-mode predicted actions have
+  positive mean population deltas versus logged (`+0.583333` terminal alive,
+  `+0.125` births), but mean target-local score delta is negative
+  (`-12.951134`) and target vitals regress on average (energy `-0.014044`,
+  hydration `-0.020773`, health `-0.011208`). This confirms the caveat from
+  v90: option-mode accuracy alone is not useful unless it improves target-local
+  continuation utility near the real carrion failure frontier.
+- Decision: v91 is rejected. No runtime policy or RTX training is allowed from
+  this line. The current bottleneck is objective mismatch at frontier states:
+  replayed population gains mostly relabel ambiguous rows as resource
+  exploitation, while target-local utility for predicted actions remains
+  negative.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3243,6 +3284,11 @@ Major milestones from the current state:
   dominant-mode collapse, but exact reposition direction on multi-move rows
   reached only `0.5` against the predeclared `0.55` floor. No runtime
   hierarchical option policy was trained.
+- v91: failure-frontier reposition boundary. Enlarging the archive to `48`
+  frontier labels lifted best reposition direction accuracy to `0.625`, but
+  actual option-mode reposition support collapsed to `8` multi-move labels,
+  option-mode accuracy fell to `0.583333`, and predicted target-local branch
+  utility was negative (`-12.951134`). No runtime policy was trained.
 
 External checks that support this direction:
 

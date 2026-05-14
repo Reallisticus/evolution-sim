@@ -12,6 +12,7 @@ from evolution_sim.cli import (
 )
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.branch_action_oracle_audit import (
+    FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
     MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     build_branch_action_oracle_audit_report,
@@ -167,6 +168,31 @@ class MindV3CarrionBranchExploreTests(unittest.TestCase):
         self.assertGreaterEqual(discovery["eligible_row_count"], 1)
         self.assertIn("skipped_row_counts", discovery)
         self.assertIn("selected_bucket_counts", discovery)
+
+    def test_branch_action_oracle_audit_can_select_failure_frontier_points(self) -> None:
+        report = build_branch_action_oracle_audit_report(
+            seeds=(37,),
+            ticks=40,
+            candidate_actions=tuple(ACTION_NAMES),
+            target_labels=tuple(ACTION_NAMES),
+            max_branch_points_per_seed=3,
+            min_oracle_changed_action_count=0,
+            min_terminal_alive_gain_total=0,
+            verify_replay=False,
+            branch_selection_policy=FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        )
+
+        discovery = report["discovery"][0]
+
+        self.assertEqual(
+            report["contract"]["branch_selection_policy"],
+            FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        )
+        self.assertTrue(discovery["scanned_all_eligible_rows"])
+        self.assertGreaterEqual(discovery["eligible_row_count"], 1)
+        self.assertIn("eligible_multi_move_reposition_row_count", discovery)
+        self.assertIn("selected_multi_move_reposition_row_count", discovery)
+        self.assertIn("selected_failure_frontier_score_summary", discovery)
 
     def test_branch_action_oracle_audit_cli_writes_json_report(self) -> None:
         with TemporaryDirectory() as tmpdir:
