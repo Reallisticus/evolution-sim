@@ -3050,6 +3050,53 @@ v95 simulator-in-the-loop constrained planning diagnostic:
   is runtime-ready because it uses replayed candidate outcomes as planning
   evidence.
 
+v96 planner-distillation/runtime-feasibility diagnostic:
+
+- `output/mind/mind-v3-v96-planner-distillation-runtime-feasibility.json`
+  distills the v95-style constrained planner into a deterministic serialized
+  local scorer. Training labels come only from the non-strict v93 support
+  archive (`51` rows, `267` candidate actions) across seeds
+  `1,2,3,4,6,7,9,11,12,17,23,31`; strict carrion seeds
+  `13,19,29,37,41,43` are held out. Strict-seed training leak count is `0`,
+  support/strict replay verification is true, heuristic action-source count is
+  `0`, and unsupported logged/oracle/predicted action counts are `0`.
+- The support teacher uses the same replay-backed constrained-planning logic as
+  v95, but only on support rows. It produces a deliberately balanced teacher
+  distribution: `drink` `9`, `eat` `9`, `move_east` `8`, `move_south` `8`,
+  `move_west` `8`, `stay` `8`, and `move_north` `1` (`0.176471` dominant
+  action share). The student keeps v94's sequence-CVaR continuation score and
+  learns small anti-collapse action penalties from support-only baseline
+  action share minus teacher share: `eat` `0.392157` and `move_east`
+  `0.431373`.
+- The serialized artifact
+  `mind_v3_planner_distilled_action_scorer_artifact_v1` stores only
+  policy-visible support feature examples, sequence target summaries, teacher
+  imitation examples, and learned action penalties. Runtime scoring is
+  one-row/one-agent local inference from the observation/action mask; it does
+  not require planner outcome tables, branch ids, seed ids, fixture identity,
+  logged-action fallback, hidden simulator state, global batch quotas, or
+  heuristic fallback. JSON reload scoring matches exactly.
+- Strict branch replay evaluation on the existing `48` frontier rows accepts
+  v96: dominant predicted action share `0.416667` (`eat` `20/48`, cap `0.50`),
+  dominant mode share `0.416667`, target-alive negative count `0`, mean
+  target-local score delta `+5.626813`, mean terminal alive delta `+0.375`,
+  mean birth delta `+0.0625`, and both seed `41` tick `113` and tick `114`
+  catastrophes avoided. Per-seed target-local means are non-negative:
+  seed `13` `+2.927762`, `19` `+4.168225`, `29` `+1.790212`, `37`
+  `+8.007162`, `41` `+0.575764`, and `43` `+16.29175`.
+- v96 is weaker than the v95 simulator-in-the-loop upper bound
+  (`+37.156839` mean target-local), but it is the first post-v95 result to
+  satisfy the strict frontier floors with a serialized local scorer rather than
+  a global replay-backed assignment. The embedded invalid
+  `train_on_strict_labels` control is marked invalid and not eligible for
+  acceptance.
+- Decision: v96 is accepted as runtime feasibility, not promotion. v97 may run
+  the full strict promotion path for this artifact class: integrate the scorer
+  as an opt-in Mind v3 runtime artifact, then evaluate broad seeds
+  `5,13,19,29,37,41` and `carrion_only` fixture seeds
+  `13,19,29,37,41,43` at `120` ticks with the existing no-regression,
+  action-collapse, zero-heuristic, and carrion movement/alive blocker gates.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3489,6 +3536,13 @@ Major milestones from the current state:
   birth delta `+0.166667`. This is diagnostic-only; v96 may test whether these
   planner labels can be distilled into a runtime-feasible artifact without
   replay outcome access.
+- v96: planner-distillation runtime-feasibility boundary. A support-only
+  constrained teacher over non-strict v93 rows can be distilled into a
+  deterministic serialized local scorer. On the strict `48` frontier rows it
+  clears all v96 floors with dominant action share `0.416667`, target-alive
+  negative count `0`, mean target-local score delta `+5.626813`, terminal alive
+  delta `+0.375`, and birth delta `+0.0625`. This is not promotion; v97 should
+  test opt-in runtime integration and the full broad-plus-fixture strict gate.
 
 External checks that support this direction:
 

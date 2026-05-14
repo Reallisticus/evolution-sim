@@ -256,6 +256,65 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.constrained_planning_support_probe",
         )
 
+    def test_progress_ledger_treats_v96_distillation_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v96 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (output_dir / "mind-v3-v96-generic.json").write_text(
+                json.dumps(
+                    {
+                        "support_probes": {
+                            "generic_probe": {
+                                "policy": "generic",
+                                "accuracy": 0.0,
+                                "support_accuracy_floor": 1.0,
+                                "materially_supports_generic_probe": False,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (
+                output_dir
+                / "mind-v3-v96-planner-distillation-runtime-feasibility.json"
+            ).write_text(
+                json.dumps(
+                    {
+                        "planner_distillation_runtime_feasibility_support_probe": {
+                            "policy": (
+                                "v96_planner_distillation_runtime_feasibility_v1"
+                            ),
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_runtime_feasible_planner_distillation": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=96,
+                through_version=96,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.planner_distillation_runtime_feasibility_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
