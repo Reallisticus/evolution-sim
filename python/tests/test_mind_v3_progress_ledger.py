@@ -202,6 +202,60 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.sequence_continuation_support_probe",
         )
 
+    def test_progress_ledger_treats_v95_planning_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v95 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (output_dir / "mind-v3-v95-generic.json").write_text(
+                json.dumps(
+                    {
+                        "support_probes": {
+                            "generic_probe": {
+                                "policy": "generic",
+                                "accuracy": 0.0,
+                                "support_accuracy_floor": 1.0,
+                                "materially_supports_generic_probe": False,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "mind-v3-v95-branch-constrained-planning-audit.json").write_text(
+                json.dumps(
+                    {
+                        "constrained_planning_support_probe": {
+                            "policy": "v95_simulator_in_loop_constrained_planning_v1",
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_constrained_planning": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=95,
+                through_version=95,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.constrained_planning_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

@@ -22,6 +22,7 @@ _ARTIFACT_VERSION_PATTERN = re.compile(r"mind-v3-v(\d{1,3})")
 _AUTHORITATIVE_SUPPORT_PROBE_KEYS = frozenset(
     {
         "catastrophe_sensitive_utility_support_probe",
+        "constrained_planning_support_probe",
         "depleted_resource_trap_support_probe",
         "sequence_continuation_support_probe",
     }

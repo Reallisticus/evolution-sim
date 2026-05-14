@@ -38,6 +38,7 @@
     "sim:mind:v3:branch-utility-risk-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_utility_risk_audit",
     "sim:mind:v3:branch-depleted-resource-trap-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_depleted_resource_trap_audit",
     "sim:mind:v3:branch-sequence-continuation-scorer": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_sequence_continuation_scorer",
+    "sim:mind:v3:branch-constrained-planning-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_constrained_planning_audit",
     "sim:mind:v3:branch-continuation-archive-scorer": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_continuation_archive_scorer",
     "sim:mind:v3:carrion-recovery-archive": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_archive",
     "sim:mind:v3:carrion-recovery-distill": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_distill",

@@ -2998,6 +2998,58 @@ v94 sequence/world-model branch-continuation scorer diagnostic:
   contract, not another offline one-step or sequence scorer over the same
   archive.
 
+v95 simulator-in-the-loop constrained planning diagnostic:
+
+- `output/mind/mind-v3-v95-branch-constrained-planning-audit.json` uses the
+  replay-verified strict v91 branch action outcomes as simulator-in-the-loop
+  evidence and the v94 `sequence_prefix_nearest_neighbor_k5` decisions as the
+  baseline. It does not train or emit a runtime policy. Strict evaluation
+  remains `48` carrion frontier branches (`263` candidate outcomes) across
+  seeds `13,19,29,37,41,43`; replay verification is true, heuristic action
+  source count is `0`, and unsupported oracle/logged action counts are `0`.
+- The v94 baseline has useful survival utility but violates the action cap:
+  `eat` is selected `30/48` times (`0.625`, cap `0.50`), with target-alive
+  negative count `0`, mean target-local score delta `+8.359369`, mean terminal
+  alive delta `+0.4375`, and mean birth delta `+0.041667`.
+- The minimum-cost cap repair is `greedy_constrained_planner_v1`. It replaces
+  exactly six `eat` decisions, reducing `eat` to `24/48` (`0.50`) with zero
+  target-alive regressions, mean target-local score delta `+8.699062`, mean
+  terminal alive delta `+0.5625`, and mean birth delta `+0.0625`. The utility
+  cost versus v94 is `0.0`; the target-local sum increases by `+16.30524`.
+  Replacements:
+  `carrion-only-seed-13-action-branch-2-tick-47-agent-3-logged-drink`
+  `eat -> stay` (`+0.0` target-local delta),
+  `carrion-only-seed-13-action-branch-3-tick-25-agent-8-logged-eat`
+  `eat -> stay` (`+1.80794`),
+  `carrion-only-seed-29-action-branch-5-tick-66-agent-3-logged-drink`
+  `eat -> drink` (`+0.0015`),
+  `carrion-only-seed-37-action-branch-3-tick-27-agent-9-logged-eat`
+  `eat -> stay` (`+5.2009`),
+  `carrion-only-seed-37-action-branch-5-tick-34-agent-4-logged-drink`
+  `eat -> move_south` (`+0.8307`), and
+  `carrion-only-seed-43-action-branch-5-tick-62-agent-18-logged-drink`
+  `eat -> move_south` (`+8.4642`).
+- All four planner variants clear the v95 diagnostic floors. The best
+  diagnostic rule is `diversity_regularized_planner_v1`: dominant action share
+  `0.25` (`eat` `12/48`), target-alive negative count `0`, mean target-local
+  score delta `+37.156839`, mean terminal alive delta `+0.791667`, mean birth
+  delta `+0.166667`, and both seed `41` tick `113` and tick `114`
+  catastrophes avoided. The beam/global planner reaches slightly higher mean
+  target-local score (`+37.463294`) while sitting exactly on the `0.50` action
+  cap.
+- `output/mind/mind-v3-v95-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v95-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v95. The ledger treats
+  `constrained_planning_support_probe` as authoritative, records v95 as
+  `diagnostic_support_floor_pass`, and progress-passed versions become
+  `[41,42,44,80,81,82,90,95]`.
+- Decision: v95 is accepted as a diagnostic-only upper bound. It proves the
+  v94 anti-collapse cap is not structurally incompatible with strict frontier
+  utility when simulator-backed branch outcomes can be planned globally. v96
+  distillation/runtime-feasibility work is allowed, but no v95 planner result
+  is runtime-ready because it uses replayed candidate outcomes as planning
+  evidence.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3428,6 +3480,15 @@ Major milestones from the current state:
   the best scorer collapses to `eat` on `30/48` rows (`0.625`, cap `0.50`).
   No runtime policy was trained; the next line should be simulator-in-the-loop
   planning/search rather than more offline scoring on the same archive.
+- v95: simulator-in-the-loop constrained planning boundary. Replay-backed
+  global planning over the strict `48` frontier branches proves the action cap
+  is compatible with utility: a minimum-cost repair reduces `eat` from `30/48`
+  to `24/48` with zero utility cost, and the diversity-regularized planner
+  reaches dominant action share `0.25`, target-alive negative count `0`, mean
+  target-local score delta `+37.156839`, terminal alive delta `+0.791667`, and
+  birth delta `+0.166667`. This is diagnostic-only; v96 may test whether these
+  planner labels can be distilled into a runtime-feasible artifact without
+  replay outcome access.
 
 External checks that support this direction:
 
