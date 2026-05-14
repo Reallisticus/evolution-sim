@@ -2877,6 +2877,41 @@ v91 failure-frontier reposition diagnostic:
   exploitation, while target-local utility for predicted actions remains
   negative.
 
+v92 catastrophe-sensitive branch utility diagnostic:
+
+- `output/mind/mind-v3-v92-branch-utility-risk-audit.json` reuses the v91
+  failure-frontier labels and scores all `263` replayed candidate actions
+  directly with a deterministic leave-one-source-seed-out utility/risk scorer.
+  The feature contract is policy-visible only: decoded observation values,
+  action mask, compact self/local/navigation fields when decodable, same-agent
+  public history trace, and candidate action identity. Held-out seed leakage is
+  `0`; no rule uses logged action as a runtime fallback, seed/branch id,
+  fixture identity, or hidden simulator state as a feature.
+- v92 compares the v91 option-mode baseline, mean predicted target-local
+  utility, lower-confidence-bound utility, CVaR-style utility, explicit
+  target-death-risk veto, vital-regression-risk veto,
+  `action_family_balanced_risk_scorer_k5`, and navigation/resource baselines.
+  Navigation/resource rules remain baselines only and are not acceptance
+  candidates.
+- The best acceptance-eligible rule is
+  `action_family_balanced_risk_scorer_k5`, but it still fails four strict
+  floors: mean target-local score delta is `-14.142929` (must be `> 0`),
+  per-seed target-local mean is negative for seed `41` (`-127.514088`), target
+  alive delta has `1` negative case (must be `0`), and dominant predicted action
+  share is `0.729167` on `eat` (cap `0.50`). Mean terminal population deltas
+  are positive (`+0.5625` terminal alive, `+0.104167` births), so population
+  gain is still masking target-local catastrophe.
+- The known catastrophic class is reproduced under leave-one-seed-out without
+  hardcoding: seed `41`,
+  `carrion-only-seed-41-action-branch-0-tick-113-agent-18-logged-move-south`
+  is still predicted as `eat`, with target-local score delta `-1055.34151`,
+  terminal alive delta `-1`, and target alive delta `-1`. The risk/veto family
+  does not avoid this failure.
+- Decision: v92 is rejected. v93 runtime work is not allowed. The current
+  blocker is not option mode or move direction; it is branch-state continuation
+  risk calibration. The offline scorer cannot yet identify target-death
+  catastrophes from policy-visible support without collapsing toward `eat`.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3289,6 +3324,11 @@ Major milestones from the current state:
   actual option-mode reposition support collapsed to `8` multi-move labels,
   option-mode accuracy fell to `0.583333`, and predicted target-local branch
   utility was negative (`-12.951134`). No runtime policy was trained.
+- v92: catastrophe-sensitive branch utility boundary. Candidate-action
+  utility/risk scoring over the same `48` labels and `263` action branches
+  still fails target-local utility (`-14.142929` best mean delta), repeats the
+  seed `41` target-death catastrophe, and collapses to `eat` with dominant
+  predicted action share `0.729167`. No runtime policy was trained.
 
 External checks that support this direction:
 
