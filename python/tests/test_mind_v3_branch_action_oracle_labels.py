@@ -10,10 +10,12 @@ from unittest.mock import patch
 from evolution_sim.cli import mind_v3_branch_action_oracle_labels
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.branch_action_oracle_audit import (
+    DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
 )
 from evolution_sim.mind.branch_action_oracle_labels import (
     MIND_V3_BRANCH_ACTION_ORACLE_LABEL_SCHEMA_VERSION,
+    _public_history_feature_vector,
     build_branch_action_oracle_label_report,
 )
 
@@ -153,6 +155,24 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
                 "material_only_policy_observation_population_horizon_world_model"
             ]["materially_supports_population_horizon_model"]
         )
+        self.assertIn(
+            "policy_observation_history_population_horizon_world_model",
+            report["support_probes"],
+        )
+        self.assertFalse(
+            report["support_probes"][
+                "policy_observation_history_population_horizon_world_model"
+            ]["materially_supports_population_horizon_model"]
+        )
+        self.assertIn(
+            "material_only_policy_observation_history_population_horizon_world_model",
+            report["support_probes"],
+        )
+        self.assertFalse(
+            report["support_probes"][
+                "material_only_policy_observation_history_population_horizon_world_model"
+            ]["materially_supports_population_horizon_model"]
+        )
 
         first = report["labels"][0]
         self.assertEqual(first["oracle_label"]["action"], "eat")
@@ -162,6 +182,7 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
             "mind_observation_v3",
         )
         self.assertEqual(set(first["policy_state"]["action_mask"]), set(ACTION_NAMES))
+        self.assertEqual(len(first["policy_state"]["public_history_trace"]), 1)
         self.assertEqual(
             first["action_value_targets"]["objective"],
             "lexicographic_terminal_alive_birth_target_alive_deaths_diversity_v1",
@@ -211,6 +232,17 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
         self.assertEqual(payload["aggregate"]["label_count"], 3)
         self.assertTrue(payload["acceptance"]["label_archive_acceptance_passed"])
 
+    def test_public_history_feature_padding_marks_absent_slots_empty(self) -> None:
+        features = _public_history_feature_vector([_history_item()])
+        slot_size = len(features) // DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS
+        padded_prefix = features[
+            : slot_size * (DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS - 1)
+        ]
+
+        self.assertTrue(padded_prefix)
+        self.assertTrue(all(value == 0.0 for value in padded_prefix))
+        self.assertEqual(features[-slot_size], 1.0)
+
 
 def _synthetic_audit_report() -> dict[str, object]:
     branch_specs = (
@@ -248,6 +280,7 @@ def _synthetic_audit_report() -> dict[str, object]:
                     "observation_digest": f"observation-digest-{index}",
                     "observation_schema": "mind_observation_v3",
                     "action_mask": _action_mask(),
+                    "public_history_trace": [_history_item()],
                 },
                 "valid_actions": ["stay", "eat", "drink"],
             }
@@ -301,6 +334,40 @@ def _synthetic_audit_report() -> dict[str, object]:
 
 def _action_mask() -> dict[str, bool]:
     return {action: action in ("stay", "eat", "drink") for action in ACTION_NAMES}
+
+
+def _history_item() -> dict[str, object]:
+    return {
+        "tick": 10,
+        "tick_delta": 2,
+        "record_index": 90,
+        "record_index_delta": 10,
+        "requested_action": "eat",
+        "resolved_action": "eat",
+        "action_valid": True,
+        "resolution_action_valid": True,
+        "moved": False,
+        "x_delta": 0,
+        "y_delta": 0,
+        "energy_ratio_before": 0.25,
+        "energy_ratio_after": 0.45,
+        "energy_ratio_delta": 0.2,
+        "hydration_ratio_before": 0.8,
+        "hydration_ratio_after": 0.78,
+        "hydration_ratio_delta": -0.02,
+        "health_ratio_before": 0.9,
+        "health_ratio_after": 0.9,
+        "health_ratio_delta": 0.0,
+        "resource_gain": 0.2,
+        "drank": False,
+        "ate": True,
+        "died": False,
+        "death_cause": None,
+        "died_after_action": False,
+        "post_carrion_contact": True,
+        "ticks_since_animal_resource_gain": 0,
+        "ticks_since_drink": 3,
+    }
 
 
 def _action_runs(

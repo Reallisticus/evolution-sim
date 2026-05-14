@@ -60,6 +60,7 @@ DEFAULT_BRANCH_ACTION_ORACLE_CANDIDATE_ACTIONS: tuple[str, ...] = (
 )
 DEFAULT_BRANCH_ACTION_ORACLE_TARGET_LABELS: tuple[str, ...] = ("drink", "eat")
 DEFAULT_BRANCH_ACTION_ORACLE_POINTS_PER_SEED = 4
+DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS = 8
 DEFAULT_TARGET_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     0,
     1,
@@ -95,6 +96,7 @@ class _ActionBranchPoint:
     observation_input: dict[str, object]
     observation_digest: str | None
     observation_schema: str | None
+    public_history_trace: tuple[dict[str, object], ...]
     context_snapshot: dict[str, object]
     branch_state_digest: str
     world: SimulationWorld
@@ -246,7 +248,8 @@ def build_branch_action_oracle_audit_report(
             "policy_input_policy": (
                 "forced action is diagnostic-only; continuation script uses "
                 "policy-visible observation self, local_patch, navigation, and "
-                "action_mask"
+                "action_mask; branch labels may serialize prior same-agent "
+                "public trajectory rows as policy-owned history diagnostics"
             ),
         },
         "aggregate": aggregate,
@@ -355,6 +358,13 @@ def _discover_branch_points(
                 ),
                 observation_schema=_optional_string(
                     row.record.get("observation_schema")
+                ),
+                public_history_trace=tuple(
+                    _public_history_trace(
+                        contextual_rows,
+                        row,
+                        max_items=DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
+                    )
                 ),
                 context_snapshot=dict(row.context_snapshot),
                 branch_state_digest=_branch_state_digest(
@@ -847,6 +857,9 @@ def _branch_point_payload(point: _ActionBranchPoint) -> dict[str, object]:
             "observation_digest": point.observation_digest,
             "observation_schema": point.observation_schema,
             "action_mask": dict(point.action_mask),
+            "public_history_trace": [
+                dict(item) for item in point.public_history_trace
+            ],
         },
         "branch_state_digest": point.branch_state_digest,
     }
@@ -915,6 +928,99 @@ def _contract(
         "min_oracle_changed_action_count": int(min_oracle_changed_action_count),
         "min_terminal_alive_gain_total": int(min_terminal_alive_gain_total),
         "verify_replay": bool(verify_replay),
+        "public_history_trace": {
+            "policy": "same_agent_previous_public_trajectory_rows_v1",
+            "max_steps": DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
+            "fields": (
+                "tick_delta, record_index_delta, prior requested/resolved "
+                "actions, action validity, movement/resource outcome flags, "
+                "vital deltas, and rollout-context counters"
+            ),
+        },
+    }
+
+
+def _public_history_trace(
+    contextual_rows: Sequence[object],
+    branch_row: object,
+    *,
+    max_items: int,
+) -> list[dict[str, object]]:
+    current_record = _mapping(getattr(branch_row, "record", {}))
+    current_index = _optional_int(
+        current_record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD)
+    )
+    agent_id = _optional_int(current_record.get("agent_id"))
+    prior_rows = []
+    for row in contextual_rows:
+        record = _mapping(getattr(row, "record", {}))
+        if _optional_int(record.get("agent_id")) != agent_id:
+            continue
+        record_index = _optional_int(record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD))
+        if record_index >= current_index:
+            continue
+        prior_rows.append(row)
+    selected = prior_rows[-max(0, int(max_items)) :]
+    return [
+        _public_history_item(
+            row,
+            branch_tick=_optional_int(current_record.get("tick")),
+            branch_record_index=current_index,
+        )
+        for row in selected
+    ]
+
+
+def _public_history_item(
+    row: object,
+    *,
+    branch_tick: int,
+    branch_record_index: int,
+) -> dict[str, object]:
+    record = _mapping(getattr(row, "record", {}))
+    context = _mapping(getattr(row, "context_snapshot", {}))
+    before = _mapping(record.get("before"))
+    after = _mapping(record.get("after"))
+    outcome = _mapping(record.get("outcome"))
+    drinking = _mapping(outcome.get("drinking"))
+    feeding = _mapping(outcome.get("feeding"))
+    passive = _mapping(outcome.get("passive"))
+    tick = _optional_int(record.get("tick"))
+    record_index = _optional_int(record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD))
+    return {
+        "tick": tick,
+        "tick_delta": int(branch_tick) - tick,
+        "record_index": record_index,
+        "record_index_delta": int(branch_record_index) - record_index,
+        "requested_action": _optional_string(record.get("requested_action")),
+        "resolved_action": _optional_string(record.get("resolved_action")),
+        "action_valid": bool(record.get("action_valid", False)),
+        "resolution_action_valid": bool(
+            record.get("resolution_action_valid", False)
+        ),
+        "moved": bool(record.get("moved", False)),
+        "x_delta": _optional_int(after.get("x")) - _optional_int(before.get("x")),
+        "y_delta": _optional_int(after.get("y")) - _optional_int(before.get("y")),
+        "energy_ratio_before": _optional_float(before.get("energy_ratio")),
+        "energy_ratio_after": _optional_float(after.get("energy_ratio")),
+        "energy_ratio_delta": _delta(after, before, "energy_ratio"),
+        "hydration_ratio_before": _optional_float(before.get("hydration_ratio")),
+        "hydration_ratio_after": _optional_float(after.get("hydration_ratio")),
+        "hydration_ratio_delta": _delta(after, before, "hydration_ratio"),
+        "health_ratio_before": _optional_float(before.get("health_ratio")),
+        "health_ratio_after": _optional_float(after.get("health_ratio")),
+        "health_ratio_delta": _delta(after, before, "health_ratio"),
+        "resource_gain": _optional_float(outcome.get("resource_gain")),
+        "drank": bool(drinking.get("drank", False)),
+        "ate": bool(feeding.get("ate", False)),
+        "died": bool(outcome.get("died", False)),
+        "death_cause": _optional_string(passive.get("death_cause")),
+        "died_after_action": bool(passive.get("died_after_action", False)),
+        "post_carrion_contact": bool(context.get("post_carrion_contact", False)),
+        "ticks_since_animal_resource_gain": context.get(
+            "ticks_since_animal_resource_gain"
+        ),
+        "ticks_since_drink": context.get("ticks_since_drink"),
     }
 
 

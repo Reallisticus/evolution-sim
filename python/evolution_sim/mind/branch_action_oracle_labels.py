@@ -18,6 +18,7 @@ from evolution_sim.env.runtime.observations import (
     decode_observation_input,
 )
 from evolution_sim.mind.branch_action_oracle_audit import (
+    DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
@@ -178,6 +179,17 @@ def build_branch_action_oracle_label_report(
             material_only=True,
         )
     )
+    policy_observation_history_population_horizon_probe = (
+        _policy_observation_history_population_horizon_world_model_support_probe(
+            labels
+        )
+    )
+    material_policy_observation_history_population_horizon_probe = (
+        _policy_observation_history_population_horizon_world_model_support_probe(
+            labels,
+            material_only=True,
+        )
+    )
     acceptance = _acceptance(
         aggregate,
         min_material_label_count=min_material_label_count,
@@ -199,9 +211,9 @@ def build_branch_action_oracle_label_report(
             max_dominant_oracle_action_share
         ),
         "runtime_input_policy": (
-            "labels serialize only observation_input, observation_digest, and "
-            "action_mask as runtime policy support; fixture, seed, tick, and "
-            "agent_id are provenance only"
+            "labels serialize observation_input, observation_digest, action_mask, "
+            "and optional same-agent public_history_trace as runtime policy "
+            "support; fixture, seed, tick, and agent_id are provenance only"
         ),
     }
     return {
@@ -255,6 +267,12 @@ def build_branch_action_oracle_label_report(
             ),
             "material_only_policy_observation_population_horizon_world_model": (
                 material_policy_observation_population_horizon_probe
+            ),
+            "policy_observation_history_population_horizon_world_model": (
+                policy_observation_history_population_horizon_probe
+            ),
+            "material_only_policy_observation_history_population_horizon_world_model": (
+                material_policy_observation_history_population_horizon_probe
             ),
         },
         "acceptance": acceptance,
@@ -382,11 +400,63 @@ def _policy_state(branch_point: Mapping[str, object]) -> dict[str, object]:
         "observation_digest": _optional_string(state.get("observation_digest")),
         "observation_schema": _optional_string(state.get("observation_schema")),
         "action_mask": _complete_action_mask(_mapping(state.get("action_mask"))),
+        "public_history_trace": _public_history_trace(state),
         "valid_actions": [
             action
             for action in ACTION_NAMES
             if bool(_mapping(state.get("action_mask")).get(action, False))
         ],
+    }
+
+
+def _public_history_trace(state: Mapping[str, object]) -> list[dict[str, object]]:
+    trace = state.get("public_history_trace")
+    if not isinstance(trace, list):
+        return []
+    return [
+        _public_history_item(item)
+        for item in trace
+        if isinstance(item, Mapping)
+    ]
+
+
+def _public_history_item(item: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "tick": _int(item.get("tick")),
+        "tick_delta": _int(item.get("tick_delta")),
+        "record_index": _int(item.get("record_index")),
+        "record_index_delta": _int(item.get("record_index_delta")),
+        "requested_action": _optional_string(item.get("requested_action")),
+        "resolved_action": _optional_string(item.get("resolved_action")),
+        "action_valid": bool(item.get("action_valid", False)),
+        "resolution_action_valid": bool(
+            item.get("resolution_action_valid", False)
+        ),
+        "moved": bool(item.get("moved", False)),
+        "x_delta": _int(item.get("x_delta")),
+        "y_delta": _int(item.get("y_delta")),
+        "energy_ratio_before": _optional_float(item.get("energy_ratio_before")),
+        "energy_ratio_after": _optional_float(item.get("energy_ratio_after")),
+        "energy_ratio_delta": _optional_float(item.get("energy_ratio_delta")),
+        "hydration_ratio_before": _optional_float(
+            item.get("hydration_ratio_before")
+        ),
+        "hydration_ratio_after": _optional_float(item.get("hydration_ratio_after")),
+        "hydration_ratio_delta": _optional_float(item.get("hydration_ratio_delta")),
+        "health_ratio_before": _optional_float(item.get("health_ratio_before")),
+        "health_ratio_after": _optional_float(item.get("health_ratio_after")),
+        "health_ratio_delta": _optional_float(item.get("health_ratio_delta")),
+        "resource_gain": _optional_float(item.get("resource_gain")),
+        "drank": bool(item.get("drank", False)),
+        "ate": bool(item.get("ate", False)),
+        "died": bool(item.get("died", False)),
+        "death_cause": _optional_string(item.get("death_cause")),
+        "died_after_action": bool(item.get("died_after_action", False)),
+        "post_carrion_contact": bool(item.get("post_carrion_contact", False)),
+        "ticks_since_animal_resource_gain": _optional_float(
+            item.get("ticks_since_animal_resource_gain")
+        ),
+        "ticks_since_drink": _optional_float(item.get("ticks_since_drink")),
     }
 
 
@@ -909,6 +979,62 @@ def _policy_observation_population_horizon_world_model_support_probe(
     }
 
 
+def _policy_observation_history_population_horizon_world_model_support_probe(
+    labels: Sequence[Mapping[str, object]],
+    *,
+    material_only: bool = False,
+) -> dict[str, object]:
+    rows = _horizon_probe_rows(labels, material_only=material_only)
+    results = [
+        _policy_observation_population_horizon_result(
+            rows,
+            k=k,
+            max_horizon=max_horizon,
+            include_history=True,
+        )
+        for max_horizon in SHORT_HORIZON_TRACE_TICKS
+        for k in (1, 3, 5, 9)
+    ]
+    best = max(
+        results,
+        key=lambda result: (
+            float(result["accuracy"]),
+            int(result["correct_count"]),
+            int(result["max_horizon_tick_delta"]),
+            -int(result["nearest_neighbor_k"]),
+        ),
+    )
+    material = float(best["accuracy"]) >= SHORT_HORIZON_TRACE_TERMINAL_ACCURACY_FLOOR
+    return {
+        "policy": "leave_one_source_seed_out_policy_observation_history_population_horizon_model_v1",
+        "scope": _horizon_probe_scope(material_only),
+        "split_policy": "hold_out_all_labels_from_same_source_seed_v1",
+        "feature_contract": (
+            "full_decoded_policy_observation_values_plus_action_mask_"
+            "candidate_action_one_hot_and_same_agent_public_history_v1"
+        ),
+        "history_contract": {
+            "max_steps": DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
+            "source": "same_agent_previous_public_trajectory_rows",
+        },
+        "objective": "predict_branch_population_horizon_score_then_rank_actions_v1",
+        "best_max_horizon_tick_delta": best["max_horizon_tick_delta"],
+        "best_nearest_neighbor_k": best["nearest_neighbor_k"],
+        "best_accuracy": best["accuracy"],
+        "best_correct_count": best["correct_count"],
+        "material_support_accuracy_floor": _round(
+            SHORT_HORIZON_TRACE_TERMINAL_ACCURACY_FLOOR
+        ),
+        "materially_supports_population_horizon_model": material,
+        "interpretation": (
+            "negative_support_probe_do_not_train_history_population_horizon_model"
+            if not material
+            else "positive_support_probe_history_population_horizon_model_worth_testing"
+        ),
+        "results": results,
+    }
+
+
 def _horizon_probe_rows(
     labels: Sequence[Mapping[str, object]],
     *,
@@ -1025,17 +1151,18 @@ def _policy_observation_population_horizon_result(
     *,
     k: int,
     max_horizon: int,
+    include_history: bool = False,
 ) -> dict[str, object]:
     predictions: list[dict[str, object]] = []
     for row in rows:
         seed = row["seed"]
-        observation_values = _observation_values(row)
-        if seed is None or not observation_values:
+        if seed is None:
             continue
         training_examples = _policy_observation_population_horizon_training_examples(
             rows,
             held_out_seed=seed,
             max_horizon=max_horizon,
+            include_history=include_history,
         )
         if not training_examples:
             continue
@@ -1045,10 +1172,10 @@ def _policy_observation_population_horizon_result(
             field="action_values",
         ):
             action = str(candidate.get("action", ""))
-            features = _policy_observation_action_feature_vector(
-                observation_values=observation_values,
+            features = _policy_observation_population_feature_vector(
+                row=row,
                 action=action,
-                action_mask=_mapping(row.get("action_mask")),
+                include_history=include_history,
             )
             if not features:
                 continue
@@ -1156,13 +1283,11 @@ def _policy_observation_population_horizon_training_examples(
     *,
     held_out_seed: object,
     max_horizon: int,
+    include_history: bool = False,
 ) -> list[dict[str, object]]:
     examples: list[dict[str, object]] = []
     for row in rows:
         if row.get("seed") == held_out_seed:
-            continue
-        observation_values = _observation_values(row)
-        if not observation_values:
             continue
         for candidate in _list_of_mappings(
             row.get("action_values"),
@@ -1175,10 +1300,10 @@ def _policy_observation_population_horizon_training_examples(
             )
             if population_score is None:
                 continue
-            features = _policy_observation_action_feature_vector(
-                observation_values=observation_values,
+            features = _policy_observation_population_feature_vector(
+                row=row,
                 action=action,
-                action_mask=_mapping(row.get("action_mask")),
+                include_history=include_history,
             )
             if not features:
                 continue
@@ -1190,6 +1315,31 @@ def _policy_observation_population_horizon_training_examples(
                 }
             )
     return examples
+
+
+def _policy_observation_population_feature_vector(
+    *,
+    row: Mapping[str, object],
+    action: str,
+    include_history: bool,
+) -> tuple[float, ...]:
+    observation_values = _observation_values(row)
+    if not observation_values:
+        return ()
+    features = _policy_observation_action_feature_vector(
+        observation_values=observation_values,
+        action=action,
+        action_mask=_mapping(row.get("action_mask")),
+    )
+    if not features:
+        return ()
+    if not include_history:
+        return features
+    history = _list_of_mappings(
+        row.get("public_history_trace"),
+        field="public_history_trace",
+    )
+    return features + _public_history_feature_vector(history)
 
 
 def _mean_population_score_tuple(
@@ -2700,6 +2850,12 @@ def _compact_world_model_rows(
                 "observation_values": tuple(_round(float(value)) for value in values)
                 if compact_state
                 else (),
+                "public_history_trace": list(
+                    _list_of_mappings(
+                        policy_state.get("public_history_trace"),
+                        field="public_history_trace",
+                    )
+                ),
                 "action_values": list(action_values)
                 if isinstance(action_values, list)
                 else [],
@@ -2928,6 +3084,63 @@ def _policy_observation_action_feature_vector(
             1.0 if bool(action_mask.get(action, False)) else 0.0,
         )
     )
+
+
+def _public_history_feature_vector(
+    history: Sequence[Mapping[str, object]],
+) -> tuple[float, ...]:
+    selected = list(history)[-DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS:]
+    padded: list[Mapping[str, object] | None] = [None] * (
+        DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS - len(selected)
+    )
+    padded.extend(selected)
+    values: list[float] = []
+    empty_slot = (0.0,) * len(_public_history_item_features({}))
+    for item in padded:
+        if item is None:
+            values.extend(empty_slot)
+            continue
+        values.extend(_public_history_item_features(item))
+    return tuple(_round(value) for value in values)
+
+
+def _public_history_item_features(item: Mapping[str, object]) -> tuple[float, ...]:
+    return tuple(
+        _round(value)
+        for value in (
+            1.0,
+            min(_feature_float(item.get("tick_delta")) / 120.0, 1.0),
+            min(_feature_float(item.get("record_index_delta")) / 256.0, 1.0),
+            *_action_one_hot(_optional_string(item.get("requested_action"))),
+            *_action_one_hot(_optional_string(item.get("resolved_action"))),
+            1.0 if bool(item.get("action_valid", False)) else 0.0,
+            1.0 if bool(item.get("resolution_action_valid", False)) else 0.0,
+            1.0 if bool(item.get("moved", False)) else 0.0,
+            1.0 if bool(item.get("drank", False)) else 0.0,
+            1.0 if bool(item.get("ate", False)) else 0.0,
+            1.0 if bool(item.get("died", False)) else 0.0,
+            1.0 if bool(item.get("died_after_action", False)) else 0.0,
+            1.0 if bool(item.get("post_carrion_contact", False)) else 0.0,
+            _clamped_delta(item.get("x_delta")),
+            _clamped_delta(item.get("y_delta")),
+            _feature_float(item.get("resource_gain")),
+            _feature_float(item.get("energy_ratio_after")),
+            _clamped_delta(item.get("energy_ratio_delta")),
+            _feature_float(item.get("hydration_ratio_after")),
+            _clamped_delta(item.get("hydration_ratio_delta")),
+            _feature_float(item.get("health_ratio_after")),
+            _clamped_delta(item.get("health_ratio_delta")),
+            min(
+                _feature_float(item.get("ticks_since_animal_resource_gain")) / 32.0,
+                1.0,
+            ),
+            min(_feature_float(item.get("ticks_since_drink")) / 32.0, 1.0),
+        )
+    )
+
+
+def _action_one_hot(action: str | None) -> tuple[float, ...]:
+    return tuple(1.0 if action == name else 0.0 for name in ACTION_NAMES)
 
 
 def _observation_values(row: Mapping[str, object]) -> tuple[float, ...]:

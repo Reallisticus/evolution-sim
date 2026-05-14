@@ -2719,6 +2719,44 @@ v77-v85 long-horizon branch trace and population-world-model diagnostics:
   label contract for the target agent or an options/archive replay contract
   that predicts delayed value after repositioning.
 
+v86-v88 public history and continuation-option blocker checks:
+
+- `output/mind/mind-v3-v86-branch-action-oracle-audit-public-history-trace.json`
+  extends the accepted branch-action oracle audit with a deterministic
+  same-agent public history trace. Each branch point now serializes the last
+  `8` same-agent prior trajectory rows: tick/record deltas, requested/resolved
+  actions, action validity, movement/resource flags, vital deltas, and
+  rollout-context counters. This is derived from public trajectory rows only;
+  it adds no private `SimulationWorld` read and no fixture identity as runtime
+  input.
+- The v86 audit preserves the v83 branch result exactly at the aggregate level:
+  `24` branch points, `122` action branches, `24` oracle-changed labels, `17`
+  material gains, `+36` terminal alive, `+26` births, `+1` target alive,
+  replay verified, zero heuristic action sources, and no diagnostic blockers.
+  All `24` branch points carry `8` public history rows.
+- `output/mind/mind-v3-v87-branch-action-oracle-labels-public-history-model.json`
+  adds history-aware support probes. They are negative: all-label
+  full-observation+history population-horizon ranking reaches only `7/24`
+  (`0.291667`), and material-only history ranking reaches `6/17`
+  (`0.352941`). This is worse than the prior material-only full-observation
+  probe at `7/17` (`0.411765`), so the next blocker is not simply missing the
+  last few public rows.
+- `output/mind/mind-v3-v88-branch-action-oracle-option-preview-*.json` screens
+  continuation-option structure using the existing branch oracle harness with
+  `2` branch points per strict carrion seed and replay verification disabled
+  for speed. The baseline continuation remains strongest:
+  `carrion_then_water` `+19` terminal alive / `+14` births, while
+  `water_first_recovery` gives `+13` / `+13`, `conserve_after_carrion` gives
+  `+12` / `+17`, `water_rescue_carrion_cycle` gives `+10` / `+15`, and
+  `hydration_safe_carrion_cycle` gives `+6` / `+5`.
+- Result: public short history and existing scripted continuation options are
+  not the next training lever. Keep the v86 public-history contract because it
+  is deterministic and useful for future sequence models, but do not train from
+  the v87 pointwise history probe. The next useful blocker to attack is a
+  true sequence/archive objective: score multi-step branch continuations or
+  branch-state archive cells directly rather than asking a one-step nearest
+  model to infer delayed repositioning value.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3108,6 +3146,13 @@ Major milestones from the current state:
   leave-one-source-seed-out support on the expanded archive. Stop before
   training; the next branch needs public target-agent sequence/history or
   option/archive state, not a pointwise horizon model.
+- v86-v88: public history and scripted-option boundary. Branch points now carry
+  deterministic same-agent public history traces, but history-aware pointwise
+  support falls to `7/24` overall and `6/17` on material labels. Existing
+  counterfactual continuation scripts also do not beat the baseline
+  `carrion_then_water` branch continuation on the 12-point preview. Preserve
+  the history data contract, but the next real lever must score multi-step
+  archive/sequence continuations directly.
 
 External checks that support this direction:
 

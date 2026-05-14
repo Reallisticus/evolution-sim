@@ -140,6 +140,8 @@ class MindV3CarrionBranchExploreTests(unittest.TestCase):
             set(policy_state["action_mask"]),
             set(ACTION_NAMES),
         )
+        self.assertIn("public_history_trace", policy_state)
+        self.assertIsInstance(policy_state["public_history_trace"], list)
 
     def test_branch_action_oracle_audit_cli_writes_json_report(self) -> None:
         with TemporaryDirectory() as tmpdir:
