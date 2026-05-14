@@ -13,6 +13,7 @@ from evolution_sim.cli import (
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.branch_action_oracle_audit import (
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
+    MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     build_branch_action_oracle_audit_report,
 )
 from evolution_sim.mind.carrion_branch_explore import (
@@ -142,6 +143,30 @@ class MindV3CarrionBranchExploreTests(unittest.TestCase):
         )
         self.assertIn("public_history_trace", policy_state)
         self.assertIsInstance(policy_state["public_history_trace"], list)
+
+    def test_branch_action_oracle_audit_can_select_mode_balanced_points(self) -> None:
+        report = build_branch_action_oracle_audit_report(
+            seeds=(37,),
+            ticks=30,
+            candidate_actions=tuple(ACTION_NAMES),
+            target_labels=tuple(ACTION_NAMES),
+            max_branch_points_per_seed=2,
+            min_oracle_changed_action_count=0,
+            min_terminal_alive_gain_total=0,
+            verify_replay=False,
+            branch_selection_policy=MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        )
+
+        discovery = report["discovery"][0]
+
+        self.assertEqual(
+            report["contract"]["branch_selection_policy"],
+            MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        )
+        self.assertTrue(discovery["scanned_all_eligible_rows"])
+        self.assertGreaterEqual(discovery["eligible_row_count"], 1)
+        self.assertIn("skipped_row_counts", discovery)
+        self.assertIn("selected_bucket_counts", discovery)
 
     def test_branch_action_oracle_audit_cli_writes_json_report(self) -> None:
         with TemporaryDirectory() as tmpdir:

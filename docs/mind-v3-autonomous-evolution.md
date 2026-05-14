@@ -2791,6 +2791,51 @@ v89 standardized progress ledger and branch-continuation archive scorer:
   continuation value from entire public trajectory prefixes under the same
   leave-one-seed-out floor.
 
+v90 mode-balanced target-local objective diagnostic:
+
+- `output/mind/mind-v3-v90-existing-branch-mode-objective-audit.json` audits
+  the existing v83/v87 replay-verified archive before changing selection. It
+  confirms the coverage problem: `24` labels are evenly split by seed, but
+  population-first oracle modes are skewed to `reposition` (`14/24`) with only
+  `1` `recover_hydration` label. Target-local and option-mode labels disagree
+  sharply with the population-first labels: exact population-vs-target
+  agreement is `0.083333`, and mode agreement is `0.166667`. Support remains
+  negative on the existing archive: option-mode accuracy `0.375`,
+  material-only option-mode accuracy `0.470588`, and reposition exact
+  direction accuracy `0.375`.
+- `output/mind/mind-v3-v90-balanced-branch-action-oracle-audit.json` adds an
+  opt-in balanced branch-point selector. It scans all eligible post-carrion
+  rows per seed instead of stopping after the first four, admits logged
+  move/stay rows when cross-mode alternatives are legal, and balances selected
+  rows across seed, logged option mode, energy/hydration bins, and visible
+  water/carrion distance bins. Replay verification stays enabled. The preview
+  accepts diagnostically with `30` branch points, `125` action branches, `26`
+  changed population-first oracle actions, `+43` terminal alive, `+51` births,
+  zero heuristic runtime action sources, and replay verification passing.
+- `output/mind/mind-v3-v90-balanced-branch-mode-objective-audit.json` compares
+  population-first, target-local, and option-mode objectives on that balanced
+  archive. Coverage is broader: labels by seed are `5` each, population-first
+  oracle modes are `reposition=16`, `conserve=8`, `exploit_resource=5`,
+  `recover_hydration=1`, and logged move/stay rows are present in the
+  logged-to-oracle matrix. The target-local objective exposes the objective
+  mismatch: population-first oracle choices improve population alive/births
+  on average (`+1.433333` alive, `+1.566667` births vs logged) while target
+  local deltas are mostly non-positive (`target_alive_delta` mean
+  `-0.133333`, target energy mean `-0.069383`, hydration mean `-0.129273`,
+  health mean `-0.12709`).
+- Predeclared support floors: option-mode accuracy `>=0.60`, dominant predicted
+  option mode `<=0.75`, material-only option-mode accuracy `>=0.55`,
+  reposition exact direction multi-move accuracy `>=0.55`, no unsupported
+  oracle actions, and zero heuristic runtime action sources. The balanced
+  archive clears the first three model floors (`option_mode=0.766667`,
+  dominant predicted mode share `0.633333`, material-only option mode
+  `0.666667`) and keeps oracle/runtime safety clean, but fails reposition
+  exact direction at `10/20` (`0.5`) versus the `0.55` floor.
+- Decision: v90 is a diagnostic improvement, not a training pass. Runtime
+  training remains blocked. The next runtime path would only be justified after
+  a follow-up diagnostic can lift multi-move reposition direction above floor
+  without collapsing the option-mode head.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3193,6 +3238,11 @@ Major milestones from the current state:
   floor pass. The compact archive scorer does not clear the floor (`0.25`
   all-label, `0.352941` material-only, floor `0.55`), so no runtime policy was
   trained from it.
+- v90: mode-balanced target-local objective boundary. Balanced archive
+  selection fixed the broad option-mode support signal (`0.766667`) and avoided
+  dominant-mode collapse, but exact reposition direction on multi-move rows
+  reached only `0.5` against the predeclared `0.55` floor. No runtime
+  hierarchical option policy was trained.
 
 External checks that support this direction:
 

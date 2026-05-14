@@ -18,6 +18,14 @@ from evolution_sim.cli.mind_v3_evaluate import (
 )
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import (
+    NAVIGATION_INPUT_FIELDS,
+    NAVIGATION_TARGETS,
+    PATCH_CELL_COUNT,
+    PATCH_INPUT_FIELDS,
+    SELF_INPUT_FIELDS,
+    decode_observation_input,
+)
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.mind.carrion_branch_explore import (
     _branch_state_digest,
@@ -61,6 +69,10 @@ DEFAULT_BRANCH_ACTION_ORACLE_CANDIDATE_ACTIONS: tuple[str, ...] = (
 DEFAULT_BRANCH_ACTION_ORACLE_TARGET_LABELS: tuple[str, ...] = ("drink", "eat")
 DEFAULT_BRANCH_ACTION_ORACLE_POINTS_PER_SEED = 4
 DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS = 8
+DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY = "first_eligible_v1"
+MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
+    "mode_balanced_post_carrion_v1"
+)
 DEFAULT_TARGET_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     0,
     1,
@@ -162,6 +174,7 @@ def build_branch_action_oracle_audit_report(
     min_oracle_changed_action_count: int = 1,
     min_terminal_alive_gain_total: int = 1,
     verify_replay: bool = True,
+    branch_selection_policy: str = DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
 ) -> dict[str, object]:
     if fixture_name != "carrion_only":
         raise BranchActionOracleAuditError(
@@ -178,6 +191,7 @@ def build_branch_action_oracle_audit_report(
     labels = _validated_actions(target_labels)
     _validated_script(base_script)
     _validated_script(continuation_script)
+    selection_policy = _validated_selection_policy(branch_selection_policy)
     changed_floor = _nonnegative_int(
         min_oracle_changed_action_count,
         field="min_oracle_changed_action_count",
@@ -199,6 +213,7 @@ def build_branch_action_oracle_audit_report(
         min_oracle_changed_action_count=changed_floor,
         min_terminal_alive_gain_total=alive_gain_floor,
         verify_replay=verify_replay,
+        branch_selection_policy=selection_policy,
     )
     branch_points: list[_ActionBranchPoint] = []
     branch_results: list[dict[str, object]] = []
@@ -213,6 +228,7 @@ def build_branch_action_oracle_audit_report(
             target_labels=labels,
             max_branch_points=branch_limit,
             min_branch_tick=min_tick,
+            branch_selection_policy=selection_policy,
         )
         points = discovered["branch_points"]
         branch_points.extend(points)
@@ -281,6 +297,7 @@ def _discover_branch_points(
     target_labels: Sequence[str],
     max_branch_points: int,
     min_branch_tick: int,
+    branch_selection_policy: str,
 ) -> dict[str, object]:
     world = _fixture_world(
         fixture_name=fixture_name,
@@ -302,24 +319,32 @@ def _discover_branch_points(
         _contextual_records(world.trajectory_records, seed=seed),
         config=RolloutContextConfig(),
     )
-    branch_points: list[_ActionBranchPoint] = []
+    eligible_rows: list[object] = []
+    skipped_counts: Counter[str] = Counter()
     for row in contextual_rows:
-        if len(branch_points) >= max_branch_points:
-            break
+        reason = _branch_row_skip_reason(
+            row,
+            candidate_actions=candidate_actions,
+            target_labels=target_labels,
+            min_branch_tick=min_branch_tick,
+            snapshots=snapshots,
+            branch_selection_policy=branch_selection_policy,
+        )
+        if reason is not None:
+            skipped_counts[reason] += 1
+            continue
+        eligible_rows.append(row)
+    selected_rows = _select_branch_rows(
+        eligible_rows,
+        max_branch_points=max_branch_points,
+        branch_selection_policy=branch_selection_policy,
+    )
+    branch_points: list[_ActionBranchPoint] = []
+    for row in selected_rows:
         tick = int(row.record.get("tick", 0))
-        if tick < min_branch_tick:
-            continue
-        if not row.context_snapshot.get("post_carrion_contact"):
-            continue
-        if row.label not in target_labels:
-            continue
-        if not all(action in row.valid_actions for action in ("drink", "eat")):
-            continue
         valid_candidates = [
             action for action in candidate_actions if action in row.valid_actions
         ]
-        if len(valid_candidates) < 2:
-            continue
         snapshot = snapshots.get(tick)
         if snapshot is None:
             continue
@@ -375,14 +400,35 @@ def _discover_branch_points(
                 world=snapshot,
             )
         )
+    bucket_counts = Counter(_selection_bucket(row) for row in selected_rows)
     return {
         "branch_points": branch_points,
         "report": {
             "seed": int(seed),
             "fixture": fixture_name,
             "base_script": base_script,
+            "branch_selection_policy": branch_selection_policy,
+            "scanned_all_eligible_rows": (
+                branch_selection_policy
+                == MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+            ),
             "ticks_requested": int(ticks),
             "ticks_executed": int(ticks_executed),
+            "eligible_row_count": len(eligible_rows),
+            "skipped_row_counts": dict(sorted(skipped_counts.items())),
+            "selected_bucket_counts": {
+                "|".join(key): count for key, count in sorted(bucket_counts.items())
+            },
+            "eligible_logged_action_counts": dict(
+                sorted(Counter(str(row.label) for row in eligible_rows).items())
+            ),
+            "eligible_option_mode_counts": dict(
+                sorted(
+                    Counter(
+                        _action_option_mode(str(row.label)) for row in eligible_rows
+                    ).items()
+                )
+            ),
             "ambiguous_branch_point_count": len(branch_points),
             "branch_ids": [point.branch_id for point in branch_points],
             "terminal_alive_after_discovery_run": len(world.alive_agents()),
@@ -760,6 +806,152 @@ def _best_action_run(
     )
 
 
+def _branch_row_skip_reason(
+    row: object,
+    *,
+    candidate_actions: Sequence[str],
+    target_labels: Sequence[str],
+    min_branch_tick: int,
+    snapshots: Mapping[int, SimulationWorld],
+    branch_selection_policy: str,
+) -> str | None:
+    tick = int(getattr(row, "record", {}).get("tick", 0))
+    if tick < min_branch_tick:
+        return "before_min_branch_tick"
+    context = _mapping(getattr(row, "context_snapshot", {}))
+    if not context.get("post_carrion_contact"):
+        return "not_post_carrion_contact"
+    label = str(getattr(row, "label", ""))
+    if label not in target_labels:
+        return "logged_action_not_target_label"
+    valid_actions = set(getattr(row, "valid_actions", ()))
+    if branch_selection_policy == DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
+        if not all(action in valid_actions for action in ("drink", "eat")):
+            return "drink_eat_not_both_legal"
+    valid_candidates = [action for action in candidate_actions if action in valid_actions]
+    if len(valid_candidates) < 2:
+        return "too_few_candidate_actions"
+    if label not in valid_candidates:
+        return "logged_action_not_candidate_action"
+    if (
+        branch_selection_policy
+        == MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+        and len({_action_option_mode(action) for action in valid_candidates}) < 2
+    ):
+        return "no_cross_mode_candidate_alternative"
+    if tick not in snapshots:
+        return "missing_state_snapshot"
+    return None
+
+
+def _select_branch_rows(
+    eligible_rows: Sequence[object],
+    *,
+    max_branch_points: int,
+    branch_selection_policy: str,
+) -> list[object]:
+    rows = sorted(eligible_rows, key=_row_sort_key)
+    if branch_selection_policy == DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
+        return rows[:max_branch_points]
+    selected: list[object] = []
+    remaining = list(rows)
+    bucket_counts: Counter[tuple[str, str, str, str, str]] = Counter()
+    seed_counts: Counter[int] = Counter()
+    mode_counts: Counter[str] = Counter()
+    while remaining and len(selected) < max_branch_points:
+        best = min(
+            remaining,
+            key=lambda row: (
+                bucket_counts[_selection_bucket(row)],
+                mode_counts[_action_option_mode(str(getattr(row, "label", "")))],
+                seed_counts[_row_seed(row)],
+                *_row_sort_key(row),
+            ),
+        )
+        remaining.remove(best)
+        selected.append(best)
+        bucket_counts[_selection_bucket(best)] += 1
+        seed_counts[_row_seed(best)] += 1
+        mode_counts[_action_option_mode(str(getattr(best, "label", "")))] += 1
+    return selected
+
+
+def _row_sort_key(row: object) -> tuple[int, int, int, str]:
+    record = _mapping(getattr(row, "record", {}))
+    return (
+        _optional_int(record.get("tick")),
+        _optional_int(record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD)),
+        _optional_int(record.get("agent_id")),
+        str(getattr(row, "label", "")),
+    )
+
+
+def _row_seed(row: object) -> int:
+    record = _mapping(getattr(row, "record", {}))
+    return _optional_int(record.get("seed"))
+
+
+def _selection_bucket(row: object) -> tuple[str, str, str, str, str]:
+    record = _mapping(getattr(row, "record", {}))
+    before = _mapping(record.get("before"))
+    return (
+        _action_option_mode(str(getattr(row, "label", ""))),
+        _ratio_bin(before.get("energy_ratio")),
+        _ratio_bin(before.get("hydration_ratio")),
+        _distance_bin(_navigation_distance(record.get("observation_input"), "water")),
+        _distance_bin(_navigation_distance(record.get("observation_input"), "carrion")),
+    )
+
+
+def _navigation_distance(observation_input: object, target: str) -> float | None:
+    if target not in NAVIGATION_TARGETS:
+        return None
+    try:
+        values = decode_observation_input(dict(_mapping(observation_input)))
+    except (TypeError, ValueError):
+        return None
+    navigation_start = len(SELF_INPUT_FIELDS) + PATCH_CELL_COUNT * len(PATCH_INPUT_FIELDS)
+    target_index = NAVIGATION_TARGETS.index(target)
+    distance_index = NAVIGATION_INPUT_FIELDS.index("distance")
+    index = navigation_start + target_index * len(NAVIGATION_INPUT_FIELDS) + distance_index
+    if index >= len(values):
+        return None
+    return float(values[index])
+
+
+def _ratio_bin(value: object) -> str:
+    ratio = _optional_float(value)
+    if ratio is None:
+        return "unknown"
+    if ratio < 0.25:
+        return "low"
+    if ratio < 0.55:
+        return "mid"
+    return "high"
+
+
+def _distance_bin(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value <= 0.25:
+        return "near"
+    if value <= 0.6:
+        return "mid"
+    return "far"
+
+
+def _action_option_mode(action: str) -> str:
+    if action == "drink":
+        return "recover_hydration"
+    if action == "eat":
+        return "exploit_resource"
+    if action == "stay":
+        return "conserve"
+    if action.startswith("move_"):
+        return "reposition"
+    return "other"
+
+
 def _run_excerpt(run: Mapping[str, object] | None) -> dict[str, object] | None:
     if run is None:
         return None
@@ -907,6 +1099,7 @@ def _contract(
     min_oracle_changed_action_count: int,
     min_terminal_alive_gain_total: int,
     verify_replay: bool,
+    branch_selection_policy: str,
 ) -> dict[str, object]:
     return {
         "schema_version": MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
@@ -919,10 +1112,11 @@ def _contract(
         "candidate_actions": list(candidate_actions),
         "target_labels": list(target_labels),
         "max_branch_points_per_seed": int(max_branch_points_per_seed),
+        "branch_selection_policy": branch_selection_policy,
         "min_branch_tick": int(min_branch_tick),
         "branch_trigger": (
-            "post-carrion rows where drink and eat are both legal and logged "
-            "action is in target_labels"
+            "post-carrion rows selected by branch_selection_policy with logged "
+            "action in target_labels"
         ),
         "branch_timing": "pre_tick_before_ambiguous_decision_record_v1",
         "min_oracle_changed_action_count": int(min_oracle_changed_action_count),
@@ -1039,6 +1233,19 @@ def _validated_actions(actions: Sequence[str]) -> tuple[str, ...]:
 def _validated_script(script: str) -> None:
     if script not in DEFAULT_COUNTERFACTUAL_SCRIPTS:
         raise BranchActionOracleAuditError(f"unsupported script: {script}")
+
+
+def _validated_selection_policy(policy: str) -> str:
+    value = str(policy)
+    allowed = {
+        DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+    }
+    if value not in allowed:
+        raise BranchActionOracleAuditError(
+            "unsupported branch selection policy: " + value
+        )
+    return value
 
 
 def _observation_input_payload(value: object) -> dict[str, object]:

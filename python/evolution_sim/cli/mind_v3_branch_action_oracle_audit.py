@@ -8,8 +8,10 @@ from evolution_sim.mind.branch_action_oracle_audit import (
     DEFAULT_BRANCH_ACTION_ORACLE_CANDIDATE_ACTIONS,
     DEFAULT_BRANCH_ACTION_ORACLE_POINTS_PER_SEED,
     DEFAULT_BRANCH_ACTION_ORACLE_SEEDS,
+    DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     DEFAULT_BRANCH_ACTION_ORACLE_TARGET_LABELS,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
+    MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     BranchActionOracleAuditError,
     build_branch_action_oracle_audit_report,
     write_branch_action_oracle_audit_report,
@@ -58,6 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_BRANCH_ACTION_ORACLE_POINTS_PER_SEED,
     )
+    parser.add_argument(
+        "--branch-selection-policy",
+        choices=(
+            DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+            MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        ),
+        default=DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+    )
     parser.add_argument("--min-branch-tick", type=int, default=0)
     parser.add_argument("--min-oracle-changed-action-count", type=int, default=1)
     parser.add_argument("--min-terminal-alive-gain-total", type=int, default=1)
@@ -86,6 +96,7 @@ def main() -> None:
             candidate_actions=_parse_strings(args.candidate_actions),
             target_labels=_parse_strings(args.target_labels),
             max_branch_points_per_seed=int(args.max_branch_points_per_seed),
+            branch_selection_policy=str(args.branch_selection_policy),
             min_branch_tick=int(args.min_branch_tick),
             min_oracle_changed_action_count=int(args.min_oracle_changed_action_count),
             min_terminal_alive_gain_total=int(args.min_terminal_alive_gain_total),
