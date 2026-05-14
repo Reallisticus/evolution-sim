@@ -3184,6 +3184,50 @@ v98 broad-transfer support-gated residual diagnostic:
   should change the objective/support construction, not add a global stay
   penalty or wire this residual gate into runtime.
 
+v99 broad branch residual oracle diagnostic:
+
+- `output/mind/mind-v3-v99-broad-branch-residual-oracle-audit.json` regenerates
+  broad linear Mind v3 support runs on non-strict seeds
+  `2,3,7,11,17,23,31,47,53,59`, selects one policy-visible failure/recovery
+  branch point per seed, and replays legal core/movement first-action
+  alternatives with copied linear policy state as continuation. This is
+  diagnostic only: no runtime policy or promotion run was added.
+- The cheap replay-verified slice has `10` branch points, `10` source seeds,
+  no strict-seed leakage, replay verification true, heuristic action-source
+  count `0`, and unsupported candidate action count `0`. The target-local
+  oracle finds `10/10` safe non-logged overrides, mean target-local score delta
+  `+26.75745`, mean terminal alive delta `+0.1`, and mean birth delta `+0.1`.
+- v99 is rejected by the anti-collapse floor: the unconstrained oracle action
+  distribution is `eat=8`, `move_east=1`, `stay=1`, so dominant oracle action
+  share is `0.8`, above the `0.5` cap. This is a useful result, but not a
+  runtime/distillation pass because it would reintroduce action collapse.
+
+v100 constrained broad branch residual diagnostic:
+
+- `output/mind/mind-v3-v100-broad-branch-residual-constrained-audit.json`
+  reuses the replay-verified v99 candidate outcomes and tests whether the
+  v99 collapse is structural or just an unconstrained teacher assignment
+  artifact. It does not reexecute the simulator, train a runtime policy, emit
+  a policy artifact, or run promotion.
+- `output/mind/mind-v3-v100-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v100-standard-progress-ledger-report.json` update the
+  standard v-ledger through v100. Under the strict progress definition, progress
+  versions in the v89-v100 window are `v90`, `v95`, `v96`, and `v100`.
+- The accepted rule is `greedy_diversity_constrained_broad_residual_v1`.
+  It changes the assignment from `eat=8, move_east=1, stay=1` to
+  `eat=5, move_east=2, stay=3`, exactly meeting the dominant-action cap
+  (`0.5`) while keeping replay-backed utility positive: mean target-local
+  score delta `+26.55233`, mean terminal alive delta `+0.1`, mean birth delta
+  `+0.1`, target-alive negative count `0`, and `9/10` safe non-logged
+  overrides.
+- Decision: v100 is accepted as a diagnostic support-floor pass only.
+  `v101` residual distillation is allowed as the next diagnostic, but runtime
+  promotion is still not allowed. v101 should learn a local, policy-visible,
+  support-gated residual over the linear controller from constrained broad
+  branch labels, with no strict-seed leakage, no global batch quota at runtime,
+  no planner outcome tables, and an explicit branch replay gate before any
+  rollout promotion attempt.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3645,6 +3689,18 @@ Major milestones from the current state:
   eat/move alternatives. The residual design is rejected because it mostly
   abstains (`0.990398`) and the few accepted overrides collapse to `move_west`
   (`0.857143`, cap `0.50`). v99 runtime work is not allowed from this gate.
+- v99: broad branch residual oracle diagnostic. Replay-backed broad linear
+  branch outcomes find safe non-logged improvements on `10/10` non-strict
+  support branches with mean target-local score delta `+26.75745`, but the
+  unconstrained target-local oracle collapses to `eat` (`8/10`, share `0.8`),
+  so distillation/runtime work remains blocked.
+- v100: constrained broad branch residual diagnostic. A greedy diversity
+  constrained assignment over the same replay-verified v99 outcomes passes
+  the diagnostic floor: action distribution `eat=5, move_east=2, stay=3`,
+  dominant action share `0.5`, target-alive negative count `0`, mean
+  target-local score delta `+26.55233`, mean terminal alive delta `+0.1`,
+  mean birth delta `+0.1`, and `9/10` safe non-logged overrides. This allows a
+  v101 residual-distillation diagnostic, not promotion.
 
 External checks that support this direction:
 

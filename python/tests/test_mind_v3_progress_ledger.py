@@ -354,6 +354,87 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.broad_transfer_residual_support_probe",
         )
 
+    def test_progress_ledger_treats_v99_branch_residual_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v99 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (output_dir / "mind-v3-v99-broad-branch-residual-oracle-audit.json").write_text(
+                json.dumps(
+                    {
+                        "broad_branch_residual_oracle_support_probe": {
+                            "policy": "v99_broad_linear_residual_branch_oracle_v1",
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_v100_residual_distillation": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=99,
+                through_version=99,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.broad_branch_residual_oracle_support_probe",
+        )
+
+    def test_progress_ledger_treats_v100_constrained_residual_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v100 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (output_dir / "mind-v3-v100-broad-branch-residual-constrained-audit.json").write_text(
+                json.dumps(
+                    {
+                        "broad_branch_residual_constrained_support_probe": {
+                            "policy": (
+                                "v100_broad_branch_residual_diversity_"
+                                "constrained_assignment_v1"
+                            ),
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_v101_residual_distillation": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=100,
+                through_version=100,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.broad_branch_residual_constrained_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
