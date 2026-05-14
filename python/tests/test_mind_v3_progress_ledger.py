@@ -315,6 +315,45 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.planner_distillation_runtime_feasibility_support_probe",
         )
 
+    def test_progress_ledger_treats_v98_residual_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v98 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (output_dir / "mind-v3-v98-broad-transfer-residual-audit.json").write_text(
+                json.dumps(
+                    {
+                        "broad_transfer_residual_support_probe": {
+                            "policy": "v98_support_gated_residual",
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_v99_residual": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=98,
+                through_version=98,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.broad_transfer_residual_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

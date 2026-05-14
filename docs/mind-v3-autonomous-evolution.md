@@ -3138,6 +3138,52 @@ v97 planner-distilled runtime integration/promotion evaluation:
   runtime-feasible support archive or planner/world-model training objective
   that covers non-carrion ecology before another promotion attempt.
 
+v98 broad-transfer support-gated residual diagnostic:
+
+- `output/mind/mind-v3-v98-broad-transfer-residual-audit.json` analyzes the
+  v97 broad rollout collapse, builds a non-strict broad support archive from
+  successful linear Mind v3 trajectories, and audits a diagnostic residual
+  design where linear Mind v3 remains the default action and the v96
+  planner-distilled scorer may override only inside verified support with a
+  score-margin, legal-action, and local anti-collapse gate. This is diagnostic
+  only: no runtime residual path or promotion run was added.
+- Non-strict support generation used seeds `2,3,7,11,17,23,31,47,53,59`,
+  excluding strict seeds `5,13,19,29,37,41,43`. The selected support archive
+  has `960` rows and `5746` candidate examples, no strict-seed leakage, `10`
+  source seeds, `5` represented modes, dominant teacher action `eat` at
+  `0.344792`, and exactly `0.25` reposition/movement teacher rows. Category
+  coverage includes plant/food `954`, hydration `442`, movement `960`,
+  reproduction-readiness `803`, pre-death `62`, recovery `419`, and
+  animal-resource `65` rows.
+- v98 identifies the first concrete v97 collapse pattern as seed `5`, tick
+  `0`, agent `4`: the planner requested `stay` with legal `eat` and all move
+  actions available. The selected `stay` score was `1099.729477`, `eat` was
+  `1099.296263`, and the margin was `0.433214`; the sequence-CVaR components
+  are nearly tied, so the existing action penalty on `eat` and weak teacher
+  margin push a broad initial state into conserve. First-death windows also
+  show repeated unsupported survival drift, including seed `5` agent `5`
+  moving west until energy falls below zero and seed `13` agent `2` staying at
+  near-zero energy until death.
+- Broad live decisions are much farther from the v96 support archive than from
+  the new broad archive. Overall nearest v96-support distance has mean
+  `4.700186` and p90 `7.21875`; high-margin `stay` decisions have mean
+  `5.558498`. Against the broad support archive, the same overall distances
+  fall to mean `1.931331` and p90 `3.421875`, but high-margin `stay` decisions
+  still average `2.151179`, so support gating filters most planner overrides.
+- v98 is rejected. The proposed support-gated residual has
+  `729` non-identity override opportunities on the support archive but applies
+  only `7`; abstention is `0.990398`, above the predeclared `0.90` stop floor.
+  The few accepted overrides collapse to `move_west` with dominant override
+  share `0.857143`, above the `0.50` cap. Unsupported proposed actions are
+  `0`, and support coverage floors pass, but the residual gate is not a useful
+  runtime path.
+- Decision: v99 support-gated residual runtime is not allowed from v98. The
+  broader support archive proves the original v96 strict-frontier support was
+  too narrow, but a nearest-support/margin residual over the same scorer mostly
+  abstains and still has collapse pressure when it acts. The next viable line
+  should change the objective/support construction, not add a global stay
+  penalty or wire this residual gate into runtime.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3591,6 +3637,14 @@ Major milestones from the current state:
   share up to `0.6589`, unsupported action count `3`, and alive/birth
   regressions on every broad seed. v98 should broaden support/objectives before
   another runtime promotion attempt.
+- v98: broad-transfer support-gated residual diagnostic. A non-strict broad
+  linear support archive clears coverage floors (`960` rows, `10` source seeds,
+  no strict-seed leakage, `5` modes, dominant teacher action `0.344792`, and
+  reposition share `0.25`), and it identifies the first v97 collapse pattern
+  as seed `5`, tick `0`, agent `4` choosing high-margin `stay` despite legal
+  eat/move alternatives. The residual design is rejected because it mostly
+  abstains (`0.990398`) and the few accepted overrides collapse to `move_west`
+  (`0.857143`, cap `0.50`). v99 runtime work is not allowed from this gate.
 
 External checks that support this direction:
 
