@@ -26,6 +26,9 @@ from evolution_sim.mind.provenance import stable_payload_digest
 MIND_V3_BRANCH_ACTION_ORACLE_LABEL_SCHEMA_VERSION = (
     "mind_v3_branch_action_oracle_labels_v1"
 )
+MIND_V3_BRANCH_CONTINUATION_ARCHIVE_SCORER_SCHEMA_VERSION = (
+    "mind_v3_branch_continuation_archive_scorer_v1"
+)
 MIND_V3_BRANCH_ACTION_ORACLE_LABEL_POLICY = (
     "replay_verified_policy_visible_first_action_oracle_labels_v1"
 )
@@ -39,6 +42,7 @@ COMPACT_OPTION_MODE_MAX_DOMINANT_PREDICTION_SHARE = 0.75
 COMPACT_REPOSITION_DIRECTION_ACCURACY_FLOOR = 0.7
 COMPACT_REPOSITION_MULTI_MOVE_ACCURACY_FLOOR = 0.55
 SHORT_HORIZON_TRACE_TERMINAL_ACCURACY_FLOOR = 0.5
+BRANCH_CONTINUATION_ARCHIVE_SCORER_ACCURACY_FLOOR = 0.55
 SHORT_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     0,
     1,
@@ -52,6 +56,7 @@ SHORT_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     55,
     89,
 )
+BRANCH_CONTINUATION_ARCHIVE_TRACE_TICKS: tuple[int, ...] = (21, 55, 89)
 _SELF_FIELD_INDEX = {field: index for index, field in enumerate(SELF_INPUT_FIELDS)}
 _PATCH_FIELD_INDEX = {field: index for index, field in enumerate(PATCH_INPUT_FIELDS)}
 _NAVIGATION_FIELD_INDEX = {
@@ -78,6 +83,23 @@ _COMPACT_WORLD_MODEL_FEATURE_CONTRACT: tuple[str, ...] = (
     "action_mask_counts",
     "action_specific_immediate_drink_eat_stay_affordance",
     "action_specific_move_target_cell_and_navigation_alignment",
+)
+_BRANCH_CONTINUATION_ARCHIVE_FEATURE_CONTRACT: tuple[str, ...] = (
+    "compact_policy_visible_branch_state",
+    "candidate_action_family_direction_and_mask",
+    "same_agent_public_history_trace",
+    "coarse_archive_cell_quantization",
+)
+_BRANCH_CONTINUATION_ARCHIVE_TARGET_CONTRACT: tuple[str, ...] = (
+    "terminal_alive_agents",
+    "terminal_births",
+    "multi_horizon_target_survival_area",
+    "multi_horizon_population_alive_delta_area",
+    "multi_horizon_birth_delta_area",
+    "multi_horizon_target_vital_area",
+    "multi_horizon_resource_gain_area",
+    "multi_horizon_death_delta_penalty",
+    "multi_horizon_action_collapse_penalty",
 )
 
 
@@ -190,6 +212,15 @@ def build_branch_action_oracle_label_report(
             material_only=True,
         )
     )
+    branch_continuation_archive_probe = (
+        _branch_continuation_archive_scorer_support_probe(labels)
+    )
+    material_branch_continuation_archive_probe = (
+        _branch_continuation_archive_scorer_support_probe(
+            labels,
+            material_only=True,
+        )
+    )
     acceptance = _acceptance(
         aggregate,
         min_material_label_count=min_material_label_count,
@@ -274,6 +305,12 @@ def build_branch_action_oracle_label_report(
             "material_only_policy_observation_history_population_horizon_world_model": (
                 material_policy_observation_history_population_horizon_probe
             ),
+            "branch_continuation_archive_scorer": (
+                branch_continuation_archive_probe
+            ),
+            "material_only_branch_continuation_archive_scorer": (
+                material_branch_continuation_archive_probe
+            ),
         },
         "acceptance": acceptance,
         "labels": labels,
@@ -300,7 +337,118 @@ def load_branch_action_oracle_audit_report(path: str | Path) -> dict[str, object
     return payload
 
 
+def load_branch_action_oracle_label_report(path: str | Path) -> dict[str, object]:
+    resolved = Path(path)
+    try:
+        with _open_input(resolved) as handle:
+            payload = json.load(handle)
+    except OSError as exc:
+        raise BranchActionOracleLabelError(
+            f"failed to read branch action oracle labels: {resolved}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise BranchActionOracleLabelError(
+            f"branch action oracle labels are not valid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise BranchActionOracleLabelError(
+            "branch action oracle labels must be a JSON object"
+        )
+    return payload
+
+
 def write_branch_action_oracle_label_report(
+    report: Mapping[str, object],
+    output_path: str | Path,
+) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _open_output(path) as handle:
+        json.dump(report, handle, sort_keys=True, indent=2, allow_nan=False)
+        handle.write("\n")
+
+
+def build_branch_continuation_archive_scorer_report(
+    branch_action_oracle_labels: Mapping[str, object],
+) -> dict[str, object]:
+    if (
+        branch_action_oracle_labels.get("schema_version")
+        != MIND_V3_BRANCH_ACTION_ORACLE_LABEL_SCHEMA_VERSION
+    ):
+        raise BranchActionOracleLabelError(
+            "branch action oracle labels have unsupported schema_version"
+        )
+    labels = _list_of_mappings(
+        branch_action_oracle_labels.get("labels"),
+        field="labels",
+    )
+    all_label_probe = _branch_continuation_archive_scorer_support_probe(labels)
+    material_only_probe = _branch_continuation_archive_scorer_support_probe(
+        labels,
+        material_only=True,
+    )
+    passed = (
+        all_label_probe.get(
+            "materially_supports_branch_continuation_archive_scorer"
+        )
+        is True
+    )
+    blockers = []
+    if not passed:
+        blockers.append(
+            {
+                "reason": "branch_continuation_archive_support_below_floor",
+                "observed": all_label_probe.get("best_accuracy"),
+                "required_min": all_label_probe.get(
+                    "material_support_accuracy_floor"
+                ),
+            }
+        )
+    contract = {
+        "schema_version": MIND_V3_BRANCH_CONTINUATION_ARCHIVE_SCORER_SCHEMA_VERSION,
+        "source_label_schema_version": branch_action_oracle_labels.get(
+            "schema_version"
+        ),
+        "gate": (
+            "leave-one-source-seed-out exact-action ranking must reach "
+            "0.55 accuracy on all labels before any runtime policy training"
+        ),
+        "runtime_policy_trained": False,
+    }
+    return {
+        "schema_version": MIND_V3_BRANCH_CONTINUATION_ARCHIVE_SCORER_SCHEMA_VERSION,
+        "contract": contract,
+        "provenance": {
+            "source_label_digest": stable_payload_digest(
+                {
+                    "schema_version": branch_action_oracle_labels.get(
+                        "schema_version"
+                    ),
+                    "aggregate": branch_action_oracle_labels.get("aggregate"),
+                    "acceptance": branch_action_oracle_labels.get("acceptance"),
+                    "label_count": len(labels),
+                }
+            ),
+            "contract_digest": stable_payload_digest(contract),
+        },
+        "source_label_aggregate": dict(
+            _mapping(branch_action_oracle_labels.get("aggregate"))
+        ),
+        "support_probes": {
+            "branch_continuation_archive_scorer": all_label_probe,
+            "material_only_branch_continuation_archive_scorer": (
+                material_only_probe
+            ),
+        },
+        "acceptance": {
+            "branch_continuation_archive_scorer_gate_passed": passed,
+            "runtime_training_allowed": passed,
+            "blockers": blockers,
+        },
+    }
+
+
+def write_branch_continuation_archive_scorer_report(
     report: Mapping[str, object],
     output_path: str | Path,
 ) -> None:
@@ -1035,6 +1183,104 @@ def _policy_observation_history_population_horizon_world_model_support_probe(
     }
 
 
+def _branch_continuation_archive_scorer_support_probe(
+    labels: Sequence[Mapping[str, object]],
+    *,
+    material_only: bool = False,
+) -> dict[str, object]:
+    rows = _horizon_probe_rows(labels, material_only=material_only)
+    results = [
+        _branch_continuation_archive_result(
+            rows,
+            k=k,
+            max_horizon=max_horizon,
+            neighbor_policy=neighbor_policy,
+        )
+        for max_horizon in BRANCH_CONTINUATION_ARCHIVE_TRACE_TICKS
+        for k in (1, 3, 5)
+        for neighbor_policy in (
+            "same_action",
+            "same_option_mode",
+            "all_archive_actions",
+        )
+    ]
+    best = max(
+        results,
+        key=lambda result: (
+            float(result["accuracy"]),
+            int(result["correct_count"]),
+            int(result["max_horizon_tick_delta"]),
+            _neighbor_policy_rank(str(result["neighbor_policy"])),
+            -int(result["nearest_neighbor_k"]),
+        ),
+    )
+    material = (
+        float(best["accuracy"])
+        >= BRANCH_CONTINUATION_ARCHIVE_SCORER_ACCURACY_FLOOR
+    )
+    return {
+        "policy": "leave_one_source_seed_out_branch_continuation_archive_scorer_v1",
+        "scope": _horizon_probe_scope(material_only),
+        "split_policy": "hold_out_all_labels_from_same_source_seed_v1",
+        "feature_contract": {
+            "schema_version": "branch_continuation_archive_features_v1",
+            "source_observation_schema": "mind_observation_v3",
+            "privileged_world_state": False,
+            "uses_fixture_identity": False,
+            "uses_source_seed_tick_or_agent_id": False,
+            "features": list(_BRANCH_CONTINUATION_ARCHIVE_FEATURE_CONTRACT),
+            "history_contract": {
+                "max_steps": DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
+                "source": "same_agent_previous_public_trajectory_rows",
+            },
+            "feature_digest": stable_payload_digest(
+                {
+                    "schema_version": "branch_continuation_archive_features_v1",
+                    "features": list(
+                        _BRANCH_CONTINUATION_ARCHIVE_FEATURE_CONTRACT
+                    ),
+                    "history_steps": DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
+                }
+            ),
+        },
+        "target_contract": {
+            "schema_version": "branch_continuation_archive_targets_v1",
+            "target_source": "replay_verified_branch_population_horizon_trace",
+            "first_action_imitation_target": False,
+            "targets": list(_BRANCH_CONTINUATION_ARCHIVE_TARGET_CONTRACT),
+            "target_digest": stable_payload_digest(
+                {
+                    "schema_version": "branch_continuation_archive_targets_v1",
+                    "targets": list(
+                        _BRANCH_CONTINUATION_ARCHIVE_TARGET_CONTRACT
+                    ),
+                }
+            ),
+        },
+        "reference_pointwise_accuracy_range": {
+            "lower": 0.35,
+            "upper": 0.42,
+            "source": "v84_v87_pointwise_population_horizon_support_range",
+        },
+        "trace_horizons": list(BRANCH_CONTINUATION_ARCHIVE_TRACE_TICKS),
+        "best_max_horizon_tick_delta": best["max_horizon_tick_delta"],
+        "best_nearest_neighbor_k": best["nearest_neighbor_k"],
+        "best_neighbor_policy": best["neighbor_policy"],
+        "best_accuracy": best["accuracy"],
+        "best_correct_count": best["correct_count"],
+        "material_support_accuracy_floor": _round(
+            BRANCH_CONTINUATION_ARCHIVE_SCORER_ACCURACY_FLOOR
+        ),
+        "materially_supports_branch_continuation_archive_scorer": material,
+        "interpretation": (
+            "negative_support_probe_do_not_train_branch_continuation_policy"
+            if not material
+            else "positive_support_probe_branch_continuation_training_worth_testing"
+        ),
+        "results": results,
+    }
+
+
 def _horizon_probe_rows(
     labels: Sequence[Mapping[str, object]],
     *,
@@ -1054,6 +1300,362 @@ def _horizon_probe_scope(material_only: bool) -> str:
     if material_only:
         return "material_oracle_gain_labels_only"
     return "all_labels"
+
+
+def _branch_continuation_archive_result(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    k: int,
+    max_horizon: int,
+    neighbor_policy: str,
+) -> dict[str, object]:
+    predictions: list[dict[str, object]] = []
+    all_examples = _branch_continuation_archive_examples(
+        rows,
+        held_out_seed=None,
+        max_horizon=max_horizon,
+    )
+    for row in rows:
+        seed = row["seed"]
+        if seed is None:
+            continue
+        training_examples = [
+            example for example in all_examples if example.get("seed") != seed
+        ]
+        if not training_examples:
+            continue
+        predicted_scores: dict[str, tuple[float, ...]] = {}
+        for candidate in _list_of_mappings(
+            row.get("action_values"),
+            field="action_values",
+        ):
+            action = str(candidate.get("action", ""))
+            features = _branch_continuation_archive_feature_vector(
+                row=row,
+                action=action,
+            )
+            if not features:
+                continue
+            neighbors = [
+                (
+                    _squared_distance(features, example["features"]),  # type: ignore[arg-type]
+                    example["continuation_score"],  # type: ignore[index]
+                )
+                for example in training_examples
+                if _archive_neighbor_matches(
+                    action=action,
+                    example_action=str(example.get("action", "")),
+                    neighbor_policy=neighbor_policy,
+                )
+            ]
+            if not neighbors:
+                continue
+            neighbors.sort(key=lambda item: item[0])
+            selected = neighbors[: max(1, int(k))]
+            predicted_scores[action] = _mean_continuation_score_tuple(
+                [
+                    score
+                    for _, score in selected
+                    if isinstance(score, tuple)
+                ]
+            )
+        if not predicted_scores:
+            continue
+        predicted = max(
+            predicted_scores,
+            key=lambda action: (predicted_scores[action], action),
+        )
+        predictions.append(
+            {
+                "branch_id": row["branch_id"],
+                "seed": seed,
+                "oracle_action": row["action"],
+                "predicted_action": predicted,
+                "correct": predicted == row["action"],
+                "neighbor_policy": neighbor_policy,
+                "predicted_continuation_score": [
+                    _round(value) for value in predicted_scores[predicted]
+                ],
+            }
+        )
+    correct_count = sum(1 for item in predictions if item["correct"] is True)
+    prediction_counts = Counter(str(item["predicted_action"]) for item in predictions)
+    dominant_action, dominant_count = _dominant_count(prediction_counts)
+    eligible_count = len(predictions)
+    return {
+        "max_horizon_tick_delta": int(max_horizon),
+        "nearest_neighbor_k": int(k),
+        "neighbor_policy": str(neighbor_policy),
+        "eligible_label_count": eligible_count,
+        "correct_count": correct_count,
+        "accuracy": _safe_rate(correct_count, eligible_count),
+        "prediction_action_counts": dict(sorted(prediction_counts.items())),
+        "dominant_prediction_action": dominant_action,
+        "dominant_prediction_action_count": dominant_count,
+        "dominant_prediction_action_share": _safe_rate(
+            dominant_count,
+            eligible_count,
+        ),
+        "examples": predictions[:12],
+    }
+
+
+def _branch_continuation_archive_examples(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    held_out_seed: object | None,
+    max_horizon: int,
+) -> list[dict[str, object]]:
+    examples: list[dict[str, object]] = []
+    for row in rows:
+        if row.get("seed") == held_out_seed:
+            continue
+        for candidate in _list_of_mappings(
+            row.get("action_values"),
+            field="action_values",
+        ):
+            action = str(candidate.get("action", ""))
+            continuation_score = _branch_continuation_outcome_score(
+                candidate,
+                max_horizon=max_horizon,
+            )
+            if continuation_score is None:
+                continue
+            features = _branch_continuation_archive_feature_vector(
+                row=row,
+                action=action,
+            )
+            if not features:
+                continue
+            examples.append(
+                {
+                    "seed": row.get("seed"),
+                    "branch_id": row.get("branch_id"),
+                    "action": action,
+                    "features": features,
+                    "continuation_score": continuation_score,
+                }
+            )
+    return examples
+
+
+def _branch_continuation_archive_feature_vector(
+    *,
+    row: Mapping[str, object],
+    action: str,
+) -> tuple[float, ...]:
+    state = _mapping(row.get("compact_state"))
+    if not state:
+        return ()
+    self_state = _mapping(state.get("self"))
+    center = _mapping(state.get("center"))
+    local = _mapping(state.get("local"))
+    navigation = _mapping(state.get("navigation"))
+    adjacent = _mapping(state.get("adjacent"))
+    if not self_state or not center:
+        return ()
+    action_mask = _mapping(row.get("action_mask"))
+    action_dx, action_dy = _MOVE_DELTAS.get(action, (0, 0))
+    target_cell = _target_cell_for_action(action, adjacent)
+    current_carrion = _cell_carrion(center)
+    target_carrion = _cell_carrion(target_cell)
+    history = _list_of_mappings(
+        row.get("public_history_trace"),
+        field="public_history_trace",
+    )
+    supported_count = sum(1 for value in action_mask.values() if bool(value))
+    features = tuple(
+        _round(value)
+        for value in (
+            _feature_float(self_state.get("energy_ratio")),
+            _feature_float(self_state.get("hydration_ratio")),
+            _feature_float(self_state.get("health_ratio")),
+            1.0 - _feature_float(self_state.get("energy_ratio")),
+            1.0 - _feature_float(self_state.get("hydration_ratio")),
+            1.0 - _feature_float(self_state.get("health_ratio")),
+            _feature_float(self_state.get("injury_load")),
+            _feature_float(self_state.get("trophic_role_code")),
+            _feature_float(self_state.get("meat_mode_code")),
+            _feature_float(center.get("water")),
+            _feature_float(center.get("food")),
+            current_carrion,
+            _cell_risk(center),
+            _feature_float(local.get("radius1_water")),
+            _feature_float(local.get("radius1_food")),
+            _feature_float(local.get("radius1_carrion")),
+            _feature_float(local.get("radius1_risk")),
+            _feature_float(local.get("radius2_water")),
+            _feature_float(local.get("radius2_food")),
+            _feature_float(local.get("radius2_carrion")),
+            _feature_float(local.get("radius2_risk")),
+            *_navigation_features(navigation),
+            *_action_one_hot(action),
+            _round(action_dx),
+            _round(action_dy),
+            1.0 if bool(action_mask.get(action, False)) else 0.0,
+            min(float(supported_count) / max(float(len(ACTION_NAMES)), 1.0), 1.0),
+            1.0 if action in _MOVE_DELTAS else 0.0,
+            1.0 if action == "drink" else 0.0,
+            1.0 if action == "eat" else 0.0,
+            1.0 if action == "stay" else 0.0,
+            action_dx * _feature_float(target_cell.get("water")),
+            action_dy * _feature_float(target_cell.get("water")),
+            _feature_float(target_cell.get("food")),
+            target_carrion,
+            _cell_risk(target_cell),
+            *_movement_navigation_alignment(action_dx, action_dy, navigation),
+            *_public_history_summary_feature_vector(history),
+        )
+    )
+    return tuple(_archive_quantize_feature(value) for value in features)
+
+
+def _public_history_summary_feature_vector(
+    history: Sequence[Mapping[str, object]],
+) -> tuple[float, ...]:
+    if not history:
+        return (0.0,) * 16
+    count = float(len(history))
+    latest = _mapping(history[-1])
+    return tuple(
+        _round(value)
+        for value in (
+            min(count / float(DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS), 1.0),
+            sum(1.0 for item in history if bool(item.get("moved", False))) / count,
+            sum(1.0 for item in history if bool(item.get("drank", False))) / count,
+            sum(1.0 for item in history if bool(item.get("ate", False))) / count,
+            sum(
+                1.0
+                for item in history
+                if bool(item.get("post_carrion_contact", False))
+            )
+            / count,
+            sum(_feature_float(item.get("resource_gain")) for item in history) / count,
+            _feature_float(latest.get("energy_ratio_after")),
+            _clamped_delta(latest.get("energy_ratio_delta")),
+            _feature_float(latest.get("hydration_ratio_after")),
+            _clamped_delta(latest.get("hydration_ratio_delta")),
+            _feature_float(latest.get("health_ratio_after")),
+            _clamped_delta(latest.get("health_ratio_delta")),
+            min(_feature_float(latest.get("tick_delta")) / 120.0, 1.0),
+            min(
+                _feature_float(latest.get("ticks_since_animal_resource_gain")) / 32.0,
+                1.0,
+            ),
+            min(_feature_float(latest.get("ticks_since_drink")) / 32.0, 1.0),
+            _clamped_delta(latest.get("x_delta"))
+            + _clamped_delta(latest.get("y_delta")),
+        )
+    )
+
+
+def _branch_continuation_outcome_score(
+    candidate: Mapping[str, object],
+    *,
+    max_horizon: int,
+) -> tuple[float, ...] | None:
+    trace_payload = candidate.get("population_horizon_trace")
+    if not isinstance(trace_payload, list):
+        return None
+    trace = [
+        item
+        for item in _list_of_mappings(trace_payload, field="population_horizon_trace")
+        if _int(item.get("horizon_tick_delta")) <= max_horizon
+    ]
+    if not trace:
+        return None
+    first = min(trace, key=lambda item: _int(item.get("horizon_tick_delta")))
+    latest = max(trace, key=lambda item: _int(item.get("horizon_tick_delta")))
+    count = float(len(trace))
+    first_alive = float(_int(first.get("alive_agents")))
+    first_births = float(_int(first.get("births")))
+    first_deaths = float(_int(first.get("deaths")))
+    alive_area_delta = sum(
+        float(_int(item.get("alive_agents"))) - first_alive for item in trace
+    ) / count
+    birth_area_delta = sum(
+        float(_int(item.get("births"))) - first_births for item in trace
+    ) / count
+    death_area_delta = sum(
+        float(_int(item.get("deaths"))) - first_deaths for item in trace
+    ) / count
+    target_alive_area = sum(
+        1.0 if bool(item.get("target_alive", False)) else 0.0 for item in trace
+    ) / count
+    target_vital_area = sum(_target_vital_floor(item) for item in trace) / count
+    resource_gain_area = sum(
+        _feature_float(item.get("tick_resource_gain")) for item in trace
+    ) / count
+    collapse_area = sum(
+        _feature_float(item.get("tick_dominant_requested_action_share"))
+        for item in trace
+    ) / count
+    return tuple(
+        _round(value)
+        for value in (
+            float(_int(latest.get("alive_agents"))),
+            float(_int(latest.get("births"))),
+            target_alive_area,
+            alive_area_delta,
+            birth_area_delta,
+            target_vital_area,
+            resource_gain_area,
+            -death_area_delta,
+            -collapse_area,
+        )
+    )
+
+
+def _mean_continuation_score_tuple(
+    values: Sequence[tuple[float, ...]],
+) -> tuple[float, ...]:
+    if not values:
+        return (0.0,) * len(_BRANCH_CONTINUATION_ARCHIVE_TARGET_CONTRACT)
+    width = len(values[0])
+    aligned = [value for value in values if len(value) == width]
+    if not aligned:
+        return (0.0,) * len(_BRANCH_CONTINUATION_ARCHIVE_TARGET_CONTRACT)
+    count = float(len(aligned))
+    return tuple(
+        sum(value[index] for value in aligned) / count
+        for index in range(width)
+    )
+
+
+def _archive_neighbor_matches(
+    *,
+    action: str,
+    example_action: str,
+    neighbor_policy: str,
+) -> bool:
+    if neighbor_policy == "same_action":
+        return action == example_action
+    if neighbor_policy == "same_option_mode":
+        return _action_option_mode(action) == _action_option_mode(example_action)
+    return neighbor_policy == "all_archive_actions"
+
+
+def _neighbor_policy_rank(neighbor_policy: str) -> int:
+    if neighbor_policy == "same_action":
+        return 3
+    if neighbor_policy == "same_option_mode":
+        return 2
+    return 1
+
+
+def _archive_quantize_feature(value: float) -> float:
+    return _round(round(float(value) * 8.0) / 8.0)
+
+
+def _target_vital_floor(item: Mapping[str, object]) -> float:
+    if item.get("target_alive") is not True:
+        return 0.0
+    vitals = (
+        _feature_float(item.get("target_energy_ratio")),
+        _feature_float(item.get("target_hydration_ratio")),
+        _feature_float(item.get("target_health_ratio")),
+    )
+    return min(vitals)
 
 
 def _compact_population_horizon_result(

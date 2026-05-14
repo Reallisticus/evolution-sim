@@ -7,13 +7,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_v3_branch_action_oracle_labels
+from evolution_sim.cli import (
+    mind_v3_branch_action_oracle_labels,
+    mind_v3_branch_continuation_archive_scorer,
+)
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.branch_action_oracle_audit import (
     DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
 )
 from evolution_sim.mind.branch_action_oracle_labels import (
+    BRANCH_CONTINUATION_ARCHIVE_SCORER_ACCURACY_FLOOR,
+    MIND_V3_BRANCH_CONTINUATION_ARCHIVE_SCORER_SCHEMA_VERSION,
     MIND_V3_BRANCH_ACTION_ORACLE_LABEL_SCHEMA_VERSION,
     _public_history_feature_vector,
     build_branch_action_oracle_label_report,
@@ -29,6 +34,13 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
             (
                 "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m "
                 "evolution_sim.cli.mind_v3_branch_action_oracle_labels"
+            ),
+        )
+        self.assertEqual(
+            package["scripts"]["sim:mind:v3:branch-continuation-archive-scorer"],
+            (
+                "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m "
+                "evolution_sim.cli.mind_v3_branch_continuation_archive_scorer"
             ),
         )
 
@@ -173,6 +185,37 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
                 "material_only_policy_observation_history_population_horizon_world_model"
             ]["materially_supports_population_horizon_model"]
         )
+        self.assertIn(
+            "branch_continuation_archive_scorer",
+            report["support_probes"],
+        )
+        continuation_probe = report["support_probes"][
+            "branch_continuation_archive_scorer"
+        ]
+        self.assertEqual(
+            continuation_probe["material_support_accuracy_floor"],
+            BRANCH_CONTINUATION_ARCHIVE_SCORER_ACCURACY_FLOOR,
+        )
+        self.assertFalse(
+            continuation_probe[
+                "materially_supports_branch_continuation_archive_scorer"
+            ]
+        )
+        self.assertFalse(
+            continuation_probe["target_contract"][
+                "first_action_imitation_target"
+            ]
+        )
+        self.assertFalse(
+            continuation_probe["feature_contract"]["privileged_world_state"]
+        )
+        self.assertFalse(
+            continuation_probe["feature_contract"]["uses_fixture_identity"]
+        )
+        self.assertIn(
+            "material_only_branch_continuation_archive_scorer",
+            report["support_probes"],
+        )
 
         first = report["labels"][0]
         self.assertEqual(first["oracle_label"]["action"], "eat")
@@ -231,6 +274,44 @@ class MindV3BranchActionOracleLabelTests(unittest.TestCase):
         )
         self.assertEqual(payload["aggregate"]["label_count"], 3)
         self.assertTrue(payload["acceptance"]["label_archive_acceptance_passed"])
+
+    def test_branch_continuation_archive_scorer_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            labels_path = tmp_path / "labels.json"
+            output_path = tmp_path / "archive-scorer.json"
+            labels_path.write_text(
+                json.dumps(
+                    build_branch_action_oracle_label_report(
+                        _synthetic_audit_report()
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "sys.argv",
+                [
+                    "mind_v3_branch_continuation_archive_scorer",
+                    "--branch-action-oracle-labels",
+                    str(labels_path),
+                    "--output",
+                    str(output_path),
+                ],
+            ):
+                mind_v3_branch_continuation_archive_scorer.main()
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            payload["schema_version"],
+            MIND_V3_BRANCH_CONTINUATION_ARCHIVE_SCORER_SCHEMA_VERSION,
+        )
+        self.assertFalse(
+            payload["acceptance"][
+                "branch_continuation_archive_scorer_gate_passed"
+            ]
+        )
 
     def test_public_history_feature_padding_marks_absent_slots_empty(self) -> None:
         features = _public_history_feature_vector([_history_item()])

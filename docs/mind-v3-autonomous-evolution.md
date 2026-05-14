@@ -2757,6 +2757,40 @@ v86-v88 public history and continuation-option blocker checks:
   branch-state archive cells directly rather than asking a one-step nearest
   model to infer delayed repositioning value.
 
+v89 standardized progress ledger and branch-continuation archive scorer:
+
+- `output/mind/mind-v3-v89-branch-continuation-archive-scorer.json` tests the
+  next proposed blocker without training a runtime policy. Input is a compact
+  policy-visible branch-state archive cell plus same-agent public history
+  summary and candidate action. The target is replayed multi-horizon
+  population continuation value from the branch archive, not first-action
+  imitation. The predeclared gate is leave-one-source-seed-out exact-action
+  ranking at `>= 0.55`, materially above the prior weak `0.35-0.42` support
+  range.
+- Result: negative. All-label ranking reaches only `6/24` (`0.25`) with
+  horizon `55`, `k=5`, same-action archive neighbors. Material-only ranking
+  reaches `6/17` (`0.352941`) with horizon `21`, `k=1`, same-action neighbors.
+  The branch-continuation archive scorer gate fails and runtime training is
+  blocked.
+- `output/mind/mind-v3-v89-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v89-standard-progress-ledger-report.json` backfill a
+  deterministic one-row-per-version progress ledger through v89. The progress
+  rule is intentionally strict: a row counts as progress only if it is a strict
+  policy pass or a diagnostic with a predeclared support floor that passes.
+  Accepted data archives and unfloored audit wins are still tracked, but they
+  are not counted as progress by that rule. The generated report has `89`
+  rows and `6` progress rows: strict policy passes at `v41`, `v42`, and `v44`,
+  plus diagnostic support-floor passes at `v80`, `v81`, and `v82`. None of
+  `v83-v89` clears the progress rule.
+- Decision: stop this archive-scorer line for now. The negative result is
+  strong evidence that the next bottleneck is not just "score branch
+  continuations from compact public archive cells." The remaining credible
+  direction is to enlarge or restructure the branch archive itself before
+  fitting another scorer: e.g. more replay-verified branch states with diverse
+  continuation trajectories, or a sequence model diagnostic that can predict
+  continuation value from entire public trajectory prefixes under the same
+  leave-one-seed-out floor.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3153,6 +3187,12 @@ Major milestones from the current state:
   `carrion_then_water` branch continuation on the 12-point preview. Preserve
   the history data contract, but the next real lever must score multi-step
   archive/sequence continuations directly.
+- v89: standardized progress ledger and branch-continuation archive scorer
+  boundary. Every v-slice is now represented by a derived structured progress
+  row, and "progress" is defined as strict policy pass or predeclared support
+  floor pass. The compact archive scorer does not clear the floor (`0.25`
+  all-label, `0.352941` material-only, floor `0.55`), so no runtime policy was
+  trained from it.
 
 External checks that support this direction:
 
