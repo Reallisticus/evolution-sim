@@ -3097,6 +3097,47 @@ v96 planner-distillation/runtime-feasibility diagnostic:
   `13,19,29,37,41,43` at `120` ticks with the existing no-regression,
   action-collapse, zero-heuristic, and carrion movement/alive blocker gates.
 
+v97 planner-distilled runtime integration/promotion evaluation:
+
+- `python/evolution_sim/mind/v3_planner_distilled.py` factors the v96 artifact
+  loader, validation, feature builder, and scorer into a runtime-safe module.
+  It accepts either the raw serialized artifact or the v96 report containing
+  `distilled_artifact`, rejects forbidden seed/branch/fixture/logged-action/
+  planner-table/global-quota/private-state keys, and scores one local
+  row/agent from observation input, action mask, candidate action identity, and
+  policy-owned public history. Offline strict-row candidate scores match the
+  online feature builder exactly in focused parity tests.
+- `MindV3EvolutionPolicy` now has an opt-in `planner_distilled_artifact`
+  runtime path and `mind_v3_evaluate.py` accepts
+  `--planner-distilled-artifact`. The policy selects the max-scoring legal
+  candidate from the frozen artifact with no heuristic fallback, records
+  planner schema/model/selected action/score margin/candidate score summaries
+  in diagnostics, and updates the same-agent public history only from finalized
+  trajectory records.
+- Strict v97 report:
+  `output/mind/mind-v3-v97-planner-distilled-runtime-promotion-report.json`.
+  The run used broad seeds `5,13,19,29,37,41` at `120` ticks and
+  `carrion_only` fixture seeds `13,19,29,37,41,43` at `120` ticks against the
+  linear Mind v3 baseline on the same seeds/ticks. Artifact reload parity from
+  the v96 source report is true and heuristic action-source count is `0`.
+- v97 is rejected. Broad mean alive delta is `-13.6666` and broad mean births
+  delta is `-12.1666` vs linear. Every broad seed regresses alive and births:
+  seed `5` `-8/-7`, `13` `-18/-16`, `19` `-18/-18`, `29` `-10/-8`,
+  `37` `-20/-17`, and `41` `-8/-7` (alive/births). The runtime action
+  distribution collapses to `stay`: broad dominant requested-action share is
+  `0.6126`, carrion-only dominant share is `0.6589`, both above the `0.50`
+  cap. Unsupported requested/resolved action count is `3`.
+- Carrion-only fixture means do not regress (`alive` delta `0.0`, `births`
+  delta `+1.1666`) and carrion blocker count does not regress (`1` vs linear
+  `1`), but these fixture results do not offset the strict broad regressions,
+  action-collapse failure, or unsupported-action blocker.
+- Decision: v97 is an integration success but a promotion failure. v98 should
+  not retune the v96 scorer in-place. The live rollout shows the strict
+  frontier branch artifact is too narrow for broad ecology and defaults into a
+  stay-heavy survival-collapse regime. The next useful direction is a broader
+  runtime-feasible support archive or planner/world-model training objective
+  that covers non-carrion ecology before another promotion attempt.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3543,6 +3584,13 @@ Major milestones from the current state:
   negative count `0`, mean target-local score delta `+5.626813`, terminal alive
   delta `+0.375`, and birth delta `+0.0625`. This is not promotion; v97 should
   test opt-in runtime integration and the full broad-plus-fixture strict gate.
+- v97: planner-distilled runtime integration and strict promotion evaluation.
+  The artifact loads and runs without heuristic fallback, and online/offline
+  feature parity is tested, but strict promotion fails: broad alive mean delta
+  `-13.6666`, broad births mean delta `-12.1666`, dominant requested-action
+  share up to `0.6589`, unsupported action count `3`, and alive/birth
+  regressions on every broad seed. v98 should broaden support/objectives before
+  another runtime promotion attempt.
 
 External checks that support this direction:
 

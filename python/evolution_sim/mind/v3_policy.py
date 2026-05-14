@@ -37,6 +37,11 @@ from evolution_sim.mind.v3_neural import (
     score_mind_v3_neural_artifact,
     validate_mind_v3_neural_artifact,
 )
+from evolution_sim.mind.v3_planner_distilled import (
+    MIND_V3_PLANNER_DISTILLED_RUNTIME_POLICY,
+    score_mind_v3_planner_distilled_runtime,
+    validate_mind_v3_planner_distilled_artifact,
+)
 
 MIND_V3_ELIGIBILITY_TRACE_POLICY = (
     "policy_valid_requested_action_horizon_eligibility_trace_v3"
@@ -58,6 +63,7 @@ MIND_V3_NEURAL_RECOVERY_PHASE_POLICY = (
 MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY = (
     "direct_horizon_fixture_action_value_policy_v1"
 )
+MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS = 8
 MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
 MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.015
 MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS = frozenset({"eat"})
@@ -123,20 +129,38 @@ class MindV3EvolutionPolicy:
             Mapping[str, object] | Sequence[Mapping[str, object]] | None
         ) = None,
         neural_artifact: Mapping[str, object] | None = None,
+        planner_distilled_artifact: Mapping[str, object] | None = None,
     ) -> None:
+        if neural_artifact is not None and planner_distilled_artifact is not None:
+            raise ValueError(
+                "Mind v3 planner-distilled and neural artifacts are mutually exclusive"
+            )
         self._rng = Random(seed)
         self._founder_template_pool = _founder_template_pool(
             founder_template_metadata
         )
         if neural_artifact is not None:
             validate_mind_v3_neural_artifact(neural_artifact)
+        if planner_distilled_artifact is not None:
+            validate_mind_v3_planner_distilled_artifact(planner_distilled_artifact)
         self._neural_artifact = (
             dict(neural_artifact) if neural_artifact is not None else None
+        )
+        self._planner_distilled_artifact = (
+            dict(planner_distilled_artifact)
+            if planner_distilled_artifact is not None
+            else None
         )
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[int, list[tuple[str, list[float]]]] = {}
         self._no_gain_eat_streaks: dict[int, int] = {}
         self._recovery_phase_ticks_remaining: dict[int, int] = {}
+        self._public_history_records: dict[int, list[dict[str, object]]] = {}
+        self._public_record_index = 0
+        self._pending_public_decisions = 0
+        self._last_public_tick = -1
+        self._ticks_since_animal_resource_gain: dict[int, int | None] = {}
+        self._ticks_since_drink: dict[int, int | None] = {}
         self.controller_update_count = 0
 
     def register_agent_mind(
@@ -272,7 +296,22 @@ class MindV3EvolutionPolicy:
                 meat_mode=_optional_string(self_payload.get("meat_mode")),
             )
         observation_input = _observation_input_payload(observation)
-        if self._neural_artifact is None:
+        if self._planner_distilled_artifact is not None:
+            public_history_trace = self._public_history_trace_for_decision(agent_id)
+            planner_scored = score_mind_v3_planner_distilled_runtime(
+                artifact=self._planner_distilled_artifact,
+                observation_input=observation_input,
+                action_mask=action_mask,
+                public_history_trace=public_history_trace,
+            )
+            scores = dict(planner_scored["scores"])
+            requested_action = str(planner_scored["selected_action"])
+            score = float(planner_scored["selected_score"])
+            controller_backend = "planner_distilled_runtime_scorer"
+            neural_head_predictions = None
+            neural_anchor_diagnostics = dict(planner_scored["diagnostics"])
+            self._pending_public_decisions += 1
+        elif self._neural_artifact is None:
             scores = score_mind_v3_metadata(
                 metadata=metadata,
                 observation_input=_observation_values(observation),
@@ -281,6 +320,8 @@ class MindV3EvolutionPolicy:
             controller_backend = "inherited_linear_controller"
             neural_head_predictions = None
             neural_anchor_diagnostics = {}
+            requested_action = None
+            score = None
         else:
             observation_values = _observation_values(observation)
             neural_residual_recovery_phase_remaining = max(
@@ -408,7 +449,10 @@ class MindV3EvolutionPolicy:
                 artifact=self._neural_artifact,
                 observation_input=observation_input,
             )
-        requested_action, score = _best_action(scores, action_mask)
+            requested_action = None
+            score = None
+        if requested_action is None or score is None:
+            requested_action, score = _best_action(scores, action_mask)
         diagnostics: dict[str, object] = {
             "runtime_mode": "mind-v3-autonomous-evolution",
             "heuristic_free": True,
@@ -420,6 +464,15 @@ class MindV3EvolutionPolicy:
             "controller_backend": controller_backend,
         }
         diagnostics.update(neural_anchor_diagnostics)
+        if self._planner_distilled_artifact is not None:
+            diagnostics.update(
+                {
+                    "planner_distilled_policy": (
+                        MIND_V3_PLANNER_DISTILLED_RUNTIME_POLICY
+                    ),
+                    "planner_distilled_artifact_frozen": True,
+                }
+            )
         if neural_head_predictions is not None:
             diagnostics.update(
                 {
@@ -457,6 +510,8 @@ class MindV3EvolutionPolicy:
         agent_id = _record_agent_id(record)
         if agent_id is None:
             return None
+        if record.get("action_source") != "passive":
+            self._record_public_history(agent_id=agent_id, record=record)
         if self._neural_artifact is not None and is_horizon_fixture_neural_artifact(
             self._neural_artifact
         ):
@@ -530,8 +585,72 @@ class MindV3EvolutionPolicy:
             "heuristic_free": True,
             "neural_artifact_frozen": self._neural_artifact is not None,
             "anchor_controller_update": self._neural_artifact is not None,
+            "planner_distilled_artifact_frozen": (
+                self._planner_distilled_artifact is not None
+            ),
             **recovery_phase_trace,
         }
+
+    def _public_history_trace_for_decision(
+        self,
+        agent_id: int,
+    ) -> list[dict[str, object]]:
+        current_tick = max(0, self._last_public_tick + 1)
+        current_record_index = self._public_record_index + max(
+            0,
+            self._pending_public_decisions,
+        )
+        records = self._public_history_records.get(agent_id, [])
+        selected = records[-MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS:]
+        projected = []
+        for item in selected:
+            projected_item = dict(item)
+            projected_item["tick_delta"] = current_tick - int(item.get("tick", 0))
+            projected_item["record_index_delta"] = current_record_index - int(
+                item.get("record_index", 0)
+            )
+            projected.append(projected_item)
+        return projected
+
+    def _record_public_history(
+        self,
+        *,
+        agent_id: int,
+        record: Mapping[str, object],
+    ) -> None:
+        record_index = self._public_record_index
+        self._public_record_index += 1
+        self._pending_public_decisions = max(0, self._pending_public_decisions - 1)
+        tick = _record_tick(record)
+        self._last_public_tick = max(self._last_public_tick, tick)
+        item = _public_history_item_from_record(
+            record,
+            record_index=record_index,
+            ticks_since_animal_resource_gain=(
+                self._ticks_since_animal_resource_gain.get(agent_id)
+            ),
+            ticks_since_drink=self._ticks_since_drink.get(agent_id),
+        )
+        history = self._public_history_records.setdefault(agent_id, [])
+        history.append(item)
+        if len(history) > MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS:
+            del history[
+                0 : len(history) - MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS
+            ]
+        if _record_consumed_animal_resource(record):
+            self._ticks_since_animal_resource_gain[agent_id] = 0
+        else:
+            previous = self._ticks_since_animal_resource_gain.get(agent_id)
+            self._ticks_since_animal_resource_gain[agent_id] = (
+                None if previous is None else int(previous) + 1
+            )
+        if _record_drank(record):
+            self._ticks_since_drink[agent_id] = 0
+        else:
+            previous_drink = self._ticks_since_drink.get(agent_id)
+            self._ticks_since_drink[agent_id] = (
+                None if previous_drink is None else int(previous_drink) + 1
+            )
 
     def _update_recovery_phase(
         self,
@@ -686,6 +805,17 @@ def _record_agent_id(record: Mapping[str, object]) -> int | None:
     return None
 
 
+def _record_tick(record: Mapping[str, object]) -> int:
+    value = record.get("tick")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
 def _record_action(record: Mapping[str, object]) -> str | None:
     requested = _record_requested_action(record)
     if requested is not None and _record_requested_action_valid(record, requested):
@@ -714,6 +844,88 @@ def _record_requested_action_valid(
     if isinstance(action_mask, Mapping):
         return bool(action_mask.get(action, False))
     return True
+
+
+def _public_history_item_from_record(
+    record: Mapping[str, object],
+    *,
+    record_index: int,
+    ticks_since_animal_resource_gain: int | None,
+    ticks_since_drink: int | None,
+) -> dict[str, object]:
+    before = _record_state(record, "before")
+    after = _record_state(record, "after")
+    outcome = record.get("outcome")
+    outcome_payload = outcome if isinstance(outcome, Mapping) else {}
+    feeding = outcome_payload.get("feeding")
+    feeding_payload = feeding if isinstance(feeding, Mapping) else {}
+    drinking = outcome_payload.get("drinking")
+    drinking_payload = drinking if isinstance(drinking, Mapping) else {}
+    passive = outcome_payload.get("passive")
+    passive_payload = passive if isinstance(passive, Mapping) else {}
+    return {
+        "tick": _record_tick(record),
+        "tick_delta": 0,
+        "record_index": int(record_index),
+        "record_index_delta": 0,
+        "requested_action": _record_requested_action(record),
+        "resolved_action": _record_resolved_action(record),
+        "action_valid": bool(record.get("action_valid", False)),
+        "resolution_action_valid": bool(
+            record.get("resolution_action_valid", False)
+        ),
+        "moved": bool(record.get("moved", False)),
+        "x_delta": int(_number(after.get("x")) or 0.0)
+        - int(_number(before.get("x")) or 0.0),
+        "y_delta": int(_number(after.get("y")) or 0.0)
+        - int(_number(before.get("y")) or 0.0),
+        "energy_ratio_before": _number(before.get("energy_ratio")),
+        "energy_ratio_after": _number(after.get("energy_ratio")),
+        "energy_ratio_delta": _state_delta(after, before, "energy_ratio"),
+        "hydration_ratio_before": _number(before.get("hydration_ratio")),
+        "hydration_ratio_after": _number(after.get("hydration_ratio")),
+        "hydration_ratio_delta": _state_delta(after, before, "hydration_ratio"),
+        "health_ratio_before": _number(before.get("health_ratio")),
+        "health_ratio_after": _number(after.get("health_ratio")),
+        "health_ratio_delta": _state_delta(after, before, "health_ratio"),
+        "resource_gain": _number(outcome_payload.get("resource_gain")),
+        "drank": bool(drinking_payload.get("drank", False)),
+        "ate": bool(feeding_payload.get("ate", False)),
+        "died": bool(outcome_payload.get("died", False)),
+        "death_cause": _optional_string(passive_payload.get("death_cause")),
+        "died_after_action": bool(passive_payload.get("died_after_action", False)),
+        "post_carrion_contact": _record_consumed_animal_resource(record),
+        "ticks_since_animal_resource_gain": ticks_since_animal_resource_gain,
+        "ticks_since_drink": ticks_since_drink,
+    }
+
+
+def _record_state(
+    record: Mapping[str, object],
+    field: str,
+) -> Mapping[str, object]:
+    value = record.get(field)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _state_delta(
+    after: Mapping[str, object],
+    before: Mapping[str, object],
+    field: str,
+) -> float | None:
+    after_value = _number(after.get(field))
+    before_value = _number(before.get(field))
+    if after_value is None or before_value is None:
+        return None
+    return after_value - before_value
+
+
+def _record_drank(record: Mapping[str, object]) -> bool:
+    outcome = record.get("outcome")
+    outcome_payload = outcome if isinstance(outcome, Mapping) else {}
+    drinking = outcome_payload.get("drinking")
+    drinking_payload = drinking if isinstance(drinking, Mapping) else {}
+    return bool(drinking_payload.get("drank", False))
 
 
 def _record_reward_total(record: Mapping[str, object]) -> float:

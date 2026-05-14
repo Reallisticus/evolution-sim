@@ -30,6 +30,10 @@ from evolution_sim.mind.v3_policy import (
     MIND_V3_REPRODUCTION_READINESS_GOALS,
     MindV3EvolutionPolicy,
 )
+from evolution_sim.mind.v3_planner_distilled import (
+    MIND_V3_PLANNER_DISTILLED_ARTIFACT_SCHEMA_VERSION,
+    load_mind_v3_planner_distilled_artifact,
+)
 
 MIND_V3_EVALUATION_SCHEMA_VERSION = (
     "mind_v3_autonomous_evolution_evaluation_v1"
@@ -49,6 +53,13 @@ MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY = (
 MIND_V3_NEURAL_ANCHOR_DIAGNOSTICS_POLICY = (
     "mind_v3_neural_anchor_diagnostics_v1"
 )
+MIND_V3_V97_PLANNER_DISTILLED_PROMOTION_POLICY = (
+    "mind_v3_v97_planner_distilled_runtime_promotion_gate_v1"
+)
+V97_BROAD_SEEDS = (5, 13, 19, 29, 37, 41)
+V97_CARRION_FIXTURE_SEEDS = (13, 19, 29, 37, 41, 43)
+V97_TICKS = 120
+V97_MAX_DOMINANT_REQUESTED_ACTION_SHARE = 0.50
 CONTROLLED_FIXTURE_NAMES = (
     "plant_only",
     "carrion_only",
@@ -106,12 +117,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--planner-distilled-artifact",
+        type=Path,
+        help=(
+            "Optional frozen v96 planner-distilled Mind v3 action scorer "
+            "artifact or v96 report containing distilled_artifact. This is a "
+            "runtime-feasibility artifact and is evaluated without planner "
+            "outcome tables or global assignment."
+        ),
+    )
+    parser.add_argument(
         "--compare-linear-baseline",
         action="store_true",
         help=(
-            "When --neural-artifact is set, also evaluate the current linear "
-            "Mind v3 controller on the same seeds/ticks and report "
-            "neural-minus-linear deltas."
+            "When --neural-artifact or --planner-distilled-artifact is set, "
+            "also evaluate the current linear Mind v3 controller on the same "
+            "seeds/ticks and report primary-minus-linear deltas."
         ),
     )
     parser.add_argument(
@@ -223,11 +244,37 @@ def main() -> None:
         if args.neural_artifact is not None
         else None
     )
+    planner_distilled_source_payload = (
+        _load_json_mapping(args.planner_distilled_artifact)
+        if args.planner_distilled_artifact is not None
+        else None
+    )
+    planner_distilled_artifact = (
+        load_mind_v3_planner_distilled_artifact(
+            planner_distilled_source_payload
+            if planner_distilled_source_payload is not None
+            else args.planner_distilled_artifact
+        )
+        if args.planner_distilled_artifact is not None
+        else None
+    )
     anchored_neural_artifact = (
         load_mind_v3_neural_artifact(args.anchored_neural_artifact)
         if args.anchored_neural_artifact is not None
         else None
     )
+    if planner_distilled_artifact is not None and neural_artifact is not None:
+        raise SystemExit(
+            "--planner-distilled-artifact and --neural-artifact are mutually exclusive"
+        )
+    if (
+        planner_distilled_artifact is not None
+        and anchored_neural_artifact is not None
+    ):
+        raise SystemExit(
+            "--planner-distilled-artifact cannot be combined with "
+            "--anchored-neural-artifact"
+        )
     if (
         anchored_neural_artifact is not None
         and anchored_neural_artifact.get("model_type") != MIND_V3_NEURAL_MODEL_TYPE
@@ -236,8 +283,15 @@ def main() -> None:
             "--anchored-neural-artifact must use the current anchored neural "
             f"model_type {MIND_V3_NEURAL_MODEL_TYPE}"
         )
-    if args.compare_linear_baseline and neural_artifact is None:
-        raise SystemExit("--compare-linear-baseline requires --neural-artifact")
+    if (
+        args.compare_linear_baseline
+        and neural_artifact is None
+        and planner_distilled_artifact is None
+    ):
+        raise SystemExit(
+            "--compare-linear-baseline requires --neural-artifact or "
+            "--planner-distilled-artifact"
+        )
     heuristic_runs = [
         _run_once(
             seed=seed,
@@ -285,6 +339,7 @@ def main() -> None:
                 seed=seed,
                 founder_template=founder_template,
                 neural_artifact=neural_artifact,
+                planner_distilled_artifact=planner_distilled_artifact,
             ),
             trajectory_output_path=_trajectory_output_path(
                 args.trajectory_output_dir,
@@ -366,6 +421,26 @@ def main() -> None:
                 if isinstance(anchored_neural_artifact, dict)
                 else None
             ),
+            "planner_distilled_artifact_source": (
+                str(args.planner_distilled_artifact)
+                if args.planner_distilled_artifact is not None
+                else None
+            ),
+            "planner_distilled_artifact_schema_version": (
+                planner_distilled_artifact.get("schema_version")
+                if isinstance(planner_distilled_artifact, dict)
+                else None
+            ),
+            "planner_distilled_model_type": (
+                planner_distilled_artifact.get("model_type")
+                if isinstance(planner_distilled_artifact, dict)
+                else None
+            ),
+            "planner_distilled_source_reload_actions_match": (
+                _planner_distilled_source_reload_actions_match(
+                    planner_distilled_source_payload
+                )
+            ),
             "linear_baseline_compared": bool(args.compare_linear_baseline),
         },
         "comparison": {
@@ -394,10 +469,18 @@ def main() -> None:
         mind_v3=report["comparison"]["mind_v3"]["aggregate"],
     )
     if linear_runs is not None:
-        report["comparison"]["neural_vs_linear_delta"] = _comparison_delta(
+        primary_vs_linear_delta = _comparison_delta(
             heuristic=report["comparison"]["mind_v3_linear"]["aggregate"],
             mind_v3=report["comparison"]["mind_v3"]["aggregate"],
         )
+        if neural_artifact is not None:
+            report["comparison"]["neural_vs_linear_delta"] = (
+                primary_vs_linear_delta
+            )
+        if planner_distilled_artifact is not None:
+            report["comparison"]["planner_vs_linear_delta"] = (
+                primary_vs_linear_delta
+            )
     if anchored_neural_runs is not None:
         report["comparison"]["primary_vs_anchored_neural_delta"] = (
             _comparison_delta(
@@ -442,6 +525,7 @@ def main() -> None:
             ticks=fixture_ticks,
             founder_template=founder_template,
             neural_artifact=neural_artifact,
+            planner_distilled_artifact=planner_distilled_artifact,
             trajectory_output_dir=args.trajectory_output_dir,
             trajectory_prefix="fixture",
         )
@@ -463,12 +547,18 @@ def main() -> None:
                 fixture_suite=report["linear_baseline_fixture_suite"],
                 fixture_config=fixture_config,
             )
-            report["neural_vs_linear_fixture_delta"] = (
-                _fixture_gate_comparison_delta(
-                    linear_gate=report["linear_baseline_fixture_gate"],
-                    neural_gate=report["fixture_gate"],
-                )
+            primary_vs_linear_fixture_delta = _fixture_gate_comparison_delta(
+                linear_gate=report["linear_baseline_fixture_gate"],
+                neural_gate=report["fixture_gate"],
             )
+            if neural_artifact is not None:
+                report["neural_vs_linear_fixture_delta"] = (
+                    primary_vs_linear_fixture_delta
+                )
+            if planner_distilled_artifact is not None:
+                report["planner_vs_linear_fixture_delta"] = (
+                    primary_vs_linear_fixture_delta
+                )
         if anchored_neural_artifact is not None:
             report["anchored_neural_fixture_suite"] = run_mind_v3_fixture_suite(
                 suite=args.fixture_suite,
@@ -490,6 +580,11 @@ def main() -> None:
                     neural_gate=report["fixture_gate"],
                 )
             )
+    if planner_distilled_artifact is not None:
+        report["v97_planner_distilled_promotion"] = (
+            _v97_planner_distilled_promotion_report(report)
+        )
+        _attach_v97_promotion_ledger_metrics(report)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -519,6 +614,16 @@ def main() -> None:
         delta = report["comparison"]["neural_vs_linear_delta"]
         print(f"mind_v3_neural_minus_linear_alive={delta['alive_agents_mean']}")
         print(f"mind_v3_neural_minus_linear_births={delta['births_mean']}")
+    if "comparison" in report and "planner_vs_linear_delta" in report["comparison"]:
+        delta = report["comparison"]["planner_vs_linear_delta"]
+        print(f"mind_v3_planner_minus_linear_alive={delta['alive_agents_mean']}")
+        print(f"mind_v3_planner_minus_linear_births={delta['births_mean']}")
+    if "v97_planner_distilled_promotion" in report:
+        promotion = report["v97_planner_distilled_promotion"]
+        print(
+            "mind_v3_v97_promotion_candidate_passed="
+            f"{promotion['promotion_candidate_passed']}"
+        )
 
 
 def _mind_v3_policy(
@@ -526,11 +631,13 @@ def _mind_v3_policy(
     seed: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
+    planner_distilled_artifact: dict[str, object] | None = None,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
         founder_template_metadata=founder_template,
         neural_artifact=neural_artifact,
+        planner_distilled_artifact=planner_distilled_artifact,
     )
 
 
@@ -581,6 +688,18 @@ def _run_world(
         str(record["resolved_action"])
         for record in world.trajectory_records
         if isinstance(record.get("resolved_action"), str)
+    )
+    unsupported_requested_action_count = sum(
+        1
+        for record in world.trajectory_records
+        if isinstance(record.get("requested_action"), str)
+        and record.get("action_valid") is False
+    )
+    unsupported_resolved_action_count = sum(
+        1
+        for record in world.trajectory_records
+        if isinstance(record.get("resolved_action"), str)
+        and record.get("resolution_action_valid") is False
     )
     dominant_action = _dominant_action_summary(requested_action_counts)
     summary = result.summary
@@ -637,6 +756,10 @@ def _run_world(
         "unique_requested_actions": len(requested_action_counts),
         "requested_action_counts": dict(sorted(requested_action_counts.items())),
         "resolved_action_counts": dict(sorted(resolved_action_counts.items())),
+        "unsupported_requested_action_count": int(
+            unsupported_requested_action_count
+        ),
+        "unsupported_resolved_action_count": int(unsupported_resolved_action_count),
         "dominant_requested_action": dominant_action["action"],
         "dominant_requested_action_count": dominant_action["count"],
         "dominant_requested_action_share": dominant_action["share"],
@@ -735,6 +858,7 @@ def run_mind_v3_fixture_suite(
     ticks: int,
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
+    planner_distilled_artifact: dict[str, object] | None = None,
     trajectory_output_dir: Path | None = None,
     trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
@@ -748,6 +872,7 @@ def run_mind_v3_fixture_suite(
                 seed=seed,
                 founder_template=founder_template,
                 neural_artifact=neural_artifact,
+                planner_distilled_artifact=planner_distilled_artifact,
             )
         ),
         learned_policy_key="mind_v3",
@@ -1014,6 +1139,423 @@ def _fixture_gate_comparison_delta(
     }
 
 
+def _load_json_mapping(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"failed to read JSON report: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid JSON report {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"JSON report must be an object: {path}")
+    return payload
+
+
+def _planner_distilled_source_reload_actions_match(
+    payload: Mapping[str, object] | None,
+) -> bool:
+    if payload is None:
+        return False
+    reload_check = payload.get("runtime_reload_check")
+    if isinstance(reload_check, Mapping):
+        return reload_check.get("actions_match") is True
+    return False
+
+
+def _v97_planner_distilled_promotion_report(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    comparison = _mapping(report.get("comparison"))
+    candidate = _mapping(comparison.get("mind_v3"))
+    linear = _mapping(comparison.get("mind_v3_linear"))
+    candidate_aggregate = _mapping(candidate.get("aggregate"))
+    linear_aggregate = _mapping(linear.get("aggregate"))
+    policy = _mapping(report.get("policy"))
+    fixture_suite = _mapping(report.get("fixture_suite"))
+    linear_fixture_suite = _mapping(report.get("linear_baseline_fixture_suite"))
+    fixture_gate = _mapping(report.get("fixture_gate"))
+    linear_fixture_gate = _mapping(report.get("linear_baseline_fixture_gate"))
+    carrion_fixture = _fixture_report_by_name(fixture_suite, "carrion_only")
+    linear_carrion_fixture = _fixture_report_by_name(
+        linear_fixture_suite,
+        "carrion_only",
+    )
+    carrion_candidate = _mapping(
+        _mapping(_mapping(carrion_fixture.get("comparison")).get("mind_v3")).get(
+            "aggregate"
+        )
+    )
+    carrion_linear = _mapping(
+        _mapping(
+            _mapping(linear_carrion_fixture.get("comparison")).get("mind_v3")
+        ).get("aggregate")
+    )
+    broad_delta = (
+        _comparison_delta(
+            heuristic=dict(linear_aggregate),
+            mind_v3=dict(candidate_aggregate),
+        )
+        if candidate_aggregate and linear_aggregate
+        else {
+            "alive_agents_mean": 0.0,
+            "births_mean": 0.0,
+            "biologically_ready_agents_mean": 0.0,
+            "ready_agents_mean": 0.0,
+        }
+    )
+    carrion_delta = (
+        _comparison_delta(
+            heuristic=dict(carrion_linear),
+            mind_v3=dict(carrion_candidate),
+        )
+        if carrion_candidate and carrion_linear
+        else {
+            "alive_agents_mean": 0.0,
+            "births_mean": 0.0,
+            "biologically_ready_agents_mean": 0.0,
+            "ready_agents_mean": 0.0,
+        }
+    )
+    per_seed_delta = _per_seed_deltas(
+        _list_of_mappings(candidate.get("runs")),
+        _list_of_mappings(linear.get("runs")),
+    )
+    carrion_blocker_count = _fixture_blocker_count(fixture_gate, "carrion_only")
+    linear_carrion_blocker_count = _fixture_blocker_count(
+        linear_fixture_gate,
+        "carrion_only",
+    )
+    broad_unsupported = int(
+        candidate_aggregate.get("unsupported_requested_action_count", 0)
+    ) + int(candidate_aggregate.get("unsupported_resolved_action_count", 0))
+    carrion_unsupported = int(
+        carrion_candidate.get("unsupported_requested_action_count", 0)
+    ) + int(carrion_candidate.get("unsupported_resolved_action_count", 0))
+    broad_share = _float_metric(
+        candidate_aggregate.get("dominant_requested_action_share")
+    )
+    carrion_share = _float_metric(
+        carrion_candidate.get("dominant_requested_action_share")
+    )
+    max_dominant_share = max(broad_share, carrion_share)
+    blockers: list[dict[str, object]] = []
+    _append_exact_sequence_blocker(
+        blockers,
+        name="broad_seeds",
+        actual=tuple(_int(run.get("seed")) for run in _list_of_mappings(candidate.get("runs"))),
+        expected=V97_BROAD_SEEDS,
+    )
+    _append_exact_sequence_blocker(
+        blockers,
+        name="fixture_seeds",
+        actual=tuple(int(seed) for seed in fixture_suite.get("seeds", []) or ()),
+        expected=V97_CARRION_FIXTURE_SEEDS,
+    )
+    if int(fixture_suite.get("ticks", 0)) != V97_TICKS:
+        blockers.append(
+            _v97_blocker(
+                reason="fixture_ticks_not_strict_v97",
+                metric="fixture_ticks",
+                value=_float_metric(fixture_suite.get("ticks")),
+                floor=float(V97_TICKS),
+            )
+        )
+    if policy.get("planner_distilled_artifact_schema_version") != (
+        MIND_V3_PLANNER_DISTILLED_ARTIFACT_SCHEMA_VERSION
+    ):
+        blockers.append(
+            _v97_blocker(
+                reason="planner_distilled_artifact_missing",
+                metric="planner_distilled_artifact_schema_version_present",
+                value=0.0,
+                floor=1.0,
+            )
+        )
+    if policy.get("planner_distilled_source_reload_actions_match") is not True:
+        blockers.append(
+            _v97_blocker(
+                reason="artifact_reload_action_choices_not_verified",
+                metric="artifact_reload_actions_match",
+                value=0.0,
+                floor=1.0,
+            )
+        )
+    if int(candidate_aggregate.get("heuristic_action_source_count", 0)) != 0:
+        blockers.append(
+            _v97_blocker(
+                reason="heuristic_action_source_count_nonzero",
+                metric="heuristic_action_source_count",
+                value=_float_metric(
+                    candidate_aggregate.get("heuristic_action_source_count")
+                ),
+                floor=0.0,
+                comparator="eq",
+            )
+        )
+    if max_dominant_share > V97_MAX_DOMINANT_REQUESTED_ACTION_SHARE:
+        blockers.append(
+            _v97_blocker(
+                reason="dominant_requested_action_share_above_cap",
+                metric="max_broad_or_carrion_dominant_requested_action_share",
+                value=max_dominant_share,
+                floor=V97_MAX_DOMINANT_REQUESTED_ACTION_SHARE,
+                comparator="le",
+            )
+        )
+    if broad_unsupported + carrion_unsupported != 0:
+        blockers.append(
+            _v97_blocker(
+                reason="unsupported_requested_or_resolved_action_nonzero",
+                metric="unsupported_action_count",
+                value=float(broad_unsupported + carrion_unsupported),
+                floor=0.0,
+                comparator="eq",
+            )
+        )
+    _append_nonnegative_blocker(
+        blockers,
+        reason="broad_alive_mean_regression_vs_linear",
+        metric="broad_alive_mean_delta_vs_linear",
+        value=_float_metric(broad_delta.get("alive_agents_mean")),
+    )
+    _append_nonnegative_blocker(
+        blockers,
+        reason="broad_births_mean_regression_vs_linear",
+        metric="broad_births_mean_delta_vs_linear",
+        value=_float_metric(broad_delta.get("births_mean")),
+    )
+    for item in per_seed_delta:
+        seed = int(item["seed"])
+        _append_nonnegative_blocker(
+            blockers,
+            reason=f"broad_seed_{seed}_alive_regression_vs_linear",
+            metric="broad_seed_alive_delta_vs_linear",
+            value=_float_metric(item.get("alive_delta_vs_linear")),
+        )
+        _append_nonnegative_blocker(
+            blockers,
+            reason=f"broad_seed_{seed}_births_regression_vs_linear",
+            metric="broad_seed_births_delta_vs_linear",
+            value=_float_metric(item.get("births_delta_vs_linear")),
+        )
+    _append_nonnegative_blocker(
+        blockers,
+        reason="carrion_alive_mean_regression_vs_linear",
+        metric="carrion_only_alive_mean_delta_vs_linear",
+        value=_float_metric(carrion_delta.get("alive_agents_mean")),
+    )
+    _append_nonnegative_blocker(
+        blockers,
+        reason="carrion_births_mean_regression_vs_linear",
+        metric="carrion_only_births_mean_delta_vs_linear",
+        value=_float_metric(carrion_delta.get("births_mean")),
+    )
+    blocker_delta = carrion_blocker_count - linear_carrion_blocker_count
+    if blocker_delta > 0:
+        blockers.append(
+            _v97_blocker(
+                reason="carrion_only_fixture_blocker_regression_vs_linear",
+                metric="carrion_only_blocker_count_delta_vs_linear",
+                value=float(blocker_delta),
+                floor=0.0,
+                comparator="le",
+            )
+        )
+    return {
+        "policy": MIND_V3_V97_PLANNER_DISTILLED_PROMOTION_POLICY,
+        "promotion_candidate_passed": not blockers,
+        "runtime_policy_status": (
+            "strict_runtime_policy_pass"
+            if not blockers
+            else "rejected_no_promotion"
+        ),
+        "criteria": {
+            "broad_seeds": list(V97_BROAD_SEEDS),
+            "fixture": "carrion_only",
+            "fixture_seeds": list(V97_CARRION_FIXTURE_SEEDS),
+            "ticks": V97_TICKS,
+            "max_dominant_requested_action_share": (
+                V97_MAX_DOMINANT_REQUESTED_ACTION_SHARE
+            ),
+        },
+        "metrics": {
+            "heuristic_action_source_count": int(
+                candidate_aggregate.get("heuristic_action_source_count", 0)
+            ),
+            "broad_dominant_requested_action_share": _round(broad_share),
+            "carrion_only_dominant_requested_action_share": _round(carrion_share),
+            "max_broad_or_carrion_dominant_requested_action_share": _round(
+                max_dominant_share
+            ),
+            "broad_alive_mean_delta_vs_linear": _float_metric(
+                broad_delta.get("alive_agents_mean")
+            ),
+            "broad_births_mean_delta_vs_linear": _float_metric(
+                broad_delta.get("births_mean")
+            ),
+            "carrion_only_alive_mean_delta_vs_linear": _float_metric(
+                carrion_delta.get("alive_agents_mean")
+            ),
+            "carrion_only_births_mean_delta_vs_linear": _float_metric(
+                carrion_delta.get("births_mean")
+            ),
+            "carrion_only_blocker_count": carrion_blocker_count,
+            "linear_carrion_only_blocker_count": linear_carrion_blocker_count,
+            "carrion_only_blocker_count_delta_vs_linear": blocker_delta,
+            "unsupported_action_count": broad_unsupported + carrion_unsupported,
+            "artifact_reload_actions_match": bool(
+                policy.get("planner_distilled_source_reload_actions_match")
+            ),
+        },
+        "per_seed_delta_vs_linear": per_seed_delta,
+        "blockers": blockers,
+    }
+
+
+def _attach_v97_promotion_ledger_metrics(report: dict[str, object]) -> None:
+    promotion = _mapping(report.get("v97_planner_distilled_promotion"))
+    metrics = _mapping(promotion.get("metrics"))
+    blockers = promotion.get("blockers")
+    blocker_count = len(blockers) if isinstance(blockers, list) else 0
+    report["promotion_candidate_passed"] = bool(
+        promotion.get("promotion_candidate_passed")
+    )
+    report["promotion_blocker_count"] = blocker_count
+    report["blocker_count"] = blocker_count
+    report["candidate_alive_delta_vs_linear"] = metrics.get(
+        "broad_alive_mean_delta_vs_linear"
+    )
+    report["candidate_births_delta_vs_linear"] = metrics.get(
+        "broad_births_mean_delta_vs_linear"
+    )
+    report["candidate_dominant_requested_action_share"] = metrics.get(
+        "max_broad_or_carrion_dominant_requested_action_share"
+    )
+    report["candidate_heuristic_action_source_count"] = metrics.get(
+        "heuristic_action_source_count"
+    )
+    per_seed = _list_of_mappings(promotion.get("per_seed_delta_vs_linear"))
+    alive_deltas = [
+        _float_metric(item.get("alive_delta_vs_linear")) for item in per_seed
+    ]
+    birth_deltas = [
+        _float_metric(item.get("births_delta_vs_linear")) for item in per_seed
+    ]
+    if alive_deltas:
+        report["candidate_min_seed_alive_delta_vs_linear"] = min(alive_deltas)
+    if birth_deltas:
+        report["candidate_min_seed_births_delta_vs_linear"] = min(birth_deltas)
+
+
+def _fixture_report_by_name(
+    fixture_suite: Mapping[str, object],
+    fixture_name: str,
+) -> Mapping[str, object]:
+    for item in _list_of_mappings(fixture_suite.get("fixtures")):
+        if str(item.get("fixture", "")) == fixture_name:
+            return item
+    return {}
+
+
+def _fixture_blocker_count(
+    fixture_gate: Mapping[str, object],
+    fixture_name: str,
+) -> int:
+    blockers = fixture_gate.get("blockers")
+    if not isinstance(blockers, list):
+        return 0
+    return sum(
+        1
+        for item in blockers
+        if isinstance(item, Mapping) and item.get("fixture") == fixture_name
+    )
+
+
+def _per_seed_deltas(
+    candidate_runs: Sequence[Mapping[str, object]],
+    linear_runs: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    linear_by_seed = {_int(run.get("seed")): run for run in linear_runs}
+    deltas = []
+    for run in sorted(candidate_runs, key=lambda item: _int(item.get("seed"))):
+        seed = _int(run.get("seed"))
+        linear = _mapping(linear_by_seed.get(seed))
+        deltas.append(
+            {
+                "seed": seed,
+                "alive_delta_vs_linear": _round(
+                    _float_metric(run.get("alive_agents"))
+                    - _float_metric(linear.get("alive_agents"))
+                ),
+                "births_delta_vs_linear": _round(
+                    _float_metric(run.get("births"))
+                    - _float_metric(linear.get("births"))
+                ),
+                "candidate_alive": _int(run.get("alive_agents")),
+                "linear_alive": _int(linear.get("alive_agents")),
+                "candidate_births": _int(run.get("births")),
+                "linear_births": _int(linear.get("births")),
+            }
+        )
+    return deltas
+
+
+def _append_exact_sequence_blocker(
+    blockers: list[dict[str, object]],
+    *,
+    name: str,
+    actual: Sequence[int],
+    expected: Sequence[int],
+) -> None:
+    if tuple(actual) == tuple(expected):
+        return
+    blockers.append(
+        {
+            "reason": f"{name}_not_strict_v97",
+            "metric": name,
+            "value": list(actual),
+            "floor": list(expected),
+            "comparator": "eq",
+        }
+    )
+
+
+def _append_nonnegative_blocker(
+    blockers: list[dict[str, object]],
+    *,
+    reason: str,
+    metric: str,
+    value: float,
+) -> None:
+    if float(value) >= 0.0:
+        return
+    blockers.append(
+        _v97_blocker(
+            reason=reason,
+            metric=metric,
+            value=float(value),
+            floor=0.0,
+        )
+    )
+
+
+def _v97_blocker(
+    *,
+    reason: str,
+    metric: str,
+    value: float,
+    floor: float,
+    comparator: str = "ge",
+) -> dict[str, object]:
+    return {
+        "reason": reason,
+        "metric": metric,
+        "value": _round(value),
+        "floor": _round(floor),
+        "comparator": comparator,
+    }
+
+
 def _fixture_gate_metrics(aggregate: Mapping[str, object]) -> dict[str, float]:
     attribution = aggregate.get("reproduction_failure_attribution")
     if not isinstance(attribution, Mapping):
@@ -1136,6 +1678,26 @@ def _float_metric(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return float(value)
+
+
+def _int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _list_of_mappings(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
 
 
 def _run_fixture_once(
@@ -1569,6 +2131,8 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
     policy_id_counts: Counter[str] = Counter()
     requested_action_counts: Counter[str] = Counter()
     resolved_action_counts: Counter[str] = Counter()
+    unsupported_requested_action_count = 0
+    unsupported_resolved_action_count = 0
     for run in runs:
         action_source_counts.update(
             {
@@ -1598,6 +2162,12 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
                 ).items()
             }
         )
+        unsupported_requested_action_count += int(
+            run.get("unsupported_requested_action_count", 0)
+        )
+        unsupported_resolved_action_count += int(
+            run.get("unsupported_resolved_action_count", 0)
+        )
     dominant_action = _dominant_action_summary(requested_action_counts)
     reproduction_attribution = _aggregate_reproduction_failure_attribution(runs)
     temporal_readiness = _aggregate_temporal_readiness_attribution(runs)
@@ -1621,6 +2191,10 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         ),
         "requested_action_counts": dict(sorted(requested_action_counts.items())),
         "resolved_action_counts": dict(sorted(resolved_action_counts.items())),
+        "unsupported_requested_action_count": int(
+            unsupported_requested_action_count
+        ),
+        "unsupported_resolved_action_count": int(unsupported_resolved_action_count),
         "dominant_requested_action": dominant_action["action"],
         "dominant_requested_action_count": dominant_action["count"],
         "dominant_requested_action_share": dominant_action["share"],

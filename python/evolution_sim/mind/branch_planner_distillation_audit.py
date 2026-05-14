@@ -41,6 +41,12 @@ from evolution_sim.mind.branch_utility_risk_audit import (
     _utility_rows,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
+from evolution_sim.mind.v3_planner_distilled import (
+    MindV3PlannerDistilledArtifactError,
+    artifact_has_forbidden_example_keys as _runtime_artifact_has_forbidden_example_keys,
+    score_distilled_planner_artifact as _runtime_score_distilled_planner_artifact,
+    validate_mind_v3_planner_distilled_artifact,
+)
 
 MIND_V3_PLANNER_DISTILLATION_AUDIT_SCHEMA_VERSION = (
     "mind_v3_planner_distillation_runtime_feasibility_v1"
@@ -378,28 +384,7 @@ def score_distilled_planner_artifact(
     row: Mapping[str, object],
     artifact: Mapping[str, object],
 ) -> dict[str, object]:
-    _validate_artifact(artifact)
-    candidate_scores = _artifact_candidate_scores(row=row, artifact=artifact)
-    if not candidate_scores:
-        return {
-            "selected_action": None,
-            "candidate_scores": [],
-            "unsupported_predicted_action": True,
-        }
-    selected = max(
-        candidate_scores,
-        key=lambda item: (
-            _float(item.get("final_score")),
-            _float(item.get("sequence_cvar_score")),
-            str(item.get("action", "")),
-        ),
-    )
-    return {
-        "selected_action": selected.get("action"),
-        "selected_mode": selected.get("mode"),
-        "candidate_scores": candidate_scores,
-        "unsupported_predicted_action": str(selected.get("action", "")) not in ACTION_NAMES,
-    }
+    return _runtime_score_distilled_planner_artifact(row=row, artifact=artifact)
 
 
 def _validate_inputs(
@@ -1504,40 +1489,14 @@ def _candidate_outcome(
 
 
 def _validate_artifact(artifact: Mapping[str, object]) -> None:
-    if artifact.get("schema_version") != MIND_V3_PLANNER_DISTILLED_ARTIFACT_SCHEMA_VERSION:
-        raise BranchPlannerDistillationAuditError(
-            "distilled planner artifact has unsupported schema_version"
-        )
-    inference = _mapping(artifact.get("inference_contract"))
-    if inference.get("requires_planner_outcome_tables") is not False:
-        raise BranchPlannerDistillationAuditError(
-            "distilled planner artifact requires planner outcome tables"
-        )
-    if inference.get("requires_global_batch_assignment") is not False:
-        raise BranchPlannerDistillationAuditError(
-            "distilled planner artifact requires global batch assignment"
-        )
-    if inference.get("uses_heuristic_fallback") is not False:
-        raise BranchPlannerDistillationAuditError(
-            "distilled planner artifact uses heuristic fallback"
-        )
+    try:
+        validate_mind_v3_planner_distilled_artifact(artifact)
+    except MindV3PlannerDistilledArtifactError as exc:
+        raise BranchPlannerDistillationAuditError(str(exc)) from exc
 
 
 def _artifact_has_forbidden_example_keys(artifact: Mapping[str, object]) -> bool:
-    forbidden = {
-        "seed",
-        "branch_id",
-        "fixture",
-        "source",
-        "logged_action",
-        "planner_candidate_outcome_table",
-        "global_batch_action_quota",
-    }
-    for section in ("sequence_support_examples", "teacher_imitation_examples"):
-        for item in _list_of_mappings(artifact.get(section), section):
-            if set(item) & forbidden:
-                return True
-    return False
+    return _runtime_artifact_has_forbidden_example_keys(artifact)
 
 
 def _strip_comparisons(report: Mapping[str, object]) -> dict[str, object]:
