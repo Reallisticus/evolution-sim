@@ -2953,6 +2953,51 @@ v93 depleted-resource trap support diagnostic:
   next useful line is a true sequence/world-model branch continuation scorer,
   not another one-step scorer over the v91 archive.
 
+v94 sequence/world-model branch-continuation scorer diagnostic:
+
+- `output/mind/mind-v3-v94-branch-sequence-continuation-scorer.json` builds a
+  replay-backed sequence-continuation dataset from the v93 non-held-out support
+  archive and evaluates on the v91 strict carrion frontier. Support uses `51`
+  non-strict rows (`267` candidate actions) from seeds
+  `1,2,3,4,6,7,9,11,12,17,23,31`; strict evaluation remains the six carrion
+  seeds `13,19,29,37,41,43` with `48` rows and `263` candidate actions. Strict
+  seed training leakage is `0`; replay verification is true for support and
+  strict labels; heuristic action-source count and unsupported oracle action
+  count are both `0`.
+- The v94 scorer treats `first_action_outcome`, `target_horizon_trace`, and
+  `population_horizon_trace` as replay targets, not runtime inputs. Runtime
+  features are policy-visible only: decoded observation values, action mask,
+  compact self/local/navigation state when decodable, same-agent public history
+  trace, candidate action identity, move direction, and candidate support.
+- Compared with the v93 one-step trap baseline, sequence scoring fixes the
+  two seed `41` frontier catastrophes as a class. The best acceptance-eligible
+  rule, `sequence_prefix_nearest_neighbor_k5`, avoids target death on both
+  `carrion-only-seed-41-action-branch-0-tick-113-agent-18-logged-move-south`
+  and
+  `carrion-only-seed-41-action-branch-1-tick-114-agent-18-logged-eat`. It also
+  reaches global mean target-local score delta `+8.359369`, target-alive
+  negative count `0`, mean terminal alive delta `+0.4375`, and mean birth delta
+  `+0.041667`.
+- v94 still fails the predeclared strict floor because the best rule predicts
+  `eat` on `30/48` strict comparisons, dominant predicted action share
+  `0.625` versus cap `0.50`. Dominant predicted mode share is also `0.625`,
+  below the `0.75` cap. All other strict floors for that rule clear, including
+  per-seed target-local mean: seed `13` `+9.128975`, `19` `+9.436875`, `29`
+  `+1.790025`, `37` `+12.871388`, `41` `+0.619016`, and `43` `+16.309938`.
+- `output/mind/mind-v3-v94-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v94-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v94. The ledger treats the v94
+  `sequence_continuation_support_probe` as authoritative; v94 is recorded as
+  `diagnostic_support_floor_fail`, and progress-passed versions remain
+  `[41,42,44,80,81,82,90]`.
+- Decision: v94 is rejected. v95 runtime work is not allowed. This is the first
+  post-v93 diagnostic to show positive strict target-local utility while
+  avoiding both seed `41` continuation catastrophes, but it still violates the
+  anti-collapse action-share contract. The next line, if pursued, should be
+  simulator-in-the-loop planning/search with an explicit diversity/action-mask
+  contract, not another offline one-step or sequence scorer over the same
+  archive.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3376,6 +3421,13 @@ Major milestones from the current state:
   utility is still negative (`-20.003307` best mean target-local delta), seed
   `41` remains negative (`-149.153556`), one target-death regression remains,
   and mean births regress (`-0.020833`). No runtime policy was trained.
+- v94: sequence-continuation scorer boundary. Replay-backed sequence targets
+  from the v93 support archive produce the first positive strict target-local
+  frontier result (`+8.359369`) while avoiding both seed `41` tick `113` and
+  tick `114` target-death catastrophes with zero target-alive regressions, but
+  the best scorer collapses to `eat` on `30/48` rows (`0.625`, cap `0.50`).
+  No runtime policy was trained; the next line should be simulator-in-the-loop
+  planning/search rather than more offline scoring on the same archive.
 
 External checks that support this direction:
 

@@ -23,6 +23,7 @@ _AUTHORITATIVE_SUPPORT_PROBE_KEYS = frozenset(
     {
         "catastrophe_sensitive_utility_support_probe",
         "depleted_resource_trap_support_probe",
+        "sequence_continuation_support_probe",
     }
 )
 
@@ -406,7 +407,41 @@ def _version_metrics(
             blockers = acceptance.get("blockers")
             if isinstance(blockers, list):
                 merged["acceptance_blocker_count"] = len(blockers)
+            strict_blockers = acceptance.get("strict_blockers")
+            if isinstance(strict_blockers, list):
+                merged["acceptance_blocker_count"] = len(strict_blockers)
+            best_rule = acceptance.get("best_rule_for_diagnostics")
+            if isinstance(best_rule, Mapping):
+                _merge_best_rule_metrics(merged, best_rule)
     return dict(sorted(merged.items()))
+
+
+def _merge_best_rule_metrics(
+    merged: dict[str, object],
+    best_rule: Mapping[str, object],
+) -> None:
+    rule = best_rule.get("rule")
+    if isinstance(rule, str):
+        merged["best_rule"] = rule
+    for source_key, target_key in (
+        ("blocker_count", "best_rule_blocker_count"),
+        ("mean_target_local_score_delta", "best_rule_mean_target_local_score_delta"),
+        ("target_alive_delta_negative_count", "best_rule_target_alive_delta_negative_count"),
+        ("mean_terminal_alive_delta", "best_rule_mean_terminal_alive_delta"),
+        ("mean_birth_delta", "best_rule_mean_birth_delta"),
+        ("dominant_predicted_action_share", "best_rule_dominant_predicted_action_share"),
+        ("dominant_predicted_mode_share", "best_rule_dominant_predicted_mode_share"),
+    ):
+        value = best_rule.get(source_key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            merged[target_key] = value
+    for source_key in (
+        "seed_41_tick_113_avoided",
+        "seed_41_tick_114_avoided",
+    ):
+        value = best_rule.get(source_key)
+        if isinstance(value, bool):
+            merged[source_key] = value
 
 
 def _read_docs(path: Path) -> dict[int, list[dict[str, object]]]:
