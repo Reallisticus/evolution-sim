@@ -76,11 +76,21 @@ MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
 FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
     "failure_frontier_mode_balanced_v1"
 )
+DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY = (
+    "depleted_resource_trap_v1"
+)
 _FULL_SCAN_BRANCH_SELECTION_POLICIES = {
     MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+    DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
 }
 _MOVE_ACTIONS = ("move_north", "move_south", "move_east", "move_west")
+_MOVE_DELTAS: dict[str, tuple[int, int]] = {
+    "move_north": (0, -1),
+    "move_south": (0, 1),
+    "move_east": (1, 0),
+    "move_west": (-1, 0),
+}
 DEFAULT_TARGET_HORIZON_TRACE_TICKS: tuple[int, ...] = (
     0,
     1,
@@ -426,13 +436,25 @@ def _discover_branch_points(
             "eligible_multi_move_reposition_row_count": sum(
                 1 for row in eligible_rows if _has_multiple_legal_moves(row)
             ),
+            "eligible_depleted_resource_trap_row_count": sum(
+                1 for row in eligible_rows if _is_depleted_resource_trap_row(row)
+            ),
             "selected_multi_move_reposition_row_count": sum(
                 1 for row in selected_rows if _has_multiple_legal_moves(row)
+            ),
+            "selected_depleted_resource_trap_row_count": sum(
+                1 for row in selected_rows if _is_depleted_resource_trap_row(row)
             ),
             "selected_failure_frontier_score_summary": (
                 _failure_frontier_score_summary(selected_rows)
                 if branch_selection_policy
                 == FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+                else None
+            ),
+            "selected_depleted_resource_trap_score_summary": (
+                _depleted_resource_trap_score_summary(selected_rows)
+                if branch_selection_policy
+                == DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY
                 else None
             ),
             "skipped_row_counts": dict(sorted(skipped_counts.items())),
@@ -859,6 +881,12 @@ def _branch_row_skip_reason(
         and len({_action_option_mode(action) for action in valid_candidates}) < 2
     ):
         return "no_cross_mode_candidate_alternative"
+    if (
+        branch_selection_policy
+        == DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY
+        and not _is_depleted_resource_trap_row(row)
+    ):
+        return "not_depleted_resource_trap"
     if tick not in snapshots:
         return "missing_state_snapshot"
     return None
@@ -875,6 +903,11 @@ def _select_branch_rows(
         return rows[:max_branch_points]
     if branch_selection_policy == FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
         return _select_failure_frontier_rows(rows, max_branch_points=max_branch_points)
+    if branch_selection_policy == DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY:
+        return _select_depleted_resource_trap_rows(
+            rows,
+            max_branch_points=max_branch_points,
+        )
     selected: list[object] = []
     remaining = list(rows)
     bucket_counts: Counter[tuple[str, str, str, str, str]] = Counter()
@@ -949,6 +982,55 @@ def _take_diverse_failure_frontier_rows(
         bucket_counts[_failure_frontier_bucket(best)] += 1
         mode_counts[_action_option_mode(str(getattr(best, "label", "")))] += 1
     return selected
+
+
+def _select_depleted_resource_trap_rows(
+    rows: Sequence[object],
+    *,
+    max_branch_points: int,
+) -> list[object]:
+    ranked = sorted(rows, key=_depleted_resource_trap_sort_key)
+    selected: list[object] = []
+    remaining = list(ranked)
+    bucket_counts: Counter[tuple[str, str, str, str, str]] = Counter()
+    seed_counts: Counter[int] = Counter()
+    while remaining and len(selected) < max_branch_points:
+        best = min(
+            remaining,
+            key=lambda row: (
+                bucket_counts[_depleted_resource_trap_bucket(row)],
+                seed_counts[_row_seed(row)],
+                _depleted_resource_trap_sort_key(row),
+            ),
+        )
+        remaining.remove(best)
+        selected.append(best)
+        bucket_counts[_depleted_resource_trap_bucket(best)] += 1
+        seed_counts[_row_seed(best)] += 1
+    return selected
+
+
+def _depleted_resource_trap_sort_key(row: object) -> tuple[float, int, int, int, str]:
+    record = _mapping(getattr(row, "record", {}))
+    return (
+        -_depleted_resource_trap_score(row),
+        -_optional_int(record.get("tick")),
+        _optional_int(record.get(TRAJECTORY_DATASET_RECORD_INDEX_FIELD)),
+        _optional_int(record.get("agent_id")),
+        str(getattr(row, "label", "")),
+    )
+
+
+def _depleted_resource_trap_bucket(row: object) -> tuple[str, str, str, str, str]:
+    signature = _depleted_resource_trap_signature(row)
+    before = _mapping(_mapping(getattr(row, "record", {})).get("before"))
+    return (
+        _action_option_mode(str(getattr(row, "label", ""))),
+        _ratio_bin(before.get("energy_ratio")),
+        _resource_bin(signature["current_resource"]),
+        _resource_bin(signature["best_adjacent_resource"]),
+        _legal_move_count_bin(_legal_move_count(row)),
+    )
 
 
 def _failure_frontier_sort_key(row: object) -> tuple[float, int, int, int, str]:
@@ -1108,6 +1190,114 @@ def _distance_or_default(value: float | None) -> float:
     return max(0.0, min(float(value), 1.0))
 
 
+def _is_depleted_resource_trap_row(row: object) -> bool:
+    signature = _depleted_resource_trap_signature(row)
+    return (
+        bool(signature["low_or_falling_energy"])
+        and bool(signature["eat_supported"])
+        and bool(signature["move_supported"])
+        and float(signature["current_resource"]) <= 0.08
+        and float(signature["best_adjacent_resource"])
+        >= max(0.12, float(signature["current_resource"]) + 0.08)
+    )
+
+
+def _depleted_resource_trap_signature(row: object) -> dict[str, object]:
+    record = _mapping(getattr(row, "record", {}))
+    before = _mapping(record.get("before"))
+    energy = _optional_float(before.get("energy_ratio"))
+    observation_input = record.get("observation_input")
+    center = _patch_cell(observation_input, dx=0, dy=0)
+    valid_actions = set(getattr(row, "valid_actions", ()))
+    move_resources = {
+        action: _cell_resource(_patch_cell(observation_input, dx=dx, dy=dy))
+        for action, (dx, dy) in _MOVE_DELTAS.items()
+        if action in valid_actions
+    }
+    best_move = (
+        max(move_resources, key=lambda action: (move_resources[action], action))
+        if move_resources
+        else None
+    )
+    energy_trend = _contextual_energy_trend(row)
+    return {
+        "energy_ratio": energy,
+        "energy_trend": energy_trend,
+        "low_or_falling_energy": (
+            energy is not None and energy <= 0.35
+        )
+        or energy_trend <= -0.02,
+        "eat_supported": "eat" in valid_actions,
+        "move_supported": bool(move_resources),
+        "current_resource": _cell_resource(center),
+        "best_adjacent_move_action": best_move,
+        "best_adjacent_resource": (
+            move_resources[best_move] if best_move is not None else 0.0
+        ),
+    }
+
+
+def _depleted_resource_trap_score(row: object) -> float:
+    signature = _depleted_resource_trap_signature(row)
+    energy = signature["energy_ratio"]
+    energy_value = float(energy) if isinstance(energy, (int, float)) else 1.0
+    current = float(signature["current_resource"])
+    adjacent = float(signature["best_adjacent_resource"])
+    gap = max(0.0, adjacent - current)
+    trend_debt = max(0.0, -float(signature["energy_trend"]))
+    return _round(
+        (1.0 - energy_value) * 4.0
+        + gap * 6.0
+        + (0.08 - min(current, 0.08)) * 5.0
+        + trend_debt * 3.0
+        + min(float(_legal_move_count(row)), 4.0) / 4.0
+    )
+
+
+def _patch_cell(
+    observation_input: object,
+    *,
+    dx: int,
+    dy: int,
+) -> dict[str, float]:
+    try:
+        values = decode_observation_input(dict(_mapping(observation_input)))
+    except (TypeError, ValueError):
+        return {}
+    patch_start = len(SELF_INPUT_FIELDS)
+    stride = len(PATCH_INPUT_FIELDS)
+    for index in range(PATCH_CELL_COUNT):
+        offset = patch_start + index * stride
+        if offset + stride > len(values):
+            continue
+        cell = {
+            field: float(values[offset + field_index])
+            for field_index, field in enumerate(PATCH_INPUT_FIELDS)
+        }
+        if int(round(cell.get("dx", 0.0))) == dx and int(round(cell.get("dy", 0.0))) == dy:
+            return cell
+    return {}
+
+
+def _cell_resource(cell: Mapping[str, object]) -> float:
+    return max(
+        _optional_float(cell.get("food")) or 0.0,
+        _optional_float(cell.get("fresh_kill_energy")) or 0.0,
+        _optional_float(cell.get("fresh_kill")) or 0.0,
+        _optional_float(cell.get("carcass_energy")) or 0.0,
+        _optional_float(cell.get("carcass")) or 0.0,
+        (_optional_float(cell.get("carrion_signal")) or 0.0) * 0.25,
+    )
+
+
+def _contextual_energy_trend(row: object) -> float:
+    context = _mapping(getattr(row, "context_snapshot", {}))
+    value = _optional_float(context.get("recent_energy_ratio_delta_mean"))
+    if value is not None:
+        return value
+    return 0.0
+
+
 def _legal_move_actions(row: object) -> list[str]:
     valid_actions = set(getattr(row, "valid_actions", ()))
     return [action for action in _MOVE_ACTIONS if action in valid_actions]
@@ -1175,12 +1365,37 @@ def _legal_move_count_bin(count: int) -> str:
     return "four"
 
 
+def _resource_bin(value: object) -> str:
+    amount = _optional_float(value)
+    if amount is None:
+        return "unknown"
+    if amount <= 0.02:
+        return "depleted"
+    if amount <= 0.08:
+        return "low"
+    if amount <= 0.2:
+        return "medium"
+    return "high"
+
+
 def _tick_bin(tick: int) -> str:
     return f"{(int(tick) // 10) * 10:03d}-{(int(tick) // 10) * 10 + 9:03d}"
 
 
 def _failure_frontier_score_summary(rows: Sequence[object]) -> dict[str, object]:
     scores = [_failure_frontier_score(row) for row in rows]
+    if not scores:
+        return {"count": 0, "mean": 0.0, "min": 0.0, "max": 0.0}
+    return {
+        "count": len(scores),
+        "mean": _round(sum(scores) / float(len(scores))),
+        "min": _round(min(scores)),
+        "max": _round(max(scores)),
+    }
+
+
+def _depleted_resource_trap_score_summary(rows: Sequence[object]) -> dict[str, object]:
+    scores = [_depleted_resource_trap_score(row) for row in rows]
     if not scores:
         return {"count": 0, "mean": 0.0, "min": 0.0, "max": 0.0}
     return {
@@ -1513,6 +1728,7 @@ def _validated_selection_policy(policy: str) -> str:
         DEFAULT_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
         MODE_BALANCED_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
         FAILURE_FRONTIER_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
+        DEPLETED_RESOURCE_TRAP_BRANCH_ACTION_ORACLE_SELECTION_POLICY,
     }
     if value not in allowed:
         raise BranchActionOracleAuditError(

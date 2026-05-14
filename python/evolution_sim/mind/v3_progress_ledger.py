@@ -19,6 +19,12 @@ MIND_V3_PROGRESS_RULE_VERSION = (
 
 _VERSION_PATTERN = re.compile(r"\bv(\d{1,3})\b")
 _ARTIFACT_VERSION_PATTERN = re.compile(r"mind-v3-v(\d{1,3})")
+_AUTHORITATIVE_SUPPORT_PROBE_KEYS = frozenset(
+    {
+        "catastrophe_sensitive_utility_support_probe",
+        "depleted_resource_trap_support_probe",
+    }
+)
 
 
 class MindV3ProgressLedgerError(ValueError):
@@ -126,7 +132,12 @@ def _standard_progress_row(
     legacy_records: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     artifact_payloads = [_load_json_artifact(path) for path in artifacts]
-    support_probes = [
+    authoritative_support_probes = [
+        probe
+        for payload in artifact_payloads
+        for probe in _authoritative_support_probes(payload)
+    ]
+    support_probes = authoritative_support_probes or [
         probe
         for payload in artifact_payloads
         for probe in _support_probes(payload)
@@ -261,6 +272,17 @@ def _row_status(
 def _support_probes(payload: Mapping[str, object]) -> list[dict[str, object]]:
     probes: list[dict[str, object]] = []
     _collect_support_probes(payload, path="$", probes=probes)
+    return probes
+
+
+def _authoritative_support_probes(
+    payload: Mapping[str, object],
+) -> list[dict[str, object]]:
+    probes: list[dict[str, object]] = []
+    for key in sorted(_AUTHORITATIVE_SUPPORT_PROBE_KEYS):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            _collect_support_probes(value, path=f"$.{key}", probes=probes)
     return probes
 
 

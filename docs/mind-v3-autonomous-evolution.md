@@ -2912,6 +2912,47 @@ v92 catastrophe-sensitive branch utility diagnostic:
   risk calibration. The offline scorer cannot yet identify target-death
   catastrophes from policy-visible support without collapsing toward `eat`.
 
+v93 depleted-resource trap support diagnostic:
+
+- `output/mind/mind-v3-v93-depleted-resource-trap-support-branch-action-oracle-audit.json`
+  generates replay-verified support for policy-visible trap states from
+  non-held-out seeds only (`1,2,3,4,6,7,8,9,10,11,12,17,23,31`). The strict
+  carrion evaluation seeds (`13,19,29,37,41,43`) are excluded from support.
+  The selector `depleted_resource_trap_v1` found `56` eligible trap rows and
+  selected `51`, clearing the predeclared `40` support-row floor; replay
+  verification is true and heuristic action-source count is `0`.
+- `output/mind/mind-v3-v93-depleted-resource-trap-support-labels.json` labels
+  those `51` support branch points (`267` candidate action runs). It has `39`
+  oracle-changed labels, `12` material-gain labels, terminal alive gain total
+  `19`, birth gain total `12`, and dominant oracle action share `0.352941`.
+- `output/mind/mind-v3-v93-depleted-resource-trap-audit.json` evaluates the
+  support set against the existing strict v91 frontier (`48` labels). The seed
+  `41` tick `113` catastrophe is avoided for the selected diagnostic rule, but
+  the best acceptance-eligible rule,
+  `trap_support_action_family_balanced_k5`, still fails four floors: mean
+  target-local score delta is `-20.003307` (must be `> 0`), per-seed
+  target-local mean remains negative for seed `41` (`-149.153556`), target
+  alive delta has `1` negative case (must be `0`), and mean birth delta is
+  `-0.020833` (must be `>= 0`). Dominant predicted action share improves to
+  `0.395833`, below the `0.50` cap, but that diversity is not useful enough.
+- The audit also exposes the deeper issue: fixing the original depleted-eat
+  trap can create a neighboring frontier catastrophe. On seed `41`, branch
+  `carrion-only-seed-41-action-branch-1-tick-114-agent-18-logged-eat`, the
+  trap-support rule predicts `move_east` while logged/target-local `eat` keeps
+  the target alive, producing target-local score delta `-1130.74377` and target
+  alive delta `-1`.
+- `output/mind/mind-v3-v93-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v93-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v93. The ledger now treats the
+  version-specific v93 trap audit probe as authoritative over generic label
+  probes, so v93 is recorded as `diagnostic_support_floor_fail`; progress-passed
+  versions remain `[41,42,44,80,81,82,90]`.
+- Decision: v93 is rejected. v94 runtime work is not allowed. The depleted
+  resource trap is real and support can avoid the named seed `41` branch, but
+  one-step trap/action scoring does not preserve strict frontier utility. The
+  next useful line is a true sequence/world-model branch continuation scorer,
+  not another one-step scorer over the v91 archive.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3329,6 +3370,12 @@ Major milestones from the current state:
   still fails target-local utility (`-14.142929` best mean delta), repeats the
   seed `41` target-death catastrophe, and collapses to `eat` with dominant
   predicted action share `0.729167`. No runtime policy was trained.
+- v93: depleted-resource trap support boundary. Non-held-out trap support
+  generation clears the support floor (`51` selected rows from `56` eligible)
+  and avoids the named seed `41` tick `113` catastrophe, but strict frontier
+  utility is still negative (`-20.003307` best mean target-local delta), seed
+  `41` remains negative (`-149.153556`), one target-death regression remains,
+  and mean births regress (`-0.020833`). No runtime policy was trained.
 
 External checks that support this direction:
 
