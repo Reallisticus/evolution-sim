@@ -3300,6 +3300,74 @@ v102 expanded broad residual training-data diagnostic:
   over the linear Mind v3 baseline using the action-prior-balanced support
   scorer, but this is not promotion and no RTX/runtime rollout was run here.
 
+v103 opt-in support-gated residual runtime feasibility:
+
+- `output/mind/mind-v3-v103-support-gated-residual-runtime-artifact.json`,
+  `output/mind/mind-v3-v103-branch-replay-feasibility.json`,
+  `output/mind/mind-v3-v103-shadow-strict-report.json`,
+  `output/mind/mind-v3-v103-support-gated-residual-runtime-ledger.jsonl`, and
+  `output/mind/mind-v3-v103-support-gated-residual-runtime-report.json` wire the
+  v102 action-prior-balanced nearest-support residual into an opt-in runtime
+  artifact over the linear Mind v3 controller. The artifact is runtime-ready
+  but not promotion-ready and keeps `runtime_promotion_allowed=false`.
+- Branch replay passed with abstention semantics: `47/80` applied overrides,
+  unsupported proposed/candidate actions `0`, dominant applied override action
+  `eat=14/47` (`0.297872`), mean target-local delta `+8.633547`, terminal alive
+  delta `+0.0375`, birth delta `+0.0375`, and non-negative per-source-seed
+  target-local means.
+- Strict broad shadow failed the stop rule before any live run:
+  gate-accepted shadow overrides collapsed to `drink=1470/2132` (`0.689493`,
+  cap `0.50`) with unsupported proposed actions still `0`. Non-strict live
+  feasibility was not run.
+- Decision: v103 is rejected for runtime transfer. v104 may audit and repair
+  this as action-conditioned support calibration or non-strict shadow-failure
+  mining, but strict live promotion remains blocked.
+
+v104 action-conditioned support-gated residual runtime feasibility:
+
+- `output/mind/mind-v3-v104-shadow-failure-audit.json` explains the v103 strict
+  shadow failure. The accepted v103 strict-shadow overrides were
+  `drink=1470`, `move_north=299`, `move_south=133`, `eat=102`, `stay=75`,
+  `move_west=28`, and `move_east=25`; drink dominated every strict seed except
+  seed `29`, where `move_north` was the largest accepted action. Accepted drink
+  was broadly distributed rather than a single repeated loop: `1470` accepted
+  drink rows covered `100` seed-agent pairs and `119` ticks, with the largest
+  seed-agent bucket only `71` rows (`0.048299`).
+- `output/mind/mind-v3-v104-action-conditioned-support-gated-residual-runtime-artifact.json`
+  replaces the single v103 global distance/margin gate with serialized
+  selected-action thresholds learned from v102 non-strict LOO distributions
+  only. Example thresholds are drink distance `2.515625` and margin `0.913199`,
+  eat distance `2.703125` and margin `0.8316`, move-north distance `3.097656`
+  and margin `0.316383`, and stay distance `2.546875` and margin `0.848957`.
+  Runtime inference remains one local row: linear Mind v3 acts by default, and
+  the residual only overrides when the legal/support and selected-action
+  distance/margin gates pass.
+- `output/mind/mind-v3-v104-branch-replay-feasibility.json` passed:
+  `45/80` applied overrides, unsupported proposed/candidate actions `0`,
+  dominant applied override action `eat=14/45` (`0.311111`), mean target-local
+  delta `+8.321042`, terminal alive delta `+0.0375`, birth delta `+0.0375`,
+  target-alive negative count `0`, and all per-source-seed target-local means
+  non-negative.
+- `output/mind/mind-v3-v104-shadow-strict-report.json` passed strict shadow
+  validation without live strict promotion: unsupported proposed actions `0`,
+  `2617` gate-accepted shadow overrides, and dominant gate-accepted action
+  `drink=1289/2617` (`0.492549`, cap `0.50`). Accepted strict-shadow actions
+  were `move_north=939`, `drink=1289`, `move_south=168`, `eat=102`,
+  `stay=61`, `move_east=31`, and `move_west=27`.
+- `output/mind/mind-v3-v104-nonstrict-live-feasibility.json` then failed
+  non-strict live feasibility, so v104 is rejected. The live residual regressed
+  mean alive agents by `-1.7` and births by `-1.1`, had unsupported action total
+  `85` from resolved-action invalidity (`unsupported_requested=0`,
+  `unsupported_proposed=0`), and had dominant applied override share
+  `drink=1619/3221` (`0.502639`, cap `0.50`). The first failing seed was
+  non-strict seed `2`: alive `29 -> 18`, births `26 -> 18`, unsupported total
+  `7`, with applied overrides `drink=120`, `move_north=48`, `move_south=42`,
+  `eat=15`, `stay=11`, and `move_west=10`.
+- Decision: v104 repaired the strict-shadow transfer failure but failed live
+  non-strict feasibility. Active shadow-failure mining was not run because the
+  action-conditioned gate cleared strict shadow; the stop rule fired at live
+  feasibility. v105 strict promotion is not allowed.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3799,6 +3867,18 @@ Major milestones from the current state:
   `drink=1470/2132` (`0.689493`, cap `0.50`) despite unsupported proposed
   actions remaining `0`. Non-strict live feasibility was not run, and runtime
   promotion remains blocked.
+- v104: action-conditioned support-gated residual runtime feasibility. A
+  shadow-failure audit showed v103 drink acceptance was broad across strict
+  seeds, agents, and ticks, not one repeated identity. Per-action thresholds
+  learned from v102 non-strict LOO distributions repaired strict shadow:
+  branch replay passed with `45/80` applied overrides, target-local mean delta
+  `+8.321042`, terminal alive and birth deltas `+0.0375`, unsupported count
+  `0`, and dominant applied action `eat=14/45` (`0.311111`); strict shadow
+  passed with dominant gate-accepted action `drink=1289/2617` (`0.492549`).
+  Non-strict live feasibility then failed with mean alive delta `-1.7`, birth
+  delta `-1.1`, unsupported action total `85`, and dominant applied override
+  share `drink=1619/3221` (`0.502639`). v104 is rejected and v105 strict
+  promotion is not allowed.
 
 External checks that support this direction:
 

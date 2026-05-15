@@ -46,6 +46,7 @@
     "sim:mind:v3:broad-branch-residual-distillation-example": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_broad_branch_residual_distillation_example",
     "sim:mind:v3:expanded-broad-residual-training": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_expanded_broad_residual_training",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
+    "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",
     "sim:mind:v3:branch-continuation-archive-scorer": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_continuation_archive_scorer",
     "sim:mind:v3:carrion-recovery-archive": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_archive",
     "sim:mind:v3:carrion-recovery-distill": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_distill",

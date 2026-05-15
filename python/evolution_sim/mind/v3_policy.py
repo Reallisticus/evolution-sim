@@ -1671,9 +1671,15 @@ def _support_residual_diagnostics(
     override_allowed = bool(scored.get("override_allowed"))
     override_proposed = bool(scored.get("override_proposed"))
     return {
-        "support_residual_policy": MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+        "support_residual_policy": artifact.get(
+            "policy",
+            MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+        ),
         "support_residual_artifact_schema_version": (
-            MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION
+            artifact.get(
+                "schema_version",
+                MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
+            )
         ),
         "support_residual_runtime_mode": runtime_mode,
         "support_residual_runtime_promotion_allowed": False,
@@ -1712,6 +1718,9 @@ def _support_residual_diagnostics(
             "nearest_support_distance"
         ),
         "support_residual_score_margin": scored.get("score_margin"),
+        "support_residual_distance_threshold": scored.get("distance_threshold"),
+        "support_residual_margin_threshold": scored.get("margin_threshold"),
+        "support_residual_threshold_scope": scored.get("threshold_scope"),
         "support_residual_selected_score": scored.get("selected_score"),
         "support_residual_support_weight": scored.get("support_weight"),
         "support_residual_public_history_steps": scored.get(

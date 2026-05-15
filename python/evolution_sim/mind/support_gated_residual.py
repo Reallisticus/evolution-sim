@@ -16,17 +16,32 @@ from evolution_sim.mind.v3_planner_distilled import (
 MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION = (
     "mind_v3_v103_support_gated_residual_runtime_artifact_v1"
 )
+MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION = (
+    "mind_v3_v104_action_conditioned_support_gated_residual_runtime_artifact_v1"
+)
 MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY = (
     "mind_v3_v103_support_gated_residual_runtime_v1"
+)
+MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY = (
+    "mind_v3_v104_action_conditioned_support_gated_residual_runtime_v1"
 )
 MIND_V3_V103_BRANCH_REPLAY_FEASIBILITY_SCHEMA_VERSION = (
     "mind_v3_v103_branch_replay_feasibility_v1"
 )
+MIND_V3_V104_BRANCH_REPLAY_FEASIBILITY_SCHEMA_VERSION = (
+    "mind_v3_v104_branch_replay_feasibility_v1"
+)
 MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY = (
     "mind_v3_v103_support_gated_residual_runtime_diagnostics_v1"
 )
+MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY = (
+    "mind_v3_v104_action_conditioned_support_gated_residual_runtime_diagnostics_v1"
+)
 MIND_V3_V103_THRESHOLD_POLICY = (
     "v102_loo_p75_distance_p75_margin_support_gate_v1"
+)
+MIND_V3_V104_ACTION_CONDITIONED_THRESHOLD_POLICY = (
+    "v102_loo_action_conditioned_p75_distance_p75_margin_support_gate_v1"
 )
 MIND_V3_V102_EXPANDED_BROAD_RESIDUAL_TRAINING_SCHEMA_VERSION = (
     "mind_v3_v102_expanded_broad_residual_training_v1"
@@ -35,6 +50,18 @@ V103_ACTION_PRIOR_BALANCE_PENALTY = 2.0
 V103_DISTANCE_THRESHOLD_QUANTILE = 0.75
 V103_MARGIN_THRESHOLD_QUANTILE = 0.75
 V103_MAX_DOMINANT_APPLIED_OVERRIDE_ACTION_SHARE = 0.50
+SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSIONS = frozenset(
+    {
+        MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
+        MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
+    }
+)
+SUPPORT_GATED_RESIDUAL_POLICIES = frozenset(
+    {
+        MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+        MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY,
+    }
+)
 
 
 class SupportGatedResidualError(ValueError):
@@ -73,12 +100,14 @@ def load_support_gated_residual_artifact(
 def validate_support_gated_residual_artifact(
     artifact: Mapping[str, object],
 ) -> None:
-    if (
-        artifact.get("schema_version")
-        != MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION
-    ):
+    schema_version = artifact.get("schema_version")
+    if schema_version not in SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSIONS:
         raise SupportGatedResidualError(
             "support-gated residual artifact has unsupported schema_version"
+        )
+    if artifact.get("policy") not in SUPPORT_GATED_RESIDUAL_POLICIES:
+        raise SupportGatedResidualError(
+            "support-gated residual artifact has unsupported policy"
         )
     if artifact.get("runtime_ready") is not True:
         raise SupportGatedResidualError("support-gated residual artifact is not runtime_ready")
@@ -109,10 +138,23 @@ def validate_support_gated_residual_artifact(
                 f"support-gated residual artifact violates inference_contract.{key}"
             )
     gate = _mapping(artifact.get("support_gate"))
-    for key in ("nearest_support_distance_threshold", "residual_score_margin_threshold"):
-        value = _float(gate.get(key), default=float("nan"))
-        if not math.isfinite(value) or value < 0.0:
-            raise SupportGatedResidualError(f"support_gate.{key} must be finite and non-negative")
+    if schema_version == MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION:
+        action_thresholds = _mapping(gate.get("action_thresholds"))
+        if not action_thresholds:
+            raise SupportGatedResidualError(
+                "v104 support_gate.action_thresholds must not be empty"
+            )
+        for action, thresholds in action_thresholds.items():
+            if str(action) not in ACTION_NAMES:
+                raise SupportGatedResidualError(
+                    f"v104 support_gate.action_thresholds has unsupported action: {action}"
+                )
+            _validate_gate_thresholds(
+                _mapping(thresholds),
+                prefix=f"support_gate.action_thresholds[{action!r}]",
+            )
+    else:
+        _validate_gate_thresholds(gate, prefix="support_gate")
     if _contains_forbidden_runtime_keys(artifact):
         raise SupportGatedResidualError(
             "support-gated residual artifact contains forbidden runtime/provenance keys"
@@ -133,6 +175,17 @@ def validate_support_gated_residual_artifact(
             raise SupportGatedResidualError(
                 f"support example {index} must include a feature_vector"
             )
+
+
+def _validate_gate_thresholds(
+    thresholds: Mapping[str, object],
+    *,
+    prefix: str,
+) -> None:
+    for key in ("nearest_support_distance_threshold", "residual_score_margin_threshold"):
+        value = _float(thresholds.get(key), default=float("nan"))
+        if not math.isfinite(value) or value < 0.0:
+            raise SupportGatedResidualError(f"{prefix}.{key} must be finite and non-negative")
 
 
 def build_support_gated_residual_runtime_artifact(
@@ -236,6 +289,105 @@ def build_support_gated_residual_runtime_artifact(
     return artifact, threshold_report
 
 
+def build_action_conditioned_support_gated_residual_runtime_artifact(
+    *,
+    v102_report: Mapping[str, object],
+    v102_artifact: Mapping[str, object],
+    v99_report: Mapping[str, object],
+    v100_report: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    if (
+        v102_report.get("schema_version")
+        != MIND_V3_V102_EXPANDED_BROAD_RESIDUAL_TRAINING_SCHEMA_VERSION
+    ):
+        raise SupportGatedResidualError("v102 report has unsupported schema_version")
+    if v102_report.get("v103_support_gated_residual_runtime_allowed") is not True:
+        raise SupportGatedResidualError(
+            "v102 report does not allow support-gated residual runtime feasibility"
+        )
+    from evolution_sim.mind.broad_branch_residual_distillation_example import (
+        _training_rows,
+        validate_broad_residual_distillation_example_artifact,
+    )
+
+    validate_broad_residual_distillation_example_artifact(v102_artifact)
+    rows = _training_rows(v99_report=v99_report, v100_report=v100_report)
+    threshold_report = _action_conditioned_threshold_report(rows=rows)
+    support_examples = [
+        _support_example_for_runtime(example)
+        for example in _list_of_mappings(v102_artifact.get("support_examples"))
+    ]
+    action_counts = Counter(str(example.get("action", "")) for example in support_examples)
+    contract = {
+        "one_row_one_agent_local_decision": True,
+        "requires_action_mask": True,
+        "requires_policy_visible_features_only": True,
+        "requires_linear_default_action": True,
+        "requires_planner_outcome_tables": False,
+        "requires_global_batch_assignment": False,
+        "uses_heuristic_fallback": False,
+        "uses_seed_id_as_runtime_feature": False,
+        "uses_branch_id_as_runtime_feature": False,
+        "uses_fixture_id_as_runtime_feature": False,
+        "uses_logged_action_as_runtime_fallback": False,
+        "uses_private_simulator_state": False,
+    }
+    artifact = {
+        "schema_version": (
+            MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION
+        ),
+        "policy": MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY,
+        "default_action_policy": "linear_mind_v3",
+        "runtime_ready": True,
+        "promotion_ready": False,
+        "runtime_promotion_allowed": False,
+        "training_policy": v102_artifact.get("training_policy"),
+        "source_v102_schema_version": v102_report.get("schema_version"),
+        "source_v102_report_digest": stable_payload_digest(
+            {
+                "schema_version": v102_report.get("schema_version"),
+                "coverage": v102_report.get("coverage"),
+                "acceptance": v102_report.get("acceptance"),
+                "leave_one_source_seed_out_evaluation": v102_report.get(
+                    "leave_one_source_seed_out_evaluation"
+                ),
+            }
+        ),
+        "scorer_rule": "action_prior_balanced_nearest_support_v1",
+        "action_prior_penalty_scale": V103_ACTION_PRIOR_BALANCE_PENALTY,
+        "support_gate": {
+            "policy": MIND_V3_V104_ACTION_CONDITIONED_THRESHOLD_POLICY,
+            "threshold_source": "v102_leave_one_source_seed_out_by_action_distribution_v1",
+            "legal_action_required": True,
+            "action_support_required": True,
+            "distance_threshold_inclusive": True,
+            "margin_threshold_inclusive": True,
+            "threshold_scope": "selected_action",
+            "distance_quantile": V103_DISTANCE_THRESHOLD_QUANTILE,
+            "margin_quantile": V103_MARGIN_THRESHOLD_QUANTILE,
+            "action_thresholds": threshold_report["action_thresholds"],
+        },
+        "inference_contract": contract,
+        "training_row_count": int(v102_artifact.get("training_row_count", len(rows))),
+        "support_action_counts": dict(sorted(action_counts.items())),
+        "teacher_action_counts": dict(
+            sorted(
+                {
+                    str(key): int(value)
+                    for key, value in _mapping(
+                        v102_artifact.get("teacher_action_counts")
+                    ).items()
+                    if isinstance(value, int) and not isinstance(value, bool)
+                }.items()
+            )
+        ),
+        "support_examples": support_examples,
+        "threshold_diagnostics": threshold_report,
+    }
+    validate_support_gated_residual_artifact(artifact)
+    return artifact, threshold_report
+
+
 def score_support_gated_residual_artifact(
     *,
     artifact: Mapping[str, object],
@@ -256,6 +408,7 @@ def score_support_gated_residual_artifact(
         ),
         distance_threshold=_float(gate.get("nearest_support_distance_threshold")),
         margin_threshold=_float(gate.get("residual_score_margin_threshold")),
+        action_thresholds=_mapping(gate.get("action_thresholds")),
         observation_input=observation_input,
         action_mask=action_mask,
         linear_action=linear_action,
@@ -338,7 +491,7 @@ def build_branch_replay_feasibility_report(
     gate = _branch_replay_gate(summary=summary, source_report=v99_report)
     return {
         "schema_version": MIND_V3_V103_BRANCH_REPLAY_FEASIBILITY_SCHEMA_VERSION,
-        "policy": MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+        "policy": runtime_artifact.get("policy"),
         "runtime_artifact_schema_version": runtime_artifact.get("schema_version"),
         "runtime_promotion_allowed": False,
         "source_replay_verified": bool(
@@ -354,6 +507,24 @@ def build_branch_replay_feasibility_report(
         "comparisons": comparisons[:128],
         "v103_branch_replay_feasibility_passed": bool(gate["passed"]),
     }
+
+
+def build_v104_branch_replay_feasibility_report(
+    *,
+    runtime_artifact: Mapping[str, object],
+    v99_report: Mapping[str, object],
+    v100_report: Mapping[str, object],
+) -> dict[str, object]:
+    report = build_branch_replay_feasibility_report(
+        runtime_artifact=runtime_artifact,
+        v99_report=v99_report,
+        v100_report=v100_report,
+    )
+    report["schema_version"] = MIND_V3_V104_BRANCH_REPLAY_FEASIBILITY_SCHEMA_VERSION
+    report["v104_branch_replay_feasibility_passed"] = bool(
+        report.pop("v103_branch_replay_feasibility_passed")
+    )
+    return report
 
 
 def support_gated_residual_runtime_diagnostics(
@@ -378,11 +549,14 @@ def support_gated_residual_runtime_diagnostics(
     margins = []
     accepted_distances = []
     accepted_margins = []
+    observed_policies: Counter[str] = Counter()
     for diagnostic in decision_diagnostics:
         if not isinstance(diagnostic, Mapping):
             continue
-        if diagnostic.get("support_residual_policy") != MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY:
+        policy = diagnostic.get("support_residual_policy")
+        if policy not in SUPPORT_GATED_RESIDUAL_POLICIES:
             continue
+        observed_policies.update([str(policy)])
         decision_count += 1
         proposed = _diagnostic_action(diagnostic, "support_residual_proposed_action")
         if proposed is not None:
@@ -422,8 +596,13 @@ def support_gated_residual_runtime_diagnostics(
     gate_dominant = _dominant_count_share(gate_accepted_counts)
     proposed_dominant = _dominant_count_share(proposed_override_counts)
     applied_dominant = _dominant_count_share(applied_counts)
+    diagnostics_policy = (
+        MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
+        if observed_policies.get(MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY, 0) > 0
+        else MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY
+    )
     return {
-        "policy": MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY,
+        "policy": diagnostics_policy,
         "run_count": int(run_count),
         "total_decision_count": total,
         "decision_count": decision_count,
@@ -464,10 +643,13 @@ def aggregate_support_gated_residual_runtime_diagnostics(
     runs: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     diagnostics = []
+    observed_policy = MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY
     for run in runs:
         payload = run.get("support_residual_diagnostics")
         if isinstance(payload, Mapping):
             diagnostics.append(payload)
+            if payload.get("policy") == MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY:
+                observed_policy = MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
     total_decision_count = sum(int(item.get("total_decision_count", 0)) for item in diagnostics)
     decision_count = sum(int(item.get("decision_count", 0)) for item in diagnostics)
     proposed_override_count = sum(int(item.get("proposed_override_count", 0)) for item in diagnostics)
@@ -492,7 +674,7 @@ def aggregate_support_gated_residual_runtime_diagnostics(
     gate_dominant = _dominant_count_share(gate_accepted_counts)
     applied_dominant = _dominant_count_share(applied_counts)
     return {
-        "policy": MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY,
+        "policy": observed_policy,
         "run_count": len(runs),
         "total_decision_count": total_decision_count,
         "decision_count": decision_count,
@@ -557,6 +739,68 @@ def _threshold_report(
     }
 
 
+def _action_conditioned_threshold_report(
+    *,
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    records = _leave_one_source_seed_out_score_records(rows)
+    by_action: dict[str, list[Mapping[str, object]]] = {}
+    for item in records:
+        action = str(item.get("selected_action", ""))
+        if action in ACTION_NAMES:
+            by_action.setdefault(action, []).append(item)
+    action_thresholds: dict[str, dict[str, object]] = {}
+    for action in ACTION_NAMES:
+        action_records = by_action.get(action, [])
+        if not action_records:
+            continue
+        distances = [
+            _float(item.get("nearest_support_distance"))
+            for item in action_records
+            if _optional_float(item.get("nearest_support_distance")) is not None
+        ]
+        margins = [
+            _float(item.get("score_margin"))
+            for item in action_records
+            if _optional_float(item.get("score_margin")) is not None
+        ]
+        changed_count = sum(
+            1 for item in action_records if item.get("override_proposed") is True
+        )
+        action_thresholds[action] = {
+            "nearest_support_distance_threshold": _round(
+                _quantile(distances, V103_DISTANCE_THRESHOLD_QUANTILE)
+            ),
+            "residual_score_margin_threshold": _round(
+                _quantile(margins, V103_MARGIN_THRESHOLD_QUANTILE)
+            ),
+            "distance_quantile": V103_DISTANCE_THRESHOLD_QUANTILE,
+            "margin_quantile": V103_MARGIN_THRESHOLD_QUANTILE,
+            "calibration_record_count": len(action_records),
+            "calibration_override_proposed_count": changed_count,
+            "calibration_override_proposed_share": _safe_rate(
+                changed_count,
+                len(action_records),
+            ),
+            "nearest_support_distance_distribution": _float_summary(distances),
+            "score_margin_distribution": _float_summary(margins),
+        }
+    selected_counts = Counter(str(item.get("selected_action", "")) for item in records)
+    changed_count = sum(1 for item in records if item.get("override_proposed") is True)
+    return {
+        "policy": MIND_V3_V104_ACTION_CONDITIONED_THRESHOLD_POLICY,
+        "threshold_source": "v102_leave_one_source_seed_out_by_action_distribution_v1",
+        "record_count": len(records),
+        "action_thresholds": dict(sorted(action_thresholds.items())),
+        "loo_selected_action_counts": dict(sorted(selected_counts.items())),
+        "loo_proposed_override_count": changed_count,
+        "loo_proposed_override_share": _safe_rate(changed_count, len(records)),
+        "distance_quantile": V103_DISTANCE_THRESHOLD_QUANTILE,
+        "margin_quantile": V103_MARGIN_THRESHOLD_QUANTILE,
+        "action_prior_penalty_scale": V103_ACTION_PRIOR_BALANCE_PENALTY,
+    }
+
+
 def _leave_one_source_seed_out_score_records(
     rows: Sequence[Mapping[str, object]],
 ) -> list[dict[str, object]]:
@@ -599,6 +843,7 @@ def _leave_one_source_seed_out_score_records(
                         action_prior_penalty_scale=V103_ACTION_PRIOR_BALANCE_PENALTY,
                         distance_threshold=float("inf"),
                         margin_threshold=0.0,
+                        action_thresholds={},
                         observation_input=_mapping(
                             policy_state.get("observation_input")
                         ),
@@ -621,6 +866,7 @@ def _score_support_gated_residual(
     action_prior_penalty_scale: float,
     distance_threshold: float,
     margin_threshold: float,
+    action_thresholds: Mapping[str, object],
     observation_input: Mapping[str, object],
     action_mask: Mapping[str, object],
     linear_action: str,
@@ -702,11 +948,19 @@ def _score_support_gated_residual(
     )
     legal_gate = selected_action in _legal_actions(action_mask)
     action_support_gate = int(selected.get("support_count", 0)) > 0
+    selected_thresholds = _selected_action_thresholds(
+        action_thresholds=action_thresholds,
+        action=selected_action,
+        default_distance_threshold=distance_threshold,
+        default_margin_threshold=margin_threshold,
+    )
+    selected_distance_threshold = selected_thresholds["distance_threshold"]
+    selected_margin_threshold = selected_thresholds["margin_threshold"]
     distance_gate = (
         selected_distance is not None
-        and selected_distance <= float(distance_threshold)
+        and selected_distance <= float(selected_distance_threshold)
     )
-    margin_gate = score_margin >= float(margin_threshold)
+    margin_gate = score_margin >= float(selected_margin_threshold)
     support_gate_passed = legal_gate and action_support_gate and distance_gate and margin_gate
     override_proposed = selected_action != linear_action
     override_allowed = support_gate_passed and override_proposed
@@ -718,6 +972,9 @@ def _score_support_gated_residual(
         "nearest_support_distance": selected_distance,
         "support_weight": selected.get("support_weight"),
         "score_margin": score_margin,
+        "distance_threshold": _round(selected_distance_threshold),
+        "margin_threshold": _round(selected_margin_threshold),
+        "threshold_scope": selected_thresholds["scope"],
         "candidate_scores": candidate_scores,
         "candidate_scores_top": [
             _candidate_score_summary(item) for item in ordered[:5]
@@ -956,6 +1213,33 @@ def _candidate_score_summary(item: Mapping[str, object]) -> dict[str, object]:
         "nearest_support_distance": item.get("nearest_support_distance"),
         "support_weight": item.get("support_weight"),
         "score": item.get("score"),
+    }
+
+
+def _selected_action_thresholds(
+    *,
+    action_thresholds: Mapping[str, object],
+    action: str,
+    default_distance_threshold: float,
+    default_margin_threshold: float,
+) -> dict[str, object]:
+    thresholds = _mapping(action_thresholds.get(action))
+    if thresholds:
+        return {
+            "scope": "selected_action",
+            "distance_threshold": _float(
+                thresholds.get("nearest_support_distance_threshold"),
+                default=float("inf"),
+            ),
+            "margin_threshold": _float(
+                thresholds.get("residual_score_margin_threshold"),
+                default=float("inf"),
+            ),
+        }
+    return {
+        "scope": "global",
+        "distance_threshold": float(default_distance_threshold),
+        "margin_threshold": float(default_margin_threshold),
     }
 
 
