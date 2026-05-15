@@ -42,6 +42,12 @@ from evolution_sim.mind.v3_planner_distilled import (
     score_mind_v3_planner_distilled_runtime,
     validate_mind_v3_planner_distilled_artifact,
 )
+from evolution_sim.mind.support_gated_residual import (
+    MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
+    MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+    score_support_gated_residual_artifact,
+    validate_support_gated_residual_artifact,
+)
 
 MIND_V3_ELIGIBILITY_TRACE_POLICY = (
     "policy_valid_requested_action_horizon_eligibility_trace_v3"
@@ -63,6 +69,7 @@ MIND_V3_NEURAL_RECOVERY_PHASE_POLICY = (
 MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY = (
     "direct_horizon_fixture_action_value_policy_v1"
 )
+MIND_V3_SUPPORT_RESIDUAL_RUNTIME_MODES = frozenset({"live", "shadow"})
 MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS = 8
 MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
 MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.015
@@ -130,10 +137,26 @@ class MindV3EvolutionPolicy:
         ) = None,
         neural_artifact: Mapping[str, object] | None = None,
         planner_distilled_artifact: Mapping[str, object] | None = None,
+        support_residual_artifact: Mapping[str, object] | None = None,
+        support_residual_runtime_mode: str = "live",
     ) -> None:
-        if neural_artifact is not None and planner_distilled_artifact is not None:
+        active_artifact_count = sum(
+            artifact is not None
+            for artifact in (
+                neural_artifact,
+                planner_distilled_artifact,
+                support_residual_artifact,
+            )
+        )
+        if active_artifact_count > 1:
             raise ValueError(
-                "Mind v3 planner-distilled and neural artifacts are mutually exclusive"
+                "Mind v3 neural, planner-distilled, and support-residual "
+                "artifacts are mutually exclusive"
+            )
+        if support_residual_runtime_mode not in MIND_V3_SUPPORT_RESIDUAL_RUNTIME_MODES:
+            raise ValueError(
+                "unsupported Mind v3 support-residual runtime mode: "
+                f"{support_residual_runtime_mode!r}"
             )
         self._rng = Random(seed)
         self._founder_template_pool = _founder_template_pool(
@@ -143,6 +166,8 @@ class MindV3EvolutionPolicy:
             validate_mind_v3_neural_artifact(neural_artifact)
         if planner_distilled_artifact is not None:
             validate_mind_v3_planner_distilled_artifact(planner_distilled_artifact)
+        if support_residual_artifact is not None:
+            validate_support_gated_residual_artifact(support_residual_artifact)
         self._neural_artifact = (
             dict(neural_artifact) if neural_artifact is not None else None
         )
@@ -151,6 +176,12 @@ class MindV3EvolutionPolicy:
             if planner_distilled_artifact is not None
             else None
         )
+        self._support_residual_artifact = (
+            dict(support_residual_artifact)
+            if support_residual_artifact is not None
+            else None
+        )
+        self._support_residual_runtime_mode = support_residual_runtime_mode
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[int, list[tuple[str, list[float]]]] = {}
         self._no_gain_eat_streaks: dict[int, int] = {}
@@ -312,16 +343,66 @@ class MindV3EvolutionPolicy:
             neural_anchor_diagnostics = dict(planner_scored["diagnostics"])
             self._pending_public_decisions += 1
         elif self._neural_artifact is None:
-            scores = score_mind_v3_metadata(
+            linear_scores = score_mind_v3_metadata(
                 metadata=metadata,
                 observation_input=_observation_values(observation),
                 action_mask=action_mask,
             )
-            controller_backend = "inherited_linear_controller"
-            neural_head_predictions = None
-            neural_anchor_diagnostics = {}
-            requested_action = None
-            score = None
+            if self._support_residual_artifact is None:
+                scores = linear_scores
+                controller_backend = "inherited_linear_controller"
+                neural_head_predictions = None
+                neural_anchor_diagnostics = {}
+                requested_action = None
+                score = None
+            else:
+                linear_action, linear_score = _best_action(
+                    linear_scores,
+                    action_mask,
+                )
+                public_history_trace = self._public_history_trace_for_decision(
+                    agent_id
+                )
+                residual_scored = score_support_gated_residual_artifact(
+                    artifact=self._support_residual_artifact,
+                    observation_input=observation_input,
+                    action_mask=action_mask,
+                    public_history_trace=public_history_trace,
+                    linear_action=linear_action,
+                )
+                override_allowed = bool(residual_scored.get("override_allowed"))
+                override_applied = (
+                    self._support_residual_runtime_mode == "live"
+                    and override_allowed
+                )
+                requested_action = (
+                    str(residual_scored["selected_action"])
+                    if override_applied
+                    and isinstance(residual_scored.get("selected_action"), str)
+                    else linear_action
+                )
+                residual_score = _number(residual_scored.get("selected_score"))
+                score = (
+                    residual_score
+                    if override_applied and residual_score is not None
+                    else linear_score
+                )
+                scores = dict(linear_scores)
+                controller_backend = (
+                    "support_gated_residual_runtime_live"
+                    if self._support_residual_runtime_mode == "live"
+                    else "support_gated_residual_runtime_shadow"
+                )
+                neural_head_predictions = None
+                neural_anchor_diagnostics = _support_residual_diagnostics(
+                    artifact=self._support_residual_artifact,
+                    scored=residual_scored,
+                    linear_action=linear_action,
+                    final_action=requested_action,
+                    runtime_mode=self._support_residual_runtime_mode,
+                    override_applied=override_applied,
+                )
+                self._pending_public_decisions += 1
         else:
             observation_values = _observation_values(observation)
             neural_residual_recovery_phase_remaining = max(
@@ -587,6 +668,14 @@ class MindV3EvolutionPolicy:
             "anchor_controller_update": self._neural_artifact is not None,
             "planner_distilled_artifact_frozen": (
                 self._planner_distilled_artifact is not None
+            ),
+            "support_residual_artifact_frozen": (
+                self._support_residual_artifact is not None
+            ),
+            "support_residual_runtime_mode": (
+                self._support_residual_runtime_mode
+                if self._support_residual_artifact is not None
+                else None
             ),
             **recovery_phase_trace,
         }
@@ -1561,6 +1650,81 @@ def _blend_neural_with_linear_anchor(
             + effective_residual_scale * neural_normalized[action]
         )
         for action in legal_actions
+    }
+
+
+def _support_residual_diagnostics(
+    *,
+    artifact: Mapping[str, object],
+    scored: Mapping[str, object],
+    linear_action: str,
+    final_action: str,
+    runtime_mode: str,
+    override_applied: bool,
+) -> dict[str, object]:
+    selected_action = scored.get("selected_action")
+    proposed_action = (
+        str(selected_action)
+        if isinstance(selected_action, str) and selected_action
+        else "none"
+    )
+    override_allowed = bool(scored.get("override_allowed"))
+    override_proposed = bool(scored.get("override_proposed"))
+    return {
+        "support_residual_policy": MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
+        "support_residual_artifact_schema_version": (
+            MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION
+        ),
+        "support_residual_runtime_mode": runtime_mode,
+        "support_residual_runtime_promotion_allowed": False,
+        "support_residual_linear_action": linear_action,
+        "support_residual_proposed_action": proposed_action,
+        "support_residual_final_action": final_action,
+        "support_residual_override_proposed": override_proposed,
+        "support_residual_override_allowed": override_allowed,
+        "support_residual_override_applied": override_applied,
+        "support_residual_shadowed": (
+            runtime_mode == "shadow" and override_allowed
+        ),
+        "support_residual_abstained": not override_applied,
+        "support_residual_abstention_reason": (
+            None if override_applied else scored.get("abstention_reason")
+        ),
+        "support_residual_support_gate_passed": bool(
+            scored.get("support_gate_passed")
+        ),
+        "support_residual_legal_action_gate_passed": bool(
+            scored.get("legal_action_gate_passed")
+        ),
+        "support_residual_action_support_gate_passed": bool(
+            scored.get("action_support_gate_passed")
+        ),
+        "support_residual_distance_gate_passed": bool(
+            scored.get("distance_gate_passed")
+        ),
+        "support_residual_margin_gate_passed": bool(
+            scored.get("margin_gate_passed")
+        ),
+        "support_residual_unsupported_proposed_action": bool(
+            scored.get("unsupported_proposed_action")
+        ),
+        "support_residual_nearest_support_distance": scored.get(
+            "nearest_support_distance"
+        ),
+        "support_residual_score_margin": scored.get("score_margin"),
+        "support_residual_selected_score": scored.get("selected_score"),
+        "support_residual_support_weight": scored.get("support_weight"),
+        "support_residual_public_history_steps": scored.get(
+            "public_history_steps"
+        ),
+        "support_residual_candidate_scores_top": list(
+            scored.get("candidate_scores_top", [])
+        ),
+        "support_residual_forbidden_runtime_inputs_used": False,
+        "support_residual_requires_planner_outcome_tables": False,
+        "support_residual_requires_global_batch_assignment": False,
+        "support_residual_uses_heuristic_fallback": False,
+        "support_residual_training_row_count": artifact.get("training_row_count"),
     }
 
 

@@ -3787,6 +3787,18 @@ Major milestones from the current state:
   action-prior-balanced leave-one-source-seed-out support scorer clears the
   held-out action cap (`0.2625`) with mean target-local replay delta
   `+4.08732`. This allows v103 runtime-feasibility work, not promotion.
+- v103: opt-in support-gated residual runtime feasibility. The runtime artifact
+  keeps linear Mind v3 as the default action and only permits residual
+  overrides through serialized legal/support, distance, and margin gates learned
+  from the v102 support/LOO distributions. Branch replay passed with abstention
+  semantics (`47/80` applied overrides, applied share `0.5875`, dominant
+  applied action `eat=14/47`, target-local mean delta `+8.633547`, terminal
+  alive mean delta `+0.0375`, birth mean delta `+0.0375`, unsupported count
+  `0`, and non-negative per-source-seed target-local means). Strict broad
+  shadow then failed the stop rule: gate-accepted shadow overrides collapsed to
+  `drink=1470/2132` (`0.689493`, cap `0.50`) despite unsupported proposed
+  actions remaining `0`. Non-strict live feasibility was not run, and runtime
+  promotion remains blocked.
 
 External checks that support this direction:
 
