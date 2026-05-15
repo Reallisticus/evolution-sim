@@ -3256,6 +3256,50 @@ v101 broad residual distillation training example:
   a v102 expanded-training data pass, but it is too small to justify runtime
   promotion or RTX training by itself.
 
+v102 expanded broad residual training-data diagnostic:
+
+- `output/mind/mind-v3-v102-expanded-broad-residual-oracle-source.json`
+  regenerates a larger replay-verified broad branch source on the same
+  non-strict support seeds `2,3,7,11,17,23,31,47,53,59`. The selector now uses
+  a true category round-robin before priority fill; the previous helper could
+  fill all per-seed slots from the first overlapping high-priority category.
+  The corrected source has `80` branch points and covers plant/food (`energy`)
+  `80`, hydration `76`, movement `80`, reproduction-readiness `10`,
+  pre-death `69`, recovery `72`, and animal-resource `80`.
+- The raw target-local oracle remains non-promotable: `68/80` safe non-logged
+  overrides and mean target-local score delta `+13.09015`, but dominant oracle
+  action share is `0.65`. The constrained source
+  `output/mind/mind-v3-v102-expanded-broad-residual-constrained-source.json`
+  repairs the teacher to dominant action share `0.5` with mean target-local
+  score delta `+13.01621`, terminal alive delta `+0.0375`, birth delta
+  `+0.0375`, and zero target-alive regressions.
+- `output/mind/mind-v3-v102-expanded-broad-residual-training.json` and
+  `output/mind/mind-v3-v102-expanded-broad-residual-training-artifact.json`
+  serialize the expanded policy-visible training contract. It has `80` rows,
+  `10` source seeds, no strict-seed leakage, replay verification true,
+  unsupported candidate/predicted action count `0`, teacher actions
+  `eat=40`, `drink=12`, `stay=10`, `move_east=8`, `move_south=5`,
+  `move_west=3`, `move_north=2`, four teacher modes, and reposition labels
+  `18/80` (`0.225`).
+- Leave-one-source-seed-out evaluation shows why v103 needs an explicit
+  anti-collapse scorer: the naive nearest-support decoder still predicts
+  `eat` on `50/80` rows (`0.625`) despite positive replay utility. A fixed
+  action-prior-balanced nearest-support diagnostic (`penalty=2.0`) keeps the
+  held-out dominant action share to `0.2625`, has zero target-alive
+  regressions, and keeps replay utility positive: mean target-local score
+  delta `+4.08732`, terminal alive delta `0.0`, and birth delta `0.0`.
+  Exact action accuracy is low (`0.225`), so the progress signal is utility and
+  support, not pointwise imitation.
+- `output/mind/mind-v3-v102-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v102-standard-progress-ledger-report.json` update the
+  standard v-ledger through v102. Under the strict progress definition,
+  progress versions in the v89-v102 window are `v90`, `v95`, `v96`, `v100`,
+  `v101`, and `v102`.
+- Decision: v102 is accepted as an expanded training-data/support pass. v103
+  may implement an opt-in support-gated residual runtime-feasibility artifact
+  over the linear Mind v3 baseline using the action-prior-balanced support
+  scorer, but this is not promotion and no RTX/runtime rollout was run here.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3735,6 +3779,14 @@ Major milestones from the current state:
   distribution `eat=5, move_east=2, stay=3`, training-row reproduction accuracy
   `1.0`, and no blockers. This allows v102 expanded training-data generation,
   not runtime promotion.
+- v102: expanded broad residual training-data diagnostic. A corrected
+  category-balanced branch selector produces `80` replay-verified non-strict
+  branch rows covering plant/food, hydration, movement, reproduction-readiness,
+  pre-death, recovery, and animal-resource contexts. The constrained teacher
+  remains action-balanced (`eat=40/80`) and replay-positive, and an
+  action-prior-balanced leave-one-source-seed-out support scorer clears the
+  held-out action cap (`0.2625`) with mean target-local replay delta
+  `+4.08732`. This allows v103 runtime-feasibility work, not promotion.
 
 External checks that support this direction:
 

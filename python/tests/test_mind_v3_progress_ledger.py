@@ -480,6 +480,50 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.broad_branch_residual_distillation_example_support_probe",
         )
 
+    def test_progress_ledger_treats_v102_expanded_training_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v102 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (
+                output_dir / "mind-v3-v102-expanded-broad-residual-training.json"
+            ).write_text(
+                json.dumps(
+                    {
+                        "expanded_broad_residual_training_support_probe": {
+                            "policy": (
+                                "v102_expanded_policy_visible_broad_"
+                                "residual_training_v1"
+                            ),
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_v103_residual_runtime": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=102,
+                through_version=102,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.expanded_broad_residual_training_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

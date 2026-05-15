@@ -371,9 +371,9 @@ def select_broad_branch_candidates(
             return False
         selected.append(candidate)
         seen.add(key)
-        return len(selected) >= limit
+        return True
 
-    for category in (
+    category_order = (
         "pre_death",
         "recovery",
         "movement",
@@ -381,13 +381,21 @@ def select_broad_branch_candidates(
         "energy",
         "animal_resource",
         "reproduction_readiness",
-    ):
-        for candidate in ordered:
-            if category in candidate.categories and add(candidate):
-                return selected
+    )
+    made_progress = True
+    while made_progress and len(selected) < limit:
+        made_progress = False
+        for category in category_order:
+            for candidate in ordered:
+                if category in candidate.categories and add(candidate):
+                    made_progress = True
+                    if len(selected) >= limit:
+                        return selected
+                    break
     for candidate in ordered:
         if add(candidate):
-            break
+            if len(selected) >= limit:
+                break
     return selected
 
 
