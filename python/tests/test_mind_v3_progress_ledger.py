@@ -435,6 +435,51 @@ class MindV3ProgressLedgerTests(unittest.TestCase):
             "$.broad_branch_residual_constrained_support_probe",
         )
 
+    def test_progress_ledger_treats_v101_distillation_example_probe_as_authoritative(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            docs = tmp / "docs.md"
+            legacy = tmp / "ledger.jsonl"
+            output_dir = tmp / "output"
+            output_dir.mkdir()
+            docs.write_text("v101 documented.\n", encoding="utf-8")
+            legacy.write_text("", encoding="utf-8")
+            (
+                output_dir
+                / "mind-v3-v101-broad-branch-residual-distillation-example.json"
+            ).write_text(
+                json.dumps(
+                    {
+                        "broad_branch_residual_distillation_example_support_probe": {
+                            "policy": (
+                                "v101_policy_visible_broad_residual_"
+                                "distillation_example_v1"
+                            ),
+                            "accuracy": 1.0,
+                            "support_accuracy_floor": 1.0,
+                            "materially_supports_v102_expanded_training": True,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_standard_progress_ledger_report(
+                docs_path=docs,
+                legacy_ledger_path=legacy,
+                output_dir=output_dir,
+                start_version=101,
+                through_version=101,
+            )
+
+        row = report["rows"][0]
+        self.assertEqual(row["status"], "diagnostic_support_floor_pass")
+        self.assertTrue(row["progress_passed"])
+        self.assertEqual(
+            row["best_support_probe"]["path"],
+            "$.broad_branch_residual_distillation_example_support_probe",
+        )
+
     def test_progress_ledger_cli_writes_jsonl_and_summary(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

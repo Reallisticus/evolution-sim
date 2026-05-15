@@ -1254,9 +1254,11 @@ def _branch_point_payload(point: _BroadBranchPoint) -> dict[str, object]:
         "logged_action": point.logged_action,
         "before": dict(point.before),
         "action_mask": dict(point.action_mask),
+        "observation_input": dict(point.observation_input),
         "observation_digest": point.observation_digest,
         "observation_schema": point.observation_schema,
         "public_history_trace": [dict(item) for item in point.public_history_trace],
+        "compact_state": dict(point.compact_state),
         "categories": list(point.categories),
         "branch_state_digest": point.branch_state_digest,
     }

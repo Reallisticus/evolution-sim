@@ -3228,6 +3228,34 @@ v100 constrained broad branch residual diagnostic:
   no planner outcome tables, and an explicit branch replay gate before any
   rollout promotion attempt.
 
+v101 broad residual distillation training example:
+
+- `output/mind/mind-v3-v101-broad-branch-residual-distillation-example.json`
+  and
+  `output/mind/mind-v3-v101-broad-residual-distillation-example-artifact.json`
+  convert the accepted v100 constrained assignment into a deterministic,
+  serialized, policy-visible training contract. This is diagnostic/training
+  setup only: no runtime policy, promotion rollout, RTX training, or global
+  constrained assignment at inference was added.
+- The example contains `10` non-strict support rows from seeds
+  `2,3,7,11,17,23,31,47,53,59`, no strict-seed leakage, `10/10` legal teacher
+  labels, and `9/10` safe non-logged overrides. The constrained teacher action
+  distribution is `eat=5`, `move_east=2`, `stay=3`, so the dominant teacher
+  action share is exactly `0.5`.
+- The serialized artifact reloads deterministically and reproduces the teacher
+  choices on the training rows with accuracy `1.0`. Replay-backed utility from
+  the source assignment remains positive: mean target-local score delta
+  `+26.55233`, mean terminal alive delta `+0.1`, mean birth delta `+0.1`, and
+  target-alive negative count `0`.
+- `output/mind/mind-v3-v101-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v101-standard-progress-ledger-report.json` update the
+  standard v-ledger through v101. Under the strict progress definition,
+  progress versions in the v89-v101 window are `v90`, `v95`, `v96`, `v100`, and
+  `v101`.
+- Decision: v101 is accepted as a clean minimal training example only. It allows
+  a v102 expanded-training data pass, but it is too small to justify runtime
+  promotion or RTX training by itself.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -3701,6 +3729,12 @@ Major milestones from the current state:
   target-local score delta `+26.55233`, mean terminal alive delta `+0.1`,
   mean birth delta `+0.1`, and `9/10` safe non-logged overrides. This allows a
   v101 residual-distillation diagnostic, not promotion.
+- v101: broad residual distillation training example. The accepted v100
+  constrained labels are serialized as a policy-visible, reload-tested training
+  contract with `10` non-strict rows, no strict-seed leakage, teacher action
+  distribution `eat=5, move_east=2, stay=3`, training-row reproduction accuracy
+  `1.0`, and no blockers. This allows v102 expanded training-data generation,
+  not runtime promotion.
 
 External checks that support this direction:
 
