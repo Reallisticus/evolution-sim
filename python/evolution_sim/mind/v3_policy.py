@@ -4,6 +4,7 @@ import math
 from collections.abc import Mapping, Sequence
 from random import Random
 
+from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import (
     MEAT_MODE_VOCAB,
     NAVIGATION_INPUT_FIELDS,
@@ -16,13 +17,23 @@ from evolution_sim.env.runtime.observations import (
 )
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.mind.evolution import (
+    MIND_V3_CONTROLLER_ARCHITECTURE,
+    MIND_V3_HIDDEN_UNITS,
     MIND_V3_POLICY_ID,
     MIND_V3_POLICY_VERSION,
     MIND_V3_REWARD_UPDATE_POLICY,
+    MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     adapt_mind_v3_metadata,
     founder_mind_v3_metadata,
     inherit_mind_v3_metadata,
     score_mind_v3_metadata,
+)
+from evolution_sim.mind.rollout_context import (
+    MIND_V3_ROLLOUT_CONTEXT_FEATURE_POLICY,
+    MIND_V3_ROLLOUT_CONTEXT_SCHEMA_VERSION,
+    RolloutContextState,
+    rollout_context_vector_fields,
+    rollout_context_vector_size,
 )
 from evolution_sim.mind.v3_neural import (
     MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
@@ -183,10 +194,18 @@ class MindV3EvolutionPolicy:
         )
         self._support_residual_runtime_mode = support_residual_runtime_mode
         self._agent_metadata: dict[int, dict[str, object]] = {}
-        self._eligibility_traces: dict[int, list[tuple[str, list[float]]]] = {}
+        self._eligibility_traces: dict[
+            int,
+            list[tuple[str, list[float], tuple[float, ...] | None]],
+        ] = {}
         self._no_gain_eat_streaks: dict[int, int] = {}
         self._recovery_phase_ticks_remaining: dict[int, int] = {}
         self._public_history_records: dict[int, list[dict[str, object]]] = {}
+        self._rollout_context_states: dict[int, RolloutContextState] = {}
+        self._pending_rollout_context_values: dict[
+            int,
+            list[tuple[float, ...]],
+        ] = {}
         self._public_record_index = 0
         self._pending_public_decisions = 0
         self._last_public_tick = -1
@@ -327,6 +346,9 @@ class MindV3EvolutionPolicy:
                 meat_mode=_optional_string(self_payload.get("meat_mode")),
             )
         observation_input = _observation_input_payload(observation)
+        controller_architecture = _metadata_controller_architecture(metadata)
+        rollout_context_values: tuple[float, ...] | None = None
+        rollout_context_non_empty: bool | None = None
         if self._planner_distilled_artifact is not None:
             public_history_trace = self._public_history_trace_for_decision(agent_id)
             planner_scored = score_mind_v3_planner_distilled_runtime(
@@ -343,10 +365,16 @@ class MindV3EvolutionPolicy:
             neural_anchor_diagnostics = dict(planner_scored["diagnostics"])
             self._pending_public_decisions += 1
         elif self._neural_artifact is None:
+            rollout_context_values = self._rollout_context_values_for_decision(
+                agent_id=agent_id,
+                metadata=metadata,
+            )
+            rollout_context_non_empty = self._rollout_context_non_empty(agent_id)
             linear_scores = score_mind_v3_metadata(
                 metadata=metadata,
                 observation_input=_observation_values(observation),
                 action_mask=action_mask,
+                rollout_context_values=rollout_context_values,
             )
             if self._support_residual_artifact is None:
                 scores = linear_scores
@@ -405,6 +433,11 @@ class MindV3EvolutionPolicy:
                 self._pending_public_decisions += 1
         else:
             observation_values = _observation_values(observation)
+            rollout_context_values = self._rollout_context_values_for_decision(
+                agent_id=agent_id,
+                metadata=metadata,
+            )
+            rollout_context_non_empty = self._rollout_context_non_empty(agent_id)
             neural_residual_recovery_phase_remaining = max(
                 0,
                 int(self._recovery_phase_ticks_remaining.get(agent_id, 0)),
@@ -457,6 +490,7 @@ class MindV3EvolutionPolicy:
                     metadata=metadata,
                     observation_input=observation_values,
                     action_mask=action_mask,
+                    rollout_context_values=rollout_context_values,
                 )
                 neural_residual_guard_reason = (
                     _neural_residual_safety_guard_reason(
@@ -543,8 +577,18 @@ class MindV3EvolutionPolicy:
                 1 for allowed in action_mask.values() if allowed
             ),
             "controller_backend": controller_backend,
+            "controller_architecture": controller_architecture,
         }
         diagnostics.update(neural_anchor_diagnostics)
+        diagnostics.update(
+            _rollout_context_decision_diagnostics(
+                metadata=metadata,
+                rollout_context_values=rollout_context_values,
+                rollout_context_non_empty=rollout_context_non_empty,
+                action_mask=action_mask,
+                requested_action=requested_action,
+            )
+        )
         if self._planner_distilled_artifact is not None:
             diagnostics.update(
                 {
@@ -614,25 +658,34 @@ class MindV3EvolutionPolicy:
         reward_signal = float(reward_signal_components["reward_signal"])
         observation_values = _observation_values(record)
         trace_items = self._eligibility_traces.setdefault(agent_id, [])
+        rollout_context_values: tuple[float, ...] | None = None
+        uses_rollout_context = _metadata_uses_rollout_context(metadata)
         if not passive_terminal_feedback:
             if action is None:
                 return None
-            trace_items.append((action, observation_values))
+            if uses_rollout_context:
+                rollout_context_values = (
+                    self._pop_pending_rollout_context_values(agent_id)
+                    or tuple(self._rollout_context_state(agent_id).values())
+                )
+            trace_items.append((action, observation_values, rollout_context_values))
             if len(trace_items) > MIND_V3_ELIGIBILITY_TRACE_LENGTH:
                 del trace_items[0 : len(trace_items) - MIND_V3_ELIGIBILITY_TRACE_LENGTH]
         elif not trace_items:
             return None
         updated = metadata
         credited_actions: list[str] = []
-        for age, (credit_action, credit_observation_values) in enumerate(
-            reversed(trace_items)
-        ):
+        for age, trace_item in enumerate(reversed(trace_items)):
+            credit_action, credit_observation_values, credit_rollout_context = (
+                trace_item
+            )
             updated = adapt_mind_v3_metadata(
                 metadata=updated,
                 observation_input=credit_observation_values,
                 action=credit_action,
                 reward_signal=reward_signal
                 * (MIND_V3_ELIGIBILITY_TRACE_DECAY ** age),
+                rollout_context_values=credit_rollout_context,
             )
             credited_actions.append(credit_action)
         self._agent_metadata[agent_id] = updated
@@ -646,13 +699,19 @@ class MindV3EvolutionPolicy:
             agent_id=agent_id,
             record=record,
         )
+        rollout_context_update_trace = None
+        if uses_rollout_context and not passive_terminal_feedback:
+            rollout_context_update_trace = self._rollout_context_state(
+                agent_id
+            ).update_from_record(record)
         self.controller_update_count += 1
-        return {
+        trace: dict[str, object] = {
             "schema_version": "mind_v3_controller_update_trace_v1",
             "policy": MIND_V3_REWARD_UPDATE_POLICY,
             "credit_assignment": MIND_V3_ELIGIBILITY_TRACE_POLICY,
             "update_index": self.controller_update_count,
             "agent_id": agent_id,
+            "controller_architecture": _metadata_controller_architecture(updated),
             "action": action if action is not None else (resolved_action or "stay"),
             "requested_action": requested_action or "stay",
             "resolved_action": resolved_action or "stay",
@@ -679,6 +738,55 @@ class MindV3EvolutionPolicy:
             ),
             **recovery_phase_trace,
         }
+        if rollout_context_update_trace is not None:
+            trace["rollout_context_update_trace"] = rollout_context_update_trace
+        return trace
+
+    def _rollout_context_state(self, agent_id: int) -> RolloutContextState:
+        return self._rollout_context_states.setdefault(
+            agent_id,
+            RolloutContextState(),
+        )
+
+    def _rollout_context_values_for_decision(
+        self,
+        *,
+        agent_id: int,
+        metadata: Mapping[str, object],
+    ) -> tuple[float, ...] | None:
+        if not _metadata_uses_rollout_context(metadata):
+            return None
+        values = tuple(self._rollout_context_state(agent_id).values())
+        pending = self._pending_rollout_context_values.setdefault(agent_id, [])
+        pending.append(values)
+        if len(pending) > MIND_V3_ELIGIBILITY_TRACE_LENGTH:
+            del pending[0 : len(pending) - MIND_V3_ELIGIBILITY_TRACE_LENGTH]
+        return values
+
+    def _rollout_context_non_empty(self, agent_id: int) -> bool:
+        state = self._rollout_context_state(agent_id)
+        snapshot = state.snapshot()
+        return (
+            bool(snapshot.get("recent_requested_actions"))
+            or bool(snapshot.get("recent_resolved_actions"))
+            or bool(snapshot.get("recent_moved_flags"))
+            or bool(snapshot.get("recent_drank_flags"))
+            or bool(snapshot.get("recent_ate_flags"))
+            or int(snapshot.get("no_gain_eat_streak", 0)) > 0
+            or snapshot.get("ticks_since_drink") is not None
+            or snapshot.get("ticks_since_animal_resource_gain") is not None
+            or bool(snapshot.get("post_carrion_contact"))
+            or int(snapshot.get("recovery_phase_remaining", 0)) > 0
+        )
+
+    def _pop_pending_rollout_context_values(
+        self,
+        agent_id: int,
+    ) -> tuple[float, ...] | None:
+        pending = self._pending_rollout_context_values.get(agent_id)
+        if not pending:
+            return None
+        return pending.pop(0)
 
     def _public_history_trace_for_decision(
         self,
@@ -863,6 +971,106 @@ def _record_founder_template_assignment(
         "trophic_role": trophic_role,
         "meat_mode": meat_mode,
     }
+
+
+def _metadata_controller_architecture(metadata: Mapping[str, object]) -> str:
+    architecture = metadata.get("architecture")
+    if isinstance(architecture, str) and architecture:
+        return architecture
+    return MIND_V3_CONTROLLER_ARCHITECTURE
+
+
+def _metadata_uses_rollout_context(metadata: Mapping[str, object]) -> bool:
+    return (
+        _metadata_controller_architecture(metadata)
+        == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
+    )
+
+
+def _rollout_context_decision_diagnostics(
+    *,
+    metadata: Mapping[str, object],
+    rollout_context_values: tuple[float, ...] | None,
+    rollout_context_non_empty: bool | None,
+    action_mask: Mapping[str, bool],
+    requested_action: str,
+) -> dict[str, object]:
+    if not _metadata_uses_rollout_context(metadata):
+        return {}
+    values = rollout_context_values or ()
+    score_delta_by_action = _rollout_context_score_delta_by_action(
+        metadata=metadata,
+        rollout_context_values=values,
+        action_mask=action_mask,
+    )
+    return {
+        "rollout_context_schema_version": MIND_V3_ROLLOUT_CONTEXT_SCHEMA_VERSION,
+        "rollout_context_feature_policy": MIND_V3_ROLLOUT_CONTEXT_FEATURE_POLICY,
+        "rollout_context_vector_size": rollout_context_vector_size(),
+        "rollout_context_non_empty": bool(rollout_context_non_empty),
+        "rollout_context_post_carrion_context": (
+            _rollout_context_boolean_field(values, "post_carrion_contact")
+        ),
+        "rollout_context_score_delta_policy": (
+            "v5_score_minus_observation_only_context_zero_v1"
+        ),
+        "rollout_context_selected_score_delta": score_delta_by_action.get(
+            requested_action,
+            0.0,
+        ),
+        "rollout_context_score_delta_by_action": score_delta_by_action,
+    }
+
+
+def _rollout_context_score_delta_by_action(
+    *,
+    metadata: Mapping[str, object],
+    rollout_context_values: Sequence[float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    vector_size = rollout_context_vector_size()
+    if len(rollout_context_values) != vector_size:
+        return {}
+    raw_weights = metadata.get("action_head_weights")
+    if not isinstance(raw_weights, Mapping):
+        return {}
+    deltas: dict[str, float] = {}
+    for action in ACTION_NAMES:
+        if not bool(action_mask.get(action, False)):
+            continue
+        action_weights = raw_weights.get(action)
+        if not isinstance(action_weights, list):
+            continue
+        if len(action_weights) < MIND_V3_HIDDEN_UNITS + vector_size:
+            continue
+        deltas[action] = _round(
+            sum(
+                _finite_number(action_weights[MIND_V3_HIDDEN_UNITS + index])
+                * _finite_number(rollout_context_values[index])
+                for index in range(vector_size)
+            )
+        )
+    return deltas
+
+
+def _rollout_context_boolean_field(
+    values: Sequence[float],
+    field: str,
+) -> bool:
+    fields = rollout_context_vector_fields()
+    if field not in fields:
+        return False
+    index = fields.index(field)
+    if index >= len(values):
+        return False
+    return _finite_number(values[index]) > 0.0
+
+
+def _finite_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _optional_string(value: object) -> str | None:

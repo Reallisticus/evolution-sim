@@ -14,6 +14,7 @@ from evolution_sim.env.runtime.observations import (
     PATCH_INPUT_FIELDS,
     SELF_INPUT_FIELDS,
 )
+from evolution_sim.mind.rollout_context import rollout_context_vector_size
 
 MIND_V3_CONTROLLER_SCHEMA_VERSION = "mind_v3_controller_metadata_v1"
 MIND_V3_POLICY_ID = "mind_v3_autonomous_evolution_policy"
@@ -21,6 +22,9 @@ MIND_V3_POLICY_VERSION = "mind_v3_autonomous_evolution_policy_v1"
 MIND_V3_LEGACY_HIDDEN_UNITS = 8
 MIND_V3_LOCAL_NAVIGATION_HIDDEN_UNITS = 16
 MIND_V3_HIDDEN_UNITS = 24
+MIND_V3_ROLLOUT_CONTEXT_HIDDEN_UNITS = (
+    MIND_V3_HIDDEN_UNITS + rollout_context_vector_size()
+)
 MIND_V3_MUTATION_SIGMA = 0.035
 MIND_V3_WEIGHT_LIMIT = 1.5
 MIND_V3_REWARD_UPDATE_POLICY = "bounded_reward_modulated_controller_update_v1"
@@ -40,7 +44,13 @@ MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE = (
 MIND_V3_CONTROLLER_ARCHITECTURE = (
     "need_gated_local_navigation_feature_projection_linear_action_head_v4"
 )
+MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE = (
+    "rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5"
+)
 MIND_V3_FOUNDER_PRIOR_POLICY = "diverse_need_gated_navigation_action_prior_v3"
+MIND_V3_ROLLOUT_CONTEXT_FOUNDER_PRIOR_POLICY = (
+    "diverse_need_gated_navigation_action_prior_v3_plus_zero_initialized_rollout_context_units_v1"
+)
 MIND_V3_SPECIALIZATION_PROFILES: tuple[str, ...] = (
     "forager",
     "hydration_seeker",
@@ -113,6 +123,7 @@ MIND_V3_POLICY_VISIBLE_CONTROLLER_ARCHITECTURES = frozenset(
         MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
         MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
         MIND_V3_CONTROLLER_ARCHITECTURE,
+        MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     }
 )
 MIND_V3_LOADABLE_CONTROLLER_ARCHITECTURES = frozenset(
@@ -257,7 +268,17 @@ def founder_mind_v3_metadata(
     agent_id: int,
     rng: Random,
     specialization_profile: str | None = None,
+    architecture: str | None = None,
 ) -> dict[str, object]:
+    resolved_architecture = architecture or MIND_V3_CONTROLLER_ARCHITECTURE
+    if not mind_v3_controller_architecture_is_promotion_eligible(
+        resolved_architecture
+    ):
+        raise ValueError(
+            "unsupported Mind v3 founder controller architecture "
+            f"{resolved_architecture!r}"
+        )
+    hidden_units = _hidden_units_for_architecture(resolved_architecture)
     local = Random((agent_id + 1) * 1_000_003 + int(rng.random() * 1_000_000_000))
     if specialization_profile is None:
         specialization_profile = MIND_V3_SPECIALIZATION_PROFILES[
@@ -270,26 +291,24 @@ def founder_mind_v3_metadata(
     return {
         "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
         "inherited_state": True,
-        "state_size": mind_v3_parameter_count(),
-        "architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
+        "state_size": mind_v3_parameter_count(architecture=resolved_architecture),
+        "architecture": resolved_architecture,
         "mutation_policy": "gaussian_head_mutation_v1",
-        "founder_prior_policy": MIND_V3_FOUNDER_PRIOR_POLICY,
+        "founder_prior_policy": (
+            MIND_V3_ROLLOUT_CONTEXT_FOUNDER_PRIOR_POLICY
+            if resolved_architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
+            else MIND_V3_FOUNDER_PRIOR_POLICY
+        ),
         "specialization_profile": specialization_profile,
         "parent_schema_versions": [],
         "action_head_weights": {
-            action: [
-                _round(
-                    local.gauss(
-                        _founder_action_weight_prior(
-                            action,
-                            unit,
-                            specialization_profile,
-                        ),
-                        0.06,
-                    )
-                )
-                for unit in range(MIND_V3_HIDDEN_UNITS)
-            ]
+            action: _founder_action_weights(
+                action=action,
+                architecture=resolved_architecture,
+                hidden_units=hidden_units,
+                specialization_profile=specialization_profile,
+                rng=local,
+            )
             for action in ACTION_NAMES
         },
         "action_head_bias": {
@@ -385,8 +404,13 @@ def score_mind_v3_metadata(
     metadata: Mapping[str, object],
     observation_input: list[float],
     action_mask: Mapping[str, bool],
+    rollout_context_values: Sequence[object] | None = None,
 ) -> dict[str, float]:
-    hidden = _hidden_features(metadata, observation_input)
+    hidden = _hidden_features(
+        metadata,
+        observation_input,
+        rollout_context_values=rollout_context_values,
+    )
     weights = _weights(metadata)
     bias = _bias(metadata)
     scores: dict[str, float] = {}
@@ -409,12 +433,17 @@ def adapt_mind_v3_metadata(
     observation_input: list[float],
     action: str,
     reward_signal: float,
+    rollout_context_values: Sequence[object] | None = None,
 ) -> dict[str, object]:
     weights = _weights(metadata)
     bias = _bias(metadata)
     if action not in weights:
         return dict(metadata)
-    hidden = _hidden_features(metadata, observation_input)
+    hidden = _hidden_features(
+        metadata,
+        observation_input,
+        rollout_context_values=rollout_context_values,
+    )
     signal = max(-1.0, min(1.0, float(reward_signal)))
     for index, value in enumerate(weights[action]):
         weights[action][index] = _round(
@@ -557,6 +586,8 @@ def _controller_architecture(metadata: Mapping[str, object] | None) -> str:
         return MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE
     if architecture == MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE:
         return MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE
+    if architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE:
+        return MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
     return MIND_V3_CONTROLLER_ARCHITECTURE
 
 
@@ -568,6 +599,8 @@ def _hidden_units_for_architecture(architecture: str) -> int:
         return MIND_V3_LEGACY_HIDDEN_UNITS
     if architecture == MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE:
         return MIND_V3_LOCAL_NAVIGATION_HIDDEN_UNITS
+    if architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE:
+        return MIND_V3_ROLLOUT_CONTEXT_HIDDEN_UNITS
     return MIND_V3_HIDDEN_UNITS
 
 
@@ -578,6 +611,8 @@ def _hidden_unit_count(metadata: Mapping[str, object] | None) -> int:
 def _hidden_features(
     metadata: Mapping[str, object],
     observation_input: list[float],
+    *,
+    rollout_context_values: Sequence[object] | None = None,
 ) -> list[float]:
     architecture = _controller_architecture(metadata)
     if architecture == MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE:
@@ -586,6 +621,11 @@ def _hidden_features(
         return _homeostatic_hidden_features(observation_input)
     if architecture == MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE:
         return _local_navigation_hidden_features(observation_input)
+    if architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE:
+        return _rollout_context_need_gated_local_navigation_hidden_features(
+            observation_input,
+            rollout_context_values=rollout_context_values,
+        )
     return _need_gated_local_navigation_hidden_features(observation_input)
 
 
@@ -790,6 +830,31 @@ def _need_gated_local_navigation_hidden_features(
     ]
 
 
+def _rollout_context_need_gated_local_navigation_hidden_features(
+    observation_input: list[float],
+    *,
+    rollout_context_values: Sequence[object] | None,
+) -> list[float]:
+    return [
+        *_need_gated_local_navigation_hidden_features(observation_input),
+        *_rollout_context_feature_values(rollout_context_values),
+    ]
+
+
+def _rollout_context_feature_values(
+    values: Sequence[object] | None,
+) -> list[float]:
+    vector_size = rollout_context_vector_size()
+    if values is None or len(values) != vector_size:
+        return [0.0] * vector_size
+    parsed: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return [0.0] * vector_size
+        parsed.append(_round(max(-1.0, min(1.0, _finite_float(value)))))
+    return parsed
+
+
 def _fixed_hidden_features(observation_input: list[float]) -> list[float]:
     values = [_finite_float(value) for value in observation_input]
     if not values:
@@ -884,6 +949,37 @@ def _founder_action_weight_prior(
         if action == "eat" and unit in {0, 5}:
             prior += 0.05
     return max(-MIND_V3_WEIGHT_LIMIT, min(MIND_V3_WEIGHT_LIMIT, prior))
+
+
+def _founder_action_weights(
+    *,
+    action: str,
+    architecture: str,
+    hidden_units: int,
+    specialization_profile: str,
+    rng: Random,
+) -> list[float]:
+    base_units = (
+        MIND_V3_HIDDEN_UNITS
+        if architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
+        else hidden_units
+    )
+    weights = [
+        _round(
+            rng.gauss(
+                _founder_action_weight_prior(
+                    action,
+                    unit,
+                    specialization_profile,
+                ),
+                0.06,
+            )
+        )
+        for unit in range(base_units)
+    ]
+    if architecture == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE:
+        weights.extend([0.0] * rollout_context_vector_size())
+    return weights
 
 
 def _directional_prior_units(action: str) -> dict[int, float]:

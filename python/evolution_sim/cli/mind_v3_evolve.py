@@ -11,6 +11,7 @@ from random import Random
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.cli.mind_v3_evaluate import (
+    CONTROLLED_FIXTURE_NAMES,
     MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY,
     MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,
     mind_v3_fixture_gate_config,
@@ -20,9 +21,13 @@ from evolution_sim.cli.mind_v3_evaluate import (
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_ARCHITECTURE,
+    MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+    MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+    MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     MIND_V3_SPECIALIZATION_PROFILES,
     founder_mind_v3_metadata,
     inherit_mind_v3_metadata,
+    mind_v3_controller_architecture_is_promotion_eligible,
 )
 from evolution_sim.mind.v3_policy import (
     MIND_V3_FOUNDER_TEMPLATE_ASSIGNMENT_POLICY,
@@ -113,6 +118,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generations", type=int, default=2)
     parser.add_argument("--search-seed", type=int, default=311)
     parser.add_argument(
+        "--controller-architecture",
+        choices=[
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+            MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+            MIND_V3_CONTROLLER_ARCHITECTURE,
+            MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
+        ],
+        default=MIND_V3_CONTROLLER_ARCHITECTURE,
+        help=(
+            "Controller architecture used only for newly created founder "
+            "candidates. The default preserves the current v4 controller."
+        ),
+    )
+    parser.add_argument(
         "--rollout-workers",
         type=int,
         default=1,
@@ -135,6 +154,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Seed the initial population from one or more previous Mind v3 "
             "search reports. Warm-start candidates preserve report-derived "
             "founder template pools and are forced into fixture rerank."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-baseline-report",
+        type=Path,
+        help=(
+            "Optional existing Mind v3 evolution report used only to emit "
+            "matched holdout seed diagnostic deltas. It does not affect "
+            "selection, scoring, or gates."
         ),
     )
     parser.add_argument(
@@ -292,6 +320,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--fixture-names",
+        help=(
+            "Optional comma-separated fixture subset for --fixture-suite. "
+            "Defaults to all fixtures in the selected suite."
+        ),
+    )
+    parser.add_argument(
         "--fixture-ticks",
         type=int,
         help="Fixture tick horizon. Defaults to the active search horizon.",
@@ -400,10 +435,18 @@ def main() -> None:
         raise SystemExit("--fixture-selection-top-k must be >= 0")
     if args.warm_start_candidate_limit < 0:
         raise SystemExit("--warm-start-candidate-limit must be >= 0")
+    if not mind_v3_controller_architecture_is_promotion_eligible(
+        str(args.controller_architecture)
+    ):
+        raise SystemExit("--controller-architecture must be promotion eligible")
     if args.resume_from is not None and args.warm_start_report:
         raise SystemExit("--warm-start-report cannot be combined with --resume-from")
     if args.curriculum_ticks is not None:
         report = _run_curriculum_search(args)
+        _attach_comparison_baseline_report(
+            report,
+            args.comparison_baseline_report,
+        )
         _write_report(args.output, report)
         _print_report_summary(args.output, report)
         return
@@ -430,7 +473,11 @@ def main() -> None:
         population_size = int(args.population_size)
         search_seed = int(args.search_seed)
         rng = Random(search_seed)
-        candidates = _founder_candidates(population_size=population_size, rng=rng)
+        candidates = _founder_candidates(
+            population_size=population_size,
+            rng=rng,
+            controller_architecture=str(args.controller_architecture),
+        )
         warm_start_report = _warm_start_report_from_args(
             args,
             population_size=population_size,
@@ -481,6 +528,10 @@ def main() -> None:
             else 0
         ),
         warm_start=warm_start_report,
+    )
+    _attach_comparison_baseline_report(
+        report,
+        args.comparison_baseline_report,
     )
     _write_report(args.output, report)
     _print_report_summary(args.output, report)
@@ -632,6 +683,7 @@ def _run_search_stage(
         if fixture_config is not None:
             fixture_suite = run_mind_v3_fixture_suite(
                 suite=str(fixture_config["suite"]),
+                fixture_names=_fixture_names_from_config(fixture_config),
                 seeds=[int(seed) for seed in list(fixture_config["seeds"])],
                 ticks=int(fixture_config.get("ticks") or ticks),
                 founder_template=_best_candidate_founder_template(best_candidate),
@@ -685,7 +737,11 @@ def _run_curriculum_search(args: argparse.Namespace) -> dict[str, object]:
     )
     search_seed = int(args.search_seed)
     rng = Random(search_seed)
-    candidates = _founder_candidates(population_size=args.population_size, rng=rng)
+    candidates = _founder_candidates(
+        population_size=args.population_size,
+        rng=rng,
+        controller_architecture=str(args.controller_architecture),
+    )
     warm_start_report = _warm_start_report_from_args(
         args,
         population_size=int(args.population_size),
@@ -1100,6 +1156,7 @@ def _founder_candidates(
     *,
     population_size: int,
     rng: Random,
+    controller_architecture: str = MIND_V3_CONTROLLER_ARCHITECTURE,
 ) -> list[dict[str, object]]:
     return [
         _new_candidate(
@@ -1107,6 +1164,7 @@ def _founder_candidates(
             metadata=founder_mind_v3_metadata(
                 agent_id=index,
                 rng=rng,
+                architecture=controller_architecture,
                 specialization_profile=MIND_V3_SPECIALIZATION_PROFILES[
                     index % len(MIND_V3_SPECIALIZATION_PROFILES)
                 ],
@@ -1549,6 +1607,48 @@ def _evaluate_candidate(
         "unique_requested_actions_mean": aggregate["unique_requested_actions_mean"],
         "requested_action_counts": aggregate["requested_action_counts"],
         "resolved_action_counts": aggregate["resolved_action_counts"],
+        "unsupported_requested_action_count": aggregate[
+            "unsupported_requested_action_count"
+        ],
+        "unsupported_resolved_action_count": aggregate[
+            "unsupported_resolved_action_count"
+        ],
+        "unsupported_requested_action_breakdown": aggregate[
+            "unsupported_requested_action_breakdown"
+        ],
+        "unsupported_resolved_action_breakdown": aggregate[
+            "unsupported_resolved_action_breakdown"
+        ],
+        "rollout_context_decision_count": aggregate[
+            "rollout_context_decision_count"
+        ],
+        "rollout_context_non_empty_count": aggregate[
+            "rollout_context_non_empty_count"
+        ],
+        "rollout_context_non_empty_share": aggregate[
+            "rollout_context_non_empty_share"
+        ],
+        "rollout_context_selected_score_delta_nonzero_count": aggregate[
+            "rollout_context_selected_score_delta_nonzero_count"
+        ],
+        "rollout_context_selected_score_delta_mean": aggregate[
+            "rollout_context_selected_score_delta_mean"
+        ],
+        "rollout_context_selected_score_delta_abs_mean": aggregate[
+            "rollout_context_selected_score_delta_abs_mean"
+        ],
+        "rollout_context_selected_score_delta_abs_max": aggregate[
+            "rollout_context_selected_score_delta_abs_max"
+        ],
+        "rollout_context_post_carrion_context_count": aggregate[
+            "rollout_context_post_carrion_context_count"
+        ],
+        "rollout_context_post_carrion_context_share": aggregate[
+            "rollout_context_post_carrion_context_share"
+        ],
+        "rollout_context_selected_score_delta_by_requested_action": aggregate[
+            "rollout_context_selected_score_delta_by_requested_action"
+        ],
         "dominant_requested_action": aggregate["dominant_requested_action"],
         "dominant_requested_action_count": aggregate[
             "dominant_requested_action_count"
@@ -2155,15 +2255,35 @@ def _run_candidate(
     requested_actions: set[str] = set()
     requested_action_counts: Counter[str] = Counter()
     resolved_action_counts: Counter[str] = Counter()
+    unsupported_requested_action_count = 0
+    unsupported_resolved_action_count = 0
+    unsupported_requested_action_breakdown = _unsupported_action_breakdown(
+        seed=seed,
+        records=world.trajectory_records,
+        validity_key="action_valid",
+    )
+    unsupported_resolved_action_breakdown = _unsupported_action_breakdown(
+        seed=seed,
+        records=world.trajectory_records,
+        validity_key="resolution_action_valid",
+    )
+    rollout_context_diagnostics = _rollout_context_decision_summary(
+        diagnostics_records=world.policy_decision_diagnostics_records,
+        trajectory_records=world.trajectory_records,
+    )
     for record in world.trajectory_records:
         requested_action = record.get("requested_action")
         if requested_action is not None:
             action_name = str(requested_action)
             requested_actions.add(action_name)
             requested_action_counts.update([action_name])
+            if record.get("action_valid") is False:
+                unsupported_requested_action_count += 1
         resolved_action = record.get("resolved_action")
         if resolved_action is not None:
             resolved_action_counts.update([str(resolved_action)])
+            if record.get("resolution_action_valid") is False:
+                unsupported_resolved_action_count += 1
         if bool(record.get("moved", False)):
             movement_event_count += 1
         outcome = record.get("outcome")
@@ -2318,6 +2438,15 @@ def _run_candidate(
         "primary_core_blocker": sustained_readiness["primary_core_blocker"],
         "requested_action_counts": dict(sorted(requested_action_counts.items())),
         "resolved_action_counts": dict(sorted(resolved_action_counts.items())),
+        "unsupported_requested_action_count": int(
+            unsupported_requested_action_count
+        ),
+        "unsupported_resolved_action_count": int(
+            unsupported_resolved_action_count
+        ),
+        "unsupported_requested_action_breakdown": unsupported_requested_action_breakdown,
+        "unsupported_resolved_action_breakdown": unsupported_resolved_action_breakdown,
+        **rollout_context_diagnostics,
         "heuristic_action_source_count": _heuristic_action_source_count(
             action_source_counts
         ),
@@ -2331,6 +2460,202 @@ def _run_candidate(
         "action_source_counts": dict(sorted(action_source_counts.items())),
         "policy_id_counts": dict(sorted(policy_id_counts.items())),
     }
+
+
+def _rollout_context_decision_summary(
+    *,
+    diagnostics_records: list[dict[str, object] | None],
+    trajectory_records: list[dict[str, object]],
+) -> dict[str, object]:
+    count = 0
+    non_empty_count = 0
+    post_carrion_count = 0
+    nonzero_count = 0
+    delta_sum = 0.0
+    delta_abs_sum = 0.0
+    delta_abs_max = 0.0
+    per_action: dict[str, dict[str, float | int]] = {}
+    for index, diagnostics in enumerate(diagnostics_records):
+        if not isinstance(diagnostics, Mapping):
+            continue
+        if "rollout_context_schema_version" not in diagnostics:
+            continue
+        count += 1
+        if bool(diagnostics.get("rollout_context_non_empty", False)):
+            non_empty_count += 1
+        if bool(diagnostics.get("rollout_context_post_carrion_context", False)):
+            post_carrion_count += 1
+        delta = _float_value(
+            diagnostics.get("rollout_context_selected_score_delta")
+        )
+        if delta is None:
+            delta = 0.0
+        delta = _round(delta)
+        delta_abs = abs(delta)
+        delta_sum += delta
+        delta_abs_sum += delta_abs
+        delta_abs_max = max(delta_abs_max, delta_abs)
+        if delta != 0.0:
+            nonzero_count += 1
+        action = "unknown"
+        if index < len(trajectory_records):
+            action = str(trajectory_records[index].get("requested_action", "unknown"))
+        action_stats = per_action.setdefault(
+            action,
+            {
+                "count": 0,
+                "nonzero_count": 0,
+                "delta_sum": 0.0,
+                "delta_abs_sum": 0.0,
+                "delta_abs_max": 0.0,
+            },
+        )
+        action_stats["count"] = int(action_stats["count"]) + 1
+        action_stats["delta_sum"] = float(action_stats["delta_sum"]) + delta
+        action_stats["delta_abs_sum"] = (
+            float(action_stats["delta_abs_sum"]) + delta_abs
+        )
+        action_stats["delta_abs_max"] = max(
+            float(action_stats["delta_abs_max"]),
+            delta_abs,
+        )
+        if delta != 0.0:
+            action_stats["nonzero_count"] = int(action_stats["nonzero_count"]) + 1
+    return _rollout_context_summary_from_totals(
+        count=count,
+        non_empty_count=non_empty_count,
+        post_carrion_count=post_carrion_count,
+        nonzero_count=nonzero_count,
+        delta_sum=delta_sum,
+        delta_abs_sum=delta_abs_sum,
+        delta_abs_max=delta_abs_max,
+        per_action=per_action,
+    )
+
+
+def _rollout_context_summary_from_totals(
+    *,
+    count: int,
+    non_empty_count: int,
+    post_carrion_count: int,
+    nonzero_count: int,
+    delta_sum: float,
+    delta_abs_sum: float,
+    delta_abs_max: float,
+    per_action: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
+    return {
+        "rollout_context_decision_count": int(count),
+        "rollout_context_non_empty_count": int(non_empty_count),
+        "rollout_context_non_empty_share": _round(
+            int(non_empty_count) / max(1, int(count))
+        ),
+        "rollout_context_selected_score_delta_nonzero_count": int(nonzero_count),
+        "rollout_context_selected_score_delta_mean": _round(
+            float(delta_sum) / max(1, int(count))
+        ),
+        "rollout_context_selected_score_delta_abs_mean": _round(
+            float(delta_abs_sum) / max(1, int(count))
+        ),
+        "rollout_context_selected_score_delta_abs_max": _round(delta_abs_max),
+        "rollout_context_post_carrion_context_count": int(post_carrion_count),
+        "rollout_context_post_carrion_context_share": _round(
+            int(post_carrion_count) / max(1, int(count))
+        ),
+        "rollout_context_selected_score_delta_by_requested_action": (
+            _rollout_context_per_action_summary(per_action)
+        ),
+    }
+
+
+def _rollout_context_per_action_summary(
+    per_action: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    summary: dict[str, dict[str, object]] = {}
+    for action in sorted(per_action):
+        stats = per_action[action]
+        count = int(stats.get("count", 0))
+        summary[str(action)] = {
+            "count": count,
+            "nonzero_count": int(stats.get("nonzero_count", 0)),
+            "mean": _round(float(stats.get("delta_sum", 0.0)) / max(1, count)),
+            "abs_mean": _round(
+                float(stats.get("delta_abs_sum", 0.0)) / max(1, count)
+            ),
+            "abs_max": _round(float(stats.get("delta_abs_max", 0.0))),
+        }
+    return summary
+
+
+def _unsupported_action_breakdown(
+    *,
+    seed: int,
+    records: list[dict[str, object]],
+    validity_key: str,
+) -> dict[str, object]:
+    by_requested: Counter[str] = Counter()
+    by_resolved: Counter[str] = Counter()
+    by_reason: Counter[str] = Counter()
+    by_tuple: Counter[tuple[str, str, str]] = Counter()
+    for record in records:
+        if record.get(validity_key) is not False:
+            continue
+        requested_action = str(record.get("requested_action", "unknown"))
+        resolved_action = str(record.get("resolved_action", "unknown"))
+        reason = _record_invalid_reason(record)
+        by_requested.update([requested_action])
+        by_resolved.update([resolved_action])
+        by_reason.update([reason])
+        by_tuple.update([(requested_action, resolved_action, reason)])
+    return _unsupported_action_breakdown_from_counters(
+        seed=seed,
+        by_requested=by_requested,
+        by_resolved=by_resolved,
+        by_reason=by_reason,
+        by_tuple=by_tuple,
+    )
+
+
+def _unsupported_action_breakdown_from_counters(
+    *,
+    seed: int | None,
+    by_requested: Counter[str],
+    by_resolved: Counter[str],
+    by_reason: Counter[str],
+    by_tuple: Counter[tuple[str, str, str]],
+    by_seed: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "by_requested_action": dict(sorted(by_requested.items())),
+        "by_resolved_action": dict(sorted(by_resolved.items())),
+        "by_invalid_reason": dict(sorted(by_reason.items())),
+        "by_requested_resolved_invalid_reason": [
+            {
+                "requested_action": requested,
+                "resolved_action": resolved,
+                "invalid_reason": reason,
+                "count": int(count),
+            }
+            for (requested, resolved, reason), count in sorted(by_tuple.items())
+        ],
+    }
+    if seed is not None:
+        payload["seed"] = int(seed)
+    if by_seed is not None:
+        payload["by_seed"] = by_seed
+    return payload
+
+
+def _record_invalid_reason(record: Mapping[str, object]) -> str:
+    outcome = record.get("outcome")
+    if isinstance(outcome, Mapping):
+        reason = outcome.get("invalid_reason")
+        if isinstance(reason, str) and reason:
+            return reason
+    reason = record.get("invalid_reason")
+    if isinstance(reason, str) and reason:
+        return reason
+    return "unknown"
 
 
 def _run_reproduction_viability(
@@ -3086,6 +3411,125 @@ def _aggregate_run_action_counts(
     return counts
 
 
+def _aggregate_rollout_context_diagnostics(
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    count = 0
+    non_empty_count = 0
+    post_carrion_count = 0
+    nonzero_count = 0
+    delta_sum = 0.0
+    delta_abs_sum = 0.0
+    delta_abs_max = 0.0
+    per_action: dict[str, dict[str, float | int]] = {}
+    for run in runs:
+        run_count = int(run.get("rollout_context_decision_count", 0))
+        count += run_count
+        non_empty_count += int(run.get("rollout_context_non_empty_count", 0))
+        post_carrion_count += int(
+            run.get("rollout_context_post_carrion_context_count", 0)
+        )
+        nonzero_count += int(
+            run.get("rollout_context_selected_score_delta_nonzero_count", 0)
+        )
+        delta_sum += (
+            float(run.get("rollout_context_selected_score_delta_mean", 0.0))
+            * run_count
+        )
+        delta_abs_sum += (
+            float(run.get("rollout_context_selected_score_delta_abs_mean", 0.0))
+            * run_count
+        )
+        delta_abs_max = max(
+            delta_abs_max,
+            float(run.get("rollout_context_selected_score_delta_abs_max", 0.0)),
+        )
+        raw_per_action = run.get(
+            "rollout_context_selected_score_delta_by_requested_action"
+        )
+        if not isinstance(raw_per_action, Mapping):
+            continue
+        for action, raw_stats in raw_per_action.items():
+            if not isinstance(raw_stats, Mapping):
+                continue
+            action_count = int(raw_stats.get("count", 0))
+            action_stats = per_action.setdefault(
+                str(action),
+                {
+                    "count": 0,
+                    "nonzero_count": 0,
+                    "delta_sum": 0.0,
+                    "delta_abs_sum": 0.0,
+                    "delta_abs_max": 0.0,
+                },
+            )
+            action_stats["count"] = int(action_stats["count"]) + action_count
+            action_stats["nonzero_count"] = int(action_stats["nonzero_count"]) + int(
+                raw_stats.get("nonzero_count", 0)
+            )
+            action_stats["delta_sum"] = float(action_stats["delta_sum"]) + (
+                float(raw_stats.get("mean", 0.0)) * action_count
+            )
+            action_stats["delta_abs_sum"] = float(action_stats["delta_abs_sum"]) + (
+                float(raw_stats.get("abs_mean", 0.0)) * action_count
+            )
+            action_stats["delta_abs_max"] = max(
+                float(action_stats["delta_abs_max"]),
+                float(raw_stats.get("abs_max", 0.0)),
+            )
+    return _rollout_context_summary_from_totals(
+        count=count,
+        non_empty_count=non_empty_count,
+        post_carrion_count=post_carrion_count,
+        nonzero_count=nonzero_count,
+        delta_sum=delta_sum,
+        delta_abs_sum=delta_abs_sum,
+        delta_abs_max=delta_abs_max,
+        per_action=per_action,
+    )
+
+
+def _aggregate_unsupported_action_breakdowns(
+    runs: list[dict[str, object]],
+    *,
+    key: str,
+) -> dict[str, object]:
+    by_requested: Counter[str] = Counter()
+    by_resolved: Counter[str] = Counter()
+    by_reason: Counter[str] = Counter()
+    by_tuple: Counter[tuple[str, str, str]] = Counter()
+    by_seed: dict[str, object] = {}
+    for run in runs:
+        raw = run.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        seed = str(raw.get("seed", run.get("seed", "unknown")))
+        by_seed[seed] = dict(raw)
+        by_requested.update(_counts_from_mapping(raw.get("by_requested_action")))
+        by_resolved.update(_counts_from_mapping(raw.get("by_resolved_action")))
+        by_reason.update(_counts_from_mapping(raw.get("by_invalid_reason")))
+        raw_tuples = raw.get("by_requested_resolved_invalid_reason")
+        if isinstance(raw_tuples, list):
+            for item in raw_tuples:
+                if not isinstance(item, Mapping):
+                    continue
+                by_tuple[
+                    (
+                        str(item.get("requested_action", "unknown")),
+                        str(item.get("resolved_action", "unknown")),
+                        str(item.get("invalid_reason", "unknown")),
+                    )
+                ] += int(item.get("count", 0))
+    return _unsupported_action_breakdown_from_counters(
+        seed=None,
+        by_requested=by_requested,
+        by_resolved=by_resolved,
+        by_reason=by_reason,
+        by_tuple=by_tuple,
+        by_seed=dict(sorted(by_seed.items())),
+    )
+
+
 def _counts_from_mapping(payload: object) -> Counter[str]:
     if not isinstance(payload, Mapping):
         return Counter()
@@ -3316,6 +3760,21 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         key="resolved_action_counts",
         descriptor_fallback_key=None,
     )
+    unsupported_requested_action_count = sum(
+        int(run.get("unsupported_requested_action_count", 0)) for run in runs
+    )
+    unsupported_resolved_action_count = sum(
+        int(run.get("unsupported_resolved_action_count", 0)) for run in runs
+    )
+    unsupported_requested_action_breakdown = _aggregate_unsupported_action_breakdowns(
+        runs,
+        key="unsupported_requested_action_breakdown",
+    )
+    unsupported_resolved_action_breakdown = _aggregate_unsupported_action_breakdowns(
+        runs,
+        key="unsupported_resolved_action_breakdown",
+    )
+    rollout_context_diagnostics = _aggregate_rollout_context_diagnostics(runs)
     core_blocker_counts = _aggregate_run_action_counts(
         runs,
         key="core_blocker_agent_tick_counts",
@@ -3550,6 +4009,15 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         "active_behavior_niche_keys": active_behavior_niche_keys,
         "requested_action_counts": dict(sorted(requested_action_counts.items())),
         "resolved_action_counts": dict(sorted(resolved_action_counts.items())),
+        "unsupported_requested_action_count": int(
+            unsupported_requested_action_count
+        ),
+        "unsupported_resolved_action_count": int(
+            unsupported_resolved_action_count
+        ),
+        "unsupported_requested_action_breakdown": unsupported_requested_action_breakdown,
+        "unsupported_resolved_action_breakdown": unsupported_resolved_action_breakdown,
+        **rollout_context_diagnostics,
         "dominant_requested_action": dominant_action["action"],
         "dominant_requested_action_count": dominant_action["count"],
         "dominant_requested_action_share": dominant_action["share"],
@@ -4536,6 +5004,7 @@ def _evaluate_fixture_rerank_candidate(
         )
         horizon_suite = run_mind_v3_fixture_suite(
             suite=str(horizon_config["suite"]),
+            fixture_names=_fixture_names_from_config(horizon_config),
             seeds=[int(seed) for seed in list(horizon_config["seeds"])],
             ticks=int(horizon_config.get("ticks") or ticks),
             founder_template=founder_template,
@@ -6195,6 +6664,121 @@ def _build_report(
     }
 
 
+def _comparison_baseline_report(
+    report: Mapping[str, object],
+    baseline_path: Path,
+) -> dict[str, object]:
+    if not baseline_path.exists():
+        raise SystemExit(
+            f"--comparison-baseline-report does not exist: {baseline_path}"
+        )
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    current_runs = _comparison_holdout_runs(report)
+    baseline_runs = _comparison_holdout_runs(baseline)
+    baseline_by_seed = {
+        int(run["seed"]): run
+        for run in baseline_runs
+        if isinstance(run.get("seed"), int)
+    }
+    deltas: list[dict[str, object]] = []
+    for current in current_runs:
+        seed = current.get("seed")
+        if not isinstance(seed, int) or seed not in baseline_by_seed:
+            continue
+        baseline_run = baseline_by_seed[seed]
+        deltas.append(
+            _comparison_seed_delta(
+                seed=seed,
+                current=current,
+                baseline=baseline_run,
+            )
+        )
+    return {
+        "policy": "mind_v3_matched_holdout_baseline_report_delta_v1",
+        "baseline_report": str(baseline_path),
+        "matched_seed_count": len(deltas),
+        "matched_holdout_seed_deltas": deltas,
+    }
+
+
+def _attach_comparison_baseline_report(
+    report: dict[str, object],
+    baseline_path: Path | None,
+) -> None:
+    if baseline_path is None:
+        return
+    report["comparison_baseline"] = _comparison_baseline_report(
+        report,
+        baseline_path,
+    )
+
+
+def _comparison_holdout_runs(report: Mapping[str, object]) -> list[dict[str, object]]:
+    holdout = report.get("holdout_evaluation")
+    if isinstance(holdout, Mapping) and isinstance(holdout.get("runs"), list):
+        return [
+            dict(run)
+            for run in holdout["runs"]
+            if isinstance(run, Mapping)
+        ]
+    best = report.get("best_candidate")
+    if isinstance(best, Mapping) and isinstance(best.get("runs"), list):
+        return [dict(run) for run in best["runs"] if isinstance(run, Mapping)]
+    return []
+
+
+def _comparison_seed_delta(
+    *,
+    seed: int,
+    current: Mapping[str, object],
+    baseline: Mapping[str, object],
+) -> dict[str, object]:
+    current_dominant = _dominant_action_summary(
+        _counts_from_mapping(current.get("requested_action_counts"))
+    )
+    baseline_dominant = _dominant_action_summary(
+        _counts_from_mapping(baseline.get("requested_action_counts"))
+    )
+    return {
+        "seed": seed,
+        "alive_agents_delta": _numeric_delta(current, baseline, "alive_agents"),
+        "births_delta": _numeric_delta(current, baseline, "births"),
+        "deaths_delta": _numeric_delta(current, baseline, "deaths"),
+        "unsupported_requested_action_count_delta": _numeric_delta(
+            current,
+            baseline,
+            "unsupported_requested_action_count",
+        ),
+        "unsupported_resolved_action_count_delta": _numeric_delta(
+            current,
+            baseline,
+            "unsupported_resolved_action_count",
+        ),
+        "current_dominant_requested_action": current_dominant["action"],
+        "baseline_dominant_requested_action": baseline_dominant["action"],
+        "dominant_requested_action_changed": (
+            current_dominant["action"] != baseline_dominant["action"]
+        ),
+        "current_dominant_requested_action_share": current_dominant["share"],
+        "baseline_dominant_requested_action_share": baseline_dominant["share"],
+        "dominant_requested_action_share_delta": _round(
+            float(current_dominant["share"]) - float(baseline_dominant["share"])
+        ),
+    }
+
+
+def _numeric_delta(
+    current: Mapping[str, object],
+    baseline: Mapping[str, object],
+    key: str,
+) -> float | None:
+    current_value = _float_value(current.get(key))
+    baseline_value = _float_value(baseline.get(key))
+    if current_value is None or baseline_value is None:
+        return None
+    return _round(current_value - baseline_value)
+
+
 def _write_report(path: Path, report: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -6280,7 +6864,11 @@ def _fixture_config_from_args(
         if args.fixture_ticks is not None
         else default_ticks
     )
-    return mind_v3_fixture_gate_config(
+    fixture_names = _parse_fixture_names(
+        args.fixture_names,
+        suite=str(args.fixture_suite),
+    )
+    config = mind_v3_fixture_gate_config(
         suite=str(args.fixture_suite),
         seeds=fixture_seeds,
         ticks=fixture_ticks,
@@ -6293,6 +6881,37 @@ def _fixture_config_from_args(
         min_matched_diet_viability=float(args.fixture_min_matched_diet_viability),
         min_biologically_ready=float(args.fixture_min_biologically_ready),
     )
+    if fixture_names is not None:
+        config["fixture_names"] = fixture_names
+    return config
+
+
+def _parse_fixture_names(raw: str | None, *, suite: str) -> list[str] | None:
+    if raw is None or not raw.strip():
+        return None
+    if suite != "basic":
+        raise SystemExit(f"unsupported fixture suite: {suite}")
+    supported = set(CONTROLLED_FIXTURE_NAMES)
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    if not names:
+        raise SystemExit("--fixture-names must include at least one fixture name")
+    unsupported = sorted(name for name in names if name not in supported)
+    if unsupported:
+        raise SystemExit(
+            "--fixture-names includes unsupported fixture(s): "
+            + ", ".join(unsupported)
+        )
+    return list(dict.fromkeys(names))
+
+
+def _fixture_names_from_config(
+    fixture_config: Mapping[str, object],
+) -> list[str] | None:
+    raw = fixture_config.get("fixture_names")
+    if not isinstance(raw, list):
+        return None
+    names = [str(name) for name in raw if isinstance(name, str) and name]
+    return names or None
 
 
 def _fixture_rerank_ticks_from_args(

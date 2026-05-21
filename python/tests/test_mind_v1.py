@@ -10762,6 +10762,27 @@ class MindV1Tests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "mind-v3-curriculum.json"
+            baseline_path = Path(tmpdir) / "mind-v3-baseline.json"
+            baseline_path.write_text(
+                json.dumps(
+                    {
+                        "holdout_evaluation": {
+                            "runs": [
+                                {
+                                    "seed": 13,
+                                    "alive_agents": 0,
+                                    "births": 0,
+                                    "deaths": 0,
+                                    "unsupported_requested_action_count": 0,
+                                    "unsupported_resolved_action_count": 0,
+                                    "requested_action_counts": {"stay": 1},
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             with (
                 patch(
                     "sys.argv",
@@ -10795,6 +10816,8 @@ class MindV1Tests(unittest.TestCase):
                         "2",
                         "--generations",
                         "1",
+                        "--comparison-baseline-report",
+                        str(baseline_path),
                         "--output",
                         str(report_path),
                     ],
@@ -10860,6 +10883,17 @@ class MindV1Tests(unittest.TestCase):
             ],
             0,
         )
+        comparison = report["comparison_baseline"]
+        self.assertEqual(
+            comparison["policy"],
+            "mind_v3_matched_holdout_baseline_report_delta_v1",
+        )
+        self.assertEqual(comparison["baseline_report"], str(baseline_path))
+        self.assertEqual(comparison["matched_seed_count"], 1)
+        delta = comparison["matched_holdout_seed_deltas"][0]
+        self.assertEqual(delta["seed"], 13)
+        self.assertIsNotNone(delta["alive_agents_delta"])
+        self.assertIsNotNone(delta["births_delta"])
 
     def test_mind_v3_evolve_cli_stops_curriculum_on_holdout_alive_floor(
         self,

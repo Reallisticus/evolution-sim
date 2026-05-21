@@ -49,8 +49,11 @@ from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_SCHEMA_VERSION,
     MIND_V3_CONTEXT_FEATURE_FIELDS,
     MIND_V3_NEED_GATED_FEATURE_FIELDS,
+    MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
+    MIND_V3_ROLLOUT_CONTEXT_HIDDEN_UNITS,
 )
 from evolution_sim.mind.policy_inputs import ecological_policy_input_contract
+from evolution_sim.mind.rollout_context import rollout_context_feature_contract
 from evolution_sim.mind.v3_neural import (
     MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
     MIND_V3_HORIZON_FIXTURE_MODEL_TYPE,
@@ -354,6 +357,7 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
             "raw_feature_source": "mind_observation_v3_encoded_input",
             "feature_source": "architecture_specific_safe_feature_selection_v1",
             "architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
+            "default_architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
             "feature_scope": "policy_visible_self_local_patch_navigation",
             "feature_fields": list(MIND_V3_CONTEXT_FEATURE_FIELDS),
             "derived_feature_fields": list(MIND_V3_NEED_GATED_FEATURE_FIELDS),
@@ -361,6 +365,26 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
                 "mind_inheritance_available"
             ],
             "inherited_parameters": "action_head_weights_and_bias",
+            "opt_in_architectures": [
+                {
+                    "architecture": (
+                        MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
+                    ),
+                    "base_architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
+                    "hidden_units": MIND_V3_ROLLOUT_CONTEXT_HIDDEN_UNITS,
+                    "feature_source": (
+                        "v4_safe_features_plus_previous_public_rollout_context"
+                    ),
+                    "founder_initialization": (
+                        "v4_base_prior_plus_exact_zero_rollout_context_units"
+                    ),
+                    "rollout_context_feature_contract": (
+                        rollout_context_feature_contract()
+                    ),
+                    "current_or_future_outcome_input": False,
+                    "controller_private_diagnostics_excluded": True,
+                }
+            ],
         },
         "frozen_neural_artifact": {
             "schema_version": MIND_V3_NEURAL_ARTIFACT_SCHEMA_VERSION,

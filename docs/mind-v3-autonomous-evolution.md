@@ -48,6 +48,13 @@ Post-action trajectory feedback (`before`, `after`, `outcome`, and `reward`)
 is training and credit-assignment data. It is not decision-time perception for
 promotion-eligible autonomous scorers.
 
+Opt-in rollout-context controllers may consume a policy-owned summary of the
+same agent's previous finalized public trajectory rows. That context is
+historical feedback only: it is snapshotted before the current decision and
+updated only after the current record finalizes. It must not contain seed,
+fixture identity, private world state, heuristic recommendations, current
+outcome data, or future rows.
+
 ## Current First Slice
 
 - `MindV3EvolutionPolicy` is a pure autonomous policy implementing the existing
@@ -346,6 +353,39 @@ limitation that a linear head over separate `thirst` and `navigation.water.dy`
 features cannot robustly express "move toward water only when thirsty" without
 an interaction feature. Search/evaluation still has to prove that the new
 capacity improves survival, reproduction, and controlled-fixture behavior.
+
+## Rollout-Context Controller v5
+
+`rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+is the first opt-in rollout-context controller slice. It preserves the v4
+need-gated local-navigation features and appends `RolloutContextState.values()`
+from the policy-owned rollout context. The rollout context is built only from
+previous same-agent finalized public trajectory rows and is updated through
+`observe_transition()` after the finalized record is available.
+
+The v5 path is implemented as a deterministic pure-Python linear action head
+with bounded selected-action updates. It is not a residual override, planner
+scorer, heuristic fallback, or logged-action fallback. The default founder
+architecture remains v4. V5 founder templates use the v4 base founder prior for
+the first twenty-four hidden units and exact zero weights for the appended
+rollout-context units; descendants may mutate those context weights through the
+existing bounded inheritance/update path. V5 must be selected explicitly with
+`sim:mind:v3:evolve -- --controller-architecture rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+or by supplying serialized v5 founder metadata.
+
+2026-05-22 diagnostic checkpoint:
+`output/mind/mind-v3-v5-rollout-context-search-80-120-diagnostic.json` ran the
+same-shape search as the v4 baseline and kept `heuristic_action_source_count=0`.
+It improved broad holdout aggregate alive by `+8.6666`, births by `+3.3333`,
+and deaths by `-5.3333` versus v4, but it is not promoted. Seed `29` births
+regressed by `-3`, aggregate movement regressed, unsupported resolved actions
+increased by `+4`, and the dominant action stayed `eat` with share `+0.0465`.
+The fixture gate failed on `carrion_only` viability/alive floors and
+`mixed_stable` health at the short horizon. Rollout context was active
+(`rollout_context_non_empty_share=0.9818`), but post-carrion context was rare
+(`rollout_context_post_carrion_context_share=0.0054`), so this is evidence that
+public rollout context adds capacity without solving carrion acquisition or
+controlled-fixture viability.
 
 ## Local/Navigation Controller v3
 
@@ -3913,6 +3953,20 @@ Major milestones from the current state:
   delta `-1.1`, unsupported action total `85`, and dominant applied override
   share `drink=1619/3221` (`0.502639`). v104 is rejected and v105 strict
   promotion is not allowed.
+- v105: rollout-context controller checkpoint. The opt-in
+  `rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+  controller is implemented as a deterministic pure-Python architecture that
+  appends policy-owned previous-row public rollout context to the v4 safe
+  feature path. The same-shape diagnostic search improved broad holdout alive
+  by `+8.6666`, births by `+3.3333`, and deaths by `-5.3333` versus the v4
+  baseline, with `heuristic_action_source_count=0` and
+  `rollout_context_non_empty_share=0.9818`. It is rejected for promotion:
+  fixture gate failed on `carrion_only` and `mixed_stable` health, seed `29`
+  births regressed by `-3`, unsupported resolved actions increased by `+4`,
+  movement regressed, and dominant requested action stayed `eat` with share
+  `+0.0465`. Post-carrion rollout context was rare
+  (`rollout_context_post_carrion_context_share=0.0054`), so the result supports
+  public context capacity but not the carrion fixture blocker.
 
 External checks that support this direction:
 
