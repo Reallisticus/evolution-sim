@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.observations import decode_observation_input
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    decode_observation_input,
+)
+from evolution_sim.mind.policy_inputs import (
+    ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    PolicyInputError,
+    ecological_policy_values_from_decoded,
+)
 from evolution_sim.mind.branch_action_oracle_labels import (
     MIND_V3_BRANCH_ACTION_ORACLE_LABEL_SCHEMA_VERSION,
     _MOVE_DELTAS,
@@ -1075,8 +1083,10 @@ def _candidate_feature_vector(
     )
     if archive_features:
         return archive_features
-    values = row.get("policy_observation_values") or row.get("observation_values")
-    if not isinstance(values, (tuple, list)):
+    values = _policy_observation_feature_values(
+        row.get("policy_observation_values") or row.get("observation_values")
+    )
+    if not values:
         return ()
     action_mask = _mapping(row.get("action_mask"))
     supported_count = sum(1 for value in action_mask.values() if bool(value))
@@ -1099,12 +1109,33 @@ def _decode_policy_observation_values(
 ) -> tuple[float, ...]:
     observation_input = _mapping(policy_state.get("observation_input"))
     try:
-        return tuple(
-            _round(float(value))
-            for value in decode_observation_input(dict(observation_input))
+        return _policy_observation_feature_values(
+            tuple(
+                _round(float(value))
+                for value in decode_observation_input(dict(observation_input))
+            )
         )
     except (ValueError, TypeError, zlib.error):
         return ()
+
+
+def _policy_observation_feature_values(value: object) -> tuple[float, ...]:
+    if not isinstance(value, (tuple, list)):
+        return ()
+    try:
+        values = tuple(_round(float(item)) for item in value)
+    except (TypeError, ValueError):
+        return ()
+    if not all(math.isfinite(item) for item in values):
+        return ()
+    if len(values) == OBSERVATION_INPUT_VECTOR_SIZE:
+        try:
+            return ecological_policy_values_from_decoded(values)
+        except PolicyInputError:
+            return ()
+    if len(values) == ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE:
+        return values
+    return ()
 
 
 def _candidate_actions(row: Mapping[str, object]) -> list[Mapping[str, object]]:

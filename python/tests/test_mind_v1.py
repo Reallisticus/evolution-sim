@@ -206,6 +206,10 @@ class MindV1Tests(unittest.TestCase):
         self.assertFalse(MIND_RUNTIME_ENABLED_DEFAULT)
         self.assertEqual(contract["model_artifact_version"], MIND_MODEL_ARTIFACT_VERSION)
         self.assertIn("trajectory_record_fields", contract)
+        self.assertEqual(
+            contract["action_mask_contract"]["mask_role"],
+            "resolution_affordance_mask",
+        )
         json.dumps(contract)
 
     def test_mind_online_learning_contract_declares_safe_ladder(self) -> None:
@@ -387,9 +391,78 @@ class MindV1Tests(unittest.TestCase):
             contract["promotion_metric_family"],
             "autonomous_survival_reproduction",
         )
+        handoff = contract["foundation_handoff"]
+        self.assertEqual(
+            handoff["policy"],
+            "foundation_to_mind_mixed_input_surface_v1",
+        )
+        self.assertIn(
+            "raw_ecological_self_state",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "engineered_local_patch_and_navigation_perception",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "utility_shaped_affordance_action_mask",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "controller_private_diagnostics",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "post_action_training_feedback",
+            handoff["input_surface_mix"],
+        )
+        self.assertTrue(
+            handoff["raw_encoded_observation"][
+                "contains_controller_private_diagnostics"
+            ]
+        )
+        self.assertFalse(
+            handoff["raw_encoded_observation"]["promotion_eligible_policy_input"]
+        )
+        self.assertIn(
+            "self.mind_inheritance_available",
+            handoff["raw_encoded_observation"][
+                "controller_private_diagnostic_fields"
+            ],
+        )
+        self.assertEqual(
+            handoff["action_mask"]["mask_role"],
+            "resolution_affordance_mask",
+        )
+        self.assertEqual(
+            handoff["action_mask"]["action_family_semantics"]["eat"][
+                "mask_basis"
+            ],
+            "utility_shaped_intake_affordance",
+        )
+        self.assertFalse(handoff["post_action_training_feedback"]["runtime_decision_input"])
+        self.assertEqual(
+            handoff["promotion_eligible_policy_input"][
+                "ecological_policy_input_contract"
+            ]["schema_version"],
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self.assertTrue(
+            handoff["promotion_eligible_policy_input"][
+                "must_exclude_controller_private_diagnostics"
+            ]
+        )
         self.assertEqual(
             contract["controller"]["feature_scope"],
             "policy_visible_self_local_patch_navigation",
+        )
+        self.assertEqual(
+            contract["controller"]["raw_feature_source"],
+            "mind_observation_v3_encoded_input",
+        )
+        self.assertEqual(
+            contract["controller"]["feature_source"],
+            "architecture_specific_safe_feature_selection_v1",
         )
         self.assertIn(
             "local_patch.food",
@@ -822,6 +895,167 @@ class MindV1Tests(unittest.TestCase):
             "mind_inheritance_available",
             MIND_V3_HOMEOSTATIC_FEATURE_FIELDS,
         )
+
+    def test_mind_v3_policy_visible_controller_architectures_are_invariant_to_controller_diagnostics(
+        self,
+    ) -> None:
+        from evolution_sim.env.runtime.observations import SELF_INPUT_FIELDS
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_ARCHITECTURE,
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+            MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+            mind_v3_controller_architecture_status,
+            mind_v3_parameter_count,
+            score_mind_v3_metadata,
+        )
+
+        architectures = {
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE: 8,
+            MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE: 16,
+            MIND_V3_CONTROLLER_ARCHITECTURE: 24,
+        }
+        unavailable = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        unavailable[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.42
+        unavailable[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.31
+        unavailable[SELF_INPUT_FIELDS.index("health_ratio")] = 0.89
+        unavailable[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.55
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        for architecture, hidden_units in architectures.items():
+            with self.subTest(architecture=architecture):
+                weights = {
+                    action: [0.01 * (index + 1) for index in range(hidden_units)]
+                    for action in ACTION_NAMES
+                }
+                metadata = {
+                    "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+                    "state_size": mind_v3_parameter_count(
+                        architecture=architecture
+                    ),
+                    "architecture": architecture,
+                    "action_head_weights": weights,
+                    "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+                }
+
+                self.assertEqual(
+                    mind_v3_controller_architecture_status(architecture),
+                    {
+                        "architecture": architecture,
+                        "loadable": True,
+                        "policy_input_safe": True,
+                        "promotion_eligible": True,
+                        "reason": None,
+                    },
+                )
+                self.assertEqual(
+                    score_mind_v3_metadata(
+                        metadata=metadata,
+                        observation_input=unavailable,
+                        action_mask=action_mask,
+                    ),
+                    score_mind_v3_metadata(
+                        metadata=metadata,
+                        observation_input=available,
+                        action_mask=action_mask,
+                    ),
+                )
+
+    def test_mind_v3_legacy_projection_is_historical_compatibility_only(
+        self,
+    ) -> None:
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            load_mind_v3_controller_metadata,
+            mind_v3_controller_architecture_status,
+            mind_v3_parameter_count,
+        )
+
+        weights = {action: [0.0] * 8 for action in ACTION_NAMES}
+        metadata = {
+            "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            "state_size": mind_v3_parameter_count(
+                architecture=MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            "action_head_weights": weights,
+            "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy.json"
+            path.write_text(json.dumps(metadata), encoding="utf-8")
+            loaded = load_mind_v3_controller_metadata(path)
+
+        self.assertEqual(
+            loaded["architecture"],
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+        )
+        self.assertEqual(
+            mind_v3_controller_architecture_status(
+                MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            {
+                "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+                "loadable": True,
+                "policy_input_safe": False,
+                "promotion_eligible": False,
+                "reason": MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            },
+        )
+
+    def test_mind_v3_eval_rejects_legacy_founder_template(self) -> None:
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            mind_v3_parameter_count,
+        )
+
+        metadata = {
+            "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            "state_size": mind_v3_parameter_count(
+                architecture=MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            "action_head_weights": {
+                action: [0.0] * 8 for action in ACTION_NAMES
+            },
+            "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            template_path = tmp / "legacy-template.json"
+            output_path = tmp / "eval.json"
+            template_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_evaluate",
+                        "--seeds",
+                        "5",
+                        "--ticks",
+                        "1",
+                        "--founder-template",
+                        str(template_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+                self.assertRaisesRegex(
+                    SystemExit,
+                    MIND_V3_LEGACY_COMPATIBILITY_REASON,
+                ),
+            ):
+                mind_v3_evaluate.main()
 
     def test_ecological_policy_input_contract_excludes_controller_diagnostics(
         self,

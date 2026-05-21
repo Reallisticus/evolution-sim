@@ -17,7 +17,10 @@ from evolution_sim.env.runtime.state import Agent
 from evolution_sim.genome import Genome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.io import JsonlTrajectoryWriter
-from evolution_sim.mind.evolution import load_mind_v3_founder_template
+from evolution_sim.mind.evolution import (
+    load_mind_v3_founder_template,
+    require_mind_v3_founder_template_promotion_eligible,
+)
 from evolution_sim.mind.outcome_metrics import (
     aggregate_run_outcome_metrics,
     build_run_outcome_metrics,
@@ -239,6 +242,11 @@ def main() -> None:
         if args.founder_template is not None
         else None
     )
+    if founder_template is not None:
+        try:
+            require_mind_v3_founder_template_promotion_eligible(founder_template)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     neural_artifact = (
         load_mind_v3_neural_artifact(args.neural_artifact)
         if args.neural_artifact is not None

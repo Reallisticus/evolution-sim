@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
 from evolution_sim.mind.feature_policy import feature_keys_from_observation
+from evolution_sim.env.runtime.observations import SELF_INPUT_FIELDS
 
 
 class RuntimeObservationContractTests(RuntimeContractTestHelpers):
@@ -56,7 +57,17 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
             contract["policy_input"]["self_input_fields"],
         )
         self.assertFalse(contract["mind_inheritance_placeholder"]["policy_visible"])
-        self.assertEqual(contract["policy_input"]["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
+        self.assertEqual(
+            contract["policy_input"]["shape"],
+            [OBSERVATION_INPUT_VECTOR_SIZE],
+        )
+        self.assertEqual(
+            contract["policy_input"]["semantic_role"],
+            "raw_encoded_observation_tensor",
+        )
+        self.assertFalse(
+            contract["policy_input"]["promotion_eligible_direct_policy_input"]
+        )
         self.assertEqual(encoded["decoded_dtype"], OBSERVATION_INPUT_DTYPE)
         self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE])
         self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
@@ -66,6 +77,55 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
         self.assertEqual(len(digest), 64)
         json.dumps(observation)
         json.dumps(encoded)
+
+    def test_raw_observation_contract_keeps_mind_diagnostic_as_compatibility_field(
+        self,
+    ) -> None:
+        contract = observation_contract()
+
+        self.assertIn(
+            "mind_inheritance_available",
+            contract["policy_input"]["self_input_fields"],
+        )
+        self.assertIn("mind_inheritance_available", SELF_INPUT_FIELDS)
+        self.assertEqual(
+            contract["policy_input"]["shape"],
+            [OBSERVATION_INPUT_VECTOR_SIZE],
+        )
+        self.assertEqual(
+            contract["policy_input"]["compatibility_role"],
+            "historical_policy_input_key_compatibility",
+        )
+        self.assertTrue(
+            contract["policy_input"]["contains_controller_private_diagnostics"]
+        )
+        self.assertEqual(
+            contract["policy_input"]["controller_private_diagnostic_fields"],
+            ["self.mind_inheritance_available"],
+        )
+        self.assertFalse(
+            contract["policy_input"]["promotion_eligible_direct_policy_input"]
+        )
+        self.assertTrue(
+            contract["policy_input"][
+                "safe_projection_required_for_mind_v3_promotion"
+            ]
+        )
+        self.assertIn(
+            "mind_ecological_policy_input_v1",
+            contract["policy_input"]["promotion_safe_projection_examples"],
+        )
+        self.assertIn(
+            "architecture-specific safe feature selection",
+            contract["policy_input"]["promotion_policy_input_guidance"],
+        )
+
+    def test_runtime_observation_contract_has_no_mind_dependency(self) -> None:
+        source = Path("python/evolution_sim/env/runtime/observations.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("evolution_sim.mind", source)
 
     def test_observation_builder_uses_explicit_context_for_policy_inputs(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))

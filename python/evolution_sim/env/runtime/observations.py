@@ -261,6 +261,8 @@ def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
             name: list(values) for name, values in sorted(ENUM_VOCABS.items())
         },
         "policy_input": {
+            "semantic_role": "raw_encoded_observation_tensor",
+            "compatibility_role": "historical_policy_input_key_compatibility",
             "encoder_version": OBSERVATION_ENCODER_VERSION,
             "decoded_dtype": OBSERVATION_INPUT_DTYPE,
             "storage_dtype": OBSERVATION_STORAGE_DTYPE,
@@ -276,6 +278,21 @@ def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
             "categorical_encoding": "normalized_ordinal_code",
             "nonnegative_signal_encoding": "x/(1+x)",
             "quantization_scale": OBSERVATION_QUANTIZATION_SCALE,
+            "contains_controller_private_diagnostics": True,
+            "controller_private_diagnostic_fields": [
+                "self.mind_inheritance_available"
+            ],
+            "promotion_eligible_direct_policy_input": False,
+            "safe_projection_required_for_mind_v3_promotion": True,
+            "promotion_safe_projection_examples": [
+                "mind_ecological_policy_input_v1",
+                "architecture_specific_safe_feature_selection_v1",
+            ],
+            "promotion_policy_input_guidance": (
+                "Mind v3 promotion paths must use a safe projection such as "
+                "ecological policy input or architecture-specific safe feature "
+                "selection that excludes controller-private diagnostics."
+            ),
         },
         "privileged_world_state": False,
     }

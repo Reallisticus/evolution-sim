@@ -12,10 +12,17 @@ from evolution_sim.env.runtime.observations import (
     LOCAL_PATCH_RADIUS,
     NAVIGATION_INPUT_FIELDS,
     NAVIGATION_TARGETS,
+    OBSERVATION_INPUT_VECTOR_SIZE,
     PATCH_CELL_COUNT,
     PATCH_INPUT_FIELDS,
     SELF_INPUT_FIELDS,
     decode_observation_input,
+)
+from evolution_sim.mind.policy_inputs import (
+    CONTROLLER_DIAGNOSTIC_SELF_FIELDS,
+    ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    PolicyInputError,
+    ecological_policy_values_from_decoded,
 )
 
 MIND_V3_PLANNER_DISTILLED_ARTIFACT_SCHEMA_VERSION = (
@@ -138,18 +145,19 @@ def planner_distilled_runtime_row(
     action_mask: Mapping[str, object],
     public_history_trace: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
-    values = _decode_policy_observation_values(observation_input)
+    decoded_values = _decode_observation_values(observation_input)
+    policy_values = _policy_observation_feature_values(decoded_values)
     compact_state: dict[str, object] = {}
-    if values:
-        compact_state = _compact_state_from_values(values)
+    if decoded_values:
+        compact_state = _compact_state_from_values(decoded_values)
     complete_mask = _complete_action_mask(action_mask)
     return {
         "action_mask": complete_mask,
         "compact_state": compact_state,
-        "observation_values": tuple(_round(value) for value in values)
+        "observation_values": tuple(_round(value) for value in policy_values)
         if compact_state
         else (),
-        "policy_observation_values": tuple(_round(value) for value in values),
+        "policy_observation_values": tuple(_round(value) for value in policy_values),
         "public_history_trace": [
             _public_history_item(item) for item in public_history_trace
         ],
@@ -294,8 +302,10 @@ def candidate_feature_vector(
     )
     if archive_features:
         return archive_features
-    values = row.get("policy_observation_values") or row.get("observation_values")
-    if not isinstance(values, (tuple, list)):
+    values = _policy_observation_feature_values(
+        row.get("policy_observation_values") or row.get("observation_values")
+    )
+    if not values:
         return ()
     action_mask = _mapping(row.get("action_mask"))
     supported_count = sum(1 for value in action_mask.values() if bool(value))
@@ -409,6 +419,7 @@ def _compact_state_from_values(values: Sequence[float]) -> dict[str, object]:
     self_state = {
         field: _round(float(values[index]))
         for field, index in _SELF_FIELD_INDEX.items()
+        if field not in CONTROLLER_DIAGNOSTIC_SELF_FIELDS
     }
     return {
         "self": self_state,
@@ -897,7 +908,7 @@ def _validate_example_section(
         )
 
 
-def _decode_policy_observation_values(
+def _decode_observation_values(
     observation_input: Mapping[str, object],
 ) -> tuple[float, ...]:
     try:
@@ -907,6 +918,25 @@ def _decode_policy_observation_values(
         )
     except (ValueError, TypeError, zlib.error):
         return ()
+
+
+def _policy_observation_feature_values(value: object) -> tuple[float, ...]:
+    if not isinstance(value, (tuple, list)):
+        return ()
+    try:
+        values = tuple(_round(float(item)) for item in value)
+    except (TypeError, ValueError):
+        return ()
+    if not all(math.isfinite(item) for item in values):
+        return ()
+    if len(values) == OBSERVATION_INPUT_VECTOR_SIZE:
+        try:
+            return ecological_policy_values_from_decoded(values)
+        except PolicyInputError:
+            return ()
+    if len(values) == ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE:
+        return values
+    return ()
 
 
 def _complete_action_mask(raw: Mapping[str, object]) -> dict[str, bool]:

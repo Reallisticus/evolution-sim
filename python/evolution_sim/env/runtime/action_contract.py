@@ -7,6 +7,10 @@ from evolution_sim.config.schema import SignalConfig
 import evolution_sim.env.runtime.signals as runtime_signals
 
 ACTION_CONTRACT_VERSION = "mind_action_contract_v1"
+ACTION_MASK_CONTRACT_VERSION = "mind_action_mask_semantics_v1"
+ACTION_MASK_SEMANTICS_POLICY = (
+    "resolution_affordance_mask_not_pure_physical_legality_v1"
+)
 
 MOVEMENT_ACTIONS: tuple[str, ...] = (
     "move_north",
@@ -120,6 +124,66 @@ def action_contract(signal_config: Any | None = None) -> dict[str, object]:
             "meaning": "simulator_opaque",
         },
         "actions": [spec.to_dict() for spec in specs],
+    }
+
+
+def action_mask_contract() -> dict[str, object]:
+    return {
+        "schema_version": ACTION_MASK_CONTRACT_VERSION,
+        "policy": ACTION_MASK_SEMANTICS_POLICY,
+        "mask_role": "resolution_affordance_mask",
+        "pure_physical_legality": False,
+        "description": (
+            "The action mask is the Foundation-provided set of actions the "
+            "resolver is prepared to accept for the current decision. It mixes "
+            "physical reachability with resource-usefulness and biological "
+            "condition gates."
+        ),
+        "action_family_semantics": {
+            "eat": {
+                "mask_basis": "utility_shaped_intake_affordance",
+                "pure_physical_legality": False,
+                "uses_intake_usefulness": True,
+                "uses_resource_value": True,
+                "notes": (
+                    "eat is enabled only when at least one plant, fresh-kill, "
+                    "or carcass intake path is currently useful and has "
+                    "positive/currently actionable resource value."
+                ),
+            },
+            "drink": {
+                "mask_basis": "water_access_affordance",
+                "pure_physical_legality": False,
+                "notes": (
+                    "drink is enabled from the water-access affordance exposed "
+                    "by Foundation hydrology and tile state."
+                ),
+            },
+            "movement": {
+                "mask_basis": "physical_resolution_legality",
+                "closer_to_physical_legality": True,
+                "notes": (
+                    "move_* entries are closest to physical legality: bounds, "
+                    "terrain, occupancy, and movement-resolution constraints."
+                ),
+            },
+            "attack": {
+                "mask_basis": "physical_adjacency_plus_biological_condition_gates",
+                "pure_physical_legality": False,
+                "uses_biological_condition_gate": True,
+                "notes": (
+                    "attack_* requires the directional physical target "
+                    "affordance and attack biology/condition gates."
+                ),
+            },
+            "reserved": {
+                "mask_basis": "future_or_opt_in_action_slots",
+                "notes": (
+                    "reserved actions stay in the stable action id space but "
+                    "are false unless their feature gate is enabled."
+                ),
+            },
+        },
     }
 
 

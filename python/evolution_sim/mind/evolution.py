@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from random import Random
 
@@ -27,6 +27,9 @@ MIND_V3_REWARD_UPDATE_POLICY = "bounded_reward_modulated_controller_update_v1"
 MIND_V3_REWARD_LEARNING_RATE = 0.025
 MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE = (
     "fixed_random_feature_projection_linear_action_head_v1"
+)
+MIND_V3_LEGACY_COMPATIBILITY_REASON = (
+    "historical_compatibility_only_private_diagnostic_input"
 )
 MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE = (
     "homeostatic_feature_projection_linear_action_head_v2"
@@ -105,6 +108,94 @@ MIND_V3_ATTACK_ACTIONS = {
     "attack_east",
     "attack_west",
 }
+MIND_V3_POLICY_VISIBLE_CONTROLLER_ARCHITECTURES = frozenset(
+    {
+        MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+        MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+        MIND_V3_CONTROLLER_ARCHITECTURE,
+    }
+)
+MIND_V3_LOADABLE_CONTROLLER_ARCHITECTURES = frozenset(
+    {
+        *MIND_V3_POLICY_VISIBLE_CONTROLLER_ARCHITECTURES,
+        MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+    }
+)
+
+
+def mind_v3_controller_architecture_status(
+    architecture: str | None,
+) -> dict[str, object]:
+    parsed = str(architecture or "")
+    if parsed in MIND_V3_POLICY_VISIBLE_CONTROLLER_ARCHITECTURES:
+        return {
+            "architecture": parsed,
+            "loadable": True,
+            "policy_input_safe": True,
+            "promotion_eligible": True,
+            "reason": None,
+        }
+    if parsed == MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE:
+        return {
+            "architecture": parsed,
+            "loadable": True,
+            "policy_input_safe": False,
+            "promotion_eligible": False,
+            "reason": MIND_V3_LEGACY_COMPATIBILITY_REASON,
+        }
+    return {
+        "architecture": parsed,
+        "loadable": False,
+        "policy_input_safe": False,
+        "promotion_eligible": False,
+        "reason": "unsupported_architecture",
+    }
+
+
+def mind_v3_controller_architecture_is_loadable(
+    architecture: str | None,
+) -> bool:
+    return bool(mind_v3_controller_architecture_status(architecture)["loadable"])
+
+
+def mind_v3_controller_architecture_is_policy_input_safe(
+    architecture: str | None,
+) -> bool:
+    return bool(
+        mind_v3_controller_architecture_status(architecture)["policy_input_safe"]
+    )
+
+
+def mind_v3_controller_architecture_is_promotion_eligible(
+    architecture: str | None,
+) -> bool:
+    return bool(
+        mind_v3_controller_architecture_status(architecture)["promotion_eligible"]
+    )
+
+
+def mind_v3_controller_metadata_status(
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    return mind_v3_controller_architecture_status(
+        str(metadata.get("architecture", ""))
+    )
+
+
+def require_mind_v3_founder_template_promotion_eligible(
+    template: Mapping[str, object] | Sequence[Mapping[str, object]],
+) -> None:
+    templates = [template] if isinstance(template, Mapping) else list(template)
+    for index, metadata in enumerate(templates):
+        status = mind_v3_controller_metadata_status(metadata)
+        if status["promotion_eligible"] is True:
+            continue
+        reason = str(status.get("reason", "unsupported_architecture"))
+        architecture = str(status.get("architecture", ""))
+        raise ValueError(
+            "Mind v3 founder template is not promotion/eval eligible "
+            f"(entry {index}, architecture {architecture!r}): {reason}"
+        )
 
 
 def mind_v3_parameter_count(*, architecture: str | None = None) -> int:
@@ -221,12 +312,7 @@ def _validated_metadata(metadata: dict[str, object]) -> dict[str, object]:
         architecture=architecture
     ):
         raise ValueError("Mind v3 controller metadata has invalid state_size")
-    if architecture not in {
-        MIND_V3_CONTROLLER_ARCHITECTURE,
-        MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
-        MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
-        MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
-    }:
+    if not mind_v3_controller_architecture_is_loadable(architecture):
         raise ValueError("Mind v3 controller metadata has unsupported architecture")
     validated = dict(metadata)
     validated["action_head_weights"] = _strict_weights(metadata)

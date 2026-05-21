@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import base64
 import json
+import struct
 import unittest
+import zlib
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.observations import OBSERVATION_INPUT_VECTOR_SIZE
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_ENCODER_VERSION,
+    OBSERVATION_INPUT_DTYPE,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_QUANTIZATION_SCALE,
+    OBSERVATION_SCHEMA_VERSION,
+    OBSERVATION_STORAGE_DTYPE,
+    OBSERVATION_STORAGE_ENCODING,
+    SELF_INPUT_FIELDS,
+)
 from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_SCHEMA_VERSION,
     mind_v3_parameter_count,
@@ -225,6 +238,47 @@ class MindV3SupportGatedResidualRuntimeTests(unittest.TestCase):
         self.assertTrue(scored["override_proposed"])
         self.assertFalse(scored["override_allowed"])
         self.assertEqual(scored["abstention_reason"], "margin_below_threshold")
+
+    def test_support_gated_residual_scores_are_invariant_to_mind_inheritance_bit(
+        self,
+    ) -> None:
+        artifact = _minimal_runtime_artifact()
+        unavailable = _observation_values()
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+
+        unavailable_scored = score_support_gated_residual_artifact(
+            artifact=artifact,
+            observation_input=_encoded_observation_values(unavailable),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+            linear_action="stay",
+        )
+        available_scored = score_support_gated_residual_artifact(
+            artifact=artifact,
+            observation_input=_encoded_observation_values(available),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+            linear_action="stay",
+        )
+
+        self.assertEqual(unavailable_scored, available_scored)
+
+    def test_support_candidate_feature_vector_rejects_nonnumeric_values(
+        self,
+    ) -> None:
+        malformed_values = (0.0,) * (OBSERVATION_INPUT_VECTOR_SIZE - 1) + ("bad",)
+
+        vector = candidate_feature_vector(
+            {
+                "policy_observation_values": malformed_values,
+                "action_mask": _action_mask(),
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+
+        self.assertEqual(vector, ())
 
     def test_v104_shadow_failure_audit_reports_drink_concentration(self) -> None:
         vector = _candidate_vector_for(action="drink", action_mask=_drink_action_mask())
@@ -479,11 +533,33 @@ def _observation() -> dict[str, object]:
 
 
 def _observation_input() -> dict[str, object]:
+    return _encoded_observation_values(_observation_values())
+
+
+def _observation_values() -> list[float]:
     values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
-    values[0] = 0.4
-    values[1] = 0.6
-    values[2] = 0.9
-    return {"values": values}
+    values[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.4
+    values[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.6
+    values[SELF_INPUT_FIELDS.index("health_ratio")] = 0.9
+    return values
+
+
+def _encoded_observation_values(values: list[float]) -> dict[str, object]:
+    quantized = [
+        int(round(max(-1.0, min(1.0, value)) * OBSERVATION_QUANTIZATION_SCALE))
+        for value in values
+    ]
+    packed = struct.pack(f"<{len(quantized)}h", *quantized)
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "encoder_version": OBSERVATION_ENCODER_VERSION,
+        "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+        "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+        "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "data": base64.b64encode(zlib.compress(packed, level=6)).decode("ascii"),
+    }
 
 
 def _action_mask() -> dict[str, bool]:

@@ -3,12 +3,27 @@ from __future__ import annotations
 import copy
 import io
 import json
+import base64
+import struct
 import unittest
+import zlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from evolution_sim.cli import mind_v3_evaluate
+from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_ENCODER_VERSION,
+    OBSERVATION_INPUT_DTYPE,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_QUANTIZATION_SCALE,
+    OBSERVATION_SCHEMA_VERSION,
+    OBSERVATION_STORAGE_DTYPE,
+    OBSERVATION_STORAGE_ENCODING,
+    SELF_INPUT_FIELDS,
+)
 from evolution_sim.mind.branch_planner_distillation_audit import (
     build_branch_planner_distillation_audit_report,
     score_distilled_planner_artifact,
@@ -18,10 +33,16 @@ from evolution_sim.mind.branch_sequence_continuation_scorer import (
 )
 from evolution_sim.mind.branch_utility_risk_audit import _utility_rows
 from evolution_sim.mind.evolution import MIND_V3_POLICY_ID, MIND_V3_POLICY_VERSION
+from evolution_sim.mind.policy_inputs import (
+    ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    ecological_policy_values_from_decoded,
+)
 from evolution_sim.mind.v3_planner_distilled import (
     MIND_V3_PLANNER_DISTILLED_ARTIFACT_SCHEMA_VERSION,
     MindV3PlannerDistilledArtifactError,
+    candidate_feature_vector,
     load_mind_v3_planner_distilled_artifact,
+    planner_distilled_runtime_row,
     score_mind_v3_planner_distilled_runtime,
 )
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
@@ -75,6 +96,145 @@ class MindV3PlannerDistilledRuntimeTests(unittest.TestCase):
 
         self.assertEqual(online["selected_action"], offline["selected_action"])
         self.assertEqual(online["candidate_scores"], offline["candidate_scores"])
+
+    def test_planner_runtime_row_excludes_controller_diagnostic_policy_values(
+        self,
+    ) -> None:
+        unavailable = _observation_values()
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+
+        unavailable_row = planner_distilled_runtime_row(
+            observation_input=_encoded_observation_values(unavailable),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+        )
+        available_row = planner_distilled_runtime_row(
+            observation_input=_encoded_observation_values(available),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+        )
+
+        self.assertEqual(
+            len(available_row["policy_observation_values"]),
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+        self.assertEqual(
+            len(available_row["observation_values"]),
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+        self.assertEqual(
+            unavailable_row["policy_observation_values"],
+            available_row["policy_observation_values"],
+        )
+        self.assertNotIn(
+            "mind_inheritance_available",
+            available_row["compact_state"]["self"],
+        )
+
+    def test_candidate_feature_vector_fallback_strips_controller_diagnostics(
+        self,
+    ) -> None:
+        unavailable = _observation_values()
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+        action_mask = _action_mask()
+
+        unavailable_vector = candidate_feature_vector(
+            {
+                "observation_values": tuple(unavailable),
+                "action_mask": action_mask,
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+        available_vector = candidate_feature_vector(
+            {
+                "observation_values": tuple(available),
+                "action_mask": action_mask,
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+
+        self.assertEqual(unavailable_vector, available_vector)
+
+    def test_candidate_feature_vector_fallback_accepts_only_contract_vector_sizes(
+        self,
+    ) -> None:
+        raw_values = tuple(_observation_values())
+        ecological_values = ecological_policy_values_from_decoded(raw_values)
+        action_mask = _action_mask()
+
+        raw_vector = candidate_feature_vector(
+            {
+                "policy_observation_values": raw_values,
+                "action_mask": action_mask,
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+        ecological_vector = candidate_feature_vector(
+            {
+                "policy_observation_values": ecological_values,
+                "action_mask": action_mask,
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+        unknown_vector = candidate_feature_vector(
+            {
+                "policy_observation_values": (0.1, 0.2, 0.3),
+                "action_mask": action_mask,
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+
+        self.assertTrue(raw_vector)
+        self.assertTrue(ecological_vector)
+        self.assertEqual(raw_vector, ecological_vector)
+        self.assertEqual(unknown_vector, ())
+
+    def test_candidate_feature_vector_fallback_rejects_nonnumeric_values(
+        self,
+    ) -> None:
+        malformed_values = (0.0,) * (OBSERVATION_INPUT_VECTOR_SIZE - 1) + ("bad",)
+
+        vector = candidate_feature_vector(
+            {
+                "policy_observation_values": malformed_values,
+                "action_mask": _action_mask(),
+                "public_history_trace": [],
+            },
+            "eat",
+        )
+
+        self.assertEqual(vector, ())
+
+    def test_planner_distilled_runtime_scores_are_invariant_to_mind_inheritance_bit(
+        self,
+    ) -> None:
+        report = _planner_distillation_report()
+        artifact = report["distilled_artifact"]
+        unavailable = _observation_values()
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+
+        unavailable_scores = score_mind_v3_planner_distilled_runtime(
+            artifact=artifact,
+            observation_input=_encoded_observation_values(unavailable),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+        )
+        available_scores = score_mind_v3_planner_distilled_runtime(
+            artifact=artifact,
+            observation_input=_encoded_observation_values(available),
+            action_mask=_action_mask(),
+            public_history_trace=[],
+        )
+
+        self.assertEqual(unavailable_scores, available_scores)
 
     def test_policy_updates_public_history_after_transition(self) -> None:
         report = _planner_distillation_report()
@@ -217,6 +377,36 @@ def _planner_distillation_report() -> dict[str, object]:
         strict_branch_action_oracle_labels=strict,
         branch_sequence_continuation_scorer_report=sequence,
     )
+
+
+def _observation_values() -> list[float]:
+    values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+    values[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.4
+    values[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.6
+    values[SELF_INPUT_FIELDS.index("health_ratio")] = 0.9
+    return values
+
+
+def _encoded_observation_values(values: list[float]) -> dict[str, object]:
+    quantized = [
+        int(round(max(-1.0, min(1.0, value)) * OBSERVATION_QUANTIZATION_SCALE))
+        for value in values
+    ]
+    packed = struct.pack(f"<{len(quantized)}h", *quantized)
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "encoder_version": OBSERVATION_ENCODER_VERSION,
+        "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+        "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+        "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "data": base64.b64encode(zlib.compress(packed, level=6)).decode("ascii"),
+    }
+
+
+def _action_mask() -> dict[str, bool]:
+    return {action: action in {"eat", "stay", "move_north"} for action in ACTION_NAMES}
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
 from evolution_sim.env.runtime.action_contract import (
     ACTION_CONTRACT_VERSION,
     action_contract,
+    action_mask_contract,
 )
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_ENCODER_VERSION,
@@ -88,6 +89,7 @@ def mind_v1_data_contract(signal_config: Any | None = None) -> dict[str, object]
         "reward_schema_version": REWARD_SCHEMA_VERSION,
         "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
         "action_contract": action_contract(signal_config),
+        "action_mask_contract": action_mask_contract(),
         "observation_contract": observation_contract(signal_config),
         "reward_contract": reward_contract(),
         "model_artifact_version": MIND_MODEL_ARTIFACT_VERSION,
@@ -299,10 +301,58 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
         "learning_mechanism": "bounded_parental_inheritance_with_mutation_v1",
         "mind_state_storage": "agent.mind_inheritance_metadata",
         "promotion_metric_family": "autonomous_survival_reproduction",
+        "foundation_handoff": {
+            "policy": "foundation_to_mind_mixed_input_surface_v1",
+            "input_surface_mix": [
+                "raw_ecological_self_state",
+                "engineered_local_patch_and_navigation_perception",
+                "utility_shaped_affordance_action_mask",
+                "controller_private_diagnostics",
+                "post_action_training_feedback",
+            ],
+            "raw_encoded_observation": {
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "encoder_version": OBSERVATION_ENCODER_VERSION,
+                "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+                "contains_controller_private_diagnostics": True,
+                "controller_private_diagnostic_fields": [
+                    "self.mind_inheritance_available"
+                ],
+                "retained_for": "historical_runtime_contract_compatibility",
+                "promotion_eligible_policy_input": False,
+            },
+            "engineered_perception": {
+                "local_patch": "bounded_centered_patch_features",
+                "navigation_targets": [
+                    "water",
+                    "plant",
+                    "carrion",
+                    "prey",
+                ],
+                "navigation_policy": "foundation_engineered_target_vectors_v1",
+            },
+            "action_mask": action_mask_contract(),
+            "promotion_eligible_policy_input": {
+                "accepted_sources": [
+                    "mind_ecological_policy_input_v1",
+                    "architecture_specific_safe_feature_selection_v1",
+                ],
+                "must_exclude_controller_private_diagnostics": True,
+                "ecological_policy_input_contract": (
+                    ecological_policy_input_contract()
+                ),
+            },
+            "post_action_training_feedback": {
+                "source": "trajectory_before_after_outcome_reward_records",
+                "runtime_decision_input": False,
+                "allowed_use": "offline_training_or_after_action_credit_assignment",
+            },
+        },
         "controller": {
             "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
             "runtime_backend": "pure_python_deterministic_v1",
-            "feature_source": "mind_observation_v3_encoded_input",
+            "raw_feature_source": "mind_observation_v3_encoded_input",
+            "feature_source": "architecture_specific_safe_feature_selection_v1",
             "architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
             "feature_scope": "policy_visible_self_local_patch_navigation",
             "feature_fields": list(MIND_V3_CONTEXT_FEATURE_FIELDS),

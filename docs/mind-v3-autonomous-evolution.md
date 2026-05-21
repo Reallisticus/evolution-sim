@@ -17,6 +17,37 @@ terrain, diet, movement, communication, and reproduction pressures differently
 enough that emergent inter-species behavior can be observed rather than erased
 by a single global winner.
 
+## Foundation Handoff Inputs
+
+The Foundation-to-Mind boundary is intentionally mixed. Mind receives raw
+ecological/self state, engineered local-patch and navigation perception,
+Foundation-provided action affordances, controller diagnostics needed for
+historical runtime compatibility, and post-action feedback for training or
+after-action credit assignment. These surfaces are not all equivalent policy
+inputs.
+
+The raw encoded observation tensor remains the stable replay/runtime contract.
+It includes raw self ecology, local patch fields, engineered navigation targets
+for water/plant/carrion/prey, and the historical
+`self.mind_inheritance_available` diagnostic. That diagnostic describes
+controller-state availability, not ecology. Promotion-eligible Mind v3 scorers
+must not consume it directly; they must use `mind_ecological_policy_input_v1`
+or an architecture-specific safe feature projection that excludes
+controller-private diagnostics.
+
+The action mask is also an affordance/resolution contract, not a pure physics
+legality oracle. Movement entries are closest to physical legality because they
+mostly reflect bounds, terrain, occupancy, and resolution constraints. `eat` is
+utility-shaped by intake-usefulness and resource-value checks for plant,
+fresh-kill, and carcass sources. `attack_*` combines directional target
+availability with biological and condition gates. These engineered Foundation
+affordances are intentional, but they must be named as affordances rather than
+mistaken for raw environment physics.
+
+Post-action trajectory feedback (`before`, `after`, `outcome`, and `reward`)
+is training and credit-assignment data. It is not decision-time perception for
+promotion-eligible autonomous scorers.
+
 ## Current First Slice
 
 - `MindV3EvolutionPolicy` is a pure autonomous policy implementing the existing
@@ -24,8 +55,9 @@ by a single global winner.
 - Founders receive bounded controller metadata in
   `agent.mind_inheritance_metadata`.
 - Children inherit and mutate bounded controller metadata through reproduction.
-- Runtime action selection uses masked controller scores over policy-visible
-  observations.
+- Runtime action selection uses masked controller scores over safe
+  Mind-policy inputs derived from the Foundation observation/action-affordance
+  contract.
 - Within-run reward-modulated controller updates apply a short eligibility
   trace, so later resource/survival reward can credit recent actions without
   hard-coded navigation behavior.
@@ -1071,7 +1103,7 @@ Initial implementation milestone:
 - `mind_ecological_policy_input_v1` defines the safe ecological policy vector
   for stronger v3 artifacts by dropping controller-private diagnostics such as
   `self.mind_inheritance_available` while retaining self ecology, local patch,
-  and navigation inputs.
+  engineered navigation, and other Foundation perception inputs.
 
 This milestone is complete: v3 trajectory data and fixture-gated v3 reports can
 produce loadable label reports, focused tests cover the contract, and the next
@@ -2882,10 +2914,11 @@ v92 catastrophe-sensitive branch utility diagnostic:
 - `output/mind/mind-v3-v92-branch-utility-risk-audit.json` reuses the v91
   failure-frontier labels and scores all `263` replayed candidate actions
   directly with a deterministic leave-one-source-seed-out utility/risk scorer.
-  The feature contract is policy-visible only: decoded observation values,
-  action mask, compact self/local/navigation fields when decodable, same-agent
-  public history trace, and candidate action identity. Held-out seed leakage is
-  `0`; no rule uses logged action as a runtime fallback, seed/branch id,
+  The feature contract is policy-visible only after diagnostic filtering:
+  ecological decoded observation values, utility-shaped action affordances,
+  compact self/local/navigation fields when decodable, same-agent public
+  history trace, and candidate action identity. Held-out seed leakage is `0`;
+  no rule uses logged action as a runtime fallback, seed/branch id,
   fixture identity, or hidden simulator state as a feature.
 - v92 compares the v91 option-mode baseline, mean predicted target-local
   utility, lower-confidence-bound utility, CVaR-style utility, explicit
@@ -2966,9 +2999,10 @@ v94 sequence/world-model branch-continuation scorer diagnostic:
   count are both `0`.
 - The v94 scorer treats `first_action_outcome`, `target_horizon_trace`, and
   `population_horizon_trace` as replay targets, not runtime inputs. Runtime
-  features are policy-visible only: decoded observation values, action mask,
-  compact self/local/navigation state when decodable, same-agent public history
-  trace, candidate action identity, move direction, and candidate support.
+  features are policy-visible only after the Mind input filter: ecological
+  decoded observation values, the utility-shaped action mask, compact
+  self/local/navigation state when decodable, same-agent public history trace,
+  candidate action identity, move direction, and candidate support.
 - Compared with the v93 one-step trap baseline, sequence scoring fixes the
   two seed `41` frontier catastrophes as a class. The best acceptance-eligible
   rule, `sequence_prefix_nearest_neighbor_k5`, avoids target death on both
@@ -3753,8 +3787,8 @@ Major milestones from the current state:
   `24`-label branch archive is replay-verified and label-accepted with `+36`
   terminal alive and `+26` births versus logged. Actual future traces expose a
   delayed temporal-credit signal on the 12-label archive, but neither compact
-  nor full policy-visible one-row observations can predict that signal under
-  leave-one-source-seed-out support on the expanded archive. Stop before
+  nor filtered ecological one-row observation features can predict that signal
+  under leave-one-source-seed-out support on the expanded archive. Stop before
   training; the next branch needs public target-agent sequence/history or
   option/archive state, not a pointwise horizon model.
 - v86-v88: public history and scripted-option boundary. Branch points now carry

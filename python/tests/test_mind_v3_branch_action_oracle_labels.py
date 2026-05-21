@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import struct
 import unittest
+import zlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -12,6 +15,17 @@ from evolution_sim.cli import (
     mind_v3_branch_continuation_archive_scorer,
 )
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_ENCODER_VERSION,
+    OBSERVATION_INPUT_DTYPE,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_QUANTIZATION_SCALE,
+    OBSERVATION_SCHEMA_VERSION,
+    OBSERVATION_STORAGE_DTYPE,
+    OBSERVATION_STORAGE_ENCODING,
+    SELF_INPUT_FIELDS,
+)
 from evolution_sim.mind.branch_action_oracle_audit import (
     DEFAULT_BRANCH_ACTION_ORACLE_HISTORY_STEPS,
     MIND_V3_BRANCH_ACTION_ORACLE_AUDIT_SCHEMA_VERSION,
@@ -353,11 +367,7 @@ def _synthetic_audit_report() -> dict[str, object]:
                 "logged_action": logged_action,
                 "branch_state_digest": f"state-digest-{index}",
                 "policy_state": {
-                    "observation_input": {
-                        "schema_version": "mind_observation_v3",
-                        "shape": [1],
-                        "values": [index / 10.0],
-                    },
+                    "observation_input": _encoded_observation_values(index),
                     "observation_digest": f"observation-digest-{index}",
                     "observation_schema": "mind_observation_v3",
                     "action_mask": _action_mask(),
@@ -410,6 +420,28 @@ def _synthetic_audit_report() -> dict[str, object]:
         "acceptance": {"diagnostic_acceptance_passed": True, "blockers": []},
         "branch_points": branch_points,
         "branch_results": branch_results,
+    }
+
+
+def _encoded_observation_values(index: int) -> dict[str, object]:
+    values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+    values[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.35 + 0.05 * float(index)
+    values[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.65 - 0.03 * float(index)
+    values[SELF_INPUT_FIELDS.index("health_ratio")] = 0.9
+    quantized = [
+        int(round(max(-1.0, min(1.0, value)) * OBSERVATION_QUANTIZATION_SCALE))
+        for value in values
+    ]
+    packed = struct.pack(f"<{len(quantized)}h", *quantized)
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "encoder_version": OBSERVATION_ENCODER_VERSION,
+        "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+        "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+        "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "data": base64.b64encode(zlib.compress(packed, level=6)).decode("ascii"),
     }
 
 
