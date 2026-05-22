@@ -429,6 +429,79 @@ class MindV3CarrionAutopsyTests(unittest.TestCase):
             0,
         )
 
+    def test_fixture_trace_aggregates_recovery_score_attribution_bins(self) -> None:
+        report = build_carrion_autopsy_report(
+            [
+                _dataset(
+                    (
+                        _trajectory_record(
+                            tick=0,
+                            action="drink",
+                            resolved_action="stay",
+                            before_energy=0.5,
+                            after_energy=0.45,
+                            before_hydration=0.25,
+                            after_hydration=0.24,
+                            after_health=0.8,
+                            action_valid=True,
+                            resolution_action_valid=False,
+                            invalid_reason="not_in_resolution_action_mask",
+                            policy_decision_diagnostics={
+                                "recovery_context_schema_version": (
+                                    "mind_v3_recovery_context_v1"
+                                ),
+                                "recovery_context_post_carrion_contact": True,
+                                "recovery_context_drink_available": True,
+                                "recovery_context_selected_score_delta": 0.4,
+                                "recovery_context_hydration_debt_bin": "high",
+                                "recovery_context_water_distance_bin": "mid",
+                                "recovery_context_score_delta_by_action": {
+                                    "drink": 0.4,
+                                    "eat": -0.1,
+                                },
+                            },
+                        ),
+                    )
+                )
+            ],
+            post_contact_window_ticks=1,
+        )
+
+        diagnostics = report["fixture_trace"]["aggregate"][
+            "recovery_context_diagnostics"
+        ]
+        self.assertEqual(diagnostics["diagnostic_count"], 1)
+        self.assertEqual(diagnostics["post_carrion_context_count"], 1)
+        self.assertEqual(diagnostics["drink_available_count"], 1)
+        self.assertEqual(
+            diagnostics["score_delta_by_action"]["drink"]["mean"],
+            0.4,
+        )
+        self.assertEqual(
+            diagnostics["selected_score_delta_by_requested_action"]["drink"]["mean"],
+            0.4,
+        )
+        self.assertEqual(
+            diagnostics["selected_score_delta_by_resolved_action"]["stay"]["mean"],
+            0.4,
+        )
+        self.assertEqual(
+            diagnostics["selected_score_delta_by_unsupported_reason"][
+                "not_in_resolution_action_mask"
+            ]["mean"],
+            0.4,
+        )
+        self.assertEqual(
+            diagnostics["selected_score_delta_by_hydration_debt_bin"]["high"][
+                "mean"
+            ],
+            0.4,
+        )
+        self.assertEqual(
+            diagnostics["selected_score_delta_by_water_distance_bin"]["mid"]["mean"],
+            0.4,
+        )
+
 
 def _dataset(records: tuple[dict[str, object], ...]) -> TrajectoryJsonlDataset:
     provenance = {

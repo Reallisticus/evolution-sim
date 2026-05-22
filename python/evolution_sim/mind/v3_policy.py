@@ -22,11 +22,19 @@ from evolution_sim.mind.evolution import (
     MIND_V3_POLICY_ID,
     MIND_V3_POLICY_VERSION,
     MIND_V3_REWARD_UPDATE_POLICY,
+    MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE,
     MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     adapt_mind_v3_metadata,
     founder_mind_v3_metadata,
     inherit_mind_v3_metadata,
     score_mind_v3_metadata,
+)
+from evolution_sim.mind.recovery_context import (
+    MIND_V3_RECOVERY_CONTEXT_FEATURE_POLICY,
+    MIND_V3_RECOVERY_CONTEXT_SCHEMA_VERSION,
+    RecoveryContextState,
+    recovery_context_vector_fields,
+    recovery_context_vector_size,
 )
 from evolution_sim.mind.rollout_context import (
     MIND_V3_ROLLOUT_CONTEXT_FEATURE_POLICY,
@@ -196,13 +204,25 @@ class MindV3EvolutionPolicy:
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[
             int,
-            list[tuple[str, list[float], tuple[float, ...] | None]],
+            list[
+                tuple[
+                    str,
+                    list[float],
+                    tuple[float, ...] | None,
+                    tuple[float, ...] | None,
+                ]
+            ],
         ] = {}
         self._no_gain_eat_streaks: dict[int, int] = {}
         self._recovery_phase_ticks_remaining: dict[int, int] = {}
         self._public_history_records: dict[int, list[dict[str, object]]] = {}
         self._rollout_context_states: dict[int, RolloutContextState] = {}
         self._pending_rollout_context_values: dict[
+            int,
+            list[tuple[float, ...]],
+        ] = {}
+        self._recovery_context_states: dict[int, RecoveryContextState] = {}
+        self._pending_recovery_context_values: dict[
             int,
             list[tuple[float, ...]],
         ] = {}
@@ -349,6 +369,8 @@ class MindV3EvolutionPolicy:
         controller_architecture = _metadata_controller_architecture(metadata)
         rollout_context_values: tuple[float, ...] | None = None
         rollout_context_non_empty: bool | None = None
+        recovery_context_values: tuple[float, ...] | None = None
+        recovery_context_non_empty: bool | None = None
         if self._planner_distilled_artifact is not None:
             public_history_trace = self._public_history_trace_for_decision(agent_id)
             planner_scored = score_mind_v3_planner_distilled_runtime(
@@ -365,16 +387,27 @@ class MindV3EvolutionPolicy:
             neural_anchor_diagnostics = dict(planner_scored["diagnostics"])
             self._pending_public_decisions += 1
         elif self._neural_artifact is None:
+            observation_values = _observation_values(observation)
             rollout_context_values = self._rollout_context_values_for_decision(
                 agent_id=agent_id,
                 metadata=metadata,
             )
             rollout_context_non_empty = self._rollout_context_non_empty(agent_id)
+            recovery_context_values = self._recovery_context_values_for_decision(
+                agent_id=agent_id,
+                metadata=metadata,
+                observation_values=observation_values,
+                action_mask=action_mask,
+            )
+            recovery_context_non_empty = _context_values_non_empty(
+                recovery_context_values
+            )
             linear_scores = score_mind_v3_metadata(
                 metadata=metadata,
-                observation_input=_observation_values(observation),
+                observation_input=observation_values,
                 action_mask=action_mask,
                 rollout_context_values=rollout_context_values,
+                recovery_context_values=recovery_context_values,
             )
             if self._support_residual_artifact is None:
                 scores = linear_scores
@@ -438,6 +471,15 @@ class MindV3EvolutionPolicy:
                 metadata=metadata,
             )
             rollout_context_non_empty = self._rollout_context_non_empty(agent_id)
+            recovery_context_values = self._recovery_context_values_for_decision(
+                agent_id=agent_id,
+                metadata=metadata,
+                observation_values=observation_values,
+                action_mask=action_mask,
+            )
+            recovery_context_non_empty = _context_values_non_empty(
+                recovery_context_values
+            )
             neural_residual_recovery_phase_remaining = max(
                 0,
                 int(self._recovery_phase_ticks_remaining.get(agent_id, 0)),
@@ -491,6 +533,7 @@ class MindV3EvolutionPolicy:
                     observation_input=observation_values,
                     action_mask=action_mask,
                     rollout_context_values=rollout_context_values,
+                    recovery_context_values=recovery_context_values,
                 )
                 neural_residual_guard_reason = (
                     _neural_residual_safety_guard_reason(
@@ -589,6 +632,16 @@ class MindV3EvolutionPolicy:
                 requested_action=requested_action,
             )
         )
+        diagnostics.update(
+            _recovery_context_decision_diagnostics(
+                metadata=metadata,
+                recovery_context_values=recovery_context_values,
+                recovery_context_non_empty=recovery_context_non_empty,
+                action_mask=action_mask,
+                requested_action=requested_action,
+                scores=scores,
+            )
+        )
         if self._planner_distilled_artifact is not None:
             diagnostics.update(
                 {
@@ -660,6 +713,8 @@ class MindV3EvolutionPolicy:
         trace_items = self._eligibility_traces.setdefault(agent_id, [])
         rollout_context_values: tuple[float, ...] | None = None
         uses_rollout_context = _metadata_uses_rollout_context(metadata)
+        recovery_context_values: tuple[float, ...] | None = None
+        uses_recovery_context = _metadata_uses_recovery_context(metadata)
         if not passive_terminal_feedback:
             if action is None:
                 return None
@@ -668,7 +723,27 @@ class MindV3EvolutionPolicy:
                     self._pop_pending_rollout_context_values(agent_id)
                     or tuple(self._rollout_context_state(agent_id).values())
                 )
-            trace_items.append((action, observation_values, rollout_context_values))
+            if uses_recovery_context:
+                recovery_context_values = (
+                    self._pop_pending_recovery_context_values(agent_id)
+                    or tuple(
+                        self._recovery_context_state(agent_id).values(
+                            rollout_context_snapshot=self._rollout_context_state(
+                                agent_id
+                            ).snapshot(),
+                            current_observation_values=observation_values,
+                            action_mask=_record_action_mask(record),
+                        )
+                    )
+                )
+            trace_items.append(
+                (
+                    action,
+                    observation_values,
+                    rollout_context_values,
+                    recovery_context_values,
+                )
+            )
             if len(trace_items) > MIND_V3_ELIGIBILITY_TRACE_LENGTH:
                 del trace_items[0 : len(trace_items) - MIND_V3_ELIGIBILITY_TRACE_LENGTH]
         elif not trace_items:
@@ -676,9 +751,12 @@ class MindV3EvolutionPolicy:
         updated = metadata
         credited_actions: list[str] = []
         for age, trace_item in enumerate(reversed(trace_items)):
-            credit_action, credit_observation_values, credit_rollout_context = (
-                trace_item
-            )
+            (
+                credit_action,
+                credit_observation_values,
+                credit_rollout_context,
+                credit_recovery_context,
+            ) = trace_item
             updated = adapt_mind_v3_metadata(
                 metadata=updated,
                 observation_input=credit_observation_values,
@@ -686,6 +764,7 @@ class MindV3EvolutionPolicy:
                 reward_signal=reward_signal
                 * (MIND_V3_ELIGIBILITY_TRACE_DECAY ** age),
                 rollout_context_values=credit_rollout_context,
+                recovery_context_values=credit_recovery_context,
             )
             credited_actions.append(credit_action)
         self._agent_metadata[agent_id] = updated
@@ -704,6 +783,11 @@ class MindV3EvolutionPolicy:
             rollout_context_update_trace = self._rollout_context_state(
                 agent_id
             ).update_from_record(record)
+        recovery_context_update_trace = None
+        if uses_recovery_context and not passive_terminal_feedback:
+            recovery_context_update_trace = self._recovery_context_state(
+                agent_id
+            ).update_from_record(record, observation_values=observation_values)
         self.controller_update_count += 1
         trace: dict[str, object] = {
             "schema_version": "mind_v3_controller_update_trace_v1",
@@ -740,12 +824,20 @@ class MindV3EvolutionPolicy:
         }
         if rollout_context_update_trace is not None:
             trace["rollout_context_update_trace"] = rollout_context_update_trace
+        if recovery_context_update_trace is not None:
+            trace["recovery_context_update_trace"] = recovery_context_update_trace
         return trace
 
     def _rollout_context_state(self, agent_id: int) -> RolloutContextState:
         return self._rollout_context_states.setdefault(
             agent_id,
             RolloutContextState(),
+        )
+
+    def _recovery_context_state(self, agent_id: int) -> RecoveryContextState:
+        return self._recovery_context_states.setdefault(
+            agent_id,
+            RecoveryContextState(),
         )
 
     def _rollout_context_values_for_decision(
@@ -784,6 +876,40 @@ class MindV3EvolutionPolicy:
         agent_id: int,
     ) -> tuple[float, ...] | None:
         pending = self._pending_rollout_context_values.get(agent_id)
+        if not pending:
+            return None
+        return pending.pop(0)
+
+    def _recovery_context_values_for_decision(
+        self,
+        *,
+        agent_id: int,
+        metadata: Mapping[str, object],
+        observation_values: Sequence[object],
+        action_mask: Mapping[str, bool],
+    ) -> tuple[float, ...] | None:
+        if not _metadata_uses_recovery_context(metadata):
+            return None
+        values = tuple(
+            self._recovery_context_state(agent_id).values(
+                rollout_context_snapshot=self._rollout_context_state(
+                    agent_id
+                ).snapshot(),
+                current_observation_values=observation_values,
+                action_mask=action_mask,
+            )
+        )
+        pending = self._pending_recovery_context_values.setdefault(agent_id, [])
+        pending.append(values)
+        if len(pending) > MIND_V3_ELIGIBILITY_TRACE_LENGTH:
+            del pending[0 : len(pending) - MIND_V3_ELIGIBILITY_TRACE_LENGTH]
+        return values
+
+    def _pop_pending_recovery_context_values(
+        self,
+        agent_id: int,
+    ) -> tuple[float, ...] | None:
+        pending = self._pending_recovery_context_values.get(agent_id)
         if not pending:
             return None
         return pending.pop(0)
@@ -983,7 +1109,17 @@ def _metadata_controller_architecture(metadata: Mapping[str, object]) -> str:
 def _metadata_uses_rollout_context(metadata: Mapping[str, object]) -> bool:
     return (
         _metadata_controller_architecture(metadata)
-        == MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE
+        in {
+            MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
+            MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE,
+        }
+    )
+
+
+def _metadata_uses_recovery_context(metadata: Mapping[str, object]) -> bool:
+    return (
+        _metadata_controller_architecture(metadata)
+        == MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE
     )
 
 
@@ -1066,6 +1202,180 @@ def _rollout_context_boolean_field(
     return _finite_number(values[index]) > 0.0
 
 
+def _recovery_context_decision_diagnostics(
+    *,
+    metadata: Mapping[str, object],
+    recovery_context_values: tuple[float, ...] | None,
+    recovery_context_non_empty: bool | None,
+    action_mask: Mapping[str, bool],
+    requested_action: str,
+    scores: Mapping[str, float],
+) -> dict[str, object]:
+    if not _metadata_uses_recovery_context(metadata):
+        return {}
+    values = recovery_context_values or ()
+    score_delta_by_action = _recovery_context_score_delta_by_action(
+        metadata=metadata,
+        recovery_context_values=values,
+        action_mask=action_mask,
+    )
+    focus_ranks, focus_margins = _focus_action_rank_diagnostics(scores)
+    return {
+        "recovery_context_schema_version": MIND_V3_RECOVERY_CONTEXT_SCHEMA_VERSION,
+        "recovery_context_feature_policy": MIND_V3_RECOVERY_CONTEXT_FEATURE_POLICY,
+        "recovery_context_vector_size": recovery_context_vector_size(),
+        "recovery_context_non_empty": bool(recovery_context_non_empty),
+        "recovery_context_post_carrion_contact": (
+            _recovery_context_field(values, "post_carrion_contact") > 0.0
+        ),
+        "recovery_context_hydration_debt": _recovery_context_field(
+            values,
+            "post_carrion_contact_x_hydration_debt",
+        ),
+        "recovery_context_hydration_debt_bin": _unit_bin(
+            _recovery_context_field(
+                values,
+                "post_carrion_contact_x_hydration_debt",
+            )
+        ),
+        "recovery_context_water_distance": _recovery_context_field(
+            values,
+            "post_carrion_contact_x_water_distance",
+        ),
+        "recovery_context_water_distance_bin": _unit_bin(
+            _recovery_context_field(
+                values,
+                "post_carrion_contact_x_water_distance",
+            )
+        ),
+        "recovery_context_drink_available": (
+            _recovery_context_field(
+                values,
+                "post_carrion_contact_x_drink_available",
+            )
+            > 0.0
+        ),
+        "recovery_context_score_delta_policy": (
+            "v6_score_minus_rollout_context_only_recovery_zero_v1"
+        ),
+        "recovery_context_selected_score_delta": score_delta_by_action.get(
+            requested_action,
+            0.0,
+        ),
+        "recovery_context_score_delta_by_action": score_delta_by_action,
+        "recovery_context_focus_action_score_ranks": focus_ranks,
+        "recovery_context_focus_action_margins_to_best": focus_margins,
+    }
+
+
+def _recovery_context_score_delta_by_action(
+    *,
+    metadata: Mapping[str, object],
+    recovery_context_values: Sequence[float],
+    action_mask: Mapping[str, bool],
+) -> dict[str, float]:
+    vector_size = recovery_context_vector_size()
+    if len(recovery_context_values) != vector_size:
+        return {}
+    raw_weights = metadata.get("action_head_weights")
+    if not isinstance(raw_weights, Mapping):
+        return {}
+    offset = MIND_V3_HIDDEN_UNITS + rollout_context_vector_size()
+    deltas: dict[str, float] = {}
+    for action in ACTION_NAMES:
+        if not bool(action_mask.get(action, False)):
+            continue
+        action_weights = raw_weights.get(action)
+        if not isinstance(action_weights, list):
+            continue
+        if len(action_weights) < offset + vector_size:
+            continue
+        deltas[action] = _round(
+            sum(
+                _finite_number(action_weights[offset + index])
+                * _finite_number(recovery_context_values[index])
+                for index in range(vector_size)
+            )
+        )
+    return deltas
+
+
+def _recovery_context_field(values: Sequence[float], field: str) -> float:
+    fields = recovery_context_vector_fields()
+    if field not in fields:
+        return 0.0
+    index = fields.index(field)
+    if index >= len(values):
+        return 0.0
+    return _round(_finite_number(values[index]))
+
+
+def _context_values_non_empty(values: Sequence[float] | None) -> bool | None:
+    if values is None:
+        return None
+    return any(abs(_finite_number(value)) > 0.0 for value in values)
+
+
+def _focus_action_rank_diagnostics(
+    scores: Mapping[str, float],
+) -> tuple[dict[str, int | None], dict[str, float | None]]:
+    parsed_scores = {
+        action: _finite_number(score)
+        for action, score in scores.items()
+        if isinstance(action, str)
+    }
+    if not parsed_scores:
+        return (
+            {"drink": None, "eat": None, "move": None, "stay": None},
+            {"drink": None, "eat": None, "move": None, "stay": None},
+        )
+    ordered = sorted(parsed_scores.items(), key=lambda item: (-item[1], item[0]))
+    ranks = {action: index + 1 for index, (action, _) in enumerate(ordered)}
+    best_score = ordered[0][1]
+    focus_actions: dict[str, str | None] = {
+        "drink": "drink" if "drink" in parsed_scores else None,
+        "eat": "eat" if "eat" in parsed_scores else None,
+        "stay": "stay" if "stay" in parsed_scores else None,
+        "move": _best_movement_action(parsed_scores),
+    }
+    return (
+        {
+            key: (ranks[action] if action is not None else None)
+            for key, action in focus_actions.items()
+        },
+        {
+            key: (
+                _round(parsed_scores[action] - best_score)
+                if action is not None
+                else None
+            )
+            for key, action in focus_actions.items()
+        },
+    )
+
+
+def _best_movement_action(scores: Mapping[str, float]) -> str | None:
+    movement_scores = {
+        action: score
+        for action, score in scores.items()
+        if action in MIND_V3_NAVIGATION_MOVEMENT_DIRECTIONS
+    }
+    if not movement_scores:
+        return None
+    return max(movement_scores.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _unit_bin(value: float) -> str:
+    parsed = max(0.0, min(1.0, _finite_number(value)))
+    if parsed <= 0.0:
+        return "zero"
+    if parsed < 0.34:
+        return "low"
+    if parsed < 0.67:
+        return "mid"
+    return "high"
+
+
 def _finite_number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
@@ -1093,6 +1403,18 @@ def _observation_input_payload(
         if isinstance(payload, Mapping)
         else encode_observation_input(dict(observation))
     )
+
+
+def _record_observation_input(record: Mapping[str, object]) -> dict[str, object]:
+    payload = record.get("observation_input")
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _record_action_mask(record: Mapping[str, object]) -> dict[str, bool]:
+    payload = record.get("action_mask")
+    if not isinstance(payload, Mapping):
+        return {}
+    return {str(action): bool(allowed) for action, allowed in payload.items()}
 
 
 def _record_agent_id(record: Mapping[str, object]) -> int | None:

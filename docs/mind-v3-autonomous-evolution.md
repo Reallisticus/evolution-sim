@@ -387,6 +387,34 @@ The fixture gate failed on `carrion_only` viability/alive floors and
 public rollout context adds capacity without solving carrion acquisition or
 controlled-fixture viability.
 
+## Recovery-Context Controller v6
+
+`recovery_context_need_gated_local_navigation_feature_projection_linear_action_head_v6`
+is an opt-in recovery-context controller checkpoint. It preserves the v4
+need-gated local-navigation features, keeps the v5 rollout-context capacity, and
+appends a separate recovery-context vector derived only from current
+policy-visible observation/action-mask data plus previous same-agent finalized
+public trajectory rows. It is deterministic, pure Python, serialized,
+inherited, replayable, and not enabled by default.
+
+V6 founder templates keep the v4 base prior for the original hidden units and
+exact zero weights for all appended rollout/recovery context units. Descendants
+may mutate those context weights through the existing bounded update path. The
+controller does not use fixture identity, private world state, future rows,
+heuristic recommendations, logged-action fallback, controller-private
+diagnostics, or seed/source/branch identity.
+
+2026-05-22 diagnostic checkpoint:
+`output/mind/mind-v3-v6-recovery-context-smoke.json` completed mechanically
+after the recovery-context extraction optimization, with a `439.64s` small-smoke
+elapsed time. That optimization reuses decoded current observations and stores a
+compact previous public navigation summary instead of repeatedly decoding
+previous raw observation payloads. V6 is not promoted: the smoke still failed
+the `carrion_only` alive floor, and the full same-shape comparison remains
+pending. A local full same-shape run attempted before this performance patch was
+too slow and terminated without producing a report, so treat v6 as an
+experimental capacity checkpoint only.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in

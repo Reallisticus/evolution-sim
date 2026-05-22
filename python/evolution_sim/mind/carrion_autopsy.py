@@ -333,6 +333,7 @@ def _summarize_fixture_agent_trace(
     resolution_mask_availability = _empty_mask_availability()
     navigation_accumulator = _empty_navigation_accumulator()
     rollout_context = _empty_rollout_context_accumulator()
+    recovery_context = _empty_recovery_context_accumulator()
 
     eat_attempt_count = 0
     successful_eat_count = 0
@@ -405,6 +406,11 @@ def _summarize_fixture_agent_trace(
             record=record,
             missing_fields=missing_fields,
         )
+        _accumulate_recovery_context_diagnostics(
+            recovery_context,
+            record=record,
+            missing_fields=missing_fields,
+        )
         _accumulate_navigation_summary(
             navigation_accumulator,
             record=record,
@@ -471,6 +477,9 @@ def _summarize_fixture_agent_trace(
         "rollout_context_diagnostics": _finalize_rollout_context_summary(
             rollout_context
         ),
+        "recovery_context_diagnostics": _finalize_recovery_context_summary(
+            recovery_context
+        ),
         "navigation_target_observations": _finalize_navigation_summary(
             navigation_accumulator
         ),
@@ -505,6 +514,11 @@ def _contact_window_summary(
             "navigation_at_contact": {},
             "post_carrion_rollout_context": None,
             "rollout_context_selected_score_delta": None,
+            "post_carrion_recovery_context": None,
+            "recovery_context_selected_score_delta": None,
+            "recovery_context_hydration_debt_bin": None,
+            "recovery_context_water_distance_bin": None,
+            "recovery_context_drink_available": None,
         }
     first_contact = timeline[contact_index]
     contact_tick = _record_tick(first_contact)
@@ -570,6 +584,34 @@ def _contact_window_summary(
                 "rollout_context_selected_score_delta",
             )
         ),
+        "post_carrion_recovery_context": (
+            bool(diagnostics_mapping.get("recovery_context_post_carrion_contact"))
+            if diagnostics_mapping
+            else None
+        ),
+        "recovery_context_selected_score_delta": _round_optional(
+            _mapping_float(
+                diagnostics_mapping,
+                "recovery_context_selected_score_delta",
+            )
+        ),
+        "recovery_context_hydration_debt_bin": (
+            str(diagnostics_mapping.get("recovery_context_hydration_debt_bin"))
+            if diagnostics_mapping.get("recovery_context_hydration_debt_bin")
+            is not None
+            else None
+        ),
+        "recovery_context_water_distance_bin": (
+            str(diagnostics_mapping.get("recovery_context_water_distance_bin"))
+            if diagnostics_mapping.get("recovery_context_water_distance_bin")
+            is not None
+            else None
+        ),
+        "recovery_context_drink_available": (
+            bool(diagnostics_mapping.get("recovery_context_drink_available"))
+            if diagnostics_mapping
+            else None
+        ),
     }
 
 
@@ -605,6 +647,7 @@ def _aggregate_fixture_trace_subset(
     resolution_mask = _empty_mask_availability()
     navigation = _empty_navigation_accumulator()
     rollout = _empty_rollout_context_accumulator()
+    recovery = _empty_recovery_context_accumulator()
     contact_summaries: list[Mapping[str, object]] = []
 
     for trace in traces:
@@ -629,6 +672,10 @@ def _aggregate_fixture_trace_subset(
         _merge_rollout_context_summary(
             rollout,
             trace.get("rollout_context_diagnostics"),
+        )
+        _merge_recovery_context_summary(
+            recovery,
+            trace.get("recovery_context_diagnostics"),
         )
         _merge_navigation_summary(
             navigation,
@@ -709,6 +756,7 @@ def _aggregate_fixture_trace_subset(
             if isinstance(contact.get("death_ticks_after_carrion"), int)
         ],
         "rollout_context_diagnostics": _finalize_rollout_context_summary(rollout),
+        "recovery_context_diagnostics": _finalize_recovery_context_summary(recovery),
         "navigation_target_observations": _finalize_navigation_summary(navigation),
         "missing_field_counts": dict(sorted(missing_fields.items())),
     }
@@ -1070,6 +1118,303 @@ def _merge_rollout_context_summary(
         accumulator["selected_score_delta_abs_max"] = max(
             float(accumulator["selected_score_delta_abs_max"]),
             _finite_float(payload.get("selected_score_delta_abs_max")),
+        )
+
+
+def _empty_recovery_context_accumulator() -> dict[str, object]:
+    return {
+        "diagnostic_count": 0,
+        "missing_count": 0,
+        "post_carrion_context_count": 0,
+        "drink_available_count": 0,
+        "selected_score_delta_count": 0,
+        "selected_score_delta_sum": 0.0,
+        "selected_score_delta_abs_sum": 0.0,
+        "selected_score_delta_abs_max": 0.0,
+        "score_delta_by_action": {},
+        "selected_score_delta_by_requested_action": {},
+        "selected_score_delta_by_resolved_action": {},
+        "selected_score_delta_by_unsupported_reason": {},
+        "selected_score_delta_by_hydration_debt_bin": {},
+        "selected_score_delta_by_water_distance_bin": {},
+        "selected_score_delta_by_drink_available": {},
+    }
+
+
+def _accumulate_recovery_context_diagnostics(
+    accumulator: dict[str, object],
+    *,
+    record: Mapping[str, object],
+    missing_fields: Counter[str],
+) -> None:
+    diagnostics = record.get("policy_decision_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        accumulator["missing_count"] = int(accumulator["missing_count"]) + 1
+        return
+    if "recovery_context_schema_version" not in diagnostics:
+        accumulator["missing_count"] = int(accumulator["missing_count"]) + 1
+        return
+    accumulator["diagnostic_count"] = int(accumulator["diagnostic_count"]) + 1
+    if bool(diagnostics.get("recovery_context_post_carrion_contact", False)):
+        accumulator["post_carrion_context_count"] = (
+            int(accumulator["post_carrion_context_count"]) + 1
+        )
+    if bool(diagnostics.get("recovery_context_drink_available", False)):
+        accumulator["drink_available_count"] = (
+            int(accumulator["drink_available_count"]) + 1
+        )
+    delta = _mapping_float(diagnostics, "recovery_context_selected_score_delta")
+    if delta is not None:
+        _accumulate_recovery_delta(accumulator, delta)
+        requested = str(record.get("requested_action", "unknown"))
+        resolved = str(record.get("resolved_action", "unknown"))
+        reason = (
+            _record_invalid_reason(record)
+            if record.get("resolution_action_valid") is False
+            else "supported"
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_requested_action"],
+            requested,
+            delta,
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_resolved_action"],
+            resolved,
+            delta,
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_unsupported_reason"],
+            reason,
+            delta,
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_hydration_debt_bin"],
+            str(diagnostics.get("recovery_context_hydration_debt_bin", "unknown")),
+            delta,
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_water_distance_bin"],
+            str(diagnostics.get("recovery_context_water_distance_bin", "unknown")),
+            delta,
+        )
+        _update_named_delta_stats(
+            accumulator["selected_score_delta_by_drink_available"],
+            str(bool(diagnostics.get("recovery_context_drink_available", False))),
+            delta,
+        )
+    raw_by_action = diagnostics.get("recovery_context_score_delta_by_action")
+    if isinstance(raw_by_action, Mapping):
+        for action, raw_delta in raw_by_action.items():
+            action_delta = _finite_optional_float(raw_delta)
+            if action_delta is None:
+                continue
+            _update_named_delta_stats(
+                accumulator["score_delta_by_action"],
+                str(action),
+                action_delta,
+            )
+
+
+def _accumulate_recovery_delta(
+    accumulator: dict[str, object],
+    delta: float,
+) -> None:
+    accumulator["selected_score_delta_count"] = (
+        int(accumulator["selected_score_delta_count"]) + 1
+    )
+    accumulator["selected_score_delta_sum"] = (
+        float(accumulator["selected_score_delta_sum"]) + delta
+    )
+    accumulator["selected_score_delta_abs_sum"] = (
+        float(accumulator["selected_score_delta_abs_sum"]) + abs(delta)
+    )
+    accumulator["selected_score_delta_abs_max"] = max(
+        float(accumulator["selected_score_delta_abs_max"]),
+        abs(delta),
+    )
+
+
+def _finalize_recovery_context_summary(
+    accumulator: Mapping[str, object],
+) -> dict[str, object]:
+    diagnostic_count = int(accumulator.get("diagnostic_count", 0))
+    delta_count = int(accumulator.get("selected_score_delta_count", 0))
+    return {
+        "diagnostic_count": diagnostic_count,
+        "missing_count": int(accumulator.get("missing_count", 0)),
+        "post_carrion_context_count": int(
+            accumulator.get("post_carrion_context_count", 0)
+        ),
+        "post_carrion_context_share": _safe_rate(
+            int(accumulator.get("post_carrion_context_count", 0)),
+            diagnostic_count,
+        ),
+        "drink_available_count": int(accumulator.get("drink_available_count", 0)),
+        "drink_available_share": _safe_rate(
+            int(accumulator.get("drink_available_count", 0)),
+            diagnostic_count,
+        ),
+        "selected_score_delta_count": delta_count,
+        "selected_score_delta_mean": (
+            _round(float(accumulator.get("selected_score_delta_sum", 0.0)) / delta_count)
+            if delta_count
+            else None
+        ),
+        "selected_score_delta_abs_mean": (
+            _round(
+                float(accumulator.get("selected_score_delta_abs_sum", 0.0))
+                / delta_count
+            )
+            if delta_count
+            else None
+        ),
+        "selected_score_delta_abs_max": (
+            _round(float(accumulator.get("selected_score_delta_abs_max", 0.0)))
+            if delta_count
+            else None
+        ),
+        "score_delta_by_action": _finalize_named_delta_stats(
+            accumulator.get("score_delta_by_action")
+        ),
+        "selected_score_delta_by_requested_action": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_requested_action")
+        ),
+        "selected_score_delta_by_resolved_action": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_resolved_action")
+        ),
+        "selected_score_delta_by_unsupported_reason": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_unsupported_reason")
+        ),
+        "selected_score_delta_by_hydration_debt_bin": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_hydration_debt_bin")
+        ),
+        "selected_score_delta_by_water_distance_bin": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_water_distance_bin")
+        ),
+        "selected_score_delta_by_drink_available": _finalize_named_delta_stats(
+            accumulator.get("selected_score_delta_by_drink_available")
+        ),
+    }
+
+
+def _merge_recovery_context_summary(
+    accumulator: dict[str, object],
+    payload: object,
+) -> None:
+    if not isinstance(payload, Mapping):
+        return
+    diagnostic_count = int(payload.get("diagnostic_count", 0))
+    delta_count = int(payload.get("selected_score_delta_count", 0))
+    accumulator["diagnostic_count"] = int(accumulator["diagnostic_count"]) + diagnostic_count
+    accumulator["missing_count"] = int(accumulator["missing_count"]) + int(
+        payload.get("missing_count", 0)
+    )
+    accumulator["post_carrion_context_count"] = int(
+        accumulator["post_carrion_context_count"]
+    ) + int(payload.get("post_carrion_context_count", 0))
+    accumulator["drink_available_count"] = int(
+        accumulator["drink_available_count"]
+    ) + int(payload.get("drink_available_count", 0))
+    if delta_count:
+        mean = _finite_float(payload.get("selected_score_delta_mean"))
+        abs_mean = _finite_float(payload.get("selected_score_delta_abs_mean"))
+        accumulator["selected_score_delta_count"] = (
+            int(accumulator["selected_score_delta_count"]) + delta_count
+        )
+        accumulator["selected_score_delta_sum"] = (
+            float(accumulator["selected_score_delta_sum"]) + mean * delta_count
+        )
+        accumulator["selected_score_delta_abs_sum"] = (
+            float(accumulator["selected_score_delta_abs_sum"]) + abs_mean * delta_count
+        )
+        accumulator["selected_score_delta_abs_max"] = max(
+            float(accumulator["selected_score_delta_abs_max"]),
+            _finite_float(payload.get("selected_score_delta_abs_max")),
+        )
+    for key in (
+        "score_delta_by_action",
+        "selected_score_delta_by_requested_action",
+        "selected_score_delta_by_resolved_action",
+        "selected_score_delta_by_unsupported_reason",
+        "selected_score_delta_by_hydration_debt_bin",
+        "selected_score_delta_by_water_distance_bin",
+        "selected_score_delta_by_drink_available",
+    ):
+        _merge_named_delta_stats(accumulator[key], payload.get(key))
+
+
+def _empty_delta_stats() -> dict[str, float | int]:
+    return {
+        "count": 0,
+        "nonzero_count": 0,
+        "delta_sum": 0.0,
+        "delta_abs_sum": 0.0,
+        "delta_abs_max": 0.0,
+    }
+
+
+def _update_named_delta_stats(
+    accumulator: object,
+    key: str,
+    delta: float,
+) -> None:
+    if not isinstance(accumulator, dict):
+        return
+    stats = accumulator.setdefault(str(key), _empty_delta_stats())
+    if not isinstance(stats, dict):
+        return
+    stats["count"] = int(stats.get("count", 0)) + 1
+    stats["delta_sum"] = float(stats.get("delta_sum", 0.0)) + delta
+    stats["delta_abs_sum"] = float(stats.get("delta_abs_sum", 0.0)) + abs(delta)
+    stats["delta_abs_max"] = max(float(stats.get("delta_abs_max", 0.0)), abs(delta))
+    if delta != 0.0:
+        stats["nonzero_count"] = int(stats.get("nonzero_count", 0)) + 1
+
+
+def _finalize_named_delta_stats(payload: object) -> dict[str, dict[str, object]]:
+    if not isinstance(payload, Mapping):
+        return {}
+    finalized: dict[str, dict[str, object]] = {}
+    for key, raw_stats in sorted(payload.items()):
+        if not isinstance(raw_stats, Mapping):
+            continue
+        count = int(raw_stats.get("count", 0))
+        finalized[str(key)] = {
+            "count": count,
+            "nonzero_count": int(raw_stats.get("nonzero_count", 0)),
+            "mean": _round(float(raw_stats.get("delta_sum", 0.0)) / max(1, count)),
+            "abs_mean": _round(
+                float(raw_stats.get("delta_abs_sum", 0.0)) / max(1, count)
+            ),
+            "abs_max": _round(float(raw_stats.get("delta_abs_max", 0.0))),
+        }
+    return finalized
+
+
+def _merge_named_delta_stats(accumulator: object, payload: object) -> None:
+    if not isinstance(accumulator, dict) or not isinstance(payload, Mapping):
+        return
+    for key, raw_stats in payload.items():
+        if not isinstance(raw_stats, Mapping):
+            continue
+        count = int(raw_stats.get("count", 0))
+        mean = _finite_float(raw_stats.get("mean"))
+        abs_mean = _finite_float(raw_stats.get("abs_mean"))
+        stats = accumulator.setdefault(str(key), _empty_delta_stats())
+        if not isinstance(stats, dict):
+            continue
+        stats["count"] = int(stats.get("count", 0)) + count
+        stats["nonzero_count"] = int(stats.get("nonzero_count", 0)) + int(
+            raw_stats.get("nonzero_count", 0)
+        )
+        stats["delta_sum"] = float(stats.get("delta_sum", 0.0)) + mean * count
+        stats["delta_abs_sum"] = (
+            float(stats.get("delta_abs_sum", 0.0)) + abs_mean * count
+        )
+        stats["delta_abs_max"] = max(
+            float(stats.get("delta_abs_max", 0.0)),
+            _finite_float(raw_stats.get("abs_max")),
         )
 
 
@@ -1857,6 +2202,13 @@ def _finite_float(value: object) -> float:
         return 0.0
     parsed = float(value)
     return parsed if math.isfinite(parsed) else 0.0
+
+
+def _finite_optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def _optional_int(value: object) -> int | None:

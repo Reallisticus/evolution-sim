@@ -23,6 +23,7 @@ from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_ARCHITECTURE,
     MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
     MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+    MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE,
     MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     MIND_V3_SPECIALIZATION_PROFILES,
     founder_mind_v3_metadata,
@@ -124,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
             MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
             MIND_V3_CONTROLLER_ARCHITECTURE,
             MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
+            MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE,
         ],
         default=MIND_V3_CONTROLLER_ARCHITECTURE,
         help=(
@@ -1649,6 +1651,39 @@ def _evaluate_candidate(
         "rollout_context_selected_score_delta_by_requested_action": aggregate[
             "rollout_context_selected_score_delta_by_requested_action"
         ],
+        "recovery_context_decision_count": aggregate[
+            "recovery_context_decision_count"
+        ],
+        "recovery_context_non_empty_count": aggregate[
+            "recovery_context_non_empty_count"
+        ],
+        "recovery_context_non_empty_share": aggregate[
+            "recovery_context_non_empty_share"
+        ],
+        "recovery_context_selected_score_delta_nonzero_count": aggregate[
+            "recovery_context_selected_score_delta_nonzero_count"
+        ],
+        "recovery_context_selected_score_delta_mean": aggregate[
+            "recovery_context_selected_score_delta_mean"
+        ],
+        "recovery_context_selected_score_delta_abs_mean": aggregate[
+            "recovery_context_selected_score_delta_abs_mean"
+        ],
+        "recovery_context_selected_score_delta_abs_max": aggregate[
+            "recovery_context_selected_score_delta_abs_max"
+        ],
+        "recovery_context_post_carrion_context_count": aggregate[
+            "recovery_context_post_carrion_context_count"
+        ],
+        "recovery_context_post_carrion_context_share": aggregate[
+            "recovery_context_post_carrion_context_share"
+        ],
+        "recovery_context_drink_available_count": aggregate[
+            "recovery_context_drink_available_count"
+        ],
+        "recovery_context_selected_score_delta_by_requested_action": aggregate[
+            "recovery_context_selected_score_delta_by_requested_action"
+        ],
         "dominant_requested_action": aggregate["dominant_requested_action"],
         "dominant_requested_action_count": aggregate[
             "dominant_requested_action_count"
@@ -2271,6 +2306,10 @@ def _run_candidate(
         diagnostics_records=world.policy_decision_diagnostics_records,
         trajectory_records=world.trajectory_records,
     )
+    recovery_context_diagnostics = _recovery_context_decision_summary(
+        diagnostics_records=world.policy_decision_diagnostics_records,
+        trajectory_records=world.trajectory_records,
+    )
     for record in world.trajectory_records:
         requested_action = record.get("requested_action")
         if requested_action is not None:
@@ -2447,6 +2486,7 @@ def _run_candidate(
         "unsupported_requested_action_breakdown": unsupported_requested_action_breakdown,
         "unsupported_resolved_action_breakdown": unsupported_resolved_action_breakdown,
         **rollout_context_diagnostics,
+        **recovery_context_diagnostics,
         "heuristic_action_source_count": _heuristic_action_source_count(
             action_source_counts
         ),
@@ -2585,6 +2625,118 @@ def _rollout_context_per_action_summary(
             "abs_max": _round(float(stats.get("delta_abs_max", 0.0))),
         }
     return summary
+
+
+def _recovery_context_decision_summary(
+    *,
+    diagnostics_records: list[dict[str, object] | None],
+    trajectory_records: list[dict[str, object]],
+) -> dict[str, object]:
+    count = 0
+    non_empty_count = 0
+    post_carrion_count = 0
+    drink_available_count = 0
+    nonzero_count = 0
+    delta_sum = 0.0
+    delta_abs_sum = 0.0
+    delta_abs_max = 0.0
+    per_action: dict[str, dict[str, float | int]] = {}
+    for index, diagnostics in enumerate(diagnostics_records):
+        if not isinstance(diagnostics, Mapping):
+            continue
+        if "recovery_context_schema_version" not in diagnostics:
+            continue
+        count += 1
+        if bool(diagnostics.get("recovery_context_non_empty", False)):
+            non_empty_count += 1
+        if bool(diagnostics.get("recovery_context_post_carrion_contact", False)):
+            post_carrion_count += 1
+        if bool(diagnostics.get("recovery_context_drink_available", False)):
+            drink_available_count += 1
+        delta = _float_value(
+            diagnostics.get("recovery_context_selected_score_delta")
+        )
+        if delta is None:
+            delta = 0.0
+        delta = _round(delta)
+        delta_abs = abs(delta)
+        delta_sum += delta
+        delta_abs_sum += delta_abs
+        delta_abs_max = max(delta_abs_max, delta_abs)
+        if delta != 0.0:
+            nonzero_count += 1
+        action = "unknown"
+        if index < len(trajectory_records):
+            action = str(trajectory_records[index].get("requested_action", "unknown"))
+        action_stats = per_action.setdefault(
+            action,
+            {
+                "count": 0,
+                "nonzero_count": 0,
+                "delta_sum": 0.0,
+                "delta_abs_sum": 0.0,
+                "delta_abs_max": 0.0,
+            },
+        )
+        action_stats["count"] = int(action_stats["count"]) + 1
+        action_stats["delta_sum"] = float(action_stats["delta_sum"]) + delta
+        action_stats["delta_abs_sum"] = (
+            float(action_stats["delta_abs_sum"]) + delta_abs
+        )
+        action_stats["delta_abs_max"] = max(
+            float(action_stats["delta_abs_max"]),
+            delta_abs,
+        )
+        if delta != 0.0:
+            action_stats["nonzero_count"] = int(action_stats["nonzero_count"]) + 1
+    return _recovery_context_summary_from_totals(
+        count=count,
+        non_empty_count=non_empty_count,
+        post_carrion_count=post_carrion_count,
+        drink_available_count=drink_available_count,
+        nonzero_count=nonzero_count,
+        delta_sum=delta_sum,
+        delta_abs_sum=delta_abs_sum,
+        delta_abs_max=delta_abs_max,
+        per_action=per_action,
+    )
+
+
+def _recovery_context_summary_from_totals(
+    *,
+    count: int,
+    non_empty_count: int,
+    post_carrion_count: int,
+    drink_available_count: int,
+    nonzero_count: int,
+    delta_sum: float,
+    delta_abs_sum: float,
+    delta_abs_max: float,
+    per_action: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
+    return {
+        "recovery_context_decision_count": int(count),
+        "recovery_context_non_empty_count": int(non_empty_count),
+        "recovery_context_non_empty_share": _round(
+            int(non_empty_count) / max(1, int(count))
+        ),
+        "recovery_context_selected_score_delta_nonzero_count": int(nonzero_count),
+        "recovery_context_selected_score_delta_mean": _round(
+            float(delta_sum) / max(1, int(count))
+        ),
+        "recovery_context_selected_score_delta_abs_mean": _round(
+            float(delta_abs_sum) / max(1, int(count))
+        ),
+        "recovery_context_selected_score_delta_abs_max": _round(delta_abs_max),
+        "recovery_context_post_carrion_context_count": int(post_carrion_count),
+        "recovery_context_post_carrion_context_share": _round(
+            int(post_carrion_count) / max(1, int(count))
+        ),
+        "recovery_context_drink_available_count": int(drink_available_count),
+        "recovery_context_selected_score_delta_by_requested_action": (
+            _rollout_context_per_action_summary(per_action)
+        ),
+    }
 
 
 def _unsupported_action_breakdown(
@@ -3489,6 +3641,89 @@ def _aggregate_rollout_context_diagnostics(
     )
 
 
+def _aggregate_recovery_context_diagnostics(
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    count = 0
+    non_empty_count = 0
+    post_carrion_count = 0
+    drink_available_count = 0
+    nonzero_count = 0
+    delta_sum = 0.0
+    delta_abs_sum = 0.0
+    delta_abs_max = 0.0
+    per_action: dict[str, dict[str, float | int]] = {}
+    for run in runs:
+        run_count = int(run.get("recovery_context_decision_count", 0))
+        count += run_count
+        non_empty_count += int(run.get("recovery_context_non_empty_count", 0))
+        post_carrion_count += int(
+            run.get("recovery_context_post_carrion_context_count", 0)
+        )
+        drink_available_count += int(
+            run.get("recovery_context_drink_available_count", 0)
+        )
+        nonzero_count += int(
+            run.get("recovery_context_selected_score_delta_nonzero_count", 0)
+        )
+        delta_sum += (
+            float(run.get("recovery_context_selected_score_delta_mean", 0.0))
+            * run_count
+        )
+        delta_abs_sum += (
+            float(run.get("recovery_context_selected_score_delta_abs_mean", 0.0))
+            * run_count
+        )
+        delta_abs_max = max(
+            delta_abs_max,
+            float(run.get("recovery_context_selected_score_delta_abs_max", 0.0)),
+        )
+        raw_per_action = run.get(
+            "recovery_context_selected_score_delta_by_requested_action"
+        )
+        if not isinstance(raw_per_action, Mapping):
+            continue
+        for action, raw_stats in raw_per_action.items():
+            if not isinstance(raw_stats, Mapping):
+                continue
+            action_count = int(raw_stats.get("count", 0))
+            action_stats = per_action.setdefault(
+                str(action),
+                {
+                    "count": 0,
+                    "nonzero_count": 0,
+                    "delta_sum": 0.0,
+                    "delta_abs_sum": 0.0,
+                    "delta_abs_max": 0.0,
+                },
+            )
+            action_stats["count"] = int(action_stats["count"]) + action_count
+            action_stats["nonzero_count"] = int(action_stats["nonzero_count"]) + int(
+                raw_stats.get("nonzero_count", 0)
+            )
+            action_stats["delta_sum"] = float(action_stats["delta_sum"]) + (
+                float(raw_stats.get("mean", 0.0)) * action_count
+            )
+            action_stats["delta_abs_sum"] = float(action_stats["delta_abs_sum"]) + (
+                float(raw_stats.get("abs_mean", 0.0)) * action_count
+            )
+            action_stats["delta_abs_max"] = max(
+                float(action_stats["delta_abs_max"]),
+                float(raw_stats.get("abs_max", 0.0)),
+            )
+    return _recovery_context_summary_from_totals(
+        count=count,
+        non_empty_count=non_empty_count,
+        post_carrion_count=post_carrion_count,
+        drink_available_count=drink_available_count,
+        nonzero_count=nonzero_count,
+        delta_sum=delta_sum,
+        delta_abs_sum=delta_abs_sum,
+        delta_abs_max=delta_abs_max,
+        per_action=per_action,
+    )
+
+
 def _aggregate_unsupported_action_breakdowns(
     runs: list[dict[str, object]],
     *,
@@ -3775,6 +4010,7 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         key="unsupported_resolved_action_breakdown",
     )
     rollout_context_diagnostics = _aggregate_rollout_context_diagnostics(runs)
+    recovery_context_diagnostics = _aggregate_recovery_context_diagnostics(runs)
     core_blocker_counts = _aggregate_run_action_counts(
         runs,
         key="core_blocker_agent_tick_counts",
@@ -4018,6 +4254,7 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         "unsupported_requested_action_breakdown": unsupported_requested_action_breakdown,
         "unsupported_resolved_action_breakdown": unsupported_resolved_action_breakdown,
         **rollout_context_diagnostics,
+        **recovery_context_diagnostics,
         "dominant_requested_action": dominant_action["action"],
         "dominant_requested_action_count": dominant_action["count"],
         "dominant_requested_action_share": dominant_action["share"],

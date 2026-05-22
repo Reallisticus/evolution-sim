@@ -49,10 +49,13 @@ from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_SCHEMA_VERSION,
     MIND_V3_CONTEXT_FEATURE_FIELDS,
     MIND_V3_NEED_GATED_FEATURE_FIELDS,
+    MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE,
+    MIND_V3_RECOVERY_CONTEXT_HIDDEN_UNITS,
     MIND_V3_ROLLOUT_CONTEXT_CONTROLLER_ARCHITECTURE,
     MIND_V3_ROLLOUT_CONTEXT_HIDDEN_UNITS,
 )
 from evolution_sim.mind.policy_inputs import ecological_policy_input_contract
+from evolution_sim.mind.recovery_context import recovery_context_feature_contract
 from evolution_sim.mind.rollout_context import rollout_context_feature_contract
 from evolution_sim.mind.v3_neural import (
     MIND_V3_HORIZON_FIXTURE_ARCHITECTURE,
@@ -380,6 +383,27 @@ def mind_v3_autonomous_evolution_contract() -> dict[str, object]:
                     ),
                     "rollout_context_feature_contract": (
                         rollout_context_feature_contract()
+                    ),
+                    "current_or_future_outcome_input": False,
+                    "controller_private_diagnostics_excluded": True,
+                },
+                {
+                    "architecture": (
+                        MIND_V3_RECOVERY_CONTEXT_CONTROLLER_ARCHITECTURE
+                    ),
+                    "base_architecture": MIND_V3_CONTROLLER_ARCHITECTURE,
+                    "hidden_units": MIND_V3_RECOVERY_CONTEXT_HIDDEN_UNITS,
+                    "feature_source": (
+                        "v4_safe_features_plus_previous_public_rollout_and_recovery_context"
+                    ),
+                    "founder_initialization": (
+                        "v4_base_prior_plus_exact_zero_rollout_and_recovery_context_units"
+                    ),
+                    "rollout_context_vector_policy": (
+                        "previous_public_trajectory_rows_context_vector"
+                    ),
+                    "recovery_context_feature_contract": (
+                        recovery_context_feature_contract()
                     ),
                     "current_or_future_outcome_input": False,
                     "controller_private_diagnostics_excluded": True,
