@@ -415,6 +415,22 @@ pending. A local full same-shape run attempted before this performance patch was
 too slow and terminated without producing a report, so treat v6 as an
 experimental capacity checkpoint only.
 
+Full same-shape diagnostic:
+`output/mind/mind-v3-v6-recovery-context-search-80-120-diagnostic.json`
+completed locally in `5805s` after the optimization. It is still
+non-promoted. The fixture gate failed; `carrion_only` was dead at both `80` and
+`120` ticks with zero viability shares. Against the v4 baseline, broad holdout
+aggregate moved only slightly on alive (`+0.3333`), regressed births
+(`-2.3333`), and reduced deaths (`-2.6667`). Seed `29` regressed by `-9` alive
+and `-9` births. Unsupported resolved actions improved by `-9`, but dominant
+`eat` share increased to `0.4780`. Context was active
+(`rollout_context_non_empty_share=0.9819`,
+`recovery_context_non_empty_share=0.2072`) and post-carrion context shares
+matched at `0.0163`; recovery selected-score delta abs mean/max were
+`0.0130`/`0.8346`. V6 adds public recovery-context capacity, but it did not
+solve carrion recovery. Do not tune this branch further without a new,
+testable hypothesis.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in

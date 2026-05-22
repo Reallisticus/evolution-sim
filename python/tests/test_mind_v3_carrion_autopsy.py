@@ -248,6 +248,68 @@ class MindV3CarrionAutopsyTests(unittest.TestCase):
             1,
         )
 
+    def test_contact_window_uses_post_contact_recovery_context_diagnostics(
+        self,
+    ) -> None:
+        records = (
+            _trajectory_record(
+                tick=0,
+                action="eat",
+                before_energy=0.3,
+                after_energy=0.7,
+                before_hydration=0.4,
+                after_hydration=0.4,
+                after_health=0.9,
+                food_source="carcass",
+                gained_energy=0.4,
+                policy_decision_diagnostics={
+                    "recovery_context_schema_version": (
+                        "mind_v3_recovery_context_v1"
+                    ),
+                    "recovery_context_post_carrion_contact": True,
+                    "recovery_context_selected_score_delta": 0.9,
+                    "recovery_context_hydration_debt_bin": "high",
+                    "recovery_context_water_distance_bin": "high",
+                    "recovery_context_drink_available": False,
+                },
+            ),
+            _trajectory_record(
+                tick=1,
+                action="stay",
+                before_energy=0.7,
+                after_energy=0.65,
+                before_hydration=0.4,
+                after_hydration=0.35,
+                after_health=0.9,
+                policy_decision_diagnostics={
+                    "recovery_context_schema_version": (
+                        "mind_v3_recovery_context_v1"
+                    ),
+                    "recovery_context_post_carrion_contact": True,
+                    "recovery_context_selected_score_delta": 0.2,
+                    "recovery_context_hydration_debt_bin": "low",
+                    "recovery_context_water_distance_bin": "mid",
+                    "recovery_context_drink_available": True,
+                },
+            ),
+        )
+
+        report = build_carrion_autopsy_report(
+            [_dataset(records)],
+            post_contact_window_ticks=1,
+        )
+
+        traces_by_agent = report["fixture_trace"]["by_agent"]
+        self.assertEqual(len(traces_by_agent), 1)
+        contact = next(iter(traces_by_agent.values()))[
+            "first_animal_resource_contact"
+        ]
+        self.assertTrue(contact["post_carrion_recovery_context"])
+        self.assertEqual(contact["recovery_context_selected_score_delta"], 0.2)
+        self.assertEqual(contact["recovery_context_hydration_debt_bin"], "low")
+        self.assertEqual(contact["recovery_context_water_distance_bin"], "mid")
+        self.assertTrue(contact["recovery_context_drink_available"])
+
     def test_fixture_trace_unsupported_breakdown_accumulates_same_seed_agents(
         self,
     ) -> None:

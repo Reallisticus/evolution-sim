@@ -477,10 +477,26 @@ class MindV3RolloutContextControllerTests(unittest.TestCase):
                         "deaths": 3,
                         "unsupported_requested_action_count": 0,
                         "unsupported_resolved_action_count": 2,
+                        "heuristic_action_source_count": 0,
                         "requested_action_counts": {"eat": 3, "drink": 1},
                     }
                 ]
-            }
+            },
+            "fixture_gate": {
+                "passed": False,
+                "blockers": [
+                    {
+                        "fixture": "carrion_only",
+                        "reason": "fixture_alive_floor",
+                        "metric": "alive_agents_mean",
+                    },
+                    {
+                        "fixture": "mixed_stable",
+                        "reason": "fixture_health_viability_floor",
+                        "metric": "health_viability_share_mean",
+                    },
+                ],
+            },
         }
         baseline = {
             "holdout_evaluation": {
@@ -492,10 +508,21 @@ class MindV3RolloutContextControllerTests(unittest.TestCase):
                         "deaths": 5,
                         "unsupported_requested_action_count": 1,
                         "unsupported_resolved_action_count": 0,
+                        "heuristic_action_source_count": 1,
                         "requested_action_counts": {"stay": 2, "eat": 1},
                     }
                 ]
-            }
+            },
+            "fixture_gate": {
+                "passed": True,
+                "blockers": [
+                    {
+                        "fixture": "carrion_only",
+                        "reason": "fixture_birth_floor",
+                        "metric": "births_mean",
+                    },
+                ],
+            },
         }
         with TemporaryDirectory() as tmpdir:
             baseline_path = Path(tmpdir) / "baseline.json"
@@ -511,6 +538,7 @@ class MindV3RolloutContextControllerTests(unittest.TestCase):
         self.assertEqual(delta["alive_agents_delta"], 3.0)
         self.assertEqual(delta["births_delta"], 2.0)
         self.assertEqual(delta["deaths_delta"], -2.0)
+        self.assertEqual(delta["heuristic_action_source_count_delta"], -1.0)
         self.assertEqual(
             delta["unsupported_requested_action_count_delta"],
             -1.0,
@@ -519,6 +547,33 @@ class MindV3RolloutContextControllerTests(unittest.TestCase):
         self.assertEqual(delta["current_dominant_requested_action"], "eat")
         self.assertEqual(delta["baseline_dominant_requested_action"], "stay")
         self.assertTrue(delta["dominant_requested_action_changed"])
+        self.assertEqual(comparison["heuristic_action_source_count_delta"], -1.0)
+        fixture_gate = comparison["fixture_gate"]
+        self.assertFalse(fixture_gate["current_passed"])
+        self.assertTrue(fixture_gate["baseline_passed"])
+        self.assertEqual(fixture_gate["current_blocker_count"], 2)
+        self.assertEqual(fixture_gate["baseline_blocker_count"], 1)
+        self.assertEqual(fixture_gate["blocker_count_delta"], 1)
+        self.assertEqual(
+            fixture_gate["blocker_count_delta_by_fixture"],
+            {"carrion_only": 0, "mixed_stable": 1},
+        )
+        self.assertEqual(
+            fixture_gate["blocker_count_delta_by_reason"],
+            {
+                "fixture_alive_floor": 1,
+                "fixture_birth_floor": -1,
+                "fixture_health_viability_floor": 1,
+            },
+        )
+        self.assertEqual(
+            fixture_gate["blocker_count_delta_by_metric"],
+            {
+                "alive_agents_mean": 1,
+                "births_mean": -1,
+                "health_viability_share_mean": 1,
+            },
+        )
 
     def test_short_v5_smoke_run_is_heuristic_free_and_supported(self) -> None:
         policy = MindV3EvolutionPolicy(

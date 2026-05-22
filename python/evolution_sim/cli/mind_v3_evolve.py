@@ -5,7 +5,7 @@ import hashlib
 import json
 from concurrent.futures import ProcessPoolExecutor
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from random import Random
 
@@ -6930,11 +6930,61 @@ def _comparison_baseline_report(
                 baseline=baseline_run,
             )
         )
+    current_heuristic_count = _comparison_heuristic_action_source_count(report)
+    baseline_heuristic_count = _comparison_heuristic_action_source_count(baseline)
+    current_fixture_gate = _comparison_fixture_gate_summary(report)
+    baseline_fixture_gate = _comparison_fixture_gate_summary(baseline)
     return {
         "policy": "mind_v3_matched_holdout_baseline_report_delta_v1",
         "baseline_report": str(baseline_path),
         "matched_seed_count": len(deltas),
         "matched_holdout_seed_deltas": deltas,
+        "heuristic_action_source_count_current": current_heuristic_count,
+        "heuristic_action_source_count_baseline": baseline_heuristic_count,
+        "heuristic_action_source_count_delta": _optional_numeric_delta(
+            current_heuristic_count,
+            baseline_heuristic_count,
+        ),
+        "fixture_gate": {
+            "current_passed": current_fixture_gate["passed"],
+            "baseline_passed": baseline_fixture_gate["passed"],
+            "current_blocker_count": current_fixture_gate["blocker_count"],
+            "baseline_blocker_count": baseline_fixture_gate["blocker_count"],
+            "blocker_count_delta": (
+                int(current_fixture_gate["blocker_count"])
+                - int(baseline_fixture_gate["blocker_count"])
+            ),
+            "current_blocker_counts_by_fixture": current_fixture_gate[
+                "blocker_counts_by_fixture"
+            ],
+            "baseline_blocker_counts_by_fixture": baseline_fixture_gate[
+                "blocker_counts_by_fixture"
+            ],
+            "blocker_count_delta_by_fixture": _count_mapping_delta(
+                current_fixture_gate["blocker_counts_by_fixture"],
+                baseline_fixture_gate["blocker_counts_by_fixture"],
+            ),
+            "current_blocker_counts_by_reason": current_fixture_gate[
+                "blocker_counts_by_reason"
+            ],
+            "baseline_blocker_counts_by_reason": baseline_fixture_gate[
+                "blocker_counts_by_reason"
+            ],
+            "blocker_count_delta_by_reason": _count_mapping_delta(
+                current_fixture_gate["blocker_counts_by_reason"],
+                baseline_fixture_gate["blocker_counts_by_reason"],
+            ),
+            "current_blocker_counts_by_metric": current_fixture_gate[
+                "blocker_counts_by_metric"
+            ],
+            "baseline_blocker_counts_by_metric": baseline_fixture_gate[
+                "blocker_counts_by_metric"
+            ],
+            "blocker_count_delta_by_metric": _count_mapping_delta(
+                current_fixture_gate["blocker_counts_by_metric"],
+                baseline_fixture_gate["blocker_counts_by_metric"],
+            ),
+        },
     }
 
 
@@ -6991,6 +7041,11 @@ def _comparison_seed_delta(
             baseline,
             "unsupported_resolved_action_count",
         ),
+        "heuristic_action_source_count_delta": _numeric_delta(
+            current,
+            baseline,
+            "heuristic_action_source_count",
+        ),
         "current_dominant_requested_action": current_dominant["action"],
         "baseline_dominant_requested_action": baseline_dominant["action"],
         "dominant_requested_action_changed": (
@@ -7002,6 +7057,106 @@ def _comparison_seed_delta(
             float(current_dominant["share"]) - float(baseline_dominant["share"])
         ),
     }
+
+
+def _comparison_heuristic_action_source_count(
+    report: Mapping[str, object],
+) -> float | None:
+    holdout = report.get("holdout_evaluation")
+    if isinstance(holdout, Mapping):
+        aggregate = holdout.get("aggregate")
+        if isinstance(aggregate, Mapping):
+            value = _float_value(aggregate.get("heuristic_action_source_count"))
+            if value is not None:
+                return value
+    best = report.get("best_candidate")
+    if isinstance(best, Mapping):
+        value = _float_value(best.get("heuristic_action_source_count"))
+        if value is not None:
+            return value
+    runs = _comparison_holdout_runs(report)
+    values = [
+        _float_value(run.get("heuristic_action_source_count"))
+        for run in runs
+    ]
+    parsed = [value for value in values if value is not None]
+    if parsed:
+        return _round(sum(parsed))
+    return None
+
+
+def _comparison_fixture_gate_summary(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    fixture_gate = report.get("fixture_gate")
+    if not isinstance(fixture_gate, Mapping):
+        return {
+            "passed": None,
+            "blocker_count": 0,
+            "blocker_counts_by_fixture": {},
+            "blocker_counts_by_reason": {},
+            "blocker_counts_by_metric": {},
+        }
+    blockers = fixture_gate.get("blockers")
+    blocker_list = (
+        [blocker for blocker in blockers if isinstance(blocker, Mapping)]
+        if isinstance(blockers, list)
+        else []
+    )
+    return {
+        "passed": (
+            bool(fixture_gate.get("passed"))
+            if "passed" in fixture_gate
+            else None
+        ),
+        "blocker_count": len(blocker_list),
+        "blocker_counts_by_fixture": _comparison_blocker_counts(
+            blocker_list,
+            "fixture",
+        ),
+        "blocker_counts_by_reason": _comparison_blocker_counts(
+            blocker_list,
+            "reason",
+        ),
+        "blocker_counts_by_metric": _comparison_blocker_counts(
+            blocker_list,
+            "metric",
+        ),
+    }
+
+
+def _comparison_blocker_counts(
+    blockers: Sequence[Mapping[str, object]],
+    key: str,
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for blocker in blockers:
+        counts.update([str(blocker.get(key) or "unknown")])
+    return dict(sorted((name, int(count)) for name, count in counts.items()))
+
+
+def _count_mapping_delta(
+    current: object,
+    baseline: object,
+) -> dict[str, int]:
+    current_mapping = current if isinstance(current, Mapping) else {}
+    baseline_mapping = baseline if isinstance(baseline, Mapping) else {}
+    keys = set(str(key) for key in current_mapping) | set(
+        str(key) for key in baseline_mapping
+    )
+    return {
+        key: int(current_mapping.get(key, 0)) - int(baseline_mapping.get(key, 0))
+        for key in sorted(keys)
+    }
+
+
+def _optional_numeric_delta(
+    current_value: float | None,
+    baseline_value: float | None,
+) -> float | None:
+    if current_value is None or baseline_value is None:
+        return None
+    return _round(current_value - baseline_value)
 
 
 def _numeric_delta(

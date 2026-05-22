@@ -495,6 +495,36 @@ class MindV3RecoveryContextControllerTests(unittest.TestCase):
         for payload in (metadata, v6_contract, feature_contract, diagnostics):
             self.assertNotIn("fixture", json.dumps(payload, sort_keys=True).lower())
 
+    def test_recovery_context_contract_declares_previous_public_outcomes(
+        self,
+    ) -> None:
+        feature_contract = recovery_context_feature_contract()
+
+        self.assertEqual(
+            feature_contract["outcome_timing_contract"],
+            "previous_finalized_public_rows_only_not_current_or_future_outcomes",
+        )
+        self.assertIn(
+            "outcome.resource_gain",
+            feature_contract["previous_finalized_public_outcome_dependencies"],
+        )
+        self.assertIn(
+            "outcome.feeding.food_source",
+            feature_contract["previous_finalized_public_outcome_dependencies"],
+        )
+        self.assertIn(
+            "post_carrion_contact",
+            feature_contract["derived_rollout_snapshot_dependencies"],
+        )
+        self.assertIn(
+            "ticks_since_drink",
+            feature_contract["derived_rollout_snapshot_dependencies"],
+        )
+        self.assertIn(
+            "no_gain_eat_streak",
+            feature_contract["derived_rollout_snapshot_dependencies"],
+        )
+
 
 def _recovery_unit(field: str) -> int:
     return (

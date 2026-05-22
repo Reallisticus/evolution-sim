@@ -100,9 +100,28 @@ def recovery_context_feature_contract() -> dict[str, object]:
             "previous_record.requested_action",
             "previous_record.resolved_action",
             "previous_record.moved",
+            "previous_record.outcome.resource_gain",
             "previous_record.outcome.feeding",
+            "previous_record.outcome.feeding.food_source",
             "previous_record.outcome.drinking",
         ],
+        "previous_finalized_public_outcome_dependencies": [
+            "outcome.resource_gain",
+            "outcome.feeding.food_source",
+            "outcome.drinking.drank",
+            "resolved_action",
+            "moved",
+        ],
+        "derived_rollout_snapshot_dependencies": [
+            "post_carrion_contact",
+            "ticks_since_drink",
+            "no_gain_eat_streak",
+            "recent_resolved_actions",
+            "recent_moved_flags",
+        ],
+        "outcome_timing_contract": (
+            "previous_finalized_public_rows_only_not_current_or_future_outcomes"
+        ),
         "decoded_observation_source": "mind_observation_v3_encoded_input",
         "missing_prior_observation_policy": "zero_features",
         "malformed_context_vector_policy": "zero_features",

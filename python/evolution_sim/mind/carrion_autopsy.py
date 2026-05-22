@@ -540,6 +540,9 @@ def _contact_window_summary(
     window_state = _state_payload(terminal, "after")
     diagnostics = first_contact.get("policy_decision_diagnostics")
     diagnostics_mapping = diagnostics if isinstance(diagnostics, Mapping) else {}
+    recovery_diagnostics_mapping = _first_recovery_context_diagnostics(
+        after_contact_records
+    )
     return {
         "present": True,
         "first_contact_tick": contact_tick,
@@ -585,34 +588,58 @@ def _contact_window_summary(
             )
         ),
         "post_carrion_recovery_context": (
-            bool(diagnostics_mapping.get("recovery_context_post_carrion_contact"))
-            if diagnostics_mapping
+            bool(
+                recovery_diagnostics_mapping.get(
+                    "recovery_context_post_carrion_contact"
+                )
+            )
+            if recovery_diagnostics_mapping
             else None
         ),
         "recovery_context_selected_score_delta": _round_optional(
             _mapping_float(
-                diagnostics_mapping,
+                recovery_diagnostics_mapping,
                 "recovery_context_selected_score_delta",
             )
         ),
         "recovery_context_hydration_debt_bin": (
-            str(diagnostics_mapping.get("recovery_context_hydration_debt_bin"))
-            if diagnostics_mapping.get("recovery_context_hydration_debt_bin")
+            str(
+                recovery_diagnostics_mapping.get(
+                    "recovery_context_hydration_debt_bin"
+                )
+            )
+            if recovery_diagnostics_mapping.get("recovery_context_hydration_debt_bin")
             is not None
             else None
         ),
         "recovery_context_water_distance_bin": (
-            str(diagnostics_mapping.get("recovery_context_water_distance_bin"))
-            if diagnostics_mapping.get("recovery_context_water_distance_bin")
+            str(
+                recovery_diagnostics_mapping.get(
+                    "recovery_context_water_distance_bin"
+                )
+            )
+            if recovery_diagnostics_mapping.get("recovery_context_water_distance_bin")
             is not None
             else None
         ),
         "recovery_context_drink_available": (
-            bool(diagnostics_mapping.get("recovery_context_drink_available"))
-            if diagnostics_mapping
+            bool(recovery_diagnostics_mapping.get("recovery_context_drink_available"))
+            if recovery_diagnostics_mapping
             else None
         ),
     }
+
+
+def _first_recovery_context_diagnostics(
+    records: Sequence[Mapping[str, object]],
+) -> Mapping[str, object]:
+    for record in records:
+        diagnostics = record.get("policy_decision_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        if "recovery_context_schema_version" in diagnostics:
+            return diagnostics
+    return {}
 
 
 def _aggregate_fixture_agent_traces(
