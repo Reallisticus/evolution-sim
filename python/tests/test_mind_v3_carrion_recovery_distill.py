@@ -38,9 +38,12 @@ from evolution_sim.mind.carrion_recovery_distill import (
 )
 from evolution_sim.mind.carrion_recovery_residual_audit import (
     MIND_V3_CARRION_RECOVERY_RESIDUAL_AUDIT_SCHEMA_VERSION,
+    _calibration_classification,
+    _counter_reconciliation,
     _failure_classification,
     _fixture_diagnostic_summary,
     _load_trajectory_records,
+    _shadow_calibration_for_snapshots,
 )
 from evolution_sim.mind.v3_neural import (
     MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY,
@@ -114,6 +117,14 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
                     "13,19",
                     "--fixture-ticks",
                     "120",
+                    "--evaluation-report",
+                    "evaluation.json",
+                    "--activation-audit",
+                    "activation.json",
+                    "--margin-sweep",
+                    "0,0.008",
+                    "--scale-sweep",
+                    "0.01,0.03",
                     "--output",
                     str(output_path),
                 ],
@@ -139,8 +150,177 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
             build_report.call_args.kwargs["fixture_seeds"],
             (13, 19),
         )
+        self.assertEqual(
+            build_report.call_args.kwargs["margin_sweep"],
+            (0.0, 0.008),
+        )
+        self.assertEqual(
+            build_report.call_args.kwargs["scale_sweep"],
+            (0.01, 0.03),
+        )
         self.assertIn("classification=margin domination", stdout.getvalue())
         self.assertIn("fixture_residual_applied_count=0", stdout.getvalue())
+
+    def test_recovery_residual_counter_reconciliation_flags_reporting_bug(
+        self,
+    ) -> None:
+        report = _counter_reconciliation(
+            evaluation_report={
+                "action_balance_diagnostics": {
+                    "open": {
+                        "mind_v3_recovery_distilled": {
+                            "record_count": 10,
+                            "requested_action_counts": {"eat": 10},
+                            "changed_linear_decision_count": 0,
+                            "residual_application_count": 0,
+                        }
+                    }
+                },
+                "open": {
+                    "comparison": {
+                        "mind_v3_recovery_distilled": {
+                            "aggregate": {
+                                "trajectory_record_count": 10,
+                                "requested_action_counts": {"eat": 10},
+                                "neural_anchor_diagnostics": {
+                                    "decision_count": 10,
+                                    "changed_linear_action_count": 2,
+                                    "residual_applied_count": 2,
+                                    "shadow_reason_counts": {
+                                        "context_gate:test": 3,
+                                        "none": 2,
+                                    },
+                                    "linear_anchor_action_counts": {"eat": 10},
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+            distill_report={
+                "heldout_branch_state_evaluation": {
+                    "aggregate_action_balance": {
+                        "record_count": 4,
+                        "missing_decision_diagnostics_count": 0,
+                        "requested_action_counts": {"stay": 4},
+                        "changed_linear_decision_count": 0,
+                        "residual_application_count": 0,
+                    }
+                }
+            },
+            activation_audit={
+                "fixture_replay_diagnostics": {
+                    "decision_count": 6,
+                    "context_gate_pass_count": 3,
+                    "context_gate_fail_count": 3,
+                    "residual_applied_count": 1,
+                    "actual_changed_linear_count": 1,
+                    "configured_residual_would_change_count": 1,
+                    "safety_guard_shadow_reason_counts": {"none": 1},
+                }
+            },
+            heldout_artifact_replay={
+                "decision_count": 4,
+                "residual_applied_count": 1,
+                "actual_changed_linear_count": 1,
+                "configured_would_change_count": 1,
+                "shadow_reason_counts": {"none": 1},
+            },
+            current_fixture_replay={},
+        )
+
+        self.assertEqual(report["classification"]["primary"], "reporting bug")
+        broad = report["surfaces"][0]
+        self.assertEqual(broad["surface"], "broad_open_evaluation")
+        self.assertEqual(broad["actual_changed_linear_count"], 0)
+        self.assertEqual(broad["configured_would_change_count"], 2)
+        self.assertTrue(broad["counter_mismatch"])
+
+    def test_recovery_residual_shadow_calibration_reports_margin_sweep(
+        self,
+    ) -> None:
+        snapshots = (
+            {
+                "seed": 13,
+                "linear_action": "eat",
+                "neural_action": "drink",
+                "linear_margin": 0.01,
+                "gate": "visible_carrion_or_recovery_phase_v1",
+                "gate_passed": True,
+                "gate_reason": "recovery_phase",
+                "safety_guard_reason": "none",
+                "action_mask": {"drink": True, "eat": True, "stay": True},
+                "linear_scores": {"drink": 0.99, "eat": 1.0, "stay": 0.0},
+                "neural_scores": {"drink": 1.0, "eat": 0.0, "stay": 0.0},
+            },
+            {
+                "seed": 19,
+                "linear_action": "eat",
+                "neural_action": "drink",
+                "linear_margin": 0.01,
+                "gate": "visible_carrion_or_recovery_phase_v1",
+                "gate_passed": True,
+                "gate_reason": "recovery_phase",
+                "safety_guard_reason": "none",
+                "action_mask": {"drink": True, "eat": True, "stay": True},
+                "linear_scores": {"drink": 0.99, "eat": 1.0, "stay": 0.0},
+                "neural_scores": {"drink": 1.0, "eat": 0.0, "stay": 0.0},
+            },
+        )
+
+        calibration = _shadow_calibration_for_snapshots(
+            snapshots,
+            configured_margin=0.0,
+            configured_scale=0.05,
+            margin_sweep=(0.0, 0.02),
+            scale_sweep=(0.01, 0.05),
+        )
+        classification = _calibration_classification(
+            feature_checks={"passed": True},
+            failure_classification={"primary": "margin domination"},
+            shadow_calibration={
+                "heldout_branch_states": calibration,
+                "carrion_fixture_rows": calibration,
+            },
+        )
+
+        self.assertEqual(calibration["configured"]["would_change_count"], 0)
+        self.assertGreater(
+            calibration["margin_ignored"]["would_change_count"],
+            calibration["configured"]["would_change_count"],
+        )
+        self.assertEqual(
+            calibration["margin_threshold_sweep"][1]["would_change_by_seed"],
+            {"13": 1, "19": 1},
+        )
+        self.assertEqual(classification["primary"], "margin domination")
+
+    def test_recovery_residual_shadow_calibration_marks_branch_state_sampling(
+        self,
+    ) -> None:
+        from evolution_sim.mind.carrion_recovery_residual_audit import (
+            _shadow_calibration,
+        )
+
+        calibration = _shadow_calibration(
+            artifact={
+                "neural_residual_max_linear_override_margin": 0.008,
+                "neural_residual_scale": 0.03,
+            },
+            heldout_rows=(),
+            fixture_records=(),
+            margin_sweep=(0.0,),
+            scale_sweep=(0.01,),
+        )
+
+        self.assertEqual(
+            calibration["heldout_branch_state_sampling_policy"],
+            "first_record_per_split_trajectory_v1",
+        )
+        self.assertEqual(
+            calibration["carrion_fixture_row_sampling_policy"],
+            "all_fixture_decision_rows_v1",
+        )
 
     def test_recovery_residual_audit_classifies_margin_domination(self) -> None:
         classification = _failure_classification(

@@ -31,6 +31,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Input carrion recovery distillation report.",
     )
     parser.add_argument(
+        "--evaluation-report",
+        type=Path,
+        default=None,
+        help=(
+            "Optional carrion recovery distill evaluation report for counter "
+            "reconciliation."
+        ),
+    )
+    parser.add_argument(
+        "--activation-audit",
+        type=Path,
+        default=None,
+        help=(
+            "Optional prior residual activation audit report for v66 fixture "
+            "counter reconciliation."
+        ),
+    )
+    parser.add_argument(
         "--archive-report",
         type=Path,
         required=True,
@@ -54,6 +72,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Carrion-only fixture tick horizon for the replay audit.",
     )
     parser.add_argument(
+        "--margin-sweep",
+        default="",
+        help=(
+            "Optional comma-separated linear override margin thresholds for "
+            "offline shadow calibration."
+        ),
+    )
+    parser.add_argument(
+        "--scale-sweep",
+        default="",
+        help=(
+            "Optional comma-separated residual scales for offline shadow "
+            "calibration."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(
@@ -71,10 +105,14 @@ def main() -> None:
         report = build_carrion_recovery_residual_audit_report(
             artifact_path=args.artifact,
             distill_report_path=args.distill_report,
+            evaluation_report_path=args.evaluation_report,
+            activation_audit_path=args.activation_audit,
             archive_report_path=args.archive_report,
             split_report_path=args.split_report,
             fixture_seeds=fixture_seeds,
             fixture_ticks=int(args.fixture_ticks),
+            margin_sweep=_parse_float_list(args.margin_sweep, field="--margin-sweep"),
+            scale_sweep=_parse_float_list(args.scale_sweep, field="--scale-sweep"),
         )
         write_carrion_recovery_residual_audit_report(report, args.output)
     except (OSError, ValueError, CarrionRecoveryResidualAuditError) as exc:
@@ -116,6 +154,26 @@ def _print_report_summary(
         "fixture_actual_changed_linear_count="
         f"{fixture.get('actual_changed_linear_count', 0)}"
     )
+    reconciliation = _mapping(report.get("residual_counter_reconciliation"))
+    if reconciliation:
+        mismatch = _mapping(reconciliation.get("classification"))
+        print(f"mismatch_classification={mismatch.get('primary')}")
+    calibration = _mapping(report.get("calibration_classification"))
+    if calibration:
+        print(f"calibration_classification={calibration.get('primary')}")
+        strongest = _mapping(_mapping(report.get("shadow_calibration")).get("strongest_shadow_setting"))
+        print(
+            "strongest_shadow_setting="
+            f"{strongest.get('surface')}:{strongest.get('label')}"
+        )
+        print(
+            "strongest_shadow_would_change_count="
+            f"{strongest.get('would_change_count', 0)}"
+        )
+        print(
+            "strongest_shadow_action_collapse_risk="
+            f"{strongest.get('action_collapse_risk', False)}"
+        )
 
 
 def _parse_seeds(raw: str) -> tuple[int, ...]:
@@ -127,6 +185,20 @@ def _parse_seeds(raw: str) -> tuple[int, ...]:
         values.append(int(stripped))
     if not values:
         raise ValueError("--fixture-seeds must include at least one seed")
+    return tuple(values)
+
+
+def _parse_float_list(raw: str, *, field: str) -> tuple[float, ...]:
+    values: list[float] = []
+    if not raw:
+        return ()
+    for token in raw.split(","):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        values.append(float(stripped))
+    if any(value < 0.0 for value in values):
+        raise ValueError(f"{field} values must be nonnegative")
     return tuple(values)
 
 

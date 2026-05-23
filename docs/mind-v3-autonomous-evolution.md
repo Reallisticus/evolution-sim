@@ -501,6 +501,15 @@ results are not runtime behavior, not promotion evidence, and do not alter
 controller scoring, action masks, gates, fixtures, replay, or artifact
 promotion.
 
+The v67 extension keeps that same diagnostics-only boundary and adds residual
+counter reconciliation plus offline margin/scale shadow sweeps. It compares
+broad evaluation, carrion fixture evaluation, held-out branch logged
+trajectories, held-out artifact decision replay, and the v66 fixture replay so
+action-balance counters can be separated from live neural-anchor diagnostics.
+The margin and scale sweeps are report-only calibration probes; they do not
+change the trained artifact, runtime residual behavior, gates, floors, action
+masks, replay semantics, or promotion status.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in
