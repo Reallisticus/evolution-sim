@@ -490,6 +490,17 @@ records and emits held-out branch-state trajectory and action-balance
 diagnostics. This remains a negative-control distillation path and is not
 promoted regardless of metrics.
 
+The v66 recovery residual activation audit is diagnostics-only. It explains why
+the v65 split-aware recovery artifact produced zero residual applications and
+zero changed-linear decisions by comparing artifact, train, held-out, and small
+`carrion_only` replay diagnostics. `sim:mind:v3:carrion-recovery-residual-audit`
+reports feature-contract compatibility, neural score variance, linear-vs-neural
+top actions, configured blended actions, and offline-only shadow calculations
+with the context gate forced or the linear override margin ignored. Those shadow
+results are not runtime behavior, not promotion evidence, and do not alter
+controller scoring, action masks, gates, fixtures, replay, or artifact
+promotion.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in
