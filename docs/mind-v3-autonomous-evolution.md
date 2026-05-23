@@ -464,6 +464,31 @@ fixture-rerank selected candidate is unchanged, and the flag does not change
 runtime policy inputs, controller scoring, action masks, gates, fixture floors,
 or replay semantics. Retention remains bounded to fixture-rerank initial,
 standard repair, and bridge-repair candidates with completed recovery probes.
+The retention line is closed for now: the full same-shape diagnostic still
+selected `g1-c23`, and no retained/probed candidate beat it on post-contact
+survival or carrion blockers.
+
+The v64 current-policy branch-support audit is diagnostics-only. It replays the
+selected Mind v3 candidate from a search report autonomously in `carrion_only`,
+branches from exact post-animal-resource simulator states, and fans out explicit
+offline continuation scripts. The source candidate replay remains autonomous
+Mind v3 with zero heuristic fallback; continuation script identity is recorded
+as offline diagnostic evidence, not runtime or promotion evidence. The accepted
+v64 archive produced `output/mind/mind-v3-v64-current-policy-recovery-archive.json`
+and `output/mind/mind-v3-v64-current-policy-recovery-archive-dataset.jsonl`
+from `output/mind/mind-v3-v64-current-policy-branch-explore.json`.
+
+The v65 recovery-archive validation slice adds a non-promoted, opt-in
+pre-training check. `sim:mind:v3:carrion-recovery-archive-validate` validates
+that every dataset trajectory path exists and loads, record IDs are unique,
+records carry seed/branch/tick/script/path/outcome labels, runtime actions are
+zero-heuristic, and train/held-out records are split only by branch-state digest
+or stable branch id. The validation report blocks training if a leakage-free
+split cannot be built. `sim:mind:v3:carrion-recovery-distill` can optionally
+consume that split with `--archive-split-report`; it trains only on split train
+records and emits held-out branch-state trajectory and action-balance
+diagnostics. This remains a negative-control distillation path and is not
+promoted regardless of metrics.
 
 ## Local/Navigation Controller v3
 

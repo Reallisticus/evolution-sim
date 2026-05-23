@@ -19,6 +19,8 @@ from evolution_sim.cli.mind_v3_evaluate import (
 )
 from evolution_sim.mind.carrion_recovery_archive import (
     MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
+    MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED,
+    MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
     load_carrion_recovery_json_report,
 )
 from evolution_sim.mind.dataset import load_trajectory_jsonl
@@ -89,6 +91,8 @@ def build_carrion_recovery_distillation_report(
     *,
     archive_report: Mapping[str, object] | None = None,
     archive_report_path: str | Path | None = None,
+    archive_split_report: Mapping[str, object] | None = None,
+    archive_split_report_path: str | Path | None = None,
     horizons: Sequence[int] = DEFAULT_HORIZON_TICKS,
     artifact_mode: str = DEFAULT_CARRION_RECOVERY_DISTILL_ARTIFACT_MODE,
     hidden_units: int = DEFAULT_CARRION_RECOVERY_DISTILL_HIDDEN_UNITS,
@@ -120,6 +124,12 @@ def build_carrion_recovery_distillation_report(
             raise CarrionRecoveryDistillError("archive_report_path is required")
         archive_report = load_carrion_recovery_json_report(archive_report_path)
     _validate_archive_report(archive_report)
+    if archive_split_report is None and archive_split_report_path is not None:
+        archive_split_report = load_carrion_recovery_json_report(
+            archive_split_report_path
+        )
+    if archive_split_report is not None:
+        _validate_archive_split_report(archive_split_report)
     horizon_ticks = normalize_horizon_ticks(horizons)
     eval_seed_values = _validated_seeds(eval_seeds, field="eval_seeds")
     fixture_seed_values = (
@@ -135,9 +145,15 @@ def build_carrion_recovery_distillation_report(
     )
     fixture_name_values = _validated_fixture_names(fixture_names)
     mode = _validated_artifact_mode(artifact_mode)
+    train_record_ids = (
+        _split_record_ids(archive_split_report, split="train")
+        if archive_split_report is not None
+        else None
+    )
     selected = _selected_trajectory_examples(
         archive_report,
         weight_policy=weight_policy,
+        include_record_ids=train_record_ids,
     )
     datasets = [load_trajectory_jsonl(item["trajectory_path"]) for item in selected]
     trajectory_weights = [float(item["trajectory_weight"]) for item in selected]
@@ -177,12 +193,21 @@ def build_carrion_recovery_distillation_report(
         fixture_seeds=fixture_seed_values,
         fixture_ticks=fixture_tick_count,
     )
+    evaluation["action_balance_diagnostics"] = _evaluation_action_balance(evaluation)
+    heldout_branch_evaluation = _heldout_branch_state_evaluation(
+        archive_split_report,
+    )
     if evaluation_output_path is not None:
         _write_json(evaluation, evaluation_output_path)
     contract = {
         "schema_version": MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
         "policy": MIND_V3_CARRION_RECOVERY_DISTILL_POLICY,
         "source_archive_schema_version": archive_report.get("schema_version"),
+        "source_archive_split_schema_version": (
+            archive_split_report.get("schema_version")
+            if archive_split_report is not None
+            else None
+        ),
         "horizon_ticks": list(horizon_ticks),
         "artifact_mode": mode,
         "hidden_units": int(hidden_units),
@@ -208,6 +233,12 @@ def build_carrion_recovery_distillation_report(
         "fixture_names": list(fixture_name_values),
         "fixture_seeds": list(fixture_seed_values),
         "fixture_ticks": int(fixture_tick_count),
+        "archive_split_policy": (
+            archive_split_report.get("split_policy")
+            if archive_split_report is not None
+            else None
+        ),
+        "non_promoted_negative_control": True,
     }
     report = {
         "schema_version": MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
@@ -223,6 +254,11 @@ def build_carrion_recovery_distillation_report(
                     "dataset": archive_report.get("dataset"),
                 }
             ),
+            "source_archive_split_report_digest": (
+                stable_payload_digest(archive_split_report)
+                if archive_split_report is not None
+                else None
+            ),
         },
         "source": {
             "archive_report_path": (
@@ -230,10 +266,29 @@ def build_carrion_recovery_distillation_report(
             ),
             "archive_acceptance": archive_report.get("acceptance"),
             "archive_aggregate": archive_report.get("aggregate"),
+            "archive_split_report_path": (
+                str(archive_split_report_path)
+                if archive_split_report_path is not None
+                else None
+            ),
+            "archive_split_acceptance": (
+                archive_split_report.get("acceptance")
+                if archive_split_report is not None
+                else None
+            ),
+            "archive_split_aggregate": (
+                archive_split_report.get("aggregate")
+                if archive_split_report is not None
+                else None
+            ),
         },
         "training": {
             "selected_trajectory_count": len(selected),
             "selected_trajectories": selected,
+            "archive_split_consumed": archive_split_report is not None,
+            "train_record_ids_from_split": (
+                sorted(train_record_ids) if train_record_ids is not None else None
+            ),
             "horizon_label_output_path": (
                 str(horizon_output_path) if horizon_output_path is not None else None
             ),
@@ -263,6 +318,14 @@ def build_carrion_recovery_distillation_report(
             "artifact_training_summary": artifact.get("training_summary"),
             "artifact_action_value_summary": artifact.get("action_value_summary"),
         },
+        "heldout_branch_state_evaluation": heldout_branch_evaluation,
+        "promotion": {
+            "promoted": False,
+            "reason": (
+                "negative_control_recovery_archive_distill_is_diagnostic_only"
+            ),
+            "requires_separate_promotion_review": True,
+        },
         "evaluation": evaluation,
     }
     report["acceptance"] = _acceptance(report)
@@ -285,10 +348,50 @@ def _validate_archive_report(report: Mapping[str, object]) -> None:
         raise CarrionRecoveryDistillError("archive report must include dataset records")
 
 
+def _validate_archive_split_report(report: Mapping[str, object]) -> None:
+    if report.get("schema_version") != MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION:
+        raise CarrionRecoveryDistillError(
+            "archive split report has stale schema_version"
+        )
+    if (
+        report.get("split_policy")
+        != MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED
+    ):
+        raise CarrionRecoveryDistillError("archive split report has unsupported policy")
+    acceptance = _mapping(report.get("acceptance"))
+    if bool(acceptance.get("training_blocked", True)):
+        raise CarrionRecoveryDistillError(
+            "archive split report blocks training: "
+            + ",".join(str(item) for item in acceptance.get("blockers", []))
+        )
+    if not _split_record_ids(report, split="train"):
+        raise CarrionRecoveryDistillError("archive split report has no train records")
+
+
+def _split_record_ids(
+    split_report: Mapping[str, object] | None,
+    *,
+    split: str,
+) -> set[str]:
+    if split_report is None:
+        return set()
+    records = _mapping(split_report.get("records"))
+    rows = records.get(split)
+    record_ids = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        record_id = row.get("record_id")
+        if isinstance(record_id, str) and record_id:
+            record_ids.add(record_id)
+    return record_ids
+
+
 def _selected_trajectory_examples(
     archive_report: Mapping[str, object],
     *,
     weight_policy: str,
+    include_record_ids: set[str] | None = None,
 ) -> list[dict[str, object]]:
     dataset = archive_report.get("dataset")
     records = dataset.get("records") if isinstance(dataset, Mapping) else []
@@ -297,6 +400,9 @@ def _selected_trajectory_examples(
     selected_by_path: dict[str, dict[str, object]] = {}
     for index, record in enumerate(records):
         if not isinstance(record, Mapping):
+            continue
+        record_id = record.get("record_id")
+        if include_record_ids is not None and record_id not in include_record_ids:
             continue
         source = record.get("source")
         source_payload = source if isinstance(source, Mapping) else {}
@@ -311,7 +417,7 @@ def _selected_trajectory_examples(
         weight = _trajectory_weight(record, weight_policy=weight_policy)
         payload = {
             "dataset_record_index": index,
-            "record_id": record.get("record_id"),
+            "record_id": record_id,
             "trajectory_path": path,
             "trajectory_weight": weight,
             "outcome_class": _label_value(record, "outcome_class"),
@@ -529,6 +635,349 @@ def _record_consumed_animal_resource(record: Mapping[str, object]) -> bool:
         feeding_gain,
         resource_gain,
     ) > 0.0
+
+
+def _heldout_branch_state_evaluation(
+    split_report: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if split_report is None:
+        return {
+            "enabled": False,
+            "reason": "archive_split_report_not_provided",
+        }
+    rows = _split_rows(split_report, split="heldout")
+    diagnostics = []
+    load_failures = []
+    for row in rows:
+        path = row.get("trajectory_path")
+        if not isinstance(path, str) or not path:
+            load_failures.append(
+                {
+                    "record_id": row.get("record_id"),
+                    "reason": "trajectory_path_missing",
+                }
+            )
+            continue
+        try:
+            dataset = load_trajectory_jsonl(path)
+        except (OSError, ValueError) as exc:
+            load_failures.append(
+                {
+                    "record_id": row.get("record_id"),
+                    "trajectory_path": path,
+                    "reason": str(exc),
+                }
+            )
+            continue
+        diagnostics.append(
+            {
+                "record_id": row.get("record_id"),
+                "seed": row.get("seed"),
+                "branch_id": row.get("branch_id"),
+                "branch_state_key": row.get("branch_state_key"),
+                "branch_tick": row.get("branch_tick"),
+                "continuation_script": row.get("continuation_script"),
+                "terminal_survivor": bool(row.get("terminal_survivor")),
+                "trajectory_path": path,
+                "action_balance": _trajectory_action_balance(dataset.records),
+            }
+        )
+    aggregate = _heldout_branch_aggregate(diagnostics)
+    return {
+        "enabled": True,
+        "split_policy": split_report.get("split_policy"),
+        "heldout_record_count": len(rows),
+        "loaded_record_count": len(diagnostics),
+        "load_failure_count": len(load_failures),
+        "load_failures": load_failures,
+        "survivor_count": sum(
+            1 for row in rows if bool(row.get("terminal_survivor"))
+        ),
+        "failure_count": sum(
+            1 for row in rows if not bool(row.get("terminal_survivor"))
+        ),
+        "by_seed": _heldout_count_table(rows, "seed"),
+        "by_continuation_script": _heldout_count_table(
+            rows,
+            "continuation_script",
+        ),
+        "aggregate_action_balance": aggregate,
+        "records": diagnostics,
+    }
+
+
+def _split_rows(
+    split_report: Mapping[str, object],
+    *,
+    split: str,
+) -> list[Mapping[str, object]]:
+    records = _mapping(split_report.get("records"))
+    rows = records.get(split)
+    return [row for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
+
+
+def _trajectory_action_balance(
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    requested = Counter()
+    resolved = Counter()
+    action_source = Counter()
+    unsupported_requested = 0
+    unsupported_resolved = 0
+    changed_linear = 0
+    recovery_phase_residual = 0
+    residual_application = 0
+    missing_decision_diagnostics = 0
+    for record in records:
+        requested_action = str(record.get("requested_action", "unknown"))
+        resolved_action = str(record.get("resolved_action", requested_action))
+        requested[requested_action] += 1
+        resolved[resolved_action] += 1
+        action_source[str(record.get("action_source", "unknown"))] += 1
+        if record.get("action_valid") is False:
+            unsupported_requested += 1
+        if record.get("resolution_action_valid") is False:
+            unsupported_resolved += 1
+        diagnostics = record.get("policy_decision_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            missing_decision_diagnostics += 1
+            continue
+        if bool(diagnostics.get("neural_residual_changed_linear_decision")):
+            changed_linear += 1
+        elif (
+            diagnostics.get("linear_anchor_action") is not None
+            and diagnostics.get("requested_action") is not None
+            and diagnostics.get("linear_anchor_action")
+            != diagnostics.get("requested_action")
+        ):
+            changed_linear += 1
+        effective_scale = _metric(diagnostics, "neural_residual_effective_scale")
+        if effective_scale > 0.0:
+            residual_application += 1
+        if (
+            effective_scale > 0.0
+            and diagnostics.get("neural_residual_context_gate_reason")
+            == "recovery_phase"
+        ):
+            recovery_phase_residual += 1
+    total = sum(requested.values())
+    dominant_action, dominant_count = _dominant_count(requested)
+    return {
+        "record_count": total,
+        "requested_action_counts": dict(sorted(requested.items())),
+        "resolved_action_counts": dict(sorted(resolved.items())),
+        "action_source_counts": dict(sorted(action_source.items())),
+        "dominant_requested_action": dominant_action,
+        "dominant_requested_action_share": (
+            _round(dominant_count / total) if total else 0.0
+        ),
+        "drink_requested_count": requested.get("drink", 0),
+        "eat_requested_count": requested.get("eat", 0),
+        "stay_requested_count": requested.get("stay", 0),
+        "move_requested_count": sum(
+            count for action, count in requested.items() if action.startswith("move_")
+        ),
+        "unsupported_requested_action_count": unsupported_requested,
+        "unsupported_resolved_action_count": unsupported_resolved,
+        "changed_linear_decision_count": changed_linear,
+        "recovery_phase_residual_application_count": recovery_phase_residual,
+        "residual_application_count": residual_application,
+        "missing_decision_diagnostics_count": missing_decision_diagnostics,
+    }
+
+
+def _heldout_branch_aggregate(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    requested = Counter()
+    resolved = Counter()
+    action_source = Counter()
+    totals = Counter()
+    for item in diagnostics:
+        balance = _mapping(item.get("action_balance"))
+        requested.update(_counter_from_mapping(balance.get("requested_action_counts")))
+        resolved.update(_counter_from_mapping(balance.get("resolved_action_counts")))
+        action_source.update(_counter_from_mapping(balance.get("action_source_counts")))
+        for key in (
+            "record_count",
+            "drink_requested_count",
+            "eat_requested_count",
+            "stay_requested_count",
+            "move_requested_count",
+            "unsupported_requested_action_count",
+            "unsupported_resolved_action_count",
+            "changed_linear_decision_count",
+            "recovery_phase_residual_application_count",
+            "residual_application_count",
+            "missing_decision_diagnostics_count",
+        ):
+            totals[key] += _int(balance.get(key))
+    total = int(totals["record_count"])
+    dominant_action, dominant_count = _dominant_count(requested)
+    return {
+        "record_count": total,
+        "requested_action_counts": dict(sorted(requested.items())),
+        "resolved_action_counts": dict(sorted(resolved.items())),
+        "action_source_counts": dict(sorted(action_source.items())),
+        "dominant_requested_action": dominant_action,
+        "dominant_requested_action_share": (
+            _round(dominant_count / total) if total else 0.0
+        ),
+        **{key: int(value) for key, value in sorted(totals.items())},
+    }
+
+
+def _heldout_count_table(
+    rows: Sequence[Mapping[str, object]],
+    field: str,
+) -> dict[str, dict[str, int]]:
+    table: dict[str, Counter[str]] = {}
+    for row in rows:
+        key = str(row.get(field, "unknown"))
+        outcome = "survivor" if bool(row.get("terminal_survivor")) else "failure"
+        table.setdefault(key, Counter())[outcome] += 1
+        table[key]["total"] += 1
+    return {key: dict(sorted(counts.items())) for key, counts in sorted(table.items())}
+
+
+def _evaluation_action_balance(
+    evaluation: Mapping[str, object],
+) -> dict[str, object]:
+    open_eval = _mapping(evaluation.get("open"))
+    comparison = _mapping(open_eval.get("comparison"))
+    result = {
+        "open": {
+            "mind_v3_linear": _run_summary_action_balance(
+                _mapping(comparison.get("mind_v3_linear")).get("runs")
+            ),
+            "mind_v3_recovery_distilled": _run_summary_action_balance(
+                _mapping(comparison.get("mind_v3_recovery_distilled")).get("runs")
+            ),
+        },
+        "fixture": {},
+    }
+    candidate = result["open"]["mind_v3_recovery_distilled"]
+    linear = result["open"]["mind_v3_linear"]
+    result["open"]["candidate_vs_linear_delta"] = _action_balance_delta(
+        candidate,
+        linear,
+    )
+    fixture = _mapping(evaluation.get("fixture"))
+    candidate_suite = _mapping(fixture.get("candidate_suite"))
+    linear_suite = _mapping(fixture.get("linear_baseline_suite"))
+    result["fixture"] = {
+        "mind_v3_linear": _fixture_suite_action_balance(linear_suite),
+        "mind_v3_recovery_distilled": _fixture_suite_action_balance(candidate_suite),
+    }
+    return result
+
+
+def _run_summary_action_balance(value: object) -> dict[str, object]:
+    runs = [run for run in value if isinstance(run, Mapping)] if isinstance(value, list) else []
+    requested = Counter()
+    resolved = Counter()
+    totals = Counter()
+    for run in runs:
+        requested.update(_counter_from_mapping(run.get("requested_action_counts")))
+        resolved.update(_counter_from_mapping(run.get("resolved_action_counts")))
+        for key in (
+            "unsupported_requested_action_count",
+            "unsupported_resolved_action_count",
+            "heuristic_action_source_count",
+            "changed_linear_decision_count",
+            "recovery_phase_residual_application_count",
+            "residual_application_count",
+        ):
+            totals[key] += _int(run.get(key))
+    total = sum(requested.values())
+    dominant_action, dominant_count = _dominant_count(requested)
+    return {
+        "run_count": len(runs),
+        "requested_action_counts": dict(sorted(requested.items())),
+        "resolved_action_counts": dict(sorted(resolved.items())),
+        "dominant_requested_action": dominant_action,
+        "dominant_requested_action_share": (
+            _round(dominant_count / total) if total else 0.0
+        ),
+        "drink_requested_count": requested.get("drink", 0),
+        "eat_requested_count": requested.get("eat", 0),
+        "stay_requested_count": requested.get("stay", 0),
+        "move_requested_count": sum(
+            count for action, count in requested.items() if action.startswith("move_")
+        ),
+        **{key: int(value) for key, value in sorted(totals.items())},
+    }
+
+
+def _fixture_suite_action_balance(
+    suite: Mapping[str, object],
+) -> dict[str, object]:
+    policy_key = str(suite.get("evaluated_policy_key", "mind_v3"))
+    fixtures = suite.get("fixtures")
+    result = {}
+    for fixture in fixtures if isinstance(fixtures, list) else []:
+        if not isinstance(fixture, Mapping):
+            continue
+        comparison = _mapping(fixture.get("comparison"))
+        policy = _mapping(comparison.get(policy_key))
+        aggregate = _mapping(policy.get("aggregate"))
+        result[str(fixture.get("fixture", "unknown"))] = {
+            "dominant_requested_action": aggregate.get("dominant_requested_action"),
+            "dominant_requested_action_share": aggregate.get(
+                "dominant_requested_action_share"
+            ),
+            "unsupported_requested_action_count": _int(
+                aggregate.get("unsupported_requested_action_count")
+            ),
+            "unsupported_resolved_action_count": _int(
+                aggregate.get("unsupported_resolved_action_count")
+            ),
+            "heuristic_action_source_count": _int(
+                aggregate.get("heuristic_action_source_count")
+            ),
+            "requested_action_counts": aggregate.get("requested_action_counts", {}),
+        }
+    return result
+
+
+def _action_balance_delta(
+    candidate: Mapping[str, object],
+    linear: Mapping[str, object],
+) -> dict[str, object]:
+    result = {}
+    for key in (
+        "drink_requested_count",
+        "eat_requested_count",
+        "stay_requested_count",
+        "move_requested_count",
+        "unsupported_requested_action_count",
+        "unsupported_resolved_action_count",
+        "changed_linear_decision_count",
+        "recovery_phase_residual_application_count",
+        "residual_application_count",
+    ):
+        result[f"{key}_delta"] = _int(candidate.get(key)) - _int(linear.get(key))
+    result["dominant_requested_action_changed"] = (
+        candidate.get("dominant_requested_action")
+        != linear.get("dominant_requested_action")
+    )
+    result["dominant_requested_action_share_delta"] = _round(
+        _metric(candidate, "dominant_requested_action_share")
+        - _metric(linear, "dominant_requested_action_share")
+    )
+    return result
+
+
+def _counter_from_mapping(value: object) -> Counter[str]:
+    payload = _mapping(value)
+    return Counter({str(key): _int(count) for key, count in payload.items()})
+
+
+def _dominant_count(counter: Counter[str]) -> tuple[str | None, int]:
+    if not counter:
+        return None, 0
+    action, count = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0]
+    return action, int(count)
 
 
 def _positive_finite_weight(value: object) -> float:

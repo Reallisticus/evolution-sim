@@ -52,6 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Input mind_v3_carrion_recovery_archive_v1 report.",
     )
     parser.add_argument(
+        "--archive-split-report",
+        type=Path,
+        default=None,
+        help=(
+            "Optional leakage-safe archive split manifest. When provided, "
+            "distillation trains only on train records and reports held-out "
+            "branch-state trajectory diagnostics."
+        ),
+    )
+    parser.add_argument(
         "--horizons",
         default=",".join(str(horizon) for horizon in DEFAULT_HORIZON_TICKS),
         help="Comma-separated future tick horizons to label.",
@@ -209,6 +219,7 @@ def main() -> None:
         fixture_names = _parse_names(args.fixture_names, field="--fixture-names")
         report = build_carrion_recovery_distillation_report(
             archive_report_path=args.archive_report,
+            archive_split_report_path=args.archive_split_report,
             horizons=parse_horizon_ticks(args.horizons),
             artifact_mode=str(args.artifact_mode),
             hidden_units=int(args.hidden_units),
@@ -284,8 +295,17 @@ def _print_report_summary(
         f"{recovery_bias.get('record_count', 0)}"
     )
     print(f"weight_policy={_mapping(report.get('contract')).get('weight_policy')}")
+    print(
+        "archive_split_consumed="
+        f"{training.get('archive_split_consumed', False)}"
+    )
     print(f"selected_trajectory_count={training.get('selected_trajectory_count')}")
     print(f"trained_record_count={training.get('trained_record_count')}")
+    heldout = _mapping(report.get("heldout_branch_state_evaluation"))
+    print(f"heldout_branch_evaluation_enabled={heldout.get('enabled', False)}")
+    print(f"heldout_branch_loaded_record_count={heldout.get('loaded_record_count', 0)}")
+    print(f"heldout_branch_survivor_count={heldout.get('survivor_count', 0)}")
+    print(f"heldout_branch_failure_count={heldout.get('failure_count', 0)}")
     print(
         "data_path_acceptance_passed="
         f"{acceptance.get('data_path_acceptance_passed')}"

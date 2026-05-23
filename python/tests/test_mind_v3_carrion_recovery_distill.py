@@ -17,6 +17,8 @@ from evolution_sim.env.runtime.observations import (
     encode_observation_input,
 )
 from evolution_sim.mind.carrion_recovery_archive import (
+    MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED,
+    MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
     build_carrion_recovery_archive_report,
     write_carrion_recovery_archive_report,
 )
@@ -225,6 +227,52 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
             "fixture_candidate_carrion_only_total_scavenger_carcass_events=",
             stdout.getvalue(),
         )
+
+    def test_recovery_distill_consumes_train_records_from_split_manifest(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            archive = _build_small_recovery_archive(tmp_path)
+            first_record = dict(archive["dataset"]["records"][0])
+            heldout_record = json.loads(json.dumps(first_record))
+            heldout_record["record_id"] = "heldout-record-not-used-for-training"
+            heldout_record["source"]["branch_id"] = "heldout-branch"
+            heldout_record["source"]["trajectory_path"] = str(
+                tmp_path / "missing-heldout.jsonl.gz"
+            )
+            archive["dataset"]["records"] = [first_record, heldout_record]
+            archive["dataset"]["record_count"] = 2
+            split_report = _split_report(
+                train_record=first_record,
+                heldout_record=heldout_record,
+            )
+
+            report = build_carrion_recovery_distillation_report(
+                archive_report=archive,
+                archive_split_report=split_report,
+                horizons=(1,),
+                hidden_units=4,
+                eval_seeds=(29,),
+                eval_ticks=8,
+                fixture_names=("carrion_only",),
+                fixture_seeds=(29,),
+                fixture_ticks=8,
+            )
+
+        self.assertTrue(report["training"]["archive_split_consumed"])
+        self.assertEqual(report["training"]["selected_trajectory_count"], 1)
+        self.assertEqual(
+            report["training"]["selected_trajectories"][0]["record_id"],
+            first_record["record_id"],
+        )
+        heldout = report["heldout_branch_state_evaluation"]
+        self.assertTrue(heldout["enabled"])
+        self.assertEqual(heldout["heldout_record_count"], 1)
+        self.assertEqual(heldout["load_failure_count"], 1)
+        self.assertFalse(report["promotion"]["promoted"])
+        action_balance = report["evaluation"]["action_balance_diagnostics"]
+        self.assertIn("candidate_vs_linear_delta", action_balance["open"])
 
     def test_recovery_distill_blocks_per_seed_open_regression(self) -> None:
         report = {
@@ -620,6 +668,74 @@ def _build_small_recovery_archive(tmp_path: Path) -> dict[str, object]:
     if not report["acceptance"]["archive_acceptance_passed"]:
         raise AssertionError(report["acceptance"])
     return report
+
+
+def _split_report(
+    *,
+    train_record: dict[str, object],
+    heldout_record: dict[str, object],
+) -> dict[str, object]:
+    train_ref = _split_record_ref(train_record, split_key="train-branch")
+    heldout_ref = _split_record_ref(heldout_record, split_key="heldout-branch")
+    return {
+        "schema_version": MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
+        "split_policy": (
+            MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED
+        ),
+        "records": {
+            "train": [train_ref],
+            "heldout": [heldout_ref],
+        },
+        "record_ids": {
+            "train": [train_record["record_id"]],
+            "heldout": [heldout_record["record_id"]],
+        },
+        "branch_state_keys": {
+            "train": ["train-branch"],
+            "heldout": ["heldout-branch"],
+        },
+        "aggregate": {
+            "train_record_count": 1,
+            "heldout_record_count": 1,
+            "train_survivor_count": 1,
+            "train_failure_count": 0,
+            "heldout_survivor_count": 1,
+            "heldout_failure_count": 0,
+        },
+        "leakage_check": {
+            "passed": True,
+            "overlapping_branch_state_keys": [],
+        },
+        "acceptance": {
+            "validation_passed": True,
+            "training_blocked": False,
+            "blockers": [],
+        },
+    }
+
+
+def _split_record_ref(
+    record: dict[str, object],
+    *,
+    split_key: str,
+) -> dict[str, object]:
+    source = record["source"]
+    label = record["label"]
+    return {
+        "record_id": record["record_id"],
+        "dataset_record_index": 0,
+        "seed": source["seed"],
+        "branch_id": source["branch_id"],
+        "branch_state_digest": split_key,
+        "branch_state_key": split_key,
+        "branch_state_key_type": "branch_state_digest",
+        "branch_tick": source["branch_tick"],
+        "continuation_script": source["continuation_script"],
+        "trajectory_path": source["trajectory_path"],
+        "terminal_survivor": label["terminal_survivor"],
+        "outcome_class": label["outcome_class"],
+        "trajectory_record_count": 1,
+    }
 
 
 def _basic_action_mask() -> dict[str, bool]:

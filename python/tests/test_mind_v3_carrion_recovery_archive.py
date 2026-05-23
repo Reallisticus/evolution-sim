@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_v3_carrion_recovery_archive
+from evolution_sim.cli import (
+    mind_v3_carrion_recovery_archive,
+    mind_v3_carrion_recovery_archive_validate,
+)
 from evolution_sim.mind.carrion_branch_explore import (
     MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION,
 )
@@ -15,10 +19,15 @@ from evolution_sim.mind.carrion_counterfactual import (
 )
 from evolution_sim.mind.carrion_recovery_archive import (
     MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
+    MIND_V3_CARRION_RECOVERY_ARCHIVE_VALIDATION_SCHEMA_VERSION,
     MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE,
+    MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
     MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY,
     build_fixture_rerank_recovery_probe_archive_report,
     build_carrion_recovery_archive_report,
+    build_carrion_recovery_archive_validation_report,
+    write_carrion_recovery_archive_report,
+    write_carrion_recovery_dataset_records,
 )
 
 
@@ -31,6 +40,13 @@ class MindV3CarrionRecoveryArchiveTests(unittest.TestCase):
             (
                 "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m "
                 "evolution_sim.cli.mind_v3_carrion_recovery_archive"
+            ),
+        )
+        self.assertEqual(
+            package["scripts"]["sim:mind:v3:carrion-recovery-archive-validate"],
+            (
+                "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m "
+                "evolution_sim.cli.mind_v3_carrion_recovery_archive_validate"
             ),
         )
 
@@ -343,6 +359,109 @@ class MindV3CarrionRecoveryArchiveTests(unittest.TestCase):
             report["archive_contract"]["retention_policy"],
         )
 
+    def test_archive_validate_builds_leakage_safe_split_manifest(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, branch_report, dataset_path = _validation_archive_fixture(root)
+
+            with patch(
+                "evolution_sim.mind.carrion_recovery_archive.load_trajectory_jsonl",
+                return_value=SimpleNamespace(
+                    record_count=2,
+                    records=(
+                        {"action_source": "mind_v3_autonomous_evolution_policy_v1"},
+                        {"action_source": "counterfactual_script:water_first_recovery"},
+                    ),
+                ),
+            ):
+                report = build_carrion_recovery_archive_validation_report(
+                    archive_report=archive,
+                    dataset_path=dataset_path,
+                    branch_report=branch_report,
+                )
+
+        split = report["split"]
+        train_keys = set(split["branch_state_keys"]["train"])
+        heldout_keys = set(split["branch_state_keys"]["heldout"])
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_CARRION_RECOVERY_ARCHIVE_VALIDATION_SCHEMA_VERSION,
+        )
+        self.assertTrue(report["acceptance"]["validation_passed"])
+        self.assertFalse(report["acceptance"]["training_blocked"])
+        self.assertEqual(
+            split["schema_version"],
+            MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
+        )
+        self.assertFalse(train_keys & heldout_keys)
+        self.assertGreater(split["aggregate"]["train_record_count"], 0)
+        self.assertGreater(split["aggregate"]["heldout_record_count"], 0)
+        self.assertGreater(split["aggregate"]["heldout_survivor_count"], 0)
+        self.assertGreater(split["aggregate"]["heldout_failure_count"], 0)
+        self.assertTrue(split["leakage_check"]["passed"])
+
+    def test_archive_validate_blocks_duplicate_record_ids(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, branch_report, dataset_path = _validation_archive_fixture(root)
+            records = list(archive["dataset"]["records"])
+            records[1]["record_id"] = records[0]["record_id"]
+            write_carrion_recovery_dataset_records(records, dataset_path)
+
+            with patch(
+                "evolution_sim.mind.carrion_recovery_archive.load_trajectory_jsonl",
+                return_value=SimpleNamespace(record_count=1, records=()),
+            ):
+                report = build_carrion_recovery_archive_validation_report(
+                    archive_report=archive,
+                    dataset_path=dataset_path,
+                    branch_report=branch_report,
+                )
+
+        self.assertFalse(report["acceptance"]["validation_passed"])
+        self.assertIn("duplicate_record_ids", report["acceptance"]["blockers"])
+        self.assertTrue(report["acceptance"]["training_blocked"])
+
+    def test_archive_validate_cli_writes_validation_and_split(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive, branch_report, dataset_path = _validation_archive_fixture(root)
+            archive_path = root / "archive.json"
+            branch_path = root / "branch.json"
+            validation_path = root / "validation.json"
+            split_path = root / "split.json"
+            archive["source"]["branch_report_path"] = str(branch_path)
+            write_carrion_recovery_archive_report(archive, archive_path)
+            branch_path.write_text(json.dumps(branch_report), encoding="utf-8")
+
+            with patch(
+                "evolution_sim.mind.carrion_recovery_archive.load_trajectory_jsonl",
+                return_value=SimpleNamespace(record_count=1, records=()),
+            ), patch(
+                "sys.argv",
+                [
+                    "mind_v3_carrion_recovery_archive_validate",
+                    "--archive-report",
+                    str(archive_path),
+                    "--dataset",
+                    str(dataset_path),
+                    "--split-output",
+                    str(split_path),
+                    "--output",
+                    str(validation_path),
+                ],
+            ):
+                mind_v3_carrion_recovery_archive_validate.main()
+
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            split = json.loads(split_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(validation["acceptance"]["validation_passed"])
+        self.assertEqual(
+            split["schema_version"],
+            MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
+        )
+
 
 def _synthetic_branch_report() -> dict[str, object]:
     return {
@@ -470,6 +589,55 @@ def _synthetic_rerank_probe_search_report() -> dict[str, object]:
             ],
         },
     }
+
+
+def _validation_archive_fixture(
+    root: Path,
+) -> tuple[dict[str, object], dict[str, object], Path]:
+    branch_report = _synthetic_branch_report()
+    branch_report["branch_points"] = [
+        {
+            "branch_id": "branch-29",
+            "branch_state_digest": "digest-branch-29",
+            "seed": 29,
+            "branch_tick": 0,
+        },
+        {
+            "branch_id": "branch-37",
+            "branch_state_digest": "digest-branch-37",
+            "seed": 37,
+            "branch_tick": 0,
+        },
+    ]
+    branch_report["train_heldout_split_metadata"] = {
+        "by_branch_state_digest": [
+            {
+                "branch_id": "branch-29",
+                "branch_state_digest": "digest-branch-29",
+                "seed": 29,
+                "split": "source_search_train",
+            },
+            {
+                "branch_id": "branch-37",
+                "branch_state_digest": "digest-branch-37",
+                "seed": 37,
+                "split": "source_search_holdout",
+            },
+        ],
+    }
+    archive = build_carrion_recovery_archive_report(
+        branch_report=branch_report,
+        min_survivor_cells=2,
+        min_failure_cells=1,
+    )
+    records = archive["dataset"]["records"]
+    for index, record in enumerate(records):
+        path = root / f"trajectory-{index}.jsonl.gz"
+        path.write_text("", encoding="utf-8")
+        record["source"]["trajectory_path"] = str(path)
+    dataset_path = root / "dataset.jsonl"
+    write_carrion_recovery_dataset_records(records, dataset_path)
+    return archive, branch_report, dataset_path
 
 
 def _rerank_candidate(
