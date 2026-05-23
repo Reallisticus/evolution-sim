@@ -9776,6 +9776,236 @@ class MindV1Tests(unittest.TestCase):
             [80, 120],
         )
 
+    def test_mind_v3_fixture_rerank_selector_probe_scope_is_opt_in(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        args = mind_v3_evolve.build_parser().parse_args([])
+        self.assertEqual(
+            args.fixture_rerank_selector_probe_scope,
+            mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY,
+        )
+        self.assertIsNone(args.fixture_recovery_archive_retention)
+        policy = mind_v3_evolve.MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY
+
+        self.assertEqual(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+                ),
+                phase="initial",
+            ),
+            policy,
+        )
+        self.assertIsNone(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+                ),
+                phase="repair",
+            )
+        )
+        self.assertEqual(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR
+                ),
+                phase="bridge_repair",
+            ),
+            policy,
+        )
+
+    def test_mind_v3_fixture_rerank_selector_probe_summary_counts_repair_scope(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = mind_v3_evolve.MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY
+        summary = mind_v3_evolve._fixture_rerank_selector_probe_summary(
+            [
+                {
+                    "candidate_id": "initial",
+                    "carrion_recovery_probe": {
+                        "available": True,
+                        "missing_fields": [],
+                    },
+                },
+                {
+                    "candidate_id": "repair",
+                    "fixture_repair": {
+                        "donor_selection_reason": "scavenger_lane",
+                    },
+                    "carrion_recovery_probe": {
+                        "available": True,
+                        "missing_fields": ["mean_water_distance"],
+                    },
+                },
+                {
+                    "candidate_id": "bridge",
+                    "fixture_repair": {
+                        "donor_selection_reason": "promotion_safe_bridge",
+                    },
+                    "carrion_recovery_probe": {
+                        "available": False,
+                        "missing_reason": "trajectory_output_dir_missing",
+                        "missing_fields": [],
+                    },
+                },
+            ],
+            selected_candidate_id="repair",
+            selector_probe=policy,
+            selector_probe_scope=(
+                mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR
+            ),
+            initial_candidate_count=1,
+            standard_repair_candidate_count=1,
+            bridge_repair_candidate_count=1,
+        )
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["scope"], "initial-and-repair")
+        self.assertEqual(summary["initial_candidates_probed"], 1)
+        self.assertEqual(summary["repair_candidates_probed"], 1)
+        self.assertEqual(summary["bridge_repair_candidates_probed"], 1)
+        self.assertEqual(summary["complete_probe_count"], 1)
+        self.assertEqual(
+            summary["missing_probe_count_by_reason"],
+            {
+                "missing_fields": 1,
+                "trajectory_output_dir_missing": 1,
+            },
+        )
+        self.assertTrue(summary["selected_candidate_probe_present"])
+        self.assertFalse(summary["selected_candidate_probe_completed"])
+
+    def test_mind_v3_fixture_recovery_archive_retention_adds_archive_parents(
+        self,
+    ) -> None:
+        from random import Random
+
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        rerank_report = _mind_v3_recovery_retention_rerank_report()
+        retention = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=rerank_report,
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        self.assertIsNotNone(retention)
+        assert retention is not None
+        summary = retention["report"]
+        self.assertEqual(summary["policy"], policy)
+        self.assertEqual(summary["selected_candidate_id"], "selected")
+        self.assertFalse(summary["changes_final_selected_candidate"])
+        self.assertGreater(summary["archive_cell_count"], 1)
+        self.assertGreater(summary["retention_added_count"], 0)
+        self.assertIn("hydration", summary["retained_candidate_ids"])
+        self.assertTrue(summary["retained_source_cells"])
+
+        archive = mind_v3_evolve._archive_with_recovery_archive_retention(
+            {
+                "policy": mind_v3_evolve.MIND_V3_ARCHIVE_POLICY,
+                "elites": {
+                    "balanced": _mind_v3_recovery_retention_parent("selected")
+                },
+                "behavior_niches": {},
+                "niche_count": 0,
+            },
+            retention=retention,
+        )
+        parents = mind_v3_evolve._archive_parent_candidates(archive)
+        parent_ids = [str(parent["candidate_id"]) for parent in parents]
+        self.assertEqual(parent_ids[0], "selected")
+        self.assertIn("hydration", parent_ids)
+
+        def fake_inherit_mind_v3_metadata(**kwargs: object) -> dict[str, object]:
+            parent = dict(kwargs["primary_parent_metadata"])
+            return {"inherited_from": parent["source_marker"]}
+
+        with patch(
+            "evolution_sim.cli.mind_v3_evolve.inherit_mind_v3_metadata",
+            side_effect=fake_inherit_mind_v3_metadata,
+        ):
+            children = mind_v3_evolve._next_generation(
+                parents,
+                generation_index=1,
+                population_size=4,
+                rng=Random(5),
+            )
+
+        self.assertIn(
+            "hydration",
+            {str(child["parent_candidate_id"]) for child in children},
+        )
+
+    def test_mind_v3_fixture_recovery_archive_retention_is_deterministic(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        first = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=_mind_v3_recovery_retention_rerank_report(),
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+        second = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=_mind_v3_recovery_retention_rerank_report(),
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        assert first is not None
+        assert second is not None
+        self.assertEqual(first["report"], second["report"])
+        self.assertEqual(
+            first["report"]["retained_candidate_ids"],
+            second["report"]["retained_candidate_ids"],
+        )
+
+    def test_mind_v3_fixture_recovery_archive_retention_skips_missing_probes(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        rerank_report = _mind_v3_recovery_retention_rerank_report()
+        rerank_report["candidates"][1]["carrion_recovery_probe"].pop(
+            "mean_water_distance"
+        )
+
+        retention = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=rerank_report,
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        self.assertIsNotNone(retention)
+        assert retention is not None
+        summary = retention["report"]
+        self.assertEqual(summary["retention_added_count"], 0)
+        self.assertEqual(summary["retained_candidate_ids"], [])
+        self.assertIn(
+            "missing_or_incomplete_recovery_probe_candidates",
+            summary["retention_blocked_reasons"],
+        )
+
     def test_mind_v3_fixture_summary_records_observed_animal_resource_intake(
         self,
     ) -> None:
@@ -15705,6 +15935,124 @@ class MindV1Tests(unittest.TestCase):
             gate["blockers"][0]["field"],
             "policy_diagnostics.guard_intervention_rate_reduction",
         )
+
+
+def _mind_v3_recovery_retention_rerank_report() -> dict[str, object]:
+    return {
+        "policy": "fixture_holdout_top_k_multi_horizon_scavenger_lane_rerank_v7",
+        "selected_candidate_id": "selected",
+        "candidates": [
+            _mind_v3_recovery_retention_rerank_entry(
+                "selected",
+                survival=0.2,
+                drink=0.8,
+                hydration=0.02,
+                water=2.0,
+                unsupported=4,
+                dominant=0.42,
+                score=20.0,
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "hydration",
+                survival=0.0,
+                drink=0.9,
+                hydration=0.2,
+                water=1.5,
+                unsupported=2,
+                dominant=0.4,
+                score=30.0,
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "repair",
+                survival=0.1,
+                drink=0.4,
+                hydration=-0.1,
+                water=3.0,
+                unsupported=3,
+                dominant=0.45,
+                score=15.0,
+                source="repair",
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "bridge",
+                survival=0.0,
+                drink=0.0,
+                hydration=-0.3,
+                water=5.0,
+                unsupported=9,
+                dominant=0.6,
+                score=10.0,
+                source="bridge-repair",
+            ),
+        ],
+    }
+
+
+def _mind_v3_recovery_retention_rerank_entry(
+    candidate_id: str,
+    *,
+    survival: float,
+    drink: float,
+    hydration: float,
+    water: float,
+    unsupported: int,
+    dominant: float,
+    score: float,
+    source: str = "initial",
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "candidate_id": candidate_id,
+        "prefilter_rank": 0 if candidate_id == "selected" else 1,
+        "search_score": score,
+        "carrion_recovery_probe": {
+            "available": True,
+            "fixture_blocker_count": 5,
+            "carrion_only_blocker_count": 5,
+            "post_contact_survival_rate": survival,
+            "drink_after_carrion_rate": drink,
+            "mean_hydration_delta_after_carrion": hydration,
+            "mean_water_distance": water,
+            "unsupported_requested_action_count": 0,
+            "unsupported_resolved_action_count": unsupported,
+            "dominant_requested_action_share": dominant,
+            "missing_fields": [],
+        },
+    }
+    if source == "repair":
+        entry["fixture_repair"] = {"donor_selection_reason": "scavenger_lane"}
+    elif source == "bridge-repair":
+        entry["fixture_repair"] = {
+            "donor_selection_reason": "promotion_safe_bridge"
+        }
+    return entry
+
+
+def _mind_v3_recovery_retention_parent(candidate_id: str) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "candidate_index": 0,
+        "generation_index": 0,
+        "score": 0.0,
+        "alive_agents_mean": 1.0,
+        "births_mean": 0.0,
+        "deaths_mean": 0.0,
+        "alive_agent_ticks_per_tick_mean": 1.0,
+        "resource_event_rate": 0.0,
+        "movement_event_rate": 0.0,
+        "heuristic_action_source_count": 0,
+        "controller_metadata": {
+            "schema_version": "mind_v3_controller_metadata_v1",
+            "state_size": 0,
+            "source_marker": candidate_id,
+        },
+    }
+
+
+def _mind_v3_recovery_retention_runtimes() -> list[dict[str, object]]:
+    return [
+        {"candidate": _mind_v3_recovery_retention_parent(candidate_id)}
+        for candidate_id in ("selected", "hydration", "repair", "bridge")
+    ]
 
 
 if __name__ == "__main__":

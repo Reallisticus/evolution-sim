@@ -431,6 +431,40 @@ matched at `0.0163`; recovery selected-score delta abs mean/max were
 solve carrion recovery. Do not tune this branch further without a new,
 testable hypothesis.
 
+Follow-up diagnostics added a report-only carrion objective-pressure audit and
+gate-aligned selector probe. The audit joins search/rerank reports with
+carrion-only traces to ask whether selected candidates favor carrion contact,
+gain, or births while under-penalizing post-contact hydration collapse and
+death. The selector probe is retrospective only:
+`gate_aligned_carrion_recovery_probe_v1` compares the current selected
+fixture-rerank candidate with a lexicographic gate-aligned candidate using
+fixture pass status, blocker counts, multi-horizon carrion viability, unsupported
+actions, dominant-action share, and search score only as the final tie-breaker.
+It reports missing candidate-level recovery fields and plausible alternates but
+does not change runtime policy, action masks, score weights, gates, replay
+semantics, or active candidate selection. A separate evolve flag can opt in to
+bounded fixture-rerank candidate recovery probes that write carrion-only
+trajectory diagnostics for top-K nominees; it is disabled by default and is not
+an active selector. The probe scope defaults to `initial-only`, preserving the
+original top-K nominee coverage. The opt-in `initial-and-repair` scope also
+annotates standard repair and bridge-repair candidates with the same
+JSON-only recovery metrics and emits coverage/missing-reason counts so final
+repair artifacts are auditable before any active selector is considered.
+The carrion recovery archive CLI can now consume those completed rerank probe
+fields directly with `--source fixture-rerank-recovery-probe`. This mode is a
+report-only audit: it builds descriptive recovery cells from
+`fixture_rerank.candidates[*].carrion_recovery_probe`, reports selected-cell
+coverage, non-selected recovery-better candidates, and hypothetical archive
+retention IDs, but it does not add parents or alter active fixture reranking.
+Slice 2 adds an evolve-only opt-in,
+`--fixture-recovery-archive-retention gate_aligned_carrion_recovery_archive_v1`,
+that consumes those same completed rerank probe cells and retains non-selected
+cell elites only as future parent/archive diversity. The current generation's
+fixture-rerank selected candidate is unchanged, and the flag does not change
+runtime policy inputs, controller scoring, action masks, gates, fixture floors,
+or replay semantics. Retention remains bounded to fixture-rerank initial,
+standard repair, and bridge-repair candidates with completed recovery probes.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in

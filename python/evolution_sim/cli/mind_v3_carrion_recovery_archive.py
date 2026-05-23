@@ -18,8 +18,12 @@ from evolution_sim.mind.carrion_recovery_archive import (
     DEFAULT_RECOVERY_ARCHIVE_MIN_FAILURE_CELLS,
     DEFAULT_RECOVERY_ARCHIVE_MIN_SURVIVOR_CELLS,
     MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION,
+    MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_BRANCH,
+    MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE,
     CarrionRecoveryArchiveError,
+    build_fixture_rerank_recovery_probe_archive_report,
     build_carrion_recovery_archive_report,
+    load_carrion_recovery_json_report,
     write_carrion_recovery_archive_report,
 )
 
@@ -30,6 +34,28 @@ def build_parser() -> argparse.ArgumentParser:
             "Build a quality-diverse Mind v3 carrion recovery archive from "
             "post-contact branch continuations."
         )
+    )
+    parser.add_argument(
+        "--source",
+        choices=[
+            MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_BRANCH,
+            MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE,
+        ],
+        default=MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_BRANCH,
+        help=(
+            "Archive source. The default keeps the existing branch-continuation "
+            "archive path; fixture-rerank-recovery-probe builds a report-only "
+            "audit from completed fixture_rerank candidate carrion probes."
+        ),
+    )
+    parser.add_argument(
+        "--search-report",
+        action="append",
+        default=[],
+        help=(
+            "Search report for --source fixture-rerank-recovery-probe. Use "
+            "LABEL=PATH or PATH. Repeat to combine reports."
+        ),
     )
     parser.add_argument(
         "--branch-report",
@@ -142,6 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.source == MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE:
+        _run_fixture_rerank_probe_archive(args)
+        return
     continuation_scripts = (
         tuple(args.continuation_script)
         if args.continuation_script
@@ -192,6 +221,62 @@ def main() -> None:
         "archive",
         aggregate_payload.get("outcome_metrics", {}),
     )
+
+
+def _run_fixture_rerank_probe_archive(args: argparse.Namespace) -> None:
+    if not args.search_report:
+        raise SystemExit(
+            "failed to build carrion recovery archive: "
+            "--source fixture-rerank-recovery-probe requires --search-report"
+        )
+    try:
+        search_reports = []
+        for raw in args.search_report:
+            label, path = _parse_labeled_search_report(str(raw))
+            search_reports.append(
+                (
+                    label,
+                    load_carrion_recovery_json_report(path),
+                    path,
+                )
+            )
+        report = build_fixture_rerank_recovery_probe_archive_report(
+            search_reports=search_reports,
+        )
+        write_carrion_recovery_archive_report(report, args.output)
+    except (OSError, ValueError, CarrionRecoveryArchiveError) as exc:
+        raise SystemExit(f"failed to build carrion recovery archive: {exc}") from exc
+
+    input_summary = report["input_summary"]  # type: ignore[index]
+    archive = report["archive"]  # type: ignore[index]
+    selected = report["selected"]  # type: ignore[index]
+    retention = report["retention"]  # type: ignore[index]
+    print(f"carrion_recovery_archive={args.output}")
+    print(f"schema_version={MIND_V3_CARRION_RECOVERY_ARCHIVE_SCHEMA_VERSION}")
+    print(f"source={MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE}")
+    print(f"candidate_count={input_summary['candidate_count']}")  # type: ignore[index]
+    print(f"complete_probe_count={input_summary['complete_probe_count']}")  # type: ignore[index]
+    print(f"missing_probe_count={input_summary['missing_probe_count']}")  # type: ignore[index]
+    print(f"archive_cell_count={archive['cell_count']}")  # type: ignore[index]
+    print(
+        "selected_dominates_all_non_selected_recovery_cells="
+        f"{selected['dominates_all_non_selected_recovery_cells']}"  # type: ignore[index]
+    )
+    print(
+        "archive_retention_would_add_new_parent_candidates="
+        f"{retention['would_add_new_parent_candidates']}"  # type: ignore[index]
+    )
+
+
+def _parse_labeled_search_report(raw: str) -> tuple[str, Path]:
+    if "=" in raw:
+        label, path = raw.split("=", 1)
+        label = label.strip()
+        if not label:
+            raise CarrionRecoveryArchiveError("--search-report label is empty")
+        return label, Path(path)
+    path = Path(raw)
+    return path.stem, path
 
 
 def _print_outcome_metrics(prefix: str, metrics: object) -> None:

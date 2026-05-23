@@ -19,6 +19,18 @@ from evolution_sim.cli.mind_v3_evaluate import (
     run_mind_v3_fixture_suite,
 )
 from evolution_sim.env import RunMode, SimulationWorld
+from evolution_sim.mind.carrion_autopsy import (
+    build_carrion_autopsy_report,
+    load_carrion_autopsy_trajectory_jsonl,
+)
+from evolution_sim.mind.carrion_objective_audit import (
+    MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY,
+)
+from evolution_sim.mind.carrion_recovery_archive import (
+    MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE,
+    MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY,
+    build_fixture_rerank_recovery_probe_archive_report,
+)
 from evolution_sim.mind.evolution import (
     MIND_V3_CONTROLLER_ARCHITECTURE,
     MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
@@ -57,6 +69,8 @@ MIND_V3_GENERATION_FIXTURE_SELECTION_NOMINEE_POLICY = (
     "generation_fixture_diverse_nominee_pool_v1"
 )
 MIND_V3_FIXTURE_REPAIR_POLICY = "fixture_blocker_composite_founder_pool_repair_v5"
+MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY = "initial-only"
+MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR = "initial-and-repair"
 MIND_V3_SUSTAINED_READINESS_POLICY = (
     "trajectory_observed_temporal_bottleneck_readiness_v3"
 )
@@ -418,6 +432,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--fixture-rerank-selector-probe",
+        choices=[MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY],
+        help=(
+            "Opt-in JSON-only carrion recovery diagnostics for bounded "
+            "fixture-rerank candidates. This never changes active selection."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-rerank-selector-probe-scope",
+        choices=[
+            MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY,
+            MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR,
+        ],
+        default=MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY,
+        help=(
+            "Candidate scope for --fixture-rerank-selector-probe. The default "
+            "probes only the initial fixture-rerank pool; initial-and-repair "
+            "also probes standard repair and bridge-repair candidates."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-rerank-selector-probe-trajectory-output-dir",
+        type=Path,
+        help=(
+            "Optional trajectory directory for --fixture-rerank-selector-probe. "
+            "Defaults to a directory next to --output."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-recovery-archive-retention",
+        choices=[MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY],
+        help=(
+            "Opt-in report-backed carrion recovery archive retention for "
+            "future parent diversity. This consumes completed fixture-rerank "
+            "recovery probe fields and never changes current fixture-rerank "
+            "selection."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("output/mind/mind-v3-evolution-search-report.json"),
@@ -437,6 +490,40 @@ def main() -> None:
         raise SystemExit("--fixture-selection-top-k must be >= 0")
     if args.warm_start_candidate_limit < 0:
         raise SystemExit("--warm-start-candidate-limit must be >= 0")
+    if args.fixture_rerank_selector_probe and args.fixture_suite == "none":
+        raise SystemExit(
+            "--fixture-rerank-selector-probe requires --fixture-suite"
+        )
+    if args.fixture_rerank_selector_probe and args.fixture_rerank_top_k <= 1:
+        raise SystemExit(
+            "--fixture-rerank-selector-probe requires --fixture-rerank-top-k > 1"
+        )
+    if (
+        args.fixture_rerank_selector_probe_scope
+        != MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+        and not args.fixture_rerank_selector_probe
+    ):
+        raise SystemExit(
+            "--fixture-rerank-selector-probe-scope requires "
+            "--fixture-rerank-selector-probe"
+        )
+    if args.fixture_recovery_archive_retention and args.fixture_suite == "none":
+        raise SystemExit(
+            "--fixture-recovery-archive-retention requires --fixture-suite"
+        )
+    if args.fixture_recovery_archive_retention and args.fixture_rerank_top_k <= 1:
+        raise SystemExit(
+            "--fixture-recovery-archive-retention requires "
+            "--fixture-rerank-top-k > 1"
+        )
+    if (
+        args.fixture_recovery_archive_retention
+        and not args.fixture_rerank_selector_probe
+    ):
+        raise SystemExit(
+            "--fixture-recovery-archive-retention requires "
+            "--fixture-rerank-selector-probe"
+        )
     if not mind_v3_controller_architecture_is_promotion_eligible(
         str(args.controller_architecture)
     ):
@@ -529,6 +616,12 @@ def main() -> None:
             if args.fixture_suite != "none"
             else 0
         ),
+        fixture_rerank_selector_probe=args.fixture_rerank_selector_probe,
+        fixture_rerank_selector_probe_scope=args.fixture_rerank_selector_probe_scope,
+        fixture_rerank_selector_probe_trajectory_output_dir=(
+            _fixture_rerank_selector_probe_trajectory_output_dir(args)
+        ),
+        fixture_recovery_archive_retention=args.fixture_recovery_archive_retention,
         warm_start=warm_start_report,
     )
     _attach_comparison_baseline_report(
@@ -558,6 +651,12 @@ def _run_search_stage(
     fixture_rerank_top_k: int = 1,
     fixture_rerank_ticks: list[int] | None = None,
     fixture_selection_top_k: int = 0,
+    fixture_rerank_selector_probe: str | None = None,
+    fixture_rerank_selector_probe_scope: str = (
+        MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+    ),
+    fixture_rerank_selector_probe_trajectory_output_dir: Path | None = None,
+    fixture_recovery_archive_retention: str | None = None,
     warm_start: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if start_generation_index > requested_generations:
@@ -663,12 +762,40 @@ def _run_search_stage(
             rollout_workers=rollout_workers,
             fixture_config=fixture_config,
             fixture_ticks=fixture_rerank_ticks or [int(fixture_config.get("ticks") or ticks)],
+            selector_probe=fixture_rerank_selector_probe,
+            selector_probe_scope=fixture_rerank_selector_probe_scope,
+            selector_probe_trajectory_output_dir=(
+                fixture_rerank_selector_probe_trajectory_output_dir
+            ),
+            recovery_archive_retention=fixture_recovery_archive_retention,
         )
         best_candidate = dict(rerank["selected_candidate"])
         holdout_evaluation = rerank["holdout_evaluation"]
         fixture_suite = rerank["fixture_suite"]
         fixture_gate = rerank["fixture_gate"]
         fixture_rerank = dict(rerank["report"])
+        retention = rerank.get("recovery_archive_retention")
+        if isinstance(retention, Mapping):
+            retention_archive = _archive_with_recovery_archive_retention(
+                archive,
+                retention=retention,
+            )
+            retention_report = retention.get("report")
+            retention_added_count = (
+                int(retention_report.get("retention_added_count", 0))
+                if isinstance(retention_report, Mapping)
+                else 0
+            )
+            if retention_added_count > 0:
+                archive = retention_archive
+                next_candidates = _next_generation(
+                    _archive_parent_candidates(archive),
+                    generation_index=requested_generations,
+                    population_size=population_size,
+                    rng=rng,
+                )
+            else:
+                archive = retention_archive
     else:
         holdout_evaluation = (
             _evaluate_holdout(
@@ -789,6 +916,14 @@ def _run_curriculum_search(args: argparse.Namespace) -> dict[str, object]:
                 if args.fixture_suite != "none"
                 else 0
             ),
+            fixture_rerank_selector_probe=args.fixture_rerank_selector_probe,
+            fixture_rerank_selector_probe_scope=(
+                args.fixture_rerank_selector_probe_scope
+            ),
+            fixture_rerank_selector_probe_trajectory_output_dir=(
+                _fixture_rerank_selector_probe_trajectory_output_dir(args)
+            ),
+            fixture_recovery_archive_retention=args.fixture_recovery_archive_retention,
             warm_start=warm_start_report if stage_index == 0 else None,
         )
         stage_status = _curriculum_stage_status(
@@ -4854,15 +4989,38 @@ def _archive_parent_candidates(archive: dict[str, object]) -> list[dict[str, obj
         seen.add(parent_key)
         parents.append(parent)
 
+    def append_retained_archive_parents() -> None:
+        retained = archive.get("fixture_recovery_archive_retained_candidates")
+        if not isinstance(retained, list):
+            return
+        for raw_candidate in retained:
+            if not isinstance(raw_candidate, dict):
+                continue
+            candidate_id = str(raw_candidate.get("candidate_id", ""))
+            if not candidate_id:
+                continue
+            if any(
+                str(parent.get("candidate_id", "")) == candidate_id
+                for parent in parents
+            ):
+                continue
+            append_parent(
+                dict(raw_candidate),
+                parent_key=f"fixture_recovery_archive:{candidate_id}",
+            )
+
     for name in ARCHIVE_ORDER:
         candidate = elites.get(name)
         if not isinstance(candidate, dict):
             continue
         candidate_id = str(candidate.get("candidate_id", ""))
         append_parent(candidate, parent_key=f"metric:{candidate_id}")
+        if name == "balanced":
+            append_retained_archive_parents()
+    append_retained_archive_parents()
     behavior_niches = archive.get("behavior_niches")
     if not isinstance(behavior_niches, dict):
-        return parents
+        behavior_niches = {}
     for niche_key in sorted(behavior_niches):
         raw_cell = behavior_niches[niche_key]
         if not isinstance(raw_cell, dict):
@@ -5026,6 +5184,10 @@ def _run_fixture_rerank(
     rollout_workers: int,
     fixture_config: dict[str, object],
     fixture_ticks: list[int],
+    selector_probe: str | None = None,
+    selector_probe_scope: str = MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY,
+    selector_probe_trajectory_output_dir: Path | None = None,
+    recovery_archive_retention: str | None = None,
 ) -> dict[str, object]:
     generation_candidates = _generation_candidates(generations)
     candidates = [
@@ -5058,6 +5220,22 @@ def _run_fixture_rerank(
             selected_key = key
             selected_runtime = runtime
 
+    initial_selector_probe = _fixture_rerank_selector_probe_for_phase(
+        selector_probe,
+        selector_probe_scope=selector_probe_scope,
+        phase="initial",
+    )
+    repair_selector_probe = _fixture_rerank_selector_probe_for_phase(
+        selector_probe,
+        selector_probe_scope=selector_probe_scope,
+        phase="repair",
+    )
+    bridge_repair_selector_probe = _fixture_rerank_selector_probe_for_phase(
+        selector_probe,
+        selector_probe_scope=selector_probe_scope,
+        phase="bridge_repair",
+    )
+
     initial_runtimes, initial_worker_count = _evaluate_fixture_rerank_candidates(
         [
             (rank, candidate)
@@ -5068,6 +5246,8 @@ def _run_fixture_rerank(
         rollout_workers=rollout_workers,
         fixture_config=fixture_config,
         fixture_ticks=fixture_ticks,
+        selector_probe=initial_selector_probe,
+        selector_probe_trajectory_output_dir=selector_probe_trajectory_output_dir,
     )
     for runtime in initial_runtimes:
         consider_runtime(runtime)
@@ -5080,6 +5260,12 @@ def _run_fixture_rerank(
         rollout_workers=rollout_workers,
         fixture_config=fixture_config,
         fixture_ticks=fixture_ticks,
+        selector_probe=repair_selector_probe,
+        selector_probe_trajectory_output_dir=(
+            selector_probe_trajectory_output_dir
+            if repair_selector_probe is not None
+            else None
+        ),
     )
     for runtime in repair_runtimes:
         consider_runtime(runtime)
@@ -5097,6 +5283,12 @@ def _run_fixture_rerank(
         rollout_workers=rollout_workers,
         fixture_config=fixture_config,
         fixture_ticks=fixture_ticks,
+        selector_probe=bridge_repair_selector_probe,
+        selector_probe_trajectory_output_dir=(
+            selector_probe_trajectory_output_dir
+            if bridge_repair_selector_probe is not None
+            else None
+        ),
     )
     for runtime in bridge_repair_runtimes:
         consider_runtime(runtime)
@@ -5110,6 +5302,15 @@ def _run_fixture_rerank(
         for entry in evaluated
         if isinstance(entry.get("fixture_repair"), Mapping)
     )
+    selector_probe_summary = _fixture_rerank_selector_probe_summary(
+        evaluated,
+        selected_candidate_id=str(selected_candidate["candidate_id"]),
+        selector_probe=selector_probe,
+        selector_probe_scope=selector_probe_scope,
+        initial_candidate_count=len(candidates),
+        standard_repair_candidate_count=len(repair_candidates),
+        bridge_repair_candidate_count=len(bridge_repair_candidates),
+    )
     warm_start_candidate_count = sum(
         1
         for candidate in candidates
@@ -5120,38 +5321,441 @@ def _run_fixture_rerank(
         for candidate in candidates
         if "scavenger" in _candidate_ecology_lane_tags(candidate)
     )
+    report = {
+        "policy": MIND_V3_FIXTURE_RERANK_POLICY,
+        "top_k": limit,
+        "candidate_count": len(evaluated),
+        "initial_candidate_count": len(candidates),
+        "warm_start_candidate_count": warm_start_candidate_count,
+        "warm_start_candidate_limit": MIND_V3_FIXTURE_WARM_START_CANDIDATE_LIMIT,
+        "ecology_lane_candidate_count": ecology_lane_candidate_count,
+        "ecology_lane_candidate_limit": MIND_V3_FIXTURE_ECOLOGY_LANE_CANDIDATE_LIMIT,
+        "fixture_rerank_ticks": [int(value) for value in fixture_ticks],
+        "execution": {
+            "policy": "fixture_rerank_candidate_process_pool_v1",
+            "requested_workers": rollout_workers,
+            "initial_workers": initial_worker_count,
+            "repair_workers": repair_worker_count,
+            "bridge_repair_workers": bridge_repair_worker_count,
+        },
+        "repair_policy": MIND_V3_FIXTURE_REPAIR_POLICY,
+        "selector_probe_policy": selector_probe,
+        "selector_probe_enabled": selector_probe is not None,
+        "selector_probe_scope": (
+            selector_probe_scope if selector_probe is not None else None
+        ),
+        "selector_probe_candidate_scope": (
+            _fixture_rerank_selector_probe_scope_label(selector_probe_scope)
+            if selector_probe is not None
+            else None
+        ),
+        "selector_probe_summary": selector_probe_summary,
+        "selector_probe_trajectory_output_dir": (
+            str(selector_probe_trajectory_output_dir)
+            if selector_probe_trajectory_output_dir is not None
+            else None
+        ),
+        "repair_candidate_count": repair_count,
+        "standard_repair_candidate_count": len(repair_candidates),
+        "bridge_repair_candidate_count": len(bridge_repair_candidates),
+        "selected_candidate_id": str(selected_candidate["candidate_id"]),
+        "selected_prefilter_rank": int(selected_entry["prefilter_rank"]),
+        "selected_selection_key": list(selected_key or ()),
+        "candidates": evaluated,
+    }
+    retention = _fixture_recovery_archive_retention_from_rerank(
+        recovery_archive_retention,
+        rerank_report=report,
+        evaluated_runtimes=evaluated_runtimes,
+    )
+    if retention is not None:
+        report["fixture_recovery_archive_retention_policy"] = (
+            recovery_archive_retention
+        )
+        report["fixture_recovery_archive_retention_enabled"] = True
+        report["fixture_recovery_archive_retention"] = dict(
+            retention["report"]
+        )
     return {
         "selected_candidate": selected_candidate,
         "holdout_evaluation": selected_runtime["holdout_evaluation"],
         "fixture_suite": selected_runtime["fixture_suite"],
         "fixture_gate": selected_runtime["fixture_gate"],
-        "report": {
-            "policy": MIND_V3_FIXTURE_RERANK_POLICY,
-            "top_k": limit,
-            "candidate_count": len(evaluated),
-            "initial_candidate_count": len(candidates),
-            "warm_start_candidate_count": warm_start_candidate_count,
-            "warm_start_candidate_limit": MIND_V3_FIXTURE_WARM_START_CANDIDATE_LIMIT,
-            "ecology_lane_candidate_count": ecology_lane_candidate_count,
-            "ecology_lane_candidate_limit": MIND_V3_FIXTURE_ECOLOGY_LANE_CANDIDATE_LIMIT,
-            "fixture_rerank_ticks": [int(value) for value in fixture_ticks],
-            "execution": {
-                "policy": "fixture_rerank_candidate_process_pool_v1",
-                "requested_workers": rollout_workers,
-                "initial_workers": initial_worker_count,
-                "repair_workers": repair_worker_count,
-                "bridge_repair_workers": bridge_repair_worker_count,
-            },
-            "repair_policy": MIND_V3_FIXTURE_REPAIR_POLICY,
-            "repair_candidate_count": repair_count,
-            "standard_repair_candidate_count": len(repair_candidates),
-            "bridge_repair_candidate_count": len(bridge_repair_candidates),
-            "selected_candidate_id": str(selected_candidate["candidate_id"]),
-            "selected_prefilter_rank": int(selected_entry["prefilter_rank"]),
-            "selected_selection_key": list(selected_key or ()),
-            "candidates": evaluated,
+        "report": report,
+        "recovery_archive_retention": retention,
+    }
+
+
+def _fixture_recovery_archive_retention_from_rerank(
+    policy: str | None,
+    *,
+    rerank_report: Mapping[str, object],
+    evaluated_runtimes: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    if policy is None:
+        return None
+    if policy != MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY:
+        raise ValueError(f"unsupported recovery archive retention policy: {policy}")
+    audit_report = build_fixture_rerank_recovery_probe_archive_report(
+        search_reports=[
+            (
+                "fixture_rerank",
+                {
+                    "schema_version": MIND_V3_EVOLUTION_SEARCH_SCHEMA_VERSION,
+                    "fixture_rerank": rerank_report,
+                },
+                None,
+            )
+        ]
+    )
+    input_summary = dict(audit_report.get("input_summary", {}))
+    selected_ids = [
+        str(candidate_id)
+        for candidate_id in input_summary.get("selected_candidate_ids", [])
+    ]
+    selected_candidate_id = selected_ids[0] if selected_ids else str(
+        rerank_report.get("selected_candidate_id", "")
+    )
+    missing_probe_count = int(input_summary.get("missing_probe_count", 0))
+    selected_probe_completed = bool(
+        input_summary.get("selected_candidate_probe_completed", False)
+    )
+    blocked_reasons: list[str] = []
+    if int(input_summary.get("complete_probe_count", 0)) <= 0:
+        blocked_reasons.append("no_complete_recovery_probe_candidates")
+    if missing_probe_count > 0:
+        blocked_reasons.append("missing_or_incomplete_recovery_probe_candidates")
+    if not selected_probe_completed:
+        blocked_reasons.append("selected_candidate_recovery_probe_incomplete")
+
+    source_candidates = _fixture_rerank_runtime_candidates_by_id(evaluated_runtimes)
+    source_cells = _fixture_recovery_archive_retention_source_cells(audit_report)
+    candidate_ids_that_would_be_added = [
+        str(candidate_id)
+        for candidate_id in dict(audit_report.get("retention", {})).get(
+            "retained_candidate_ids_that_would_be_added",
+            [],
+        )
+    ]
+    if not candidate_ids_that_would_be_added:
+        blocked_reasons.append("no_non_selected_cell_elites")
+
+    retained_candidates: list[dict[str, object]] = []
+    retained_source_cells: list[dict[str, object]] = []
+    missing_candidate_ids: list[str] = []
+    if not blocked_reasons:
+        for candidate_id in candidate_ids_that_would_be_added:
+            source = source_candidates.get(candidate_id)
+            cells = source_cells.get(candidate_id, [])
+            if source is None:
+                missing_candidate_ids.append(candidate_id)
+                continue
+            retained = dict(source)
+            retained["fixture_recovery_archive_retention"] = {
+                "policy": policy,
+                "source_mode": (
+                    MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE
+                ),
+                "selected_candidate_id": selected_candidate_id,
+                "source_candidate_id": candidate_id,
+                "source_cells": cells,
+            }
+            retained["archive_parent_source"] = policy
+            retained_candidates.append(retained)
+            retained_source_cells.extend(cells)
+    if missing_candidate_ids:
+        blocked_reasons.append("retained_candidate_metadata_missing")
+        retained_candidates = []
+        retained_source_cells = []
+
+    retained_candidate_ids = [
+        str(candidate["candidate_id"])
+        for candidate in retained_candidates
+        if "candidate_id" in candidate
+    ]
+    source_type_counts = Counter(
+        str(cell.get("source_type", "unknown")) for cell in retained_source_cells
+    )
+    report = {
+        "policy": policy,
+        "enabled": True,
+        "source_mode": MIND_V3_CARRION_RECOVERY_ARCHIVE_SOURCE_FIXTURE_RERANK_PROBE,
+        "changes_runtime_policy": False,
+        "changes_fixture_rerank_selection": False,
+        "changes_final_selected_candidate": False,
+        "bounded_to_fixture_rerank_candidates": True,
+        "archive_cell_count": int(
+            dict(audit_report.get("archive", {})).get("cell_count", 0)
+        ),
+        "selected_candidate_id": selected_candidate_id,
+        "selected_dominates_non_selected_cells": bool(
+            dict(audit_report.get("selected", {})).get(
+                "dominates_all_non_selected_recovery_cells",
+                False,
+            )
+        ),
+        "input_summary": input_summary,
+        "retention_added_count": len(retained_candidate_ids),
+        "retained_candidate_ids": retained_candidate_ids,
+        "retained_source_cells": retained_source_cells,
+        "retention_blocked_reasons": sorted(set(blocked_reasons)),
+        "missing_retained_candidate_ids": sorted(missing_candidate_ids),
+        "parent_archive_source_diagnostics": {
+            "policy": policy,
+            "source_candidate_count": len(source_candidates),
+            "source_candidate_ids": sorted(source_candidates),
+            "retained_candidate_count": len(retained_candidate_ids),
+            "retained_source_type_counts": dict(sorted(source_type_counts.items())),
+            "retention_pool": (
+                "fixture_rerank_initial_repair_bridge_repair_candidates_only"
+            ),
+        },
+        "audit": {
+            "archive_policy": audit_report.get("archive_policy"),
+            "archive_contract_digest": dict(
+                audit_report.get("provenance", {})
+            ).get("archive_contract_digest"),
+            "retained_candidate_ids_that_would_be_added": (
+                candidate_ids_that_would_be_added
+            ),
+            "non_selected_recovery_better_than_selected": bool(
+                dict(audit_report.get("retention", {})).get(
+                    "non_selected_recovery_better_than_selected",
+                    False,
+                )
+            ),
         },
     }
+    return {
+        "policy": policy,
+        "report": report,
+        "retained_candidates": retained_candidates,
+    }
+
+
+def _fixture_rerank_runtime_candidates_by_id(
+    evaluated_runtimes: Sequence[Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    candidates: dict[str, dict[str, object]] = {}
+    for runtime in evaluated_runtimes:
+        candidate = runtime.get("candidate")
+        if not isinstance(candidate, Mapping):
+            continue
+        candidate_id = str(candidate.get("candidate_id", ""))
+        if not candidate_id:
+            continue
+        candidates[candidate_id] = dict(candidate)
+    return candidates
+
+
+def _fixture_recovery_archive_retention_source_cells(
+    audit_report: Mapping[str, object],
+) -> dict[str, list[dict[str, object]]]:
+    archive = audit_report.get("archive")
+    cells = dict(archive).get("cells", []) if isinstance(archive, Mapping) else []
+    source_cells: dict[str, list[dict[str, object]]] = {}
+    if not isinstance(cells, list):
+        return source_cells
+    for raw_cell in cells:
+        if not isinstance(raw_cell, Mapping):
+            continue
+        elite = raw_cell.get("elite")
+        if not isinstance(elite, Mapping):
+            continue
+        candidate_id = str(elite.get("candidate_id", ""))
+        if not candidate_id:
+            continue
+        source_cells.setdefault(candidate_id, []).append(
+            {
+                "cell_key": str(raw_cell.get("cell_key", "")),
+                "descriptor": dict(raw_cell.get("descriptor", {}))
+                if isinstance(raw_cell.get("descriptor"), Mapping)
+                else {},
+                "facet_cells": [
+                    str(value)
+                    for value in elite.get("facet_cells", [])
+                    if isinstance(value, str)
+                ],
+                "source_type": str(elite.get("source_type", "unknown")),
+                "origin_source_type": str(
+                    elite.get("origin_source_type", "unknown")
+                ),
+                "post_contact_survival_rate": float(
+                    elite.get("post_contact_survival_rate", 0.0)
+                ),
+                "drink_after_carrion_rate": float(
+                    elite.get("drink_after_carrion_rate", 0.0)
+                ),
+                "mean_hydration_delta_after_carrion": float(
+                    elite.get("mean_hydration_delta_after_carrion", 0.0)
+                ),
+                "mean_water_distance": float(
+                    elite.get("mean_water_distance", 0.0)
+                ),
+                "unsupported_resolved_action_count": int(
+                    elite.get("unsupported_resolved_action_count", 0)
+                ),
+                "dominant_requested_action_share": float(
+                    elite.get("dominant_requested_action_share", 0.0)
+                ),
+            }
+        )
+    for candidate_cells in source_cells.values():
+        candidate_cells.sort(
+            key=lambda cell: (
+                str(cell.get("cell_key", "")),
+                str(cell.get("source_type", "")),
+            )
+        )
+    return source_cells
+
+
+def _archive_with_recovery_archive_retention(
+    archive: Mapping[str, object],
+    *,
+    retention: Mapping[str, object],
+) -> dict[str, object]:
+    enriched = dict(archive)
+    report = retention.get("report")
+    retained_candidates = retention.get("retained_candidates")
+    if isinstance(report, Mapping):
+        enriched["fixture_recovery_archive_retention"] = dict(report)
+    if isinstance(retained_candidates, list):
+        enriched["fixture_recovery_archive_retained_candidates"] = [
+            dict(candidate)
+            for candidate in retained_candidates
+            if isinstance(candidate, Mapping)
+        ]
+    return enriched
+
+
+def _fixture_rerank_selector_probe_for_phase(
+    selector_probe: str | None,
+    *,
+    selector_probe_scope: str,
+    phase: str,
+) -> str | None:
+    if selector_probe is None:
+        return None
+    if phase == "initial":
+        return selector_probe
+    if (
+        selector_probe_scope
+        == MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR
+        and phase in {"repair", "bridge_repair"}
+    ):
+        return selector_probe
+    return None
+
+
+def _fixture_rerank_selector_probe_scope_label(selector_probe_scope: str) -> str:
+    if selector_probe_scope == MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR:
+        return "initial_and_repair_fixture_rerank_candidates"
+    return "initial_fixture_rerank_candidate_pool_only"
+
+
+def _fixture_rerank_selector_probe_summary(
+    evaluated: list[dict[str, object]],
+    *,
+    selected_candidate_id: str,
+    selector_probe: str | None,
+    selector_probe_scope: str,
+    initial_candidate_count: int,
+    standard_repair_candidate_count: int,
+    bridge_repair_candidate_count: int,
+) -> dict[str, object] | None:
+    if selector_probe is None:
+        return None
+    probed_by_group = {
+        "initial": 0,
+        "repair": 0,
+        "bridge_repair": 0,
+    }
+    total_by_group = {
+        "initial": int(initial_candidate_count),
+        "repair": int(standard_repair_candidate_count),
+        "bridge_repair": int(bridge_repair_candidate_count),
+    }
+    missing_by_reason: dict[str, int] = {}
+    complete_probe_count = 0
+    selected_probe_present = False
+    selected_probe_completed = False
+
+    for entry in evaluated:
+        group = _fixture_rerank_entry_probe_group(entry)
+        probe = entry.get("carrion_recovery_probe")
+        probe_present = isinstance(probe, Mapping)
+        if probe_present:
+            probed_by_group[group] = probed_by_group.get(group, 0) + 1
+            if _fixture_rerank_recovery_probe_completed(probe):
+                complete_probe_count += 1
+            else:
+                reason = _fixture_rerank_recovery_probe_missing_reason(probe)
+                missing_by_reason[reason] = missing_by_reason.get(reason, 0) + 1
+        else:
+            reason = (
+                "not_probed_initial_only_scope"
+                if group in {"repair", "bridge_repair"}
+                and selector_probe_scope
+                == MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+                else "probe_missing"
+            )
+            missing_by_reason[reason] = missing_by_reason.get(reason, 0) + 1
+        if str(entry.get("candidate_id", "")) == selected_candidate_id:
+            selected_probe_present = probe_present
+            selected_probe_completed = bool(
+                probe_present
+                and _fixture_rerank_recovery_probe_completed(probe)
+            )
+
+    missing_probe_count = sum(missing_by_reason.values())
+    return {
+        "policy": selector_probe,
+        "scope": selector_probe_scope,
+        "report_only": True,
+        "changes_candidate_selection": False,
+        "initial_candidate_count": total_by_group["initial"],
+        "repair_candidate_count": total_by_group["repair"],
+        "bridge_repair_candidate_count": total_by_group["bridge_repair"],
+        "initial_candidates_probed": probed_by_group["initial"],
+        "repair_candidates_probed": probed_by_group["repair"],
+        "bridge_repair_candidates_probed": probed_by_group["bridge_repair"],
+        "complete_probe_count": complete_probe_count,
+        "missing_probe_count": missing_probe_count,
+        "missing_probe_count_by_reason": dict(sorted(missing_by_reason.items())),
+        "selected_candidate_probe_present": selected_probe_present,
+        "selected_candidate_probe_completed": selected_probe_completed,
+    }
+
+
+def _fixture_rerank_entry_probe_group(entry: Mapping[str, object]) -> str:
+    repair = entry.get("fixture_repair")
+    if isinstance(repair, Mapping):
+        if repair.get("donor_selection_reason") == "promotion_safe_bridge":
+            return "bridge_repair"
+        return "repair"
+    return "initial"
+
+
+def _fixture_rerank_recovery_probe_completed(
+    probe: Mapping[str, object],
+) -> bool:
+    if not bool(probe.get("available", False)):
+        return False
+    missing_fields = probe.get("missing_fields")
+    return isinstance(missing_fields, list) and not missing_fields
+
+
+def _fixture_rerank_recovery_probe_missing_reason(
+    probe: Mapping[str, object],
+) -> str:
+    if not bool(probe.get("available", False)):
+        reason = probe.get("missing_reason")
+        return str(reason) if isinstance(reason, str) and reason else "unavailable"
+    missing_fields = probe.get("missing_fields")
+    if isinstance(missing_fields, list) and missing_fields:
+        return "missing_fields"
+    return "incomplete_probe"
 
 
 def _evaluate_fixture_rerank_candidates(
@@ -5162,6 +5766,8 @@ def _evaluate_fixture_rerank_candidates(
     rollout_workers: int,
     fixture_config: dict[str, object],
     fixture_ticks: list[int],
+    selector_probe: str | None = None,
+    selector_probe_trajectory_output_dir: Path | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     worker_count = _resolved_rollout_worker_count(
         rollout_workers,
@@ -5180,6 +5786,10 @@ def _evaluate_fixture_rerank_candidates(
                     rollout_workers=rollout_workers,
                     fixture_config=fixture_config,
                     fixture_ticks=fixture_ticks,
+                    selector_probe=selector_probe,
+                    selector_probe_trajectory_output_dir=(
+                        selector_probe_trajectory_output_dir
+                    ),
                 )
                 for prefilter_rank, candidate in ranked_candidates
             ],
@@ -5193,6 +5803,12 @@ def _evaluate_fixture_rerank_candidates(
             "ticks": ticks,
             "fixture_config": fixture_config,
             "fixture_ticks": fixture_ticks,
+            "selector_probe": selector_probe,
+            "selector_probe_trajectory_output_dir": (
+                str(selector_probe_trajectory_output_dir)
+                if selector_probe_trajectory_output_dir is not None
+                else None
+            ),
         }
         for prefilter_rank, candidate in ranked_candidates
     ]
@@ -5209,6 +5825,16 @@ def _evaluate_fixture_rerank_task(task: dict[str, object]) -> dict[str, object]:
         rollout_workers=1,
         fixture_config=dict(task["fixture_config"]),
         fixture_ticks=[int(tick) for tick in list(task["fixture_ticks"])],
+        selector_probe=(
+            str(task["selector_probe"])
+            if task.get("selector_probe") is not None
+            else None
+        ),
+        selector_probe_trajectory_output_dir=(
+            Path(str(task["selector_probe_trajectory_output_dir"]))
+            if task.get("selector_probe_trajectory_output_dir") is not None
+            else None
+        ),
     )
 
 
@@ -5221,6 +5847,8 @@ def _evaluate_fixture_rerank_candidate(
     rollout_workers: int,
     fixture_config: dict[str, object],
     fixture_ticks: list[int],
+    selector_probe: str | None = None,
+    selector_probe_trajectory_output_dir: Path | None = None,
 ) -> dict[str, object]:
     founder_template = _best_candidate_founder_template(candidate)
     holdout_evaluation = (
@@ -5263,6 +5891,17 @@ def _evaluate_fixture_rerank_candidate(
     primary_runtime = horizon_runtimes[0]
     fixture_suite = dict(primary_runtime["fixture_suite"])
     fixture_gate = _combined_fixture_horizon_gate(horizon_runtimes)
+    recovery_probe = _fixture_rerank_candidate_recovery_probe(
+        selector_probe=selector_probe,
+        candidate=candidate,
+        prefilter_rank=prefilter_rank,
+        founder_template=founder_template,
+        fixture_config=fixture_config,
+        fixture_ticks=fixture_ticks,
+        fallback_fixture_gate=fixture_gate,
+        fallback_fixture_summary=_fixture_rerank_fixture_summary(fixture_suite),
+        trajectory_output_dir=selector_probe_trajectory_output_dir,
+    )
     return {
         "candidate": candidate,
         "holdout_evaluation": holdout_evaluation,
@@ -5276,8 +5915,276 @@ def _evaluate_fixture_rerank_candidate(
             fixture_suite=fixture_suite,
             fixture_gate=fixture_gate,
             fixture_horizons=horizon_runtimes,
+            recovery_probe=recovery_probe,
         ),
     }
+
+
+def _fixture_rerank_candidate_recovery_probe(
+    *,
+    selector_probe: str | None,
+    candidate: Mapping[str, object],
+    prefilter_rank: int,
+    founder_template: dict[str, object] | list[dict[str, object]],
+    fixture_config: Mapping[str, object],
+    fixture_ticks: list[int],
+    fallback_fixture_gate: Mapping[str, object],
+    fallback_fixture_summary: Mapping[str, object],
+    trajectory_output_dir: Path | None,
+) -> dict[str, object] | None:
+    if selector_probe is None:
+        return None
+    if selector_probe != MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY:
+        raise ValueError(f"unsupported selector probe policy: {selector_probe}")
+    configured_fixture_names = _fixture_names_from_config(fixture_config)
+    if configured_fixture_names is not None and (
+        "carrion_only" not in configured_fixture_names
+    ):
+        return _fixture_rerank_recovery_probe_unavailable(
+            candidate=candidate,
+            prefilter_rank=prefilter_rank,
+            reason="carrion_only_not_in_fixture_config",
+            fixture_gate=fallback_fixture_gate,
+            fixture_summary=fallback_fixture_summary,
+        )
+    if trajectory_output_dir is None:
+        return _fixture_rerank_recovery_probe_unavailable(
+            candidate=candidate,
+            prefilter_rank=prefilter_rank,
+            reason="trajectory_output_dir_missing",
+            fixture_gate=fallback_fixture_gate,
+            fixture_summary=fallback_fixture_summary,
+        )
+    probe_ticks = max(int(value) for value in (fixture_ticks or [0]))
+    if probe_ticks < 1:
+        probe_ticks = int(fixture_config.get("ticks") or 1)
+    horizon_config = _fixture_config_for_ticks(fixture_config, ticks=probe_ticks)
+    horizon_config["fixture_names"] = ["carrion_only"]
+    trajectory_output_dir.mkdir(parents=True, exist_ok=True)
+    candidate_id = str(candidate.get("candidate_id", "candidate"))
+    prefix = (
+        "selector_probe_"
+        f"{_selector_probe_path_token(candidate_id)}_rank{int(prefilter_rank)}"
+        f"_t{int(probe_ticks)}"
+    )
+    fixture_suite = run_mind_v3_fixture_suite(
+        suite=str(horizon_config["suite"]),
+        fixture_names=["carrion_only"],
+        seeds=[int(seed) for seed in list(horizon_config["seeds"])],
+        ticks=int(horizon_config.get("ticks") or probe_ticks),
+        founder_template=founder_template,
+        trajectory_output_dir=trajectory_output_dir,
+        trajectory_prefix=prefix,
+    )
+    fixture_gate = mind_v3_fixture_gate_status(
+        fixture_suite=fixture_suite,
+        fixture_config=horizon_config,
+    )
+    trajectory_paths = _mind_v3_fixture_trajectory_paths(fixture_suite)
+    datasets = [
+        load_carrion_autopsy_trajectory_jsonl(path)
+        for path in trajectory_paths
+    ]
+    trace_report = build_carrion_autopsy_report(datasets)
+    return _fixture_rerank_recovery_probe_report(
+        candidate=candidate,
+        prefilter_rank=prefilter_rank,
+        fixture_gate=fixture_gate,
+        fixture_summary=_fixture_rerank_fixture_summary(fixture_suite),
+        trace_report=trace_report,
+        trajectory_paths=trajectory_paths,
+        ticks=probe_ticks,
+    )
+
+
+def _fixture_rerank_recovery_probe_unavailable(
+    *,
+    candidate: Mapping[str, object],
+    prefilter_rank: int,
+    reason: str,
+    fixture_gate: Mapping[str, object],
+    fixture_summary: Mapping[str, object],
+) -> dict[str, object]:
+    report = _fixture_rerank_recovery_probe_report(
+        candidate=candidate,
+        prefilter_rank=prefilter_rank,
+        fixture_gate=fixture_gate,
+        fixture_summary=fixture_summary,
+        trace_report=None,
+        trajectory_paths=[],
+        ticks=None,
+    )
+    report["available"] = False
+    report["missing_reason"] = reason
+    return report
+
+
+def _fixture_rerank_recovery_probe_report(
+    *,
+    candidate: Mapping[str, object],
+    prefilter_rank: int,
+    fixture_gate: Mapping[str, object],
+    fixture_summary: Mapping[str, object],
+    trace_report: Mapping[str, object] | None,
+    trajectory_paths: list[Path],
+    ticks: int | None,
+) -> dict[str, object]:
+    carrion_fixture = _fixture_summary_named_fixture(
+        fixture_summary,
+        "carrion_only",
+    )
+    blockers = fixture_gate.get("blockers")
+    blocker_list = (
+        [item for item in blockers if isinstance(item, Mapping)]
+        if isinstance(blockers, list)
+        else []
+    )
+    trace_aggregate = _mapping(
+        _mapping(trace_report.get("fixture_trace") if trace_report else None).get(
+            "aggregate"
+        )
+    )
+    navigation = _mapping(trace_aggregate.get("navigation_target_observations"))
+    water_navigation = _mapping(navigation.get("water"))
+    requested_counts = _int_counter(trace_aggregate.get("requested_action_counts"))
+    dominant_count = max(requested_counts.values(), default=0)
+    total_requested = sum(requested_counts.values())
+    report: dict[str, object] = {
+        "policy": MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY,
+        "available": trace_report is not None,
+        "report_only": True,
+        "changes_candidate_selection": False,
+        "candidate_id": str(candidate.get("candidate_id", "")),
+        "prefilter_rank": int(prefilter_rank),
+        "ticks": int(ticks) if ticks is not None else None,
+        "trajectory_paths": [str(path) for path in trajectory_paths],
+        "fixture_gate_passed": bool(fixture_gate.get("passed", False)),
+        "fixture_blocker_count": len(blocker_list),
+        "carrion_only_blocker_count": sum(
+            1 for blocker in blocker_list if blocker.get("fixture") == "carrion_only"
+        ),
+        "fixture_blockers": [dict(blocker) for blocker in blocker_list],
+        "post_contact_survival_rate": _probe_optional_number(
+            trace_aggregate.get("survival_after_carrion_rate")
+        ),
+        "drink_after_carrion_rate": _probe_optional_number(
+            trace_aggregate.get("drink_after_carrion_rate")
+        ),
+        "mean_hydration_delta_after_carrion": _probe_optional_number(
+            trace_aggregate.get("mean_hydration_delta_after_carrion")
+        ),
+        "mean_energy_delta_after_carrion": _probe_optional_number(
+            trace_aggregate.get("mean_energy_delta_after_carrion")
+        ),
+        "mean_health_delta_after_carrion": _probe_optional_number(
+            trace_aggregate.get("mean_health_delta_after_carrion")
+        ),
+        "mean_water_distance": _probe_optional_number(
+            water_navigation.get("mean_distance")
+        ),
+        "unsupported_requested_action_count": _probe_optional_number(
+            trace_aggregate.get("unsupported_requested_action_count")
+        ),
+        "unsupported_resolved_action_count": _probe_optional_number(
+            trace_aggregate.get("unsupported_resolved_action_count")
+        ),
+        "dominant_requested_action_share": _round(
+            dominant_count / max(1, total_requested)
+        )
+        if total_requested > 0
+        else None,
+        "carrion_only_alive_agents_mean": _probe_optional_number(
+            carrion_fixture.get("alive_agents_mean")
+        ),
+        "carrion_only_births_mean": _probe_optional_number(
+            carrion_fixture.get("births_mean")
+        ),
+        "carrion_only_terminal_hydration_viability_share_mean": (
+            _probe_optional_number(
+                carrion_fixture.get("terminal_hydration_viability_share_mean")
+            )
+        ),
+        "carrion_only_terminal_energy_viability_share_mean": (
+            _probe_optional_number(
+                carrion_fixture.get("terminal_energy_viability_share_mean")
+            )
+        ),
+        "carrion_only_terminal_health_viability_share_mean": _probe_optional_number(
+            carrion_fixture.get("terminal_health_viability_share_mean")
+        ),
+        "carrion_only_terminal_matched_diet_viability_share_mean": (
+            _probe_optional_number(
+                carrion_fixture.get("terminal_matched_diet_viability_share_mean")
+            )
+        ),
+    }
+    missing_fields = [
+        field
+        for field in (
+            "post_contact_survival_rate",
+            "drink_after_carrion_rate",
+            "mean_hydration_delta_after_carrion",
+            "mean_energy_delta_after_carrion",
+            "mean_health_delta_after_carrion",
+            "mean_water_distance",
+            "unsupported_requested_action_count",
+            "unsupported_resolved_action_count",
+            "dominant_requested_action_share",
+        )
+        if report.get(field) is None
+    ]
+    report["missing_fields"] = missing_fields
+    return report
+
+
+def _mind_v3_fixture_trajectory_paths(fixture_suite: Mapping[str, object]) -> list[Path]:
+    paths: list[Path] = []
+    for fixture in _list_of_mappings(fixture_suite.get("fixtures")):
+        comparison = _mapping(fixture.get("comparison"))
+        mind_v3 = _mapping(comparison.get("mind_v3"))
+        for run in _list_of_mappings(mind_v3.get("runs")):
+            path = run.get("trajectory_path")
+            if isinstance(path, str) and path:
+                paths.append(Path(path))
+    return paths
+
+
+def _selector_probe_path_token(value: str) -> str:
+    chars = [
+        char if char.isalnum() or char in {"-", "_"} else "-"
+        for char in value
+    ]
+    token = "".join(chars).strip("-_")
+    return token or "candidate"
+
+
+def _probe_optional_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return _round(float(value))
+    return None
+
+
+def _int_counter(value: object) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for key, raw in value.items():
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            continue
+        result[str(key)] = int(raw)
+    return result
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _list_of_mappings(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
 
 
 def _fixture_repair_candidates(
@@ -5743,6 +6650,7 @@ def _fixture_rerank_entry(
     fixture_suite: dict[str, object],
     fixture_gate: dict[str, object],
     fixture_horizons: list[dict[str, object]] | None = None,
+    recovery_probe: dict[str, object] | None = None,
 ) -> dict[str, object]:
     holdout_aggregate = (
         dict(holdout_evaluation["aggregate"])
@@ -5835,6 +6743,9 @@ def _fixture_rerank_entry(
         entry["fixture_horizon_summary"] = _fixture_horizon_summary(
             fixture_horizons
         )
+    if recovery_probe is not None:
+        entry["gate_aligned_carrion_recovery_probe_v1"] = recovery_probe
+        entry["carrion_recovery_probe"] = recovery_probe
     repair = candidate.get("fixture_repair")
     if isinstance(repair, Mapping):
         entry["fixture_repair"] = dict(repair)
@@ -6873,6 +7784,14 @@ def _build_report(
     if fixture_rerank is not None:
         search["fixture_rerank_policy"] = MIND_V3_FIXTURE_RERANK_POLICY
         search["fixture_rerank_top_k"] = int(fixture_rerank["top_k"])
+    archive_retention = archive.get("fixture_recovery_archive_retention")
+    if isinstance(archive_retention, Mapping):
+        search["fixture_recovery_archive_retention_policy"] = str(
+            archive_retention.get("policy", "")
+        )
+        search["fixture_recovery_archive_retention_added_count"] = int(
+            archive_retention.get("retention_added_count", 0)
+        )
     if fixture_selection_top_k > 0:
         search["fixture_selection_policy"] = (
             MIND_V3_GENERATION_FIXTURE_SELECTION_POLICY
@@ -7330,6 +8249,19 @@ def _fixture_rerank_ticks_from_args(
     else:
         selected.insert(0, active_ticks)
     return selected
+
+
+def _fixture_rerank_selector_probe_trajectory_output_dir(
+    args: argparse.Namespace,
+) -> Path | None:
+    if not args.fixture_rerank_selector_probe:
+        return None
+    if args.fixture_rerank_selector_probe_trajectory_output_dir is not None:
+        return Path(args.fixture_rerank_selector_probe_trajectory_output_dir)
+    output = Path(args.output)
+    return output.with_suffix("").with_name(
+        f"{output.with_suffix('').name}-selector-probe-trajectories"
+    )
 
 
 def _parse_positive_ints(raw: str, *, flag_name: str) -> list[int]:
