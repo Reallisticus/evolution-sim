@@ -10,6 +10,7 @@ from evolution_sim.mind.carrion_branch_explore import (
     MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION,
     CarrionBranchExploreError,
     build_carrion_branch_explore_report,
+    build_current_policy_carrion_branch_explore_report,
     write_carrion_branch_explore_report,
 )
 from evolution_sim.mind.carrion_counterfactual import (
@@ -53,6 +54,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--source-search-report",
+        type=Path,
+        default=None,
+        help=(
+            "Optional Mind v3 search report. When provided with "
+            "--source-candidate-id, branch points are discovered by replaying "
+            "that autonomous Mind v3 candidate on carrion_only instead of the "
+            "scripted --base-script policy."
+        ),
+    )
+    parser.add_argument(
+        "--source-candidate-id",
+        default=None,
+        help="Candidate id to extract from --source-search-report.",
+    )
+    parser.add_argument(
         "--max-branch-points-per-seed",
         type=int,
         default=DEFAULT_CARRION_BRANCH_POINTS_PER_SEED,
@@ -92,16 +109,34 @@ def main() -> None:
         else DEFAULT_COUNTERFACTUAL_SCRIPTS
     )
     try:
-        report = build_carrion_branch_explore_report(
-            seeds=_parse_seeds(args.seeds),
-            ticks=int(args.ticks),
-            base_script=str(args.base_script),
-            continuation_scripts=continuation_scripts,
-            max_branch_points_per_seed=int(args.max_branch_points_per_seed),
-            min_branch_tick=int(args.min_branch_tick),
-            trajectory_output_dir=args.trajectory_output_dir,
-            verify_replay=not bool(args.no_verify_replay),
-        )
+        if args.source_search_report is not None or args.source_candidate_id:
+            if args.source_search_report is None or not args.source_candidate_id:
+                raise CarrionBranchExploreError(
+                    "--source-search-report and --source-candidate-id must be "
+                    "provided together"
+                )
+            report = build_current_policy_carrion_branch_explore_report(
+                source_search_report_path=args.source_search_report,
+                source_candidate_id=str(args.source_candidate_id),
+                seeds=_parse_seeds(args.seeds),
+                ticks=int(args.ticks),
+                continuation_scripts=continuation_scripts,
+                max_branch_points_per_seed=int(args.max_branch_points_per_seed),
+                min_branch_tick=int(args.min_branch_tick),
+                trajectory_output_dir=args.trajectory_output_dir,
+                verify_replay=not bool(args.no_verify_replay),
+            )
+        else:
+            report = build_carrion_branch_explore_report(
+                seeds=_parse_seeds(args.seeds),
+                ticks=int(args.ticks),
+                base_script=str(args.base_script),
+                continuation_scripts=continuation_scripts,
+                max_branch_points_per_seed=int(args.max_branch_points_per_seed),
+                min_branch_tick=int(args.min_branch_tick),
+                trajectory_output_dir=args.trajectory_output_dir,
+                verify_replay=not bool(args.no_verify_replay),
+            )
         write_carrion_branch_explore_report(report, args.output)
     except (OSError, ValueError, CarrionBranchExploreError) as exc:
         raise SystemExit(f"failed to run carrion branch explore: {exc}") from exc
@@ -111,6 +146,13 @@ def main() -> None:
     best = aggregate["best_branch_run"]  # type: ignore[index]
     print(f"carrion_branch_explore={args.output}")
     print(f"schema_version={MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION}")
+    source = report.get("source") if isinstance(report, Mapping) else None
+    if isinstance(source, Mapping):
+        print(f"source_candidate_id={source.get('source_candidate_id')}")
+        print(
+            "source_replay_heuristic_action_source_count="
+            f"{source.get('source_replay_heuristic_action_source_count', 0)}"
+        )
     print(f"branch_point_count={aggregate['branch_point_count']}")  # type: ignore[index]
     print(f"branch_run_count={aggregate['branch_run_count']}")  # type: ignore[index]
     print(
