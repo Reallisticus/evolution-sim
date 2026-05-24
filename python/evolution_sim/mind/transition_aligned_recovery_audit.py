@@ -244,6 +244,34 @@ def build_transition_aligned_recovery_audit_report(
     }
 
 
+def reconstruct_transition_aligned_first_recovery_rows(
+    *,
+    trajectory_datasets: Sequence[TrajectoryJsonlDataset] | None = None,
+    trajectory_paths: Sequence[str | Path] = (),
+    trajectory_glob_patterns: Sequence[str] = (),
+) -> dict[str, object]:
+    """Reconstruct v107 first-recovery rows without changing v107 report shape."""
+    trajectories = _resolve_trajectories(
+        trajectory_datasets=trajectory_datasets,
+        trajectory_paths=trajectory_paths,
+        trajectory_glob_patterns=trajectory_glob_patterns,
+    )
+    recovery = _transition_aligned_first_recovery(trajectories.datasets)
+    return {
+        "evidence": trajectories.evidence,
+        "section": recovery.section,
+        "rows": [dict(row) for row in recovery.rows],
+        "path_metadata": {
+            str(dataset.path): {
+                "seed": _dataset_seed(dataset),
+                "max_ticks": _dataset_ticks(dataset),
+                "record_count": len(dataset.records),
+            }
+            for dataset in trajectories.datasets
+        },
+    }
+
+
 def _resolve_report(
     name: str,
     payload: Mapping[str, object] | None,
@@ -1247,6 +1275,15 @@ def _dataset_seed(dataset: TrajectoryJsonlDataset) -> int:
     if match is not None:
         return int(match.group(1))
     return -1
+
+
+def _dataset_ticks(dataset: TrajectoryJsonlDataset) -> int:
+    header_config = _mapping(dataset.header.get("config"))
+    footer_summary = _mapping(dataset.footer.get("summary"))
+    for value in (header_config.get("max_ticks"), footer_summary.get("ticks_executed")):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return int(value)
+    return 0
 
 
 def _delta(candidate: object, baseline: object) -> float | None:
