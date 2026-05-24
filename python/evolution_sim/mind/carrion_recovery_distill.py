@@ -880,15 +880,28 @@ def _run_summary_action_balance(value: object) -> dict[str, object]:
     for run in runs:
         requested.update(_counter_from_mapping(run.get("requested_action_counts")))
         resolved.update(_counter_from_mapping(run.get("resolved_action_counts")))
+        neural_anchor = _mapping(run.get("neural_anchor_diagnostics"))
         for key in (
             "unsupported_requested_action_count",
             "unsupported_resolved_action_count",
             "heuristic_action_source_count",
-            "changed_linear_decision_count",
             "recovery_phase_residual_application_count",
-            "residual_application_count",
         ):
             totals[key] += _int(run.get(key))
+        if neural_anchor:
+            totals["changed_linear_decision_count"] += _int(
+                neural_anchor.get("changed_linear_action_count")
+            )
+            totals["residual_application_count"] += _int(
+                neural_anchor.get("residual_applied_count")
+            )
+        else:
+            totals["changed_linear_decision_count"] += _int(
+                run.get("changed_linear_decision_count")
+            )
+            totals["residual_application_count"] += _int(
+                run.get("residual_application_count")
+            )
     total = sum(requested.values())
     dominant_action, dominant_count = _dominant_count(requested)
     return {
@@ -921,6 +934,18 @@ def _fixture_suite_action_balance(
         comparison = _mapping(fixture.get("comparison"))
         policy = _mapping(comparison.get(policy_key))
         aggregate = _mapping(policy.get("aggregate"))
+        neural_anchor = _mapping(aggregate.get("neural_anchor_diagnostics"))
+        changed_linear_count = _int(aggregate.get("changed_linear_decision_count"))
+        residual_application_count = _int(
+            aggregate.get("residual_application_count")
+        )
+        if neural_anchor:
+            changed_linear_count = _int(
+                neural_anchor.get("changed_linear_action_count")
+            )
+            residual_application_count = _int(
+                neural_anchor.get("residual_applied_count")
+            )
         result[str(fixture.get("fixture", "unknown"))] = {
             "dominant_requested_action": aggregate.get("dominant_requested_action"),
             "dominant_requested_action_share": aggregate.get(
@@ -934,6 +959,11 @@ def _fixture_suite_action_balance(
             ),
             "heuristic_action_source_count": _int(
                 aggregate.get("heuristic_action_source_count")
+            ),
+            "changed_linear_decision_count": changed_linear_count,
+            "residual_application_count": residual_application_count,
+            "recovery_phase_residual_application_count": _int(
+                aggregate.get("recovery_phase_residual_application_count")
             ),
             "requested_action_counts": aggregate.get("requested_action_counts", {}),
         }

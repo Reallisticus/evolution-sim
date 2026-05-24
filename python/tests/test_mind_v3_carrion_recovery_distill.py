@@ -34,6 +34,8 @@ from evolution_sim.mind.carrion_recovery_distill import (
     MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
     _acceptance,
     _branch_action_log_odds_bias,
+    _evaluation_action_balance,
+    _trajectory_action_balance,
     build_carrion_recovery_distillation_report,
 )
 from evolution_sim.mind.carrion_recovery_residual_audit import (
@@ -675,6 +677,113 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
         self.assertFalse(report["promotion"]["promoted"])
         action_balance = report["evaluation"]["action_balance_diagnostics"]
         self.assertIn("candidate_vs_linear_delta", action_balance["open"])
+
+    def test_live_evaluation_action_balance_uses_neural_anchor_counters(
+        self,
+    ) -> None:
+        evaluation = {
+            "open": {
+                "comparison": {
+                    "mind_v3_linear": {
+                        "runs": [
+                            {
+                                "requested_action_counts": {"eat": 10},
+                                "resolved_action_counts": {"eat": 10},
+                            }
+                        ]
+                    },
+                    "mind_v3_recovery_distilled": {
+                        "runs": [
+                            {
+                                "requested_action_counts": {"eat": 8, "drink": 2},
+                                "resolved_action_counts": {"eat": 8, "drink": 2},
+                                "neural_anchor_diagnostics": {
+                                    "changed_linear_action_count": 2,
+                                    "residual_applied_count": 3,
+                                },
+                            }
+                        ]
+                    },
+                }
+            },
+            "fixture": {
+                "linear_baseline_suite": {
+                    "evaluated_policy_key": "mind_v3",
+                    "fixtures": [
+                        {
+                            "fixture": "carrion_only",
+                            "comparison": {
+                                "mind_v3": {
+                                    "aggregate": {
+                                        "requested_action_counts": {"eat": 10},
+                                        "dominant_requested_action": "eat",
+                                        "dominant_requested_action_share": 1.0,
+                                    }
+                                }
+                            },
+                        }
+                    ],
+                },
+                "candidate_suite": {
+                    "evaluated_policy_key": "mind_v3",
+                    "fixtures": [
+                        {
+                            "fixture": "carrion_only",
+                            "comparison": {
+                                "mind_v3": {
+                                    "aggregate": {
+                                        "requested_action_counts": {
+                                            "eat": 7,
+                                            "drink": 3,
+                                        },
+                                        "dominant_requested_action": "eat",
+                                        "dominant_requested_action_share": 0.7,
+                                        "neural_anchor_diagnostics": {
+                                            "changed_linear_action_count": 4,
+                                            "residual_applied_count": 5,
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    ],
+                },
+            },
+        }
+
+        balance = _evaluation_action_balance(evaluation)
+
+        open_candidate = balance["open"]["mind_v3_recovery_distilled"]
+        self.assertEqual(open_candidate["changed_linear_decision_count"], 2)
+        self.assertEqual(open_candidate["residual_application_count"], 3)
+        self.assertEqual(
+            balance["open"]["candidate_vs_linear_delta"][
+                "changed_linear_decision_count_delta"
+            ],
+            2,
+        )
+        fixture_candidate = balance["fixture"]["mind_v3_recovery_distilled"][
+            "carrion_only"
+        ]
+        self.assertEqual(fixture_candidate["changed_linear_decision_count"], 4)
+        self.assertEqual(fixture_candidate["residual_application_count"], 5)
+
+    def test_logged_trajectory_action_balance_does_not_invent_live_residuals(
+        self,
+    ) -> None:
+        balance = _trajectory_action_balance(
+            [
+                {
+                    "requested_action": "eat",
+                    "resolved_action": "eat",
+                    "action_source": "counterfactual_script:water_rescue",
+                }
+            ]
+        )
+
+        self.assertEqual(balance["changed_linear_decision_count"], 0)
+        self.assertEqual(balance["residual_application_count"], 0)
+        self.assertEqual(balance["missing_decision_diagnostics_count"], 1)
 
     def test_recovery_distill_blocks_per_seed_open_regression(self) -> None:
         report = {

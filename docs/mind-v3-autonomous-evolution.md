@@ -510,6 +510,14 @@ The margin and scale sweeps are report-only calibration probes; they do not
 change the trained artifact, runtime residual behavior, gates, floors, action
 masks, replay semantics, or promotion status.
 
+The v68 residual counter reconciliation fix is reporting-only. Live broad and
+fixture evaluation action-balance diagnostics now copy residual-applied and
+changed-linear counts from neural-anchor diagnostics when those diagnostics are
+present, while logged branch and counterfactual trajectories remain classified
+as logged evidence and do not invent live residual applications. This changes
+distill/evaluation reports only; it does not alter the artifact, runtime policy
+decisions, action masks, gates, floors, replay semantics, or promotion status.
+
 ## Local/Navigation Controller v3
 
 2026-05-10 audit update: the v3 controller-capacity bottleneck was verified in
