@@ -53,6 +53,7 @@
     "sim:mind:v3:carrion-recovery-archive-validate": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_archive_validate",
     "sim:mind:v3:carrion-recovery-distill": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_distill",
     "sim:mind:v3:carrion-recovery-residual-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_recovery_residual_audit",
+    "sim:mind:v3:recovery-action-target-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_recovery_action_target_audit",
     "sim:mind:v3:temporal-credit-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_temporal_credit_audit",
     "sim:mind:v3:rollout-context-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_rollout_context_audit",
     "sim:mind:v3:hydration-after-carrion-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_hydration_after_carrion_audit",
