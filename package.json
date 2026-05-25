@@ -48,6 +48,7 @@
     "sim:mind:v3:expanded-broad-residual-training": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_expanded_broad_residual_training",
     "sim:mind:v3:first-recovery-branch-oracle-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_branch_oracle_audit",
     "sim:mind:v3:first-recovery-branch-archive": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_branch_archive",
+    "sim:mind:v3:first-recovery-shadow-ranker": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_shadow_ranker",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
     "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",
     "sim:mind:v3:branch-continuation-archive-scorer": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_branch_continuation_archive_scorer",
