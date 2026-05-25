@@ -102,6 +102,9 @@ def _print_summary(report: Mapping[str, object], output_path: Path) -> None:
     action_distribution = _mapping(report.get("action_distribution"))
     unsupported = _mapping(report.get("unsupported_action_audit"))
     leakage = _mapping(report.get("leakage_audit"))
+    observation = _mapping(report.get("observation_input_ranker"))
+    history = _mapping(report.get("public_history_ranker"))
+    join = _mapping(report.get("join_evidence"))
     recommendation = _mapping(report.get("research_recommendation"))
     print(f"first_recovery_shadow_ranker={output_path}")
     print(f"schema_version={MIND_V3_FIRST_RECOVERY_SHADOW_RANKER_SCHEMA_VERSION}")
@@ -118,6 +121,18 @@ def _print_summary(report: Mapping[str, object], output_path: Path) -> None:
     )
     print(f"unsupported_action_rate={unsupported.get('unsupported_action_rate')}")
     print(f"leakage_count={leakage.get('leak_count')}")
+    print(f"observation_input_answer={observation.get('answer')}")
+    print(f"public_history_answer={history.get('answer')}")
+    print(f"trajectory_loaded_path_count={join.get('loaded_path_count')}")
+    print(f"trajectory_malformed_record_count={join.get('malformed_record_count')}")
+    print(
+        "observation_input_matched_archive_row_count="
+        f"{_mapping(observation.get('join_evidence')).get('matched_archive_row_count')}"
+    )
+    print(
+        "public_history_matched_archive_row_count="
+        f"{_mapping(history.get('join_evidence')).get('matched_archive_row_count')}"
+    )
     print(f"recommendation={recommendation.get('recommendation')}")
     print(f"missing_evidence_count={len(classification.get('missing_evidence', []))}")
 

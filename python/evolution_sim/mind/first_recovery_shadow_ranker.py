@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TextIO
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.mind.dataset import TrajectoryDatasetError, load_trajectory_jsonl
 from evolution_sim.mind.first_recovery_branch_archive import (
     MIND_V3_FIRST_RECOVERY_BRANCH_ARCHIVE_SCHEMA_VERSION,
     FORBIDDEN_TRAINABLE_KEYS as ARCHIVE_FORBIDDEN_TRAINABLE_KEYS,
@@ -37,6 +36,13 @@ OBSERVATION_INPUT_FEATURE_POLICY = (
     "optional_joined_public_ecological_observation_input_v1"
 )
 PUBLIC_HISTORY_FEATURE_POLICY = "optional_same_agent_public_history_prefix_v1"
+LOCAL_LENIENT_TRAJECTORY_READER_POLICY = (
+    "local_lenient_public_trajectory_join_reader_v1"
+)
+IGNORED_OPTIONAL_TRAJECTORY_FIELDS = (
+    "policy_decision_diagnostics",
+    "policy_update_trace",
+)
 
 DEFAULT_ARCHIVE_REPORT_PATH = Path(
     "output/mind/mind-v3-v109-first-recovery-branch-archive.json"
@@ -87,6 +93,8 @@ FORBIDDEN_FEATURE_KEY_FRAGMENTS = frozenset(
         "branch_id",
         "record_index",
         "agent_id",
+        "tick",
+        "logged_action",
     }
 )
 
@@ -286,7 +294,8 @@ def build_first_recovery_shadow_ranker(
             trajectory_paths=trajectory_paths,
             trajectory_glob_patterns=trajectory_glob_patterns,
             enabled=enable_observation_input,
-            current_reference=leave_one_seed,
+            current_leave_one_seed=leave_one_seed,
+            current_fixture_open=fixture_open,
         )
         public_history_ranker = _optional_public_history_ranker(
             groups=groups,
@@ -294,7 +303,8 @@ def build_first_recovery_shadow_ranker(
             trajectory_glob_patterns=trajectory_glob_patterns,
             enabled=enable_public_history,
             history_window=history_limit,
-            current_reference=leave_one_seed,
+            current_leave_one_seed=leave_one_seed,
+            current_fixture_open=fixture_open,
         )
     sections = {
         "current_row_linear_ranker": current_row_ranker,
@@ -339,6 +349,12 @@ def build_first_recovery_shadow_ranker(
         "feature_sets": feature_sets,
         "split_metadata": split_metadata,
         "baselines": baselines,
+        "join_evidence": _joined_feature_evidence_summary(
+            observation_input_ranker=observation_input_ranker,
+            public_history_ranker=public_history_ranker,
+            trajectory_paths=trajectory_paths,
+            trajectory_glob_patterns=trajectory_glob_patterns,
+        ),
         "current_row_linear_ranker": current_row_ranker,
         "observation_input_ranker": observation_input_ranker,
         "public_history_ranker": public_history_ranker,
@@ -445,6 +461,17 @@ def current_row_feature_names() -> tuple[str, ...]:
     names.extend(f"action_mask.{action}" for action in ACTION_NAMES)
     names.extend(name for name, _path in CURRENT_NUMERIC_PATHS)
     return tuple(names)
+
+
+def feature_name_leakage(feature_names: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in feature_names
+        if any(
+            token in FORBIDDEN_FEATURE_KEY_FRAGMENTS
+            for token in name.replace("=", ".").split(".")
+        )
+    )
 
 
 def current_row_feature_vector(row: Mapping[str, object]) -> tuple[float, ...]:
@@ -571,12 +598,21 @@ def history_usefulness_answer(
     *,
     current_metrics: Mapping[str, object],
     history_metrics: Mapping[str, object],
+    current_fixture_open_metrics: Mapping[str, object] | None = None,
+    history_fixture_open_metrics: Mapping[str, object] | None = None,
 ) -> str:
-    current_mrr = _number(current_metrics.get("mrr"))
-    history_mrr = _number(history_metrics.get("mrr"))
-    current_top1 = _number(current_metrics.get("top1_oracle_match_rate"))
-    history_top1 = _number(history_metrics.get("top1_oracle_match_rate"))
-    if history_mrr > current_mrr and history_top1 >= current_top1:
+    leave_one_seed_improves = _metrics_improve(
+        current_metrics=current_metrics,
+        candidate_metrics=history_metrics,
+    )
+    if current_fixture_open_metrics is None or history_fixture_open_metrics is None:
+        fixture_open_improves = True
+    else:
+        fixture_open_improves = _metrics_improve(
+            current_metrics=current_fixture_open_metrics,
+            candidate_metrics=history_fixture_open_metrics,
+        )
+    if leave_one_seed_improves and fixture_open_improves:
         return "shadow_ranker_history_improves"
     return "shadow_ranker_history_no_improvement"
 
@@ -1060,7 +1096,8 @@ def _optional_observation_input_ranker(
     trajectory_paths: Sequence[str | Path],
     trajectory_glob_patterns: Sequence[str],
     enabled: bool,
-    current_reference: Mapping[str, object],
+    current_leave_one_seed: Mapping[str, object],
+    current_fixture_open: Mapping[str, object],
 ) -> dict[str, object]:
     if not enabled:
         return _optional_ranker_not_run(
@@ -1078,21 +1115,40 @@ def _optional_observation_input_ranker(
             "missing_evidence": join["missing_evidence"],
         }
     feature_names = current_row_feature_names() + tuple(join["feature_names"])
+    feature_name_leaks = feature_name_leakage(feature_names)
+    if feature_name_leaks:
+        return {
+            "enabled": True,
+            "answer": "missing_evidence_inconclusive",
+            "labels": ["shadow_ranker_leakage_detected"],
+            "feature_policy": OBSERVATION_INPUT_FEATURE_POLICY,
+            "join_evidence": join["evidence"],
+            "feature_name_leaks": list(feature_name_leaks),
+            "missing_evidence": ["joined_feature_name_leakage"],
+        }
     feature_map = join["feature_map"]
 
     def feature(row: Mapping[str, object]) -> tuple[float, ...]:
         extra = tuple(feature_map.get(str(row.get("archive_row_id")), ()))
         return current_row_feature_vector(row) + extra
 
-    evaluation = _leave_one_seed_evaluation(
+    leave_one_seed = _leave_one_seed_evaluation(
         groups,
         feature_names=feature_names,
         feature_func=feature,
         feature_policy=OBSERVATION_INPUT_FEATURE_POLICY,
     )
-    answer = _optional_improvement_answer(
-        current_reference=current_reference,
-        candidate=evaluation,
+    fixture_open = _fixture_open_evaluation(
+        groups,
+        feature_names=feature_names,
+        feature_func=feature,
+        feature_policy=OBSERVATION_INPUT_FEATURE_POLICY,
+    )
+    answer = _optional_joined_variant_answer(
+        current_leave_one_seed=current_leave_one_seed,
+        current_fixture_open=current_fixture_open,
+        candidate_leave_one_seed=leave_one_seed,
+        candidate_fixture_open=fixture_open,
         improves_label="shadow_ranker_observation_input_improves",
         no_improvement_label="shadow_ranker_observation_input_no_improvement",
     )
@@ -1101,7 +1157,15 @@ def _optional_observation_input_ranker(
         "answer": answer,
         "feature_policy": OBSERVATION_INPUT_FEATURE_POLICY,
         "join_evidence": join["evidence"],
-        "evaluation": evaluation,
+        "evaluation": leave_one_seed,
+        "leave_one_seed_evaluation": leave_one_seed,
+        "fixture_open_evaluation": fixture_open,
+        "comparisons_against_current_row": _joined_variant_comparison(
+            current_leave_one_seed=current_leave_one_seed,
+            current_fixture_open=current_fixture_open,
+            candidate_leave_one_seed=leave_one_seed,
+            candidate_fixture_open=fixture_open,
+        ),
     }
 
 
@@ -1112,7 +1176,8 @@ def _optional_public_history_ranker(
     trajectory_glob_patterns: Sequence[str],
     enabled: bool,
     history_window: int,
-    current_reference: Mapping[str, object],
+    current_leave_one_seed: Mapping[str, object],
+    current_fixture_open: Mapping[str, object],
 ) -> dict[str, object]:
     if not enabled:
         return _optional_ranker_not_run(
@@ -1136,23 +1201,45 @@ def _optional_public_history_ranker(
             "missing_evidence": history["missing_evidence"],
         }
     feature_names = current_row_feature_names() + tuple(history["feature_names"])
+    feature_name_leaks = feature_name_leakage(feature_names)
+    if feature_name_leaks:
+        return {
+            "enabled": True,
+            "answer": "missing_evidence_inconclusive",
+            "labels": ["shadow_ranker_leakage_detected"],
+            "feature_policy": PUBLIC_HISTORY_FEATURE_POLICY,
+            "history_window": history_window,
+            "join_evidence": history["evidence"],
+            "feature_name_leaks": list(feature_name_leaks),
+            "missing_evidence": ["joined_feature_name_leakage"],
+        }
     feature_map = history["feature_map"]
 
     def feature(row: Mapping[str, object]) -> tuple[float, ...]:
         extra = tuple(feature_map.get(str(row.get("archive_row_id")), ()))
         return current_row_feature_vector(row) + extra
 
-    evaluation = _leave_one_seed_evaluation(
+    leave_one_seed = _leave_one_seed_evaluation(
         groups,
         feature_names=feature_names,
         feature_func=feature,
         feature_policy=PUBLIC_HISTORY_FEATURE_POLICY,
     )
-    current_metrics = _mapping(_mapping(current_reference.get("aggregate")).get("current_row_linear_ranker"))
-    history_metrics = _mapping(_mapping(evaluation.get("aggregate")).get("current_row_linear_ranker"))
+    fixture_open = _fixture_open_evaluation(
+        groups,
+        feature_names=feature_names,
+        feature_func=feature,
+        feature_policy=PUBLIC_HISTORY_FEATURE_POLICY,
+    )
+    current_metrics = _split_ranker_metrics(current_leave_one_seed)
+    history_metrics = _split_ranker_metrics(leave_one_seed)
+    current_fixture_metrics = _split_ranker_metrics(current_fixture_open)
+    history_fixture_metrics = _split_ranker_metrics(fixture_open)
     answer = history_usefulness_answer(
         current_metrics=current_metrics,
         history_metrics=history_metrics,
+        current_fixture_open_metrics=current_fixture_metrics,
+        history_fixture_open_metrics=history_fixture_metrics,
     )
     return {
         "enabled": True,
@@ -1160,7 +1247,15 @@ def _optional_public_history_ranker(
         "feature_policy": PUBLIC_HISTORY_FEATURE_POLICY,
         "history_window": history_window,
         "join_evidence": history["evidence"],
-        "evaluation": evaluation,
+        "evaluation": leave_one_seed,
+        "leave_one_seed_evaluation": leave_one_seed,
+        "fixture_open_evaluation": fixture_open,
+        "comparisons_against_current_row": _joined_variant_comparison(
+            current_leave_one_seed=current_leave_one_seed,
+            current_fixture_open=current_fixture_open,
+            candidate_leave_one_seed=leave_one_seed,
+            candidate_fixture_open=fixture_open,
+        ),
     }
 
 
@@ -1174,6 +1269,7 @@ def _joined_observation_features(
         return {**records, "feature_names": (), "feature_map": {}}
     record_by_key = records["record_by_key"]
     feature_map: dict[str, tuple[float, ...]] = {}
+    match_examples: list[dict[str, object]] = []
     missing = 0
     malformed = 0
     feature_count: int | None = None
@@ -1189,11 +1285,24 @@ def _joined_observation_features(
             continue
         feature_count = len(values)
         feature_map[str(row.get("archive_row_id"))] = tuple(values)
+        if len(match_examples) < 12:
+            provenance = _mapping(row.get("provenance"))
+            match_examples.append(
+                {
+                    "archive_row_id": row.get("archive_row_id"),
+                    "source_path": provenance.get("source_path"),
+                    "record_index": provenance.get("record_index"),
+                    "agent_id": provenance.get("agent_id"),
+                    "tick": row.get("tick"),
+                    "observation_digest": row.get("observation_digest"),
+                }
+            )
     evidence = {
         **_mapping(records["evidence"]),
         "matched_archive_row_count": len(feature_map),
         "missing_match_count": missing,
         "malformed_observation_input_count": malformed,
+        "match_examples": match_examples,
         "ecological_policy_input_contract": ecological_policy_input_contract(),
     }
     missing_evidence: list[str] = []
@@ -1231,6 +1340,7 @@ def _joined_history_features(
         "public_history.failed_movement_rate",
     )
     feature_map: dict[str, tuple[float, ...]] = {}
+    prefix_examples: list[dict[str, object]] = []
     missing = 0
     for row in _rows_from_groups(groups):
         provenance = _mapping(row.get("provenance"))
@@ -1246,11 +1356,27 @@ def _joined_history_features(
             if index < record_index and _int_or_none(record.get("agent_id")) == agent_id
         ][-history_window:]
         feature_map[str(row.get("archive_row_id"))] = _history_values(candidates)
+        if len(prefix_examples) < 12:
+            prefix_examples.append(
+                {
+                    "archive_row_id": row.get("archive_row_id"),
+                    "source_path": source_path,
+                    "record_index": record_index,
+                    "agent_id": agent_id,
+                    "prefix_record_indices": [
+                        _int(record.get("record_index")) for record in candidates
+                    ],
+                    "prefix_agent_ids": [
+                        _int_or_none(record.get("agent_id")) for record in candidates
+                    ],
+                }
+            )
     evidence = {
         **_mapping(records["evidence"]),
         "matched_archive_row_count": len(feature_map),
         "missing_match_count": missing,
         "history_window": int(history_window),
+        "history_prefix_examples": prefix_examples,
     }
     missing_evidence: list[str] = []
     if missing or not feature_map:
@@ -1278,35 +1404,56 @@ def _load_join_records(
             )
         )
     evidence = {
+        "reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
         "trajectory_paths": [str(path) for path in paths],
         "trajectory_globs": list(trajectory_glob_patterns),
         "loaded_path_count": 0,
+        "loaded_paths": [],
         "load_failure_count": 0,
         "record_count": 0,
+        "malformed_record_count": 0,
+        "malformed_records": [],
+        "ignored_optional_fields": list(IGNORED_OPTIONAL_TRAJECTORY_FIELDS),
+        "ignored_optional_field_occurrences": {
+            field: 0 for field in IGNORED_OPTIONAL_TRAJECTORY_FIELDS
+        },
         "load_failures": [],
     }
     record_by_key: dict[tuple[str, int], dict[str, object]] = {}
     records_by_path: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
     for path in paths:
         try:
-            dataset = load_trajectory_jsonl(path)
-        except (OSError, TrajectoryDatasetError, ValueError) as exc:
+            loaded = _load_lenient_public_join_records(path)
+        except OSError as exc:
             evidence["load_failure_count"] = _int(evidence.get("load_failure_count")) + 1
             _list_mut(evidence, "load_failures").append(
                 {"path": str(path), "reason": type(exc).__name__, "message": str(exc)}
             )
             continue
+        _extend_evidence_counter(
+            evidence,
+            field="malformed_record_count",
+            amount=_int(loaded["evidence"].get("malformed_record_count")),
+        )
+        _list_mut(evidence, "malformed_records").extend(
+            _list(loaded["evidence"].get("malformed_records"))
+        )
+        occurrences = _mapping(evidence.get("ignored_optional_field_occurrences"))
+        loaded_occurrences = _mapping(
+            loaded["evidence"].get("ignored_optional_field_occurrences")
+        )
+        evidence["ignored_optional_field_occurrences"] = {
+            field: _int(occurrences.get(field)) + _int(loaded_occurrences.get(field))
+            for field in IGNORED_OPTIONAL_TRAJECTORY_FIELDS
+        }
         evidence["loaded_path_count"] = _int(evidence.get("loaded_path_count")) + 1
-        evidence["record_count"] = _int(evidence.get("record_count")) + len(dataset.records)
-        path_keys = {str(path), str(dataset.path)}
-        try:
-            path_keys.add(str(Path(path).resolve()))
-            path_keys.add(str(Path(dataset.path).resolve()))
-        except OSError:
-            pass
-        for index, record in enumerate(dataset.records):
+        _list_mut(evidence, "loaded_paths").append(str(path))
+        evidence["record_count"] = _int(evidence.get("record_count")) + len(loaded["records"])
+        for index, record in loaded["records"]:
             row = dict(record)
-            for key in path_keys:
+            for key in _list(record.get("source_path_aliases")):
+                if not isinstance(key, str):
+                    continue
                 record_by_key[(key, index)] = row
                 records_by_path[key].append((index, row))
     missing = []
@@ -1316,12 +1463,145 @@ def _load_join_records(
         missing.append("trajectory_loads")
     if _int(evidence.get("load_failure_count")) > 0:
         missing.append("trajectory_load_failures")
+    if _int(evidence.get("malformed_record_count")) > 0:
+        missing.append("trajectory_malformed_records")
     return {
         "evidence": evidence,
         "missing_evidence": missing,
         "record_by_key": record_by_key,
         "records_by_path": records_by_path,
     }
+
+
+def _load_lenient_public_join_records(path: Path) -> dict[str, object]:
+    records: list[tuple[int, dict[str, object]]] = []
+    malformed = 0
+    malformed_records: list[dict[str, object]] = []
+    ignored_occurrences = {field: 0 for field in IGNORED_OPTIONAL_TRAJECTORY_FIELDS}
+    record_index = 0
+    path_aliases = _path_aliases(path)
+    with _open_input(path) as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                malformed += 1
+                if len(malformed_records) < 16:
+                    malformed_records.append(
+                        {
+                            "path": str(path),
+                            "line_number": line_number,
+                            "reason": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    )
+                continue
+            if not isinstance(payload, Mapping):
+                malformed += 1
+                if len(malformed_records) < 16:
+                    malformed_records.append(
+                        {
+                            "path": str(path),
+                            "line_number": line_number,
+                            "reason": "jsonl_row_not_object",
+                        }
+                    )
+                continue
+            row_type = payload.get("type")
+            if row_type in {"header", "footer"}:
+                continue
+            record_payload: object
+            if row_type == "record":
+                record_payload = payload.get("record")
+            else:
+                record_payload = payload
+            if not isinstance(record_payload, Mapping):
+                malformed += 1
+                if len(malformed_records) < 16:
+                    malformed_records.append(
+                        {
+                            "path": str(path),
+                            "line_number": line_number,
+                            "reason": "trajectory_record_not_object",
+                        }
+                    )
+                continue
+            for field in IGNORED_OPTIONAL_TRAJECTORY_FIELDS:
+                if field in record_payload:
+                    ignored_occurrences[field] += 1
+            records.append(
+                (
+                    record_index,
+                    _public_join_record(
+                        record_payload,
+                        source_path=str(path),
+                        source_path_aliases=path_aliases,
+                        record_index=record_index,
+                    ),
+                )
+            )
+            record_index += 1
+    return {
+        "records": tuple(records),
+        "evidence": {
+            "path": str(path),
+            "reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
+            "record_count": len(records),
+            "malformed_record_count": malformed,
+            "malformed_records": malformed_records,
+            "ignored_optional_fields": list(IGNORED_OPTIONAL_TRAJECTORY_FIELDS),
+            "ignored_optional_field_occurrences": ignored_occurrences,
+        },
+    }
+
+
+def _public_join_record(
+    record: Mapping[str, object],
+    *,
+    source_path: str,
+    source_path_aliases: Sequence[str],
+    record_index: int,
+) -> dict[str, object]:
+    return {
+        "source_path": source_path,
+        "source_path_aliases": list(source_path_aliases),
+        "record_index": int(record_index),
+        "tick": record.get("tick"),
+        "agent_id": record.get("agent_id"),
+        "observation_digest": record.get("observation_digest"),
+        "observation_input": _copy_mapping(record.get("observation_input")),
+        "action_mask": _copy_mapping(record.get("action_mask")),
+        "requested_action": record.get("requested_action"),
+        "resolved_action": record.get("resolved_action"),
+        "before": _copy_mapping(record.get("before")),
+        "after": _copy_mapping(record.get("after")),
+        "outcome": _copy_mapping(record.get("outcome")),
+        "moved": record.get("moved"),
+    }
+
+
+def _path_aliases(path: Path) -> tuple[str, ...]:
+    aliases = {str(path)}
+    try:
+        aliases.add(str(path.resolve()))
+    except OSError:
+        pass
+    return tuple(sorted(aliases))
+
+
+def _copy_mapping(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _extend_evidence_counter(
+    evidence: dict[str, object],
+    *,
+    field: str,
+    amount: int,
+) -> None:
+    evidence[field] = _int(evidence.get(field)) + int(amount)
 
 
 def _matching_record(
@@ -1387,6 +1667,74 @@ def _optional_improvement_answer(
     ):
         return improves_label
     return no_improvement_label
+
+
+def _optional_joined_variant_answer(
+    *,
+    current_leave_one_seed: Mapping[str, object],
+    current_fixture_open: Mapping[str, object],
+    candidate_leave_one_seed: Mapping[str, object],
+    candidate_fixture_open: Mapping[str, object],
+    improves_label: str,
+    no_improvement_label: str,
+) -> str:
+    leave_one_seed_improves = _metrics_improve(
+        current_metrics=_split_ranker_metrics(current_leave_one_seed),
+        candidate_metrics=_split_ranker_metrics(candidate_leave_one_seed),
+    )
+    fixture_open_improves = _metrics_improve(
+        current_metrics=_split_ranker_metrics(current_fixture_open),
+        candidate_metrics=_split_ranker_metrics(candidate_fixture_open),
+    )
+    return improves_label if leave_one_seed_improves and fixture_open_improves else no_improvement_label
+
+
+def _joined_variant_comparison(
+    *,
+    current_leave_one_seed: Mapping[str, object],
+    current_fixture_open: Mapping[str, object],
+    candidate_leave_one_seed: Mapping[str, object],
+    candidate_fixture_open: Mapping[str, object],
+) -> dict[str, object]:
+    leave_one_seed_current = _split_ranker_metrics(current_leave_one_seed)
+    leave_one_seed_candidate = _split_ranker_metrics(candidate_leave_one_seed)
+    fixture_open_current = _split_ranker_metrics(current_fixture_open)
+    fixture_open_candidate = _split_ranker_metrics(candidate_fixture_open)
+    return {
+        "leave_one_seed": {
+            "current_row_metrics": leave_one_seed_current,
+            "joined_metrics": leave_one_seed_candidate,
+            "joined_beats_current_row": _metrics_improve(
+                current_metrics=leave_one_seed_current,
+                candidate_metrics=leave_one_seed_candidate,
+            ),
+        },
+        "fixture_open": {
+            "current_row_metrics": fixture_open_current,
+            "joined_metrics": fixture_open_candidate,
+            "joined_beats_current_row": _metrics_improve(
+                current_metrics=fixture_open_current,
+                candidate_metrics=fixture_open_candidate,
+            ),
+        },
+    }
+
+
+def _split_ranker_metrics(split: Mapping[str, object]) -> Mapping[str, object]:
+    return _mapping(_mapping(split.get("aggregate")).get("current_row_linear_ranker"))
+
+
+def _metrics_improve(
+    *,
+    current_metrics: Mapping[str, object],
+    candidate_metrics: Mapping[str, object],
+) -> bool:
+    return (
+        _int(candidate_metrics.get("evaluable_group_count")) > 0
+        and _number(candidate_metrics.get("mrr")) > _number(current_metrics.get("mrr"))
+        and _number(candidate_metrics.get("top1_oracle_match_rate"))
+        >= _number(current_metrics.get("top1_oracle_match_rate"))
+    )
 
 
 def _evaluate_baseline(
@@ -1633,6 +1981,7 @@ def _contract(
             "observation_input_enabled": bool(enable_observation_input),
             "public_history_enabled": bool(enable_public_history),
             "history_window": int(history_window),
+            "trajectory_reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
         },
     }
 
@@ -1850,14 +2199,71 @@ def _feature_sets(
             "enabled": bool(enable_observation_input),
             "feature_policy": OBSERVATION_INPUT_FEATURE_POLICY,
             "uses_provenance_for_join_only": True,
+            "trajectory_reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
         },
         "public_history": {
             "enabled": bool(enable_public_history),
             "feature_policy": PUBLIC_HISTORY_FEATURE_POLICY,
             "history_window": int(history_window),
             "uses_only_records_strictly_before_branch_target": True,
+            "trajectory_reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
         },
+        "trajectory_reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
         "leakage_audit": dict(leakage_audit),
+    }
+
+
+def _joined_feature_evidence_summary(
+    *,
+    observation_input_ranker: Mapping[str, object],
+    public_history_ranker: Mapping[str, object],
+    trajectory_paths: Sequence[str | Path],
+    trajectory_glob_patterns: Sequence[str],
+) -> dict[str, object]:
+    evidence_sections = [
+        _mapping(observation_input_ranker.get("join_evidence")),
+        _mapping(public_history_ranker.get("join_evidence")),
+    ]
+    selected = next((section for section in evidence_sections if section), {})
+    loaded_paths = sorted(
+        {
+            str(path)
+            for section in evidence_sections
+            for path in _list(section.get("loaded_paths"))
+            if isinstance(path, str)
+        }
+    )
+    malformed_records: list[object] = []
+    for section in evidence_sections:
+        for item in _list(section.get("malformed_records")):
+            if item not in malformed_records:
+                malformed_records.append(item)
+    return {
+        "reader_policy": LOCAL_LENIENT_TRAJECTORY_READER_POLICY,
+        "enabled": bool(
+            observation_input_ranker.get("enabled")
+            or public_history_ranker.get("enabled")
+        ),
+        "trajectory_paths": [str(path) for path in trajectory_paths],
+        "trajectory_globs": list(trajectory_glob_patterns),
+        "loaded_path_count": len(loaded_paths),
+        "loaded_paths": loaded_paths,
+        "record_count": _int(selected.get("record_count")),
+        "load_failure_count": _int(selected.get("load_failure_count")),
+        "load_failures": _list(selected.get("load_failures")),
+        "malformed_record_count": max(
+            _int(section.get("malformed_record_count")) for section in evidence_sections
+        )
+        if evidence_sections
+        else 0,
+        "malformed_records": malformed_records[:16],
+        "ignored_optional_fields": list(IGNORED_OPTIONAL_TRAJECTORY_FIELDS),
+        "ignored_optional_field_occurrences": selected.get(
+            "ignored_optional_field_occurrences",
+            {field: 0 for field in IGNORED_OPTIONAL_TRAJECTORY_FIELDS},
+        ),
+        "observation_input": _mapping(observation_input_ranker.get("join_evidence")),
+        "public_history": _mapping(public_history_ranker.get("join_evidence")),
     }
 
 
@@ -1884,14 +2290,7 @@ def _split_metadata(groups: Sequence[BranchTargetGroup]) -> dict[str, object]:
 
 def _leakage_audit(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
     trainable = trainable_public_input_leakage(rows)
-    feature_name_leaks = [
-        name
-        for name in current_row_feature_names()
-        if any(
-            token in FORBIDDEN_FEATURE_KEY_FRAGMENTS
-            for token in name.replace("=", ".").split(".")
-        )
-    ]
+    feature_name_leaks = list(feature_name_leakage(current_row_feature_names()))
     leak_count = _int(trainable.get("leak_count")) + len(feature_name_leaks)
     answer = (
         "shadow_ranker_leakage_detected"

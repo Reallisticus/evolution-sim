@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+import base64
 import gzip
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import (
+    OBSERVATION_ENCODER_VERSION,
+    OBSERVATION_INPUT_DTYPE,
+    OBSERVATION_INPUT_VALUE_RANGE,
+    OBSERVATION_INPUT_VECTOR_SIZE,
+    OBSERVATION_SCHEMA_VERSION,
+    OBSERVATION_STORAGE_DTYPE,
+    OBSERVATION_STORAGE_ENCODING,
+    _pack_quantized_values,
+)
 from evolution_sim.mind.first_recovery_shadow_ranker import (
     ALLOWED_CLASSIFICATION_LABELS,
     MIND_V3_FIRST_RECOVERY_SHADOW_RANKER_SCHEMA_VERSION,
     build_first_recovery_shadow_ranker,
     build_pairwise_examples,
     current_row_feature_names,
+    feature_name_leakage,
     group_archive_rows_by_branch_target,
     history_usefulness_answer,
     load_first_recovery_archive_rows,
@@ -172,11 +185,67 @@ class MindV3FirstRecoveryShadowRankerTests(unittest.TestCase):
 
     def test_history_cannot_be_useful_unless_it_beats_current_row(self) -> None:
         answer = history_usefulness_answer(
-            current_metrics={"mrr": 0.6, "top1_oracle_match_rate": 0.5},
-            history_metrics={"mrr": 0.6, "top1_oracle_match_rate": 0.75},
+            current_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.5,
+            },
+            history_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.75,
+            },
         )
 
         self.assertEqual(answer, "shadow_ranker_history_no_improvement")
+
+        split_only_answer = history_usefulness_answer(
+            current_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.5,
+            },
+            history_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.7,
+                "top1_oracle_match_rate": 0.5,
+            },
+            current_fixture_open_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.5,
+            },
+            history_fixture_open_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.75,
+            },
+        )
+        both_answer = history_usefulness_answer(
+            current_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.5,
+            },
+            history_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.7,
+                "top1_oracle_match_rate": 0.5,
+            },
+            current_fixture_open_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.6,
+                "top1_oracle_match_rate": 0.5,
+            },
+            history_fixture_open_metrics={
+                "evaluable_group_count": 1,
+                "mrr": 0.7,
+                "top1_oracle_match_rate": 0.5,
+            },
+        )
+
+        self.assertEqual(split_only_answer, "shadow_ranker_history_no_improvement")
+        self.assertEqual(both_answer, "shadow_ranker_history_improves")
 
     def test_optional_joined_features_without_trajectories_are_inconclusive(self) -> None:
         build = build_first_recovery_shadow_ranker(
@@ -198,6 +267,158 @@ class MindV3FirstRecoveryShadowRankerTests(unittest.TestCase):
         self.assertIn("trajectory_paths", build.report["classification"]["missing_evidence"])
         self.assertNotIn("shadow_ranker_observation_input_improves", labels)
         self.assertNotIn("shadow_ranker_history_improves", labels)
+
+    def test_lenient_join_reader_ignores_nested_rollout_context_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trajectory_path = Path(tmp) / "trajectory.jsonl.gz"
+            rows = _join_archive_rows(trajectory_path, record_index=3)
+            records = [
+                _trajectory_record(agent_id=7, tick=1, digest="history-0", observation_index=0),
+                _trajectory_record(agent_id=8, tick=2, digest="other-agent", observation_index=1),
+                _trajectory_record(agent_id=7, tick=3, digest="history-2", observation_index=2),
+                _trajectory_record(
+                    agent_id=7,
+                    tick=4,
+                    digest=str(rows[0]["observation_digest"]),
+                    observation_index=3,
+                    include_nested_diagnostics=True,
+                ),
+            ]
+            _write_trajectory(trajectory_path, records)
+
+            build = build_first_recovery_shadow_ranker(
+                archive_report=_archive_report(rows),
+                archive_rows=rows,
+                trajectory_paths=(trajectory_path,),
+                enable_observation_input=True,
+            )
+
+        join = build.report["join_evidence"]
+        observation_join = build.report["observation_input_ranker"]["join_evidence"]
+        self.assertEqual(join["reader_policy"], "local_lenient_public_trajectory_join_reader_v1")
+        self.assertEqual(join["loaded_path_count"], 1)
+        self.assertEqual(join["load_failure_count"], 0)
+        self.assertEqual(join["malformed_record_count"], 0)
+        self.assertEqual(observation_join["matched_archive_row_count"], len(rows))
+        self.assertGreater(
+            join["ignored_optional_field_occurrences"]["policy_decision_diagnostics"],
+            0,
+        )
+        self.assertNotIn(
+            "trajectory_load_failures",
+            build.report["classification"]["missing_evidence"],
+        )
+
+    def test_joined_observation_matches_exact_public_target_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trajectory_path = Path(tmp) / "trajectory.jsonl.gz"
+            rows = _join_archive_rows(trajectory_path, record_index=2)
+            records = [
+                _trajectory_record(
+                    agent_id=7,
+                    tick=4,
+                    digest=str(rows[0]["observation_digest"]),
+                    observation_index=0,
+                ),
+                _trajectory_record(agent_id=8, tick=4, digest="wrong-agent", observation_index=1),
+                _trajectory_record(
+                    agent_id=7,
+                    tick=4,
+                    digest=str(rows[0]["observation_digest"]),
+                    observation_index=2,
+                ),
+            ]
+            _write_trajectory(trajectory_path, records)
+
+            build = build_first_recovery_shadow_ranker(
+                archive_report=_archive_report(rows),
+                archive_rows=rows,
+                trajectory_paths=(trajectory_path,),
+                enable_observation_input=True,
+            )
+
+        example = build.report["observation_input_ranker"]["join_evidence"]["match_examples"][0]
+        self.assertEqual(example["source_path"], str(trajectory_path))
+        self.assertEqual(example["record_index"], 2)
+        self.assertEqual(example["agent_id"], 7)
+        self.assertEqual(example["tick"], 4)
+        self.assertEqual(example["observation_digest"], rows[0]["observation_digest"])
+
+    def test_public_history_uses_only_same_agent_prior_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trajectory_path = Path(tmp) / "trajectory.jsonl.gz"
+            rows = _join_archive_rows(trajectory_path, record_index=3)
+            records = [
+                _trajectory_record(agent_id=7, tick=1, digest="history-0", observation_index=0),
+                _trajectory_record(agent_id=8, tick=2, digest="other-agent", observation_index=1),
+                _trajectory_record(agent_id=7, tick=3, digest="history-2", observation_index=2),
+                _trajectory_record(
+                    agent_id=7,
+                    tick=4,
+                    digest=str(rows[0]["observation_digest"]),
+                    observation_index=3,
+                ),
+                _trajectory_record(agent_id=7, tick=5, digest="future", observation_index=4),
+            ]
+            _write_trajectory(trajectory_path, records)
+
+            build = build_first_recovery_shadow_ranker(
+                archive_report=_archive_report(rows),
+                archive_rows=rows,
+                trajectory_paths=(trajectory_path,),
+                enable_public_history=True,
+            )
+
+        example = build.report["public_history_ranker"]["join_evidence"][
+            "history_prefix_examples"
+        ][0]
+        self.assertEqual(example["prefix_record_indices"], [0, 2])
+        self.assertEqual(example["prefix_agent_ids"], [7, 7])
+
+    def test_malformed_trajectory_rows_are_inconclusive_not_exceptions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trajectory_path = Path(tmp) / "malformed.jsonl"
+            rows = _join_archive_rows(trajectory_path, record_index=0)
+            trajectory_path.write_text("{not-json}\n", encoding="utf-8")
+
+            build = build_first_recovery_shadow_ranker(
+                archive_report=_archive_report(rows),
+                archive_rows=rows,
+                trajectory_paths=(trajectory_path,),
+                enable_observation_input=True,
+            )
+
+        self.assertEqual(
+            build.report["observation_input_ranker"]["answer"],
+            "missing_evidence_inconclusive",
+        )
+        self.assertIn(
+            "trajectory_malformed_records",
+            build.report["classification"]["missing_evidence"],
+        )
+        self.assertEqual(build.report["join_evidence"]["malformed_record_count"], 1)
+
+    def test_joined_feature_name_leakage_rejects_provenance_tokens(self) -> None:
+        safe_names = (
+            "observation_input.ecological_value_0",
+            "public_history.record_count",
+            "public_history.failed_movement_rate",
+        )
+        forbidden_names = (
+            "source_path",
+            "record_index",
+            "agent_id",
+            "tick",
+            "seed",
+            "source_kind",
+            "fixture.identity",
+            "logged_action",
+            "branch_id",
+            "private_world_state",
+        )
+
+        self.assertEqual(feature_name_leakage(safe_names), ())
+        self.assertEqual(set(feature_name_leakage(forbidden_names)), set(forbidden_names))
 
     def test_json_report_is_byte_stable(self) -> None:
         build = build_first_recovery_shadow_ranker(
@@ -408,6 +629,110 @@ def _row(
             "logged_action": logged_action,
         },
     }
+
+
+def _join_archive_rows(
+    source_path: Path,
+    *,
+    record_index: int,
+) -> list[dict[str, object]]:
+    rows = json.loads(json.dumps(_archive_rows()[:3]))
+    for row in rows:
+        row["tick"] = 4
+        row["record_index"] = record_index
+        row["observation_digest"] = "joined-digest"
+        provenance = row["provenance"]
+        provenance["source_path"] = str(source_path)
+        provenance["record_index"] = record_index
+        provenance["agent_id"] = 7
+    return rows
+
+
+def _trajectory_record(
+    *,
+    agent_id: int,
+    tick: int,
+    digest: str,
+    observation_index: int,
+    include_nested_diagnostics: bool = False,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "tick": tick,
+        "agent_id": agent_id,
+        "observation_digest": digest,
+        "observation_input": _observation(observation_index),
+        "action_mask": {
+            action: action in {"stay", "eat", "drink"} for action in ACTION_NAMES
+        },
+        "requested_action": "stay",
+        "resolved_action": "stay",
+        "before": {
+            "alive": True,
+            "energy_ratio": round(0.2 + 0.01 * observation_index, 6),
+            "hydration_ratio": round(0.4 + 0.01 * observation_index, 6),
+            "health_ratio": round(0.8 - 0.01 * observation_index, 6),
+        },
+        "after": {
+            "alive": True,
+            "energy_ratio": round(0.19 + 0.01 * observation_index, 6),
+            "hydration_ratio": round(0.39 + 0.01 * observation_index, 6),
+            "health_ratio": round(0.8 - 0.01 * observation_index, 6),
+        },
+        "outcome": {"resource_gain": 0.0},
+        "moved": False,
+    }
+    if include_nested_diagnostics:
+        record["policy_decision_diagnostics"] = {
+            "rollout_context_score_delta_by_action": {
+                "eat": {"nested": "ignored_by_lenient_join_reader"}
+            }
+        }
+        record["policy_update_trace"] = {"nested": ["ignored"]}
+    return record
+
+
+def _observation(index: int) -> dict[str, object]:
+    values = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+    values[0] = round(0.1 + float(index) / 20.0, 6)
+    values[1] = round(0.9 - float(index) / 30.0, 6)
+    data = base64.b64encode(
+        zlib.compress(_pack_quantized_values(values), level=6)
+    ).decode("ascii")
+    return {
+        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "encoder_version": OBSERVATION_ENCODER_VERSION,
+        "decoded_dtype": OBSERVATION_INPUT_DTYPE,
+        "storage_dtype": OBSERVATION_STORAGE_DTYPE,
+        "storage_encoding": OBSERVATION_STORAGE_ENCODING,
+        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "data": data,
+    }
+
+
+def _write_trajectory(path: Path, records: list[dict[str, object]]) -> None:
+    if path.suffix == ".gz":
+        with path.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gzip_file:
+                _write_trajectory_lines(gzip_file, records)
+    else:
+        with path.open("w", encoding="utf-8") as handle:
+            for line in _trajectory_lines(records):
+                handle.write(line)
+                handle.write("\n")
+
+
+def _write_trajectory_lines(handle: gzip.GzipFile, records: list[dict[str, object]]) -> None:
+    for line in _trajectory_lines(records):
+        handle.write(line.encode("utf-8"))
+        handle.write(b"\n")
+
+
+def _trajectory_lines(records: list[dict[str, object]]) -> list[str]:
+    payloads = [{"type": "header"}]
+    payloads.extend({"type": "record", "record": record} for record in records)
+    payloads.append({"type": "footer"})
+    return [json.dumps(payload, sort_keys=True) for payload in payloads]
 
 
 def _write_rows(path: Path, rows: list[dict[str, object]]) -> None:
