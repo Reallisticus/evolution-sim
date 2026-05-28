@@ -130,6 +130,92 @@ async function assertNoControlClipping(page, label) {
   }
 }
 
+async function waitForStableEpisodePlaybackButton(page, expectedPlaybackActive) {
+  await page.evaluate(() => {
+    document.querySelector("#episode-inspector [data-episode-play]")?.scrollIntoView({
+      block: "center",
+      inline: "center",
+    });
+  });
+  await page.waitForFunction((expectedActive) => {
+    const buttonSnapshot = () => {
+      const inspector = document.querySelector("#episode-inspector");
+      const button = inspector?.querySelector("[data-episode-play]");
+      const playbackActive = window.__viewerDebug?.episodePlayback != null;
+      if (!inspector || !button || !button.isConnected || playbackActive !== expectedActive || button.disabled) {
+        return null;
+      }
+      const style = window.getComputedStyle(button);
+      const rect = button.getBoundingClientRect();
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        return null;
+      }
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      if (centerX < 0 || centerX > window.innerWidth || centerY < 0 || centerY > window.innerHeight) {
+        return null;
+      }
+      return {
+        tick: button.dataset.episodePlay,
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    };
+
+    return new Promise((resolve) => {
+      const first = buttonSnapshot();
+      if (!first) {
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const second = buttonSnapshot();
+          resolve(Boolean(second && JSON.stringify(second) === JSON.stringify(first)));
+        });
+      });
+    });
+  }, expectedPlaybackActive);
+}
+
+async function clickEpisodePlaybackButton(page, expectedPlaybackActive) {
+  await waitForStableEpisodePlaybackButton(page, expectedPlaybackActive);
+  const center = await page.evaluate((expectedActive) => {
+    const button = document.querySelector("#episode-inspector [data-episode-play]");
+    const playbackActive = window.__viewerDebug?.episodePlayback != null;
+    if (!button || !button.isConnected || playbackActive !== expectedActive || button.disabled) {
+      return null;
+    }
+    const style = window.getComputedStyle(button);
+    const rect = button.getBoundingClientRect();
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      rect.width <= 0 ||
+      rect.height <= 0
+    ) {
+      return null;
+    }
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    if (centerX < 0 || centerX > window.innerWidth || centerY < 0 || centerY > window.innerHeight) {
+      return null;
+    }
+    return { x: centerX, y: centerY };
+  }, expectedPlaybackActive);
+  if (!center) {
+    throw new Error("Episode playback button was not attached and visible immediately before click.");
+  }
+  await page.mouse.click(center.x, center.y);
+}
+
 try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
@@ -224,28 +310,27 @@ try {
   if (causalInspector.ledgerTitles.includes("Movement")) {
     throw new Error("Expected primary episode ledger to group movement instead of listing it as causal detail.");
   }
-  await page.locator("#episode-inspector [data-episode-play]").first().click();
+  await clickEpisodePlaybackButton(page, false);
   await page.waitForFunction(() => {
+    const playbackStatus = document.querySelector("#episode-inspector .episode-playback-status")?.textContent ?? "";
     return (
       window.__viewerDebug?.episodePlayback?.scope?.primaryEventCount > 0 &&
       window.__viewerDebug?.episodePlayback?.scope?.agentIds?.length >= 2 &&
       window.__viewerDebug?.eventLensMode === "causal" &&
       document.querySelector("#event-lens-summary")?.textContent?.includes("episode") &&
-      document.querySelector("#episode-inspector")?.textContent?.includes("Playing causal window")
+      playbackStatus.includes("Playing causal window")
     );
   });
-  if (await page.evaluate(() => window.__viewerDebug?.episodePlayback != null)) {
-    try {
-      await page
-        .locator("#episode-inspector [data-episode-play]", { hasText: "Stop Causal Playback" })
-        .first()
-        .click({ timeout: 5000 });
-    } catch (error) {
-      const stillPlaying = await page.evaluate(() => window.__viewerDebug?.episodePlayback != null);
-      if (stillPlaying) throw error;
-    }
-  }
-  await page.waitForFunction(() => window.__viewerDebug?.episodePlayback === null);
+  await clickEpisodePlaybackButton(page, true);
+  await page.waitForFunction(() => {
+    const inspector = document.querySelector("#episode-inspector");
+    return (
+      window.__viewerDebug?.episodePlayback === null &&
+      inspector?.querySelector("[data-episode-play]") &&
+      !inspector.querySelector(".episode-playback-status") &&
+      !document.querySelector("#event-lens-summary")?.textContent?.includes("episode")
+    );
+  });
   await page.locator('#episode-inspector [data-episode-lens="delta"]').first().click();
   await page.waitForFunction(() => {
     return (
