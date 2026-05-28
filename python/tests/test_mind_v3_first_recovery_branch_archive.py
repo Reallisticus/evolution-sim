@@ -9,6 +9,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
+from evolution_sim.mind.dataset import TrajectoryJsonlDataset
 from evolution_sim.mind.first_recovery_branch_archive import (
     ALLOWED_CLASSIFICATION_LABELS,
     MIND_V3_FIRST_RECOVERY_BRANCH_ARCHIVE_SCHEMA_VERSION,
@@ -52,6 +53,7 @@ class MindV3FirstRecoveryBranchArchiveTests(unittest.TestCase):
         )
 
     def test_reconstructs_106_first_recovery_rows(self) -> None:
+        _require_real_first_recovery_artifacts(self)
         paths = _trajectory_paths()
         reconstructed = reconstruct_transition_aligned_first_recovery_rows(
             trajectory_paths=paths,
@@ -60,6 +62,7 @@ class MindV3FirstRecoveryBranchArchiveTests(unittest.TestCase):
         self.assertEqual(len(reconstructed["rows"]), 106)
 
     def test_stratified_selection_is_deterministic_and_includes_open_rows(self) -> None:
+        _require_real_first_recovery_artifacts(self)
         reconstructed = _real_reconstruction()
         rows = reconstructed["rows"]
         path_metadata = reconstructed["path_metadata"]
@@ -78,6 +81,7 @@ class MindV3FirstRecoveryBranchArchiveTests(unittest.TestCase):
         self.assertTrue(all_actions.issubset(selected_actions))
 
     def test_open_rows_can_be_explicitly_classified_unselected(self) -> None:
+        _require_real_first_recovery_artifacts(self)
         reconstructed = _real_reconstruction()
         selection = select_first_recovery_archive_targets(
             reconstructed["rows"],
@@ -155,7 +159,7 @@ class MindV3FirstRecoveryBranchArchiveTests(unittest.TestCase):
             _synthetic_branch_result(branch_id=f"b{i}", seed=seed, oracle_action="drink")
             for i, seed in enumerate((13, 29, 41), start=1)
         ]
-        build = _real_report_build_with_precomputed(results)
+        build = _synthetic_report_build_with_precomputed(results)
         self.assertIn(
             "oracle_action_distribution_collapsed",
             build.report["classification"]["labels"],
@@ -273,6 +277,28 @@ def _trajectory_paths() -> tuple[Path, ...]:
     return tuple(sorted((ROOT / "output/mind/mind-v3-v5-carrion-only-120-trajectories").glob("*mind-v3*.jsonl.gz")))
 
 
+def _real_first_recovery_artifact_paths() -> tuple[Path, ...]:
+    return (
+        ROOT / V108_REPORT,
+        ROOT / V107_REPORT,
+        ROOT / ROLLOUT_CONTEXT_REPORT,
+        ROOT / BASELINE_REPORT,
+    )
+
+
+def _real_first_recovery_artifacts_available() -> bool:
+    return bool(_trajectory_paths()) and all(
+        path.exists() for path in _real_first_recovery_artifact_paths()
+    )
+
+
+def _require_real_first_recovery_artifacts(
+    testcase: unittest.TestCase,
+) -> None:
+    if not _real_first_recovery_artifacts_available():
+        testcase.skipTest("real v5/v107/v108 first-recovery artifacts are not present")
+
+
 def _real_report_build_with_precomputed(
     branch_results: list[Mapping[str, object]],
 ):
@@ -283,6 +309,30 @@ def _real_report_build_with_precomputed(
         baseline_report_path=ROOT / BASELINE_REPORT,
         trajectory_paths=_trajectory_paths(),
         trajectory_glob_patterns=(TRAJECTORY_GLOB,),
+        precomputed_branch_results=branch_results,
+    )
+
+
+def _synthetic_report_build_with_precomputed(
+    branch_results: list[Mapping[str, object]],
+):
+    return build_first_recovery_branch_archive(
+        v108_report={
+            "schema_version": "mind_v3_first_recovery_branch_oracle_audit_v1",
+            "v107_row_alignment": {
+                "reconstructed_first_recovery_row_count": 0,
+                "row_count_matches_v107": True,
+            },
+        },
+        v107_report={
+            "schema_version": "mind_v3_transition_aligned_recovery_audit_v1",
+            "transition_aligned_first_recovery": {
+                "constructible_first_recovery_row_count": 0,
+            },
+        },
+        rollout_context_report={"schema_version": "mind_v3_evolution_search_v1"},
+        baseline_report={"schema_version": "mind_v3_evolution_search_v1"},
+        trajectory_datasets=[_empty_synthetic_trajectory_dataset()],
         precomputed_branch_results=branch_results,
     )
 
@@ -307,6 +357,15 @@ def _synthetic_build():
         trajectory_datasets=[],
         precomputed_branch_results=[_synthetic_branch_result()],
         archive_rows_path=Path("archive.jsonl.gz"),
+    )
+
+
+def _empty_synthetic_trajectory_dataset() -> TrajectoryJsonlDataset:
+    return TrajectoryJsonlDataset(
+        path=Path("synthetic-mind-v3-seed-29.jsonl.gz"),
+        header={"config": {"seed": 29, "max_ticks": 120}},
+        records=(),
+        footer={"summary": {"seed": 29, "ticks_executed": 120}},
     )
 
 
