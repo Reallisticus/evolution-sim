@@ -73,6 +73,25 @@ class RuntimeActionContractTests(RuntimeContractTestHelpers):
         self.assertTrue(mask["attack_south"])
         self.assertTrue(mask["signal_0_profile_0"])
 
+    def test_action_mask_contract_declares_resolution_affordance_semantics(
+        self,
+    ) -> None:
+        contract = action_mask_contract()
+
+        self.assertEqual(contract["policy"], ACTION_MASK_SEMANTICS_POLICY)
+        self.assertEqual(contract["mask_role"], "resolution_affordance_mask")
+        self.assertFalse(contract["pure_physical_legality"])
+        families = contract["action_family_semantics"]
+        self.assertEqual(
+            families["eat"]["mask_basis"],
+            "utility_shaped_intake_affordance",
+        )
+        self.assertTrue(families["eat"]["uses_intake_usefulness"])
+        self.assertTrue(families["eat"]["uses_resource_value"])
+        self.assertTrue(families["movement"]["closer_to_physical_legality"])
+        self.assertTrue(families["attack"]["uses_biological_condition_gate"])
+        json.dumps(contract)
+
     def test_resolve_action_requires_explicit_resolution_context(self) -> None:
         agent = self._standalone_hunter_agent(2)
 

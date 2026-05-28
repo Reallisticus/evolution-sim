@@ -1,6 +1,6 @@
 ---
 name: foundation-gate-loop
-description: Use for Foundation-layer work in evolution-sim: ecology readiness, trophic durability, hydrology/refuge/hazard/carrion semantics, config validation, replay invariants, release-gate behavior, summary-only/full-replay separation, and simulator benchmark reliability.
+description: "Use for Foundation-layer work in evolution-sim: ecology readiness, trophic durability, hydrology/refuge/hazard/carrion semantics, config validation, replay invariants, release-gate behavior, summary-only/full-replay separation, and simulator benchmark reliability."
 ---
 
 # Foundation Gate Loop

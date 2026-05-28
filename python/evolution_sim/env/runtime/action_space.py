@@ -62,6 +62,11 @@ def can_eat_from_values(
     carcass_food_value: float,
     adjacent_carcass_available: bool,
 ) -> bool:
+    """Return the utility-shaped eat affordance for the action mask.
+
+    This intentionally answers "would the resolver accept a currently useful
+    intake action?" rather than "is any edible matter physically present?".
+    """
     if plant_intake_useful and plant_food_value > 0:
         return True
     if (

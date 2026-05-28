@@ -5206,7 +5206,7 @@ class SimulationWorld:
                     "reproductive_expression": agent.reproductive_expression,
                     "birth_tick": agent.birth_tick,
                     "death_tick": agent.death_tick,
-                    "genome": agent.genome.to_dict(),
+                    "genome": self._canonical_replay_float_payload(agent.genome.to_dict()),
                     "mind_inheritance": dict(agent.mind_inheritance_metadata),
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
@@ -5280,6 +5280,24 @@ class SimulationWorld:
             "trajectory": self._build_trajectory_payload(),
             "agent_encoding": list(VIEWER_AGENT_ENCODING),
         }
+
+    @staticmethod
+    def _canonical_replay_float_payload(value: object) -> object:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float):
+            return float(f"{value:.12g}")
+        if isinstance(value, dict):
+            return {
+                str(key): SimulationWorld._canonical_replay_float_payload(payload)
+                for key, payload in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                SimulationWorld._canonical_replay_float_payload(payload)
+                for payload in value
+            ]
+        return value
 
     def _build_analytics(self) -> dict[str, object]:
         return build_replay_analytics(

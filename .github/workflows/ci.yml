@@ -44,6 +44,7 @@ jobs:
           --max-guard-intervention-rate-by-group 1.0
           --min-plant-energy-available-per-land-tile 0.0
           --fail-on-blockers
+      - run: npx playwright install --with-deps chromium
       - run: |
           npm run sim:run -- --seed 7 --ticks 120 --output output/sim-runs/species-check.json
           python3 -m http.server 4173 >/tmp/viewer-serve.log 2>&1 &

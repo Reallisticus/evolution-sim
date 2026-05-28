@@ -17,6 +17,44 @@ terrain, diet, movement, communication, and reproduction pressures differently
 enough that emergent inter-species behavior can be observed rather than erased
 by a single global winner.
 
+## Foundation Handoff Inputs
+
+The Foundation-to-Mind boundary is intentionally mixed. Mind receives raw
+ecological/self state, engineered local-patch and navigation perception,
+Foundation-provided action affordances, controller diagnostics needed for
+historical runtime compatibility, and post-action feedback for training or
+after-action credit assignment. These surfaces are not all equivalent policy
+inputs.
+
+The raw encoded observation tensor remains the stable replay/runtime contract.
+It includes raw self ecology, local patch fields, engineered navigation targets
+for water/plant/carrion/prey, and the historical
+`self.mind_inheritance_available` diagnostic. That diagnostic describes
+controller-state availability, not ecology. Promotion-eligible Mind v3 scorers
+must not consume it directly; they must use `mind_ecological_policy_input_v1`
+or an architecture-specific safe feature projection that excludes
+controller-private diagnostics.
+
+The action mask is also an affordance/resolution contract, not a pure physics
+legality oracle. Movement entries are closest to physical legality because they
+mostly reflect bounds, terrain, occupancy, and resolution constraints. `eat` is
+utility-shaped by intake-usefulness and resource-value checks for plant,
+fresh-kill, and carcass sources. `attack_*` combines directional target
+availability with biological and condition gates. These engineered Foundation
+affordances are intentional, but they must be named as affordances rather than
+mistaken for raw environment physics.
+
+Post-action trajectory feedback (`before`, `after`, `outcome`, and `reward`)
+is training and credit-assignment data. It is not decision-time perception for
+promotion-eligible autonomous scorers.
+
+Opt-in rollout-context controllers may consume a policy-owned summary of the
+same agent's previous finalized public trajectory rows. That context is
+historical feedback only: it is snapshotted before the current decision and
+updated only after the current record finalizes. It must not contain seed,
+fixture identity, private world state, heuristic recommendations, current
+outcome data, or future rows.
+
 ## Current First Slice
 
 - `MindV3EvolutionPolicy` is a pure autonomous policy implementing the existing
@@ -24,8 +62,9 @@ by a single global winner.
 - Founders receive bounded controller metadata in
   `agent.mind_inheritance_metadata`.
 - Children inherit and mutate bounded controller metadata through reproduction.
-- Runtime action selection uses masked controller scores over policy-visible
-  observations.
+- Runtime action selection uses masked controller scores over safe
+  Mind-policy inputs derived from the Foundation observation/action-affordance
+  contract.
 - Within-run reward-modulated controller updates apply a short eligibility
   trace, so later resource/survival reward can credit recent actions without
   hard-coded navigation behavior.
@@ -314,6 +353,170 @@ limitation that a linear head over separate `thirst` and `navigation.water.dy`
 features cannot robustly express "move toward water only when thirsty" without
 an interaction feature. Search/evaluation still has to prove that the new
 capacity improves survival, reproduction, and controlled-fixture behavior.
+
+## Rollout-Context Controller v5
+
+`rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+is the first opt-in rollout-context controller slice. It preserves the v4
+need-gated local-navigation features and appends `RolloutContextState.values()`
+from the policy-owned rollout context. The rollout context is built only from
+previous same-agent finalized public trajectory rows and is updated through
+`observe_transition()` after the finalized record is available.
+
+The v5 path is implemented as a deterministic pure-Python linear action head
+with bounded selected-action updates. It is not a residual override, planner
+scorer, heuristic fallback, or logged-action fallback. The default founder
+architecture remains v4. V5 founder templates use the v4 base founder prior for
+the first twenty-four hidden units and exact zero weights for the appended
+rollout-context units; descendants may mutate those context weights through the
+existing bounded inheritance/update path. V5 must be selected explicitly with
+`sim:mind:v3:evolve -- --controller-architecture rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+or by supplying serialized v5 founder metadata.
+
+2026-05-22 diagnostic checkpoint:
+`output/mind/mind-v3-v5-rollout-context-search-80-120-diagnostic.json` ran the
+same-shape search as the v4 baseline and kept `heuristic_action_source_count=0`.
+It improved broad holdout aggregate alive by `+8.6666`, births by `+3.3333`,
+and deaths by `-5.3333` versus v4, but it is not promoted. Seed `29` births
+regressed by `-3`, aggregate movement regressed, unsupported resolved actions
+increased by `+4`, and the dominant action stayed `eat` with share `+0.0465`.
+The fixture gate failed on `carrion_only` viability/alive floors and
+`mixed_stable` health at the short horizon. Rollout context was active
+(`rollout_context_non_empty_share=0.9818`), but post-carrion context was rare
+(`rollout_context_post_carrion_context_share=0.0054`), so this is evidence that
+public rollout context adds capacity without solving carrion acquisition or
+controlled-fixture viability.
+
+## Recovery-Context Controller v6
+
+`recovery_context_need_gated_local_navigation_feature_projection_linear_action_head_v6`
+is an opt-in recovery-context controller checkpoint. It preserves the v4
+need-gated local-navigation features, keeps the v5 rollout-context capacity, and
+appends a separate recovery-context vector derived only from current
+policy-visible observation/action-mask data plus previous same-agent finalized
+public trajectory rows. It is deterministic, pure Python, serialized,
+inherited, replayable, and not enabled by default.
+
+V6 founder templates keep the v4 base prior for the original hidden units and
+exact zero weights for all appended rollout/recovery context units. Descendants
+may mutate those context weights through the existing bounded update path. The
+controller does not use fixture identity, private world state, future rows,
+heuristic recommendations, logged-action fallback, controller-private
+diagnostics, or seed/source/branch identity.
+
+2026-05-22 diagnostic checkpoint:
+`output/mind/mind-v3-v6-recovery-context-smoke.json` completed mechanically
+after the recovery-context extraction optimization, with a `439.64s` small-smoke
+elapsed time. That optimization reuses decoded current observations and stores a
+compact previous public navigation summary instead of repeatedly decoding
+previous raw observation payloads. V6 is not promoted: the smoke still failed
+the `carrion_only` alive floor, and the full same-shape comparison remains
+pending. A local full same-shape run attempted before this performance patch was
+too slow and terminated without producing a report, so treat v6 as an
+experimental capacity checkpoint only.
+
+Full same-shape diagnostic:
+`output/mind/mind-v3-v6-recovery-context-search-80-120-diagnostic.json`
+completed locally in `5805s` after the optimization. It is still
+non-promoted. The fixture gate failed; `carrion_only` was dead at both `80` and
+`120` ticks with zero viability shares. Against the v4 baseline, broad holdout
+aggregate moved only slightly on alive (`+0.3333`), regressed births
+(`-2.3333`), and reduced deaths (`-2.6667`). Seed `29` regressed by `-9` alive
+and `-9` births. Unsupported resolved actions improved by `-9`, but dominant
+`eat` share increased to `0.4780`. Context was active
+(`rollout_context_non_empty_share=0.9819`,
+`recovery_context_non_empty_share=0.2072`) and post-carrion context shares
+matched at `0.0163`; recovery selected-score delta abs mean/max were
+`0.0130`/`0.8346`. V6 adds public recovery-context capacity, but it did not
+solve carrion recovery. Do not tune this branch further without a new,
+testable hypothesis.
+
+Follow-up diagnostics added a report-only carrion objective-pressure audit and
+gate-aligned selector probe. The audit joins search/rerank reports with
+carrion-only traces to ask whether selected candidates favor carrion contact,
+gain, or births while under-penalizing post-contact hydration collapse and
+death. The selector probe is retrospective only:
+`gate_aligned_carrion_recovery_probe_v1` compares the current selected
+fixture-rerank candidate with a lexicographic gate-aligned candidate using
+fixture pass status, blocker counts, multi-horizon carrion viability, unsupported
+actions, dominant-action share, and search score only as the final tie-breaker.
+It reports missing candidate-level recovery fields and plausible alternates but
+does not change runtime policy, action masks, score weights, gates, replay
+semantics, or active candidate selection. A separate evolve flag can opt in to
+bounded fixture-rerank candidate recovery probes that write carrion-only
+trajectory diagnostics for top-K nominees; it is disabled by default and is not
+an active selector. The probe scope defaults to `initial-only`, preserving the
+original top-K nominee coverage. The opt-in `initial-and-repair` scope also
+annotates standard repair and bridge-repair candidates with the same
+JSON-only recovery metrics and emits coverage/missing-reason counts so final
+repair artifacts are auditable before any active selector is considered.
+The carrion recovery archive CLI can now consume those completed rerank probe
+fields directly with `--source fixture-rerank-recovery-probe`. This mode is a
+report-only audit: it builds descriptive recovery cells from
+`fixture_rerank.candidates[*].carrion_recovery_probe`, reports selected-cell
+coverage, non-selected recovery-better candidates, and hypothetical archive
+retention IDs, but it does not add parents or alter active fixture reranking.
+Slice 2 adds an evolve-only opt-in,
+`--fixture-recovery-archive-retention gate_aligned_carrion_recovery_archive_v1`,
+that consumes those same completed rerank probe cells and retains non-selected
+cell elites only as future parent/archive diversity. The current generation's
+fixture-rerank selected candidate is unchanged, and the flag does not change
+runtime policy inputs, controller scoring, action masks, gates, fixture floors,
+or replay semantics. Retention remains bounded to fixture-rerank initial,
+standard repair, and bridge-repair candidates with completed recovery probes.
+The retention line is closed for now: the full same-shape diagnostic still
+selected `g1-c23`, and no retained/probed candidate beat it on post-contact
+survival or carrion blockers.
+
+The v64 current-policy branch-support audit is diagnostics-only. It replays the
+selected Mind v3 candidate from a search report autonomously in `carrion_only`,
+branches from exact post-animal-resource simulator states, and fans out explicit
+offline continuation scripts. The source candidate replay remains autonomous
+Mind v3 with zero heuristic fallback; continuation script identity is recorded
+as offline diagnostic evidence, not runtime or promotion evidence. The accepted
+v64 archive produced `output/mind/mind-v3-v64-current-policy-recovery-archive.json`
+and `output/mind/mind-v3-v64-current-policy-recovery-archive-dataset.jsonl`
+from `output/mind/mind-v3-v64-current-policy-branch-explore.json`.
+
+The v65 recovery-archive validation slice adds a non-promoted, opt-in
+pre-training check. `sim:mind:v3:carrion-recovery-archive-validate` validates
+that every dataset trajectory path exists and loads, record IDs are unique,
+records carry seed/branch/tick/script/path/outcome labels, runtime actions are
+zero-heuristic, and train/held-out records are split only by branch-state digest
+or stable branch id. The validation report blocks training if a leakage-free
+split cannot be built. `sim:mind:v3:carrion-recovery-distill` can optionally
+consume that split with `--archive-split-report`; it trains only on split train
+records and emits held-out branch-state trajectory and action-balance
+diagnostics. This remains a negative-control distillation path and is not
+promoted regardless of metrics.
+
+The v66 recovery residual activation audit is diagnostics-only. It explains why
+the v65 split-aware recovery artifact produced zero residual applications and
+zero changed-linear decisions by comparing artifact, train, held-out, and small
+`carrion_only` replay diagnostics. `sim:mind:v3:carrion-recovery-residual-audit`
+reports feature-contract compatibility, neural score variance, linear-vs-neural
+top actions, configured blended actions, and offline-only shadow calculations
+with the context gate forced or the linear override margin ignored. Those shadow
+results are not runtime behavior, not promotion evidence, and do not alter
+controller scoring, action masks, gates, fixtures, replay, or artifact
+promotion.
+
+The v67 extension keeps that same diagnostics-only boundary and adds residual
+counter reconciliation plus offline margin/scale shadow sweeps. It compares
+broad evaluation, carrion fixture evaluation, held-out branch logged
+trajectories, held-out artifact decision replay, and the v66 fixture replay so
+action-balance counters can be separated from live neural-anchor diagnostics.
+The margin and scale sweeps are report-only calibration probes; they do not
+change the trained artifact, runtime residual behavior, gates, floors, action
+masks, replay semantics, or promotion status.
+
+The v68 residual counter reconciliation fix is reporting-only. Live broad and
+fixture evaluation action-balance diagnostics now copy residual-applied and
+changed-linear counts from neural-anchor diagnostics when those diagnostics are
+present, while logged branch and counterfactual trajectories remain classified
+as logged evidence and do not invent live residual applications. This changes
+distill/evaluation reports only; it does not alter the artifact, runtime policy
+decisions, action masks, gates, floors, replay semantics, or promotion status.
 
 ## Local/Navigation Controller v3
 
@@ -1071,7 +1274,7 @@ Initial implementation milestone:
 - `mind_ecological_policy_input_v1` defines the safe ecological policy vector
   for stronger v3 artifacts by dropping controller-private diagnostics such as
   `self.mind_inheritance_available` while retaining self ecology, local patch,
-  and navigation inputs.
+  engineered navigation, and other Foundation perception inputs.
 
 This milestone is complete: v3 trajectory data and fixture-gated v3 reports can
 produce loadable label reports, focused tests cover the contract, and the next
@@ -1572,9 +1775,9 @@ evaluate against the current compiled linear default. Omit
 `--anchored-neural-artifact` only when the v29 anchored reference is not part of
 the question.
 
-RTX v34 result:
+Remote trainer v34 result:
 
-- The CUDA train-gate completed on `gpu4070` and wrote
+- The accelerator-backed train-gate completed on the remote trainer and wrote
   `output/mind/mind-v3-v34-labeled-iql-artifact.json` plus
   `output/mind/mind-v3-v34-labeled-iql-train-gate.json`. The strict control
   gate passed but remains not promoted: hard guard `0.0998`, heuristic delegate
@@ -1592,7 +1795,7 @@ RTX v34 result:
   existing boundary above: vectorized rollout/model-based training or a
   different credit/data path, not another local anchor or scalar-weight tweak.
 
-RTX v35 rollout-search scout:
+Remote trainer v35 rollout-search scout:
 
 - A small RTX scout used the existing autonomous evolution CLI with process
   rollout workers, basic controlled fixtures, and the `80,120` fixture rerank:
@@ -1600,7 +1803,7 @@ RTX v35 rollout-search scout:
   --curriculum-ticks 80,120 --population-size 8 --generations 2
   --rollout-workers 8 --fixture-suite basic --fixture-selection-top-k 4
   --fixture-rerank-top-k 4 --fixture-rerank-ticks 80,120`.
-- The run completed on `gpu4070` and wrote
+- The run completed on the remote trainer and wrote
   `output/mind/mind-v3-v35-rollout-search-smoke.json`. The selected candidate
   was `g1-c1`: score `105.6799`, train-seed alive mean `15.6667`, births mean
   `7.0`, zero heuristic action sources, dominant requested action `eat` at
@@ -2500,6 +2703,876 @@ v57-v63 strict IQL audit, coefficient probes, and rollout calibration:
   control or Go-Explore-style archive replay/robustification, not another
   coefficient-only IQL variant on the same representation.
 
+v64 rollout-context audit:
+
+- `output/mind/mind-v3-v64-rollout-context-audit.json` added a deterministic
+  pre-training audit before opening any runtime or training branch. The audit
+  builds per-agent context only from previous trajectory rows: recent
+  requested/resolved actions, moved/drank/ate flags, resource gain,
+  energy/hydration/health deltas, no-gain eat streak, ticks since drink, ticks
+  since animal-resource gain, and derivable post-carrion recovery phase. It
+  uses no fixture identity, private world state, future row, heuristic action
+  source, or scalar IQL retuning.
+- Source data covered the locally available v51 counterfactual archive and
+  v51 branch archive (`150` trajectories total). The deterministic split held
+  out seeds `37,41,43` and trained on seeds `13,19,29`, producing `41,773`
+  train rows and `42,983` held-out rows.
+- The ecological+rollout-context lookup improved held-out accuracy
+  (`0.714469` versus `0.658702`) but did not materially improve the v62 failure
+  mode. True movement/drink/stay predicted as `eat` fell only from `0.040609`
+  to `0.028780` (`0.011829` absolute reduction), below the `0.05` audit floor.
+  The post-carrion subset fell only from `0.046532` to `0.042549`; `stay`
+  post-carrion slightly worsened (`+0.000791`).
+- First residual post-carrion pattern: held-out
+  `counterfactual-carrion_then_water-seed-37`, tick `16`, agent `8`, true
+  `drink`, predicted `eat`. The first residual movement/drink/stay pattern in
+  report order was seed `37`, tick `13`, agent `11`, true `move_west`,
+  predicted `eat`.
+- Result: the audit is negative, so no v64 promotion candidate was trained and
+  no opt-in runtime/training path was added. The next branch should not
+  compensate with scalar IQL tuning; it needs a stronger policy-owned temporal
+  model or archive/replay method with a reportable held-out aliasing win before
+  any heavy trainer run.
+
+v65 hydration-after-carrion intervention audit:
+
+- `output/mind/mind-v3-v65-hydration-after-carrion-audit.json` tested the
+  narrow next hypothesis from the v64 residual: maybe post-carrion true
+  `drink` predicted as `eat` is mostly a simple "drink now, then eat again"
+  hydration-deficit alias. The report reuses the v64 deterministic
+  ecological+rollout-context lookup and the same source split: `150`
+  trajectories, `41,773` train rows from seeds `13,19,29`, and `42,983`
+  held-out rows from seeds `37,41,43`.
+- Focus rows were held-out post-carrion states where both `drink` and `eat`
+  were legal and the true label was either `drink` or `eat`. There were
+  `2,372` such rows: `1,791` true `drink`, `581` true `eat`, and `160`
+  true-`drink` rows predicted as `eat`.
+- The best policy-visible hydration-threshold intervention was `0.9`, but it
+  reduced true-`drink` predicted-as-`eat` by only `0.018426`, below the `0.05`
+  materiality floor, and it changed `8` previously correct `eat` labels to
+  `drink` (`0.013769` eat-label damage, above the `0.01` cap).
+- Drink/eat cycle aliasing was real but not dominant. All `160` residual
+  true-`drink` rows successfully drank and none died on that row, but only
+  `71` (`0.44375`) had a same-agent resource-gain `eat` within the next two
+  rows, below the `0.6` floor. The seed `37`, tick `16`, agent `8` residual is
+  one of these cycle cases, but the broader residual set is not explained by
+  that pattern.
+- Result: audit failed on all three blockers, so no v65 policy/training path
+  was added and no RTX run is justified. The bottleneck is not a simple
+  hydration-after-carrion rule; the next diagnostic should move away from
+  threshold intervention and toward outcome/action-conditional labels or exact
+  branch replay for ambiguous post-carrion states.
+
+v66 branch-action oracle audit:
+
+- `output/mind/mind-v3-v66-branch-action-oracle-audit.json` tests exact
+  branch replay from ambiguous post-carrion states instead of copying the
+  logged next action. The diagnostic restores an in-process simulator snapshot
+  from immediately before the ambiguous decision tick, forces only the first
+  action for the target agent, then resumes with the deterministic
+  `carrion_then_water` continuation policy. This is diagnostic-only branch
+  replay, not a runtime policy path.
+- Scope: carrion-only seeds `37,41,43`, `120` ticks,
+  `1` ambiguous branch point per seed, candidate first actions
+  `drink,eat,stay`, and target logged labels `drink,eat`. The report includes
+  each branch point's serialized `mind_observation_v3` input and full action
+  mask, so the artifact is replayable and can be used as an explicit oracle
+  label source without fixture identity as a runtime input.
+- Result: `3` branch points, `9` action branches, `3` oracle-changed first
+  actions, `2` material oracle gains, `+5` total terminal-alive gain versus
+  the logged first action, `+4` total birth gain versus logged, deterministic
+  replay verified, and zero heuristic action-source count. The first material
+  gain is seed `37`, tick `16`, agent `10`: logged `drink`, oracle best `eat`,
+  `+4` terminal alive, `-1` births.
+- Interpretation: the failure mode is not mainly missing scalar context or a
+  simple hydration threshold. At least some post-carrion ambiguity is a bad
+  action-label / action-aliasing problem where the locally logged action is not
+  the best next action under exact branch replay. The next step is worth
+  pursuing as a branch-replay oracle label archive and distillation experiment;
+  do not return to scalar IQL tuning or rollout-context runtime from v64.
+
+v67/v68 branch-action oracle labels and expanded action audit:
+
+- `output/mind/mind-v3-v67-branch-action-oracle-labels.json` converts the v66
+  replay-verified branch audit into a deterministic policy-visible label
+  archive. Each label carries the serialized `mind_observation_v3` input,
+  observation digest, full action mask, oracle action, logged action, and
+  action-conditioned branch outcomes. The archive passes label acceptance with
+  `3` labels, `2` material oracle gains, `+5` terminal-alive gain versus
+  logged, and dominant oracle action share `0.333333`.
+- A wider `drink,eat,stay`-only preview over strict carrion seeds
+  `13,19,29,37,41,43` remained materially positive but failed the action-share
+  boundary: `24` labels, `+15` terminal alive, `+13` births, zero heuristic
+  action sources, but `stay` was the oracle action for `14/24` labels
+  (`0.583333`). This is an explicit negative control; do not relax the
+  dominant-action cap to accept it.
+- `output/mind/mind-v3-v68-branch-action-oracle-audit-expanded-actions.json`
+  expands the candidate first-action set to include policy-visible movement
+  actions: `stay,eat,drink,move_north,move_south,move_east,move_west`. With
+  replay verification enabled, the strict carrion seed bank produced `12`
+  branch points, `59` action branches, `12` oracle-changed labels, `9`
+  material oracle gains, `+19` terminal alive, `+14` births, deterministic
+  replay verified, and zero heuristic action-source count.
+- `output/mind/mind-v3-v68-branch-action-oracle-labels-expanded-actions.json`
+  passes label-archive acceptance: `12` complete policy-state labels, no
+  conflicting observation digests, no unsupported oracle actions, dominant
+  oracle action `move_west` at `5/12` (`0.416667`), under the `0.50` cap. This
+  is the current best branch-oracle supervision artifact.
+- The same v68 label archive includes a leave-one-source-seed-out nearest
+  policy-vector support probe. That probe is negative: `2/12` correct
+  (`0.166667` accuracy), predicted-action dominant share `0.5`, and
+  `materially_supports_runtime_classifier=false`. Interpretation: branch-replay
+  oracle labels are valuable and policy-visible, but this tiny archive does not
+  justify a direct runtime classifier or exact lookup candidate. The next useful
+  step is either a larger branch-label archive or a compact outcome/world-model
+  diagnostic before any RTX training.
+
+v69 expanded branch-label direction check:
+
+- `output/mind/mind-v3-v69-branch-action-oracle-audit-expanded-actions-preview.json`
+  is a no-replay-verification preview that doubles the movement-aware branch
+  budget to `4` ambiguous branch points per strict carrion seed. It is
+  materially positive as branch data: `24` branch points, `122` action
+  branches, `24` oracle-changed labels, `17` material oracle gains, `+36`
+  terminal alive, `+26` births, `+1` target alive, zero heuristic action
+  sources, and clean oracle action distribution (`move_west` dominant at
+  `7/24`, share `0.291667`). Because replay verification was deliberately
+  skipped, it is a preview artifact only and is not accepted as a label archive.
+- `output/mind/mind-v3-v69-branch-action-oracle-labels-expanded-actions-preview.json`
+  adds two deterministic support probes. The direct oracle-action classifier
+  remains negative: `4/24` correct (`0.166667`). The action-conditioned
+  nearest-value ranker improves but is still below the materiality floor:
+  best `8/24` correct (`0.333333`) at `k=3`, with
+  `materially_supports_action_value_model=false`.
+- Direction update: branch replay is confirmed as the right diagnostic/data
+  source, and movement actions are necessary to avoid artificial `stay`
+  collapse. However, simply adding more branch labels in this narrow state
+  representation is not enough to justify a runtime classifier or value ranker.
+  The next useful diagnostic should test a richer, policy-visible outcome model
+  for hydration/energy/death and local movement consequences, or expand branch
+  labels with additional serialized temporal/context features before any RTX
+  training.
+
+v70-v76 compact world-model and option decomposition diagnostics:
+
+- The branch-action oracle label archive now carries action-conditioned
+  first-action outcomes derived from replay records: energy/hydration/health
+  deltas, moved/drank/ate flags, resource gain, death flags, and movement
+  deltas. These are serialized diagnostic targets only; no runtime policy path
+  was added.
+- A compact, policy-visible world-model probe decodes each serialized
+  `mind_observation_v3` input into self vitals, current and adjacent resource
+  signals, local radius summaries, navigation signals, action mask state, and
+  action-specific movement/eat/drink affordances. It then runs
+  leave-one-source-seed-out nearest-neighbor support checks before any training.
+- Result on the replay-verified v68 12-label archive: exact terminal oracle
+  ranking reached only `0.333333`. Immediate first-step dynamics were easier
+  (`0.75` actual first-step accuracy), but those immediate outcomes aligned
+  with terminal oracle action only `0.25`; even an upper-bound probe using the
+  actual first-step outcomes reached only `0.333333` terminal accuracy.
+- Larger previews were not enough. The 24-label preview reached `0.416667`
+  exact terminal support, while the 36-label preview dropped to `0.277778`.
+  Option-mode prediction reached `0.625` on the 24-label preview but collapsed
+  to `reposition` for `23/24` rows; reposition direction itself reached
+  `0.714286`, but multi-move direction support stayed at or below `0.5`.
+- Result: first-step dynamics are learnable, but the terminal action choice is
+  delayed and multi-modal. Do not train a runtime policy from the compact
+  one-row world-model branch.
+
+v77-v85 long-horizon branch trace and population-world-model diagnostics:
+
+- The branch-action oracle audit now serializes deterministic target-agent and
+  population horizon traces for each forced branch at deltas
+  `0,1,2,3,5,8,13,21,34,55,89`. The population trace records alive agents,
+  births, deaths, target alive/vitals, tick resource gain, tick action counts,
+  and dominant requested-action share. These fields are replay artifacts, not
+  runtime policy inputs.
+- `output/mind/mind-v3-v80-branch-action-oracle-audit-long-horizon-trace.json`
+  and
+  `output/mind/mind-v3-v80-branch-action-oracle-labels-long-horizon-trace.json`
+  showed the first temporal-credit signal: actual future target trace at
+  horizon `21` and actual future population trace at horizon `55` each matched
+  the terminal oracle on `6/12` labels (`0.5`). This is diagnostic-only because
+  actual future traces are not available at decision time.
+- Decision-time trainability did not clear the floor. On the 12-label archive,
+  compact population-horizon ranking reached only `4/12` (`0.333333`), and the
+  full decoded policy observation plus action mask/action one-hot also reached
+  only `4/12`. This falsifies the hypothesis that a compact feature summary
+  alone caused the failure.
+- `output/mind/mind-v3-v83-branch-action-oracle-audit-expanded-replay-horizon-trace.json`
+  replay-verified the previously previewed larger branch set: strict
+  `carrion_only` seeds `13,19,29,37,41,43`, `4` branch points per seed,
+  `122` action branches, `24` oracle-changed labels, `17` material gains,
+  `+36` terminal alive, `+26` births, `+1` target alive, zero heuristic action
+  sources, and clean oracle distribution (`move_west` dominant at `7/24`,
+  share `0.291667`).
+- `output/mind/mind-v3-v85-branch-action-oracle-labels-material-horizon-model.json`
+  passes label acceptance on the expanded replay set, but the support probes
+  remain negative. Actual future population trace alignment drops to `9/24`
+  (`0.375`), actual future target trace alignment to `7/24` (`0.291667`),
+  compact population-horizon ranking to `6/24` (`0.25`), and full-observation
+  population-horizon ranking to `7/24` (`0.291667`). Filtering to the `17`
+  material-gain labels helps only slightly: material-only full-observation
+  population-horizon ranking reaches `7/17` (`0.411765`), still below the
+  `0.5` support floor.
+- Result: v83/v85 is a real data milestone, not a trainable runtime milestone.
+  The expanded replay archive is now accepted and stronger than v69, but the
+  pointwise one-row outcome/world-model path is not ready for RTX training.
+  The next useful slice should harden a deterministic public sequence/history
+  label contract for the target agent or an options/archive replay contract
+  that predicts delayed value after repositioning.
+
+v86-v88 public history and continuation-option blocker checks:
+
+- `output/mind/mind-v3-v86-branch-action-oracle-audit-public-history-trace.json`
+  extends the accepted branch-action oracle audit with a deterministic
+  same-agent public history trace. Each branch point now serializes the last
+  `8` same-agent prior trajectory rows: tick/record deltas, requested/resolved
+  actions, action validity, movement/resource flags, vital deltas, and
+  rollout-context counters. This is derived from public trajectory rows only;
+  it adds no private `SimulationWorld` read and no fixture identity as runtime
+  input.
+- The v86 audit preserves the v83 branch result exactly at the aggregate level:
+  `24` branch points, `122` action branches, `24` oracle-changed labels, `17`
+  material gains, `+36` terminal alive, `+26` births, `+1` target alive,
+  replay verified, zero heuristic action sources, and no diagnostic blockers.
+  All `24` branch points carry `8` public history rows.
+- `output/mind/mind-v3-v87-branch-action-oracle-labels-public-history-model.json`
+  adds history-aware support probes. They are negative: all-label
+  full-observation+history population-horizon ranking reaches only `7/24`
+  (`0.291667`), and material-only history ranking reaches `6/17`
+  (`0.352941`). This is worse than the prior material-only full-observation
+  probe at `7/17` (`0.411765`), so the next blocker is not simply missing the
+  last few public rows.
+- `output/mind/mind-v3-v88-branch-action-oracle-option-preview-*.json` screens
+  continuation-option structure using the existing branch oracle harness with
+  `2` branch points per strict carrion seed and replay verification disabled
+  for speed. The baseline continuation remains strongest:
+  `carrion_then_water` `+19` terminal alive / `+14` births, while
+  `water_first_recovery` gives `+13` / `+13`, `conserve_after_carrion` gives
+  `+12` / `+17`, `water_rescue_carrion_cycle` gives `+10` / `+15`, and
+  `hydration_safe_carrion_cycle` gives `+6` / `+5`.
+- Result: public short history and existing scripted continuation options are
+  not the next training lever. Keep the v86 public-history contract because it
+  is deterministic and useful for future sequence models, but do not train from
+  the v87 pointwise history probe. The next useful blocker to attack is a
+  true sequence/archive objective: score multi-step branch continuations or
+  branch-state archive cells directly rather than asking a one-step nearest
+  model to infer delayed repositioning value.
+
+v89 standardized progress ledger and branch-continuation archive scorer:
+
+- `output/mind/mind-v3-v89-branch-continuation-archive-scorer.json` tests the
+  next proposed blocker without training a runtime policy. Input is a compact
+  policy-visible branch-state archive cell plus same-agent public history
+  summary and candidate action. The target is replayed multi-horizon
+  population continuation value from the branch archive, not first-action
+  imitation. The predeclared gate is leave-one-source-seed-out exact-action
+  ranking at `>= 0.55`, materially above the prior weak `0.35-0.42` support
+  range.
+- Result: negative. All-label ranking reaches only `6/24` (`0.25`) with
+  horizon `55`, `k=5`, same-action archive neighbors. Material-only ranking
+  reaches `6/17` (`0.352941`) with horizon `21`, `k=1`, same-action neighbors.
+  The branch-continuation archive scorer gate fails and runtime training is
+  blocked.
+- `output/mind/mind-v3-v89-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v89-standard-progress-ledger-report.json` backfill a
+  deterministic one-row-per-version progress ledger through v89. The progress
+  rule is intentionally strict: a row counts as progress only if it is a strict
+  policy pass or a diagnostic with a predeclared support floor that passes.
+  Accepted data archives and unfloored audit wins are still tracked, but they
+  are not counted as progress by that rule. The generated report has `89`
+  rows and `6` progress rows: strict policy passes at `v41`, `v42`, and `v44`,
+  plus diagnostic support-floor passes at `v80`, `v81`, and `v82`. None of
+  `v83-v89` clears the progress rule.
+- Decision: stop this archive-scorer line for now. The negative result is
+  strong evidence that the next bottleneck is not just "score branch
+  continuations from compact public archive cells." The remaining credible
+  direction is to enlarge or restructure the branch archive itself before
+  fitting another scorer: e.g. more replay-verified branch states with diverse
+  continuation trajectories, or a sequence model diagnostic that can predict
+  continuation value from entire public trajectory prefixes under the same
+  leave-one-seed-out floor.
+
+v90 mode-balanced target-local objective diagnostic:
+
+- `output/mind/mind-v3-v90-existing-branch-mode-objective-audit.json` audits
+  the existing v83/v87 replay-verified archive before changing selection. It
+  confirms the coverage problem: `24` labels are evenly split by seed, but
+  population-first oracle modes are skewed to `reposition` (`14/24`) with only
+  `1` `recover_hydration` label. Target-local and option-mode labels disagree
+  sharply with the population-first labels: exact population-vs-target
+  agreement is `0.083333`, and mode agreement is `0.166667`. Support remains
+  negative on the existing archive: option-mode accuracy `0.375`,
+  material-only option-mode accuracy `0.470588`, and reposition exact
+  direction accuracy `0.375`.
+- `output/mind/mind-v3-v90-balanced-branch-action-oracle-audit.json` adds an
+  opt-in balanced branch-point selector. It scans all eligible post-carrion
+  rows per seed instead of stopping after the first four, admits logged
+  move/stay rows when cross-mode alternatives are legal, and balances selected
+  rows across seed, logged option mode, energy/hydration bins, and visible
+  water/carrion distance bins. Replay verification stays enabled. The preview
+  accepts diagnostically with `30` branch points, `125` action branches, `26`
+  changed population-first oracle actions, `+43` terminal alive, `+51` births,
+  zero heuristic runtime action sources, and replay verification passing.
+- `output/mind/mind-v3-v90-balanced-branch-mode-objective-audit.json` compares
+  population-first, target-local, and option-mode objectives on that balanced
+  archive. Coverage is broader: labels by seed are `5` each, population-first
+  oracle modes are `reposition=16`, `conserve=8`, `exploit_resource=5`,
+  `recover_hydration=1`, and logged move/stay rows are present in the
+  logged-to-oracle matrix. The target-local objective exposes the objective
+  mismatch: population-first oracle choices improve population alive/births
+  on average (`+1.433333` alive, `+1.566667` births vs logged) while target
+  local deltas are mostly non-positive (`target_alive_delta` mean
+  `-0.133333`, target energy mean `-0.069383`, hydration mean `-0.129273`,
+  health mean `-0.12709`).
+- Predeclared support floors: option-mode accuracy `>=0.60`, dominant predicted
+  option mode `<=0.75`, material-only option-mode accuracy `>=0.55`,
+  reposition exact direction multi-move accuracy `>=0.55`, no unsupported
+  oracle actions, and zero heuristic runtime action sources. The balanced
+  archive clears the first three model floors (`option_mode=0.766667`,
+  dominant predicted mode share `0.633333`, material-only option mode
+  `0.666667`) and keeps oracle/runtime safety clean, but fails reposition
+  exact direction at `10/20` (`0.5`) versus the `0.55` floor.
+- Decision: v90 is a diagnostic improvement, not a training pass. Runtime
+  training remains blocked. The next runtime path would only be justified after
+  a follow-up diagnostic can lift multi-move reposition direction above floor
+  without collapsing the option-mode head.
+
+v91 failure-frontier reposition diagnostic:
+
+- `output/mind/mind-v3-v91-failure-frontier-branch-action-oracle-audit.json`
+  adds the opt-in `failure_frontier_mode_balanced_v1` selector. It scans all
+  eligible post-carrion rows, preserves six-seed carrion fixture coverage, and
+  prefers later/vital-debt/frontier rows with multi-move ambiguity and
+  policy-visible water/carrion/resource context. Replay verification stays on.
+  The archive itself accepts diagnostically with `48` branch points, `263`
+  action branches, `45` oracle/logged disagreements, `+61` terminal alive,
+  zero heuristic runtime action sources, and replay verification passing.
+- `output/mind/mind-v3-v91-failure-frontier-branch-action-oracle-labels.json`
+  produces `48` labels, `27` material oracle-gain labels, dominant oracle
+  action share `0.333333`, and clean label-archive acceptance. Coverage is
+  balanced by seed (`8` labels each), but the target-local option oracle shifts
+  sharply away from reposition on the actual frontier:
+  `exploit_resource=33`, `reposition=9`, `recover_hydration=4`, `conserve=2`.
+  The source selector proved enough candidate coverage (`1280` eligible rows,
+  `1201` eligible multi-move rows, `46` selected multi-move rows), so the low
+  actual reposition label count is an objective result, not an eligibility
+  shortage.
+- `output/mind/mind-v3-v91-reposition-frontier-audit.json` decomposes the v90
+  blocker. Best reposition-direction decoder accuracy is `5/8` (`0.625`) via
+  `current_value_k5`, above the `0.60` direction floor, with errors split as
+  `wrong_axis=2` and `opposite_axis=1`. That improvement is not enough:
+  option-mode support collapses on the failure-frontier slice (`0.583333`,
+  floor `0.70`), material-only option-mode support is just below floor
+  (`0.592593`, floor `0.60`), and only `8` option-mode reposition multi-move
+  labels remain against the `36` floor.
+- Branch utility blocks runtime work. Option-mode predicted actions have
+  positive mean population deltas versus logged (`+0.583333` terminal alive,
+  `+0.125` births), but mean target-local score delta is negative
+  (`-12.951134`) and target vitals regress on average (energy `-0.014044`,
+  hydration `-0.020773`, health `-0.011208`). This confirms the caveat from
+  v90: option-mode accuracy alone is not useful unless it improves target-local
+  continuation utility near the real carrion failure frontier.
+- Decision: v91 is rejected. No runtime policy or RTX training is allowed from
+  this line. The current bottleneck is objective mismatch at frontier states:
+  replayed population gains mostly relabel ambiguous rows as resource
+  exploitation, while target-local utility for predicted actions remains
+  negative.
+
+v92 catastrophe-sensitive branch utility diagnostic:
+
+- `output/mind/mind-v3-v92-branch-utility-risk-audit.json` reuses the v91
+  failure-frontier labels and scores all `263` replayed candidate actions
+  directly with a deterministic leave-one-source-seed-out utility/risk scorer.
+  The feature contract is policy-visible only after diagnostic filtering:
+  ecological decoded observation values, utility-shaped action affordances,
+  compact self/local/navigation fields when decodable, same-agent public
+  history trace, and candidate action identity. Held-out seed leakage is `0`;
+  no rule uses logged action as a runtime fallback, seed/branch id,
+  fixture identity, or hidden simulator state as a feature.
+- v92 compares the v91 option-mode baseline, mean predicted target-local
+  utility, lower-confidence-bound utility, CVaR-style utility, explicit
+  target-death-risk veto, vital-regression-risk veto,
+  `action_family_balanced_risk_scorer_k5`, and navigation/resource baselines.
+  Navigation/resource rules remain baselines only and are not acceptance
+  candidates.
+- The best acceptance-eligible rule is
+  `action_family_balanced_risk_scorer_k5`, but it still fails four strict
+  floors: mean target-local score delta is `-14.142929` (must be `> 0`),
+  per-seed target-local mean is negative for seed `41` (`-127.514088`), target
+  alive delta has `1` negative case (must be `0`), and dominant predicted action
+  share is `0.729167` on `eat` (cap `0.50`). Mean terminal population deltas
+  are positive (`+0.5625` terminal alive, `+0.104167` births), so population
+  gain is still masking target-local catastrophe.
+- The known catastrophic class is reproduced under leave-one-seed-out without
+  hardcoding: seed `41`,
+  `carrion-only-seed-41-action-branch-0-tick-113-agent-18-logged-move-south`
+  is still predicted as `eat`, with target-local score delta `-1055.34151`,
+  terminal alive delta `-1`, and target alive delta `-1`. The risk/veto family
+  does not avoid this failure.
+- Decision: v92 is rejected. v93 runtime work is not allowed. The current
+  blocker is not option mode or move direction; it is branch-state continuation
+  risk calibration. The offline scorer cannot yet identify target-death
+  catastrophes from policy-visible support without collapsing toward `eat`.
+
+v93 depleted-resource trap support diagnostic:
+
+- `output/mind/mind-v3-v93-depleted-resource-trap-support-branch-action-oracle-audit.json`
+  generates replay-verified support for policy-visible trap states from
+  non-held-out seeds only (`1,2,3,4,6,7,8,9,10,11,12,17,23,31`). The strict
+  carrion evaluation seeds (`13,19,29,37,41,43`) are excluded from support.
+  The selector `depleted_resource_trap_v1` found `56` eligible trap rows and
+  selected `51`, clearing the predeclared `40` support-row floor; replay
+  verification is true and heuristic action-source count is `0`.
+- `output/mind/mind-v3-v93-depleted-resource-trap-support-labels.json` labels
+  those `51` support branch points (`267` candidate action runs). It has `39`
+  oracle-changed labels, `12` material-gain labels, terminal alive gain total
+  `19`, birth gain total `12`, and dominant oracle action share `0.352941`.
+- `output/mind/mind-v3-v93-depleted-resource-trap-audit.json` evaluates the
+  support set against the existing strict v91 frontier (`48` labels). The seed
+  `41` tick `113` catastrophe is avoided for the selected diagnostic rule, but
+  the best acceptance-eligible rule,
+  `trap_support_action_family_balanced_k5`, still fails four floors: mean
+  target-local score delta is `-20.003307` (must be `> 0`), per-seed
+  target-local mean remains negative for seed `41` (`-149.153556`), target
+  alive delta has `1` negative case (must be `0`), and mean birth delta is
+  `-0.020833` (must be `>= 0`). Dominant predicted action share improves to
+  `0.395833`, below the `0.50` cap, but that diversity is not useful enough.
+- The audit also exposes the deeper issue: fixing the original depleted-eat
+  trap can create a neighboring frontier catastrophe. On seed `41`, branch
+  `carrion-only-seed-41-action-branch-1-tick-114-agent-18-logged-eat`, the
+  trap-support rule predicts `move_east` while logged/target-local `eat` keeps
+  the target alive, producing target-local score delta `-1130.74377` and target
+  alive delta `-1`.
+- `output/mind/mind-v3-v93-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v93-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v93. The ledger now treats the
+  version-specific v93 trap audit probe as authoritative over generic label
+  probes, so v93 is recorded as `diagnostic_support_floor_fail`; progress-passed
+  versions remain `[41,42,44,80,81,82,90]`.
+- Decision: v93 is rejected. v94 runtime work is not allowed. The depleted
+  resource trap is real and support can avoid the named seed `41` branch, but
+  one-step trap/action scoring does not preserve strict frontier utility. The
+  next useful line is a true sequence/world-model branch continuation scorer,
+  not another one-step scorer over the v91 archive.
+
+v94 sequence/world-model branch-continuation scorer diagnostic:
+
+- `output/mind/mind-v3-v94-branch-sequence-continuation-scorer.json` builds a
+  replay-backed sequence-continuation dataset from the v93 non-held-out support
+  archive and evaluates on the v91 strict carrion frontier. Support uses `51`
+  non-strict rows (`267` candidate actions) from seeds
+  `1,2,3,4,6,7,9,11,12,17,23,31`; strict evaluation remains the six carrion
+  seeds `13,19,29,37,41,43` with `48` rows and `263` candidate actions. Strict
+  seed training leakage is `0`; replay verification is true for support and
+  strict labels; heuristic action-source count and unsupported oracle action
+  count are both `0`.
+- The v94 scorer treats `first_action_outcome`, `target_horizon_trace`, and
+  `population_horizon_trace` as replay targets, not runtime inputs. Runtime
+  features are policy-visible only after the Mind input filter: ecological
+  decoded observation values, the utility-shaped action mask, compact
+  self/local/navigation state when decodable, same-agent public history trace,
+  candidate action identity, move direction, and candidate support.
+- Compared with the v93 one-step trap baseline, sequence scoring fixes the
+  two seed `41` frontier catastrophes as a class. The best acceptance-eligible
+  rule, `sequence_prefix_nearest_neighbor_k5`, avoids target death on both
+  `carrion-only-seed-41-action-branch-0-tick-113-agent-18-logged-move-south`
+  and
+  `carrion-only-seed-41-action-branch-1-tick-114-agent-18-logged-eat`. It also
+  reaches global mean target-local score delta `+8.359369`, target-alive
+  negative count `0`, mean terminal alive delta `+0.4375`, and mean birth delta
+  `+0.041667`.
+- v94 still fails the predeclared strict floor because the best rule predicts
+  `eat` on `30/48` strict comparisons, dominant predicted action share
+  `0.625` versus cap `0.50`. Dominant predicted mode share is also `0.625`,
+  below the `0.75` cap. All other strict floors for that rule clear, including
+  per-seed target-local mean: seed `13` `+9.128975`, `19` `+9.436875`, `29`
+  `+1.790025`, `37` `+12.871388`, `41` `+0.619016`, and `43` `+16.309938`.
+- `output/mind/mind-v3-v94-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v94-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v94. The ledger treats the v94
+  `sequence_continuation_support_probe` as authoritative; v94 is recorded as
+  `diagnostic_support_floor_fail`, and progress-passed versions remain
+  `[41,42,44,80,81,82,90]`.
+- Decision: v94 is rejected. v95 runtime work is not allowed. This is the first
+  post-v93 diagnostic to show positive strict target-local utility while
+  avoiding both seed `41` continuation catastrophes, but it still violates the
+  anti-collapse action-share contract. The next line, if pursued, should be
+  simulator-in-the-loop planning/search with an explicit diversity/action-mask
+  contract, not another offline one-step or sequence scorer over the same
+  archive.
+
+v95 simulator-in-the-loop constrained planning diagnostic:
+
+- `output/mind/mind-v3-v95-branch-constrained-planning-audit.json` uses the
+  replay-verified strict v91 branch action outcomes as simulator-in-the-loop
+  evidence and the v94 `sequence_prefix_nearest_neighbor_k5` decisions as the
+  baseline. It does not train or emit a runtime policy. Strict evaluation
+  remains `48` carrion frontier branches (`263` candidate outcomes) across
+  seeds `13,19,29,37,41,43`; replay verification is true, heuristic action
+  source count is `0`, and unsupported oracle/logged action counts are `0`.
+- The v94 baseline has useful survival utility but violates the action cap:
+  `eat` is selected `30/48` times (`0.625`, cap `0.50`), with target-alive
+  negative count `0`, mean target-local score delta `+8.359369`, mean terminal
+  alive delta `+0.4375`, and mean birth delta `+0.041667`.
+- The minimum-cost cap repair is `greedy_constrained_planner_v1`. It replaces
+  exactly six `eat` decisions, reducing `eat` to `24/48` (`0.50`) with zero
+  target-alive regressions, mean target-local score delta `+8.699062`, mean
+  terminal alive delta `+0.5625`, and mean birth delta `+0.0625`. The utility
+  cost versus v94 is `0.0`; the target-local sum increases by `+16.30524`.
+  Replacements:
+  `carrion-only-seed-13-action-branch-2-tick-47-agent-3-logged-drink`
+  `eat -> stay` (`+0.0` target-local delta),
+  `carrion-only-seed-13-action-branch-3-tick-25-agent-8-logged-eat`
+  `eat -> stay` (`+1.80794`),
+  `carrion-only-seed-29-action-branch-5-tick-66-agent-3-logged-drink`
+  `eat -> drink` (`+0.0015`),
+  `carrion-only-seed-37-action-branch-3-tick-27-agent-9-logged-eat`
+  `eat -> stay` (`+5.2009`),
+  `carrion-only-seed-37-action-branch-5-tick-34-agent-4-logged-drink`
+  `eat -> move_south` (`+0.8307`), and
+  `carrion-only-seed-43-action-branch-5-tick-62-agent-18-logged-drink`
+  `eat -> move_south` (`+8.4642`).
+- All four planner variants clear the v95 diagnostic floors. The best
+  diagnostic rule is `diversity_regularized_planner_v1`: dominant action share
+  `0.25` (`eat` `12/48`), target-alive negative count `0`, mean target-local
+  score delta `+37.156839`, mean terminal alive delta `+0.791667`, mean birth
+  delta `+0.166667`, and both seed `41` tick `113` and tick `114`
+  catastrophes avoided. The beam/global planner reaches slightly higher mean
+  target-local score (`+37.463294`) while sitting exactly on the `0.50` action
+  cap.
+- `output/mind/mind-v3-v95-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v95-standard-progress-ledger-report.json` update the
+  one-row-per-version ledger through v95. The ledger treats
+  `constrained_planning_support_probe` as authoritative, records v95 as
+  `diagnostic_support_floor_pass`, and progress-passed versions become
+  `[41,42,44,80,81,82,90,95]`.
+- Decision: v95 is accepted as a diagnostic-only upper bound. It proves the
+  v94 anti-collapse cap is not structurally incompatible with strict frontier
+  utility when simulator-backed branch outcomes can be planned globally. v96
+  distillation/runtime-feasibility work is allowed, but no v95 planner result
+  is runtime-ready because it uses replayed candidate outcomes as planning
+  evidence.
+
+v96 planner-distillation/runtime-feasibility diagnostic:
+
+- `output/mind/mind-v3-v96-planner-distillation-runtime-feasibility.json`
+  distills the v95-style constrained planner into a deterministic serialized
+  local scorer. Training labels come only from the non-strict v93 support
+  archive (`51` rows, `267` candidate actions) across seeds
+  `1,2,3,4,6,7,9,11,12,17,23,31`; strict carrion seeds
+  `13,19,29,37,41,43` are held out. Strict-seed training leak count is `0`,
+  support/strict replay verification is true, heuristic action-source count is
+  `0`, and unsupported logged/oracle/predicted action counts are `0`.
+- The support teacher uses the same replay-backed constrained-planning logic as
+  v95, but only on support rows. It produces a deliberately balanced teacher
+  distribution: `drink` `9`, `eat` `9`, `move_east` `8`, `move_south` `8`,
+  `move_west` `8`, `stay` `8`, and `move_north` `1` (`0.176471` dominant
+  action share). The student keeps v94's sequence-CVaR continuation score and
+  learns small anti-collapse action penalties from support-only baseline
+  action share minus teacher share: `eat` `0.392157` and `move_east`
+  `0.431373`.
+- The serialized artifact
+  `mind_v3_planner_distilled_action_scorer_artifact_v1` stores only
+  policy-visible support feature examples, sequence target summaries, teacher
+  imitation examples, and learned action penalties. Runtime scoring is
+  one-row/one-agent local inference from the observation/action mask; it does
+  not require planner outcome tables, branch ids, seed ids, fixture identity,
+  logged-action fallback, hidden simulator state, global batch quotas, or
+  heuristic fallback. JSON reload scoring matches exactly.
+- Strict branch replay evaluation on the existing `48` frontier rows accepts
+  v96: dominant predicted action share `0.416667` (`eat` `20/48`, cap `0.50`),
+  dominant mode share `0.416667`, target-alive negative count `0`, mean
+  target-local score delta `+5.626813`, mean terminal alive delta `+0.375`,
+  mean birth delta `+0.0625`, and both seed `41` tick `113` and tick `114`
+  catastrophes avoided. Per-seed target-local means are non-negative:
+  seed `13` `+2.927762`, `19` `+4.168225`, `29` `+1.790212`, `37`
+  `+8.007162`, `41` `+0.575764`, and `43` `+16.29175`.
+- v96 is weaker than the v95 simulator-in-the-loop upper bound
+  (`+37.156839` mean target-local), but it is the first post-v95 result to
+  satisfy the strict frontier floors with a serialized local scorer rather than
+  a global replay-backed assignment. The embedded invalid
+  `train_on_strict_labels` control is marked invalid and not eligible for
+  acceptance.
+- Decision: v96 is accepted as runtime feasibility, not promotion. v97 may run
+  the full strict promotion path for this artifact class: integrate the scorer
+  as an opt-in Mind v3 runtime artifact, then evaluate broad seeds
+  `5,13,19,29,37,41` and `carrion_only` fixture seeds
+  `13,19,29,37,41,43` at `120` ticks with the existing no-regression,
+  action-collapse, zero-heuristic, and carrion movement/alive blocker gates.
+
+v97 planner-distilled runtime integration/promotion evaluation:
+
+- `python/evolution_sim/mind/v3_planner_distilled.py` factors the v96 artifact
+  loader, validation, feature builder, and scorer into a runtime-safe module.
+  It accepts either the raw serialized artifact or the v96 report containing
+  `distilled_artifact`, rejects forbidden seed/branch/fixture/logged-action/
+  planner-table/global-quota/private-state keys, and scores one local
+  row/agent from observation input, action mask, candidate action identity, and
+  policy-owned public history. Offline strict-row candidate scores match the
+  online feature builder exactly in focused parity tests.
+- `MindV3EvolutionPolicy` now has an opt-in `planner_distilled_artifact`
+  runtime path and `mind_v3_evaluate.py` accepts
+  `--planner-distilled-artifact`. The policy selects the max-scoring legal
+  candidate from the frozen artifact with no heuristic fallback, records
+  planner schema/model/selected action/score margin/candidate score summaries
+  in diagnostics, and updates the same-agent public history only from finalized
+  trajectory records.
+- Strict v97 report:
+  `output/mind/mind-v3-v97-planner-distilled-runtime-promotion-report.json`.
+  The run used broad seeds `5,13,19,29,37,41` at `120` ticks and
+  `carrion_only` fixture seeds `13,19,29,37,41,43` at `120` ticks against the
+  linear Mind v3 baseline on the same seeds/ticks. Artifact reload parity from
+  the v96 source report is true and heuristic action-source count is `0`.
+- v97 is rejected. Broad mean alive delta is `-13.6666` and broad mean births
+  delta is `-12.1666` vs linear. Every broad seed regresses alive and births:
+  seed `5` `-8/-7`, `13` `-18/-16`, `19` `-18/-18`, `29` `-10/-8`,
+  `37` `-20/-17`, and `41` `-8/-7` (alive/births). The runtime action
+  distribution collapses to `stay`: broad dominant requested-action share is
+  `0.6126`, carrion-only dominant share is `0.6589`, both above the `0.50`
+  cap. Unsupported requested/resolved action count is `3`.
+- Carrion-only fixture means do not regress (`alive` delta `0.0`, `births`
+  delta `+1.1666`) and carrion blocker count does not regress (`1` vs linear
+  `1`), but these fixture results do not offset the strict broad regressions,
+  action-collapse failure, or unsupported-action blocker.
+- Decision: v97 is an integration success but a promotion failure. v98 should
+  not retune the v96 scorer in-place. The live rollout shows the strict
+  frontier branch artifact is too narrow for broad ecology and defaults into a
+  stay-heavy survival-collapse regime. The next useful direction is a broader
+  runtime-feasible support archive or planner/world-model training objective
+  that covers non-carrion ecology before another promotion attempt.
+
+v98 broad-transfer support-gated residual diagnostic:
+
+- `output/mind/mind-v3-v98-broad-transfer-residual-audit.json` analyzes the
+  v97 broad rollout collapse, builds a non-strict broad support archive from
+  successful linear Mind v3 trajectories, and audits a diagnostic residual
+  design where linear Mind v3 remains the default action and the v96
+  planner-distilled scorer may override only inside verified support with a
+  score-margin, legal-action, and local anti-collapse gate. This is diagnostic
+  only: no runtime residual path or promotion run was added.
+- Non-strict support generation used seeds `2,3,7,11,17,23,31,47,53,59`,
+  excluding strict seeds `5,13,19,29,37,41,43`. The selected support archive
+  has `960` rows and `5746` candidate examples, no strict-seed leakage, `10`
+  source seeds, `5` represented modes, dominant teacher action `eat` at
+  `0.344792`, and exactly `0.25` reposition/movement teacher rows. Category
+  coverage includes plant/food `954`, hydration `442`, movement `960`,
+  reproduction-readiness `803`, pre-death `62`, recovery `419`, and
+  animal-resource `65` rows.
+- v98 identifies the first concrete v97 collapse pattern as seed `5`, tick
+  `0`, agent `4`: the planner requested `stay` with legal `eat` and all move
+  actions available. The selected `stay` score was `1099.729477`, `eat` was
+  `1099.296263`, and the margin was `0.433214`; the sequence-CVaR components
+  are nearly tied, so the existing action penalty on `eat` and weak teacher
+  margin push a broad initial state into conserve. First-death windows also
+  show repeated unsupported survival drift, including seed `5` agent `5`
+  moving west until energy falls below zero and seed `13` agent `2` staying at
+  near-zero energy until death.
+- Broad live decisions are much farther from the v96 support archive than from
+  the new broad archive. Overall nearest v96-support distance has mean
+  `4.700186` and p90 `7.21875`; high-margin `stay` decisions have mean
+  `5.558498`. Against the broad support archive, the same overall distances
+  fall to mean `1.931331` and p90 `3.421875`, but high-margin `stay` decisions
+  still average `2.151179`, so support gating filters most planner overrides.
+- v98 is rejected. The proposed support-gated residual has
+  `729` non-identity override opportunities on the support archive but applies
+  only `7`; abstention is `0.990398`, above the predeclared `0.90` stop floor.
+  The few accepted overrides collapse to `move_west` with dominant override
+  share `0.857143`, above the `0.50` cap. Unsupported proposed actions are
+  `0`, and support coverage floors pass, but the residual gate is not a useful
+  runtime path.
+- Decision: v99 support-gated residual runtime is not allowed from v98. The
+  broader support archive proves the original v96 strict-frontier support was
+  too narrow, but a nearest-support/margin residual over the same scorer mostly
+  abstains and still has collapse pressure when it acts. The next viable line
+  should change the objective/support construction, not add a global stay
+  penalty or wire this residual gate into runtime.
+
+v99 broad branch residual oracle diagnostic:
+
+- `output/mind/mind-v3-v99-broad-branch-residual-oracle-audit.json` regenerates
+  broad linear Mind v3 support runs on non-strict seeds
+  `2,3,7,11,17,23,31,47,53,59`, selects one policy-visible failure/recovery
+  branch point per seed, and replays legal core/movement first-action
+  alternatives with copied linear policy state as continuation. This is
+  diagnostic only: no runtime policy or promotion run was added.
+- The cheap replay-verified slice has `10` branch points, `10` source seeds,
+  no strict-seed leakage, replay verification true, heuristic action-source
+  count `0`, and unsupported candidate action count `0`. The target-local
+  oracle finds `10/10` safe non-logged overrides, mean target-local score delta
+  `+26.75745`, mean terminal alive delta `+0.1`, and mean birth delta `+0.1`.
+- v99 is rejected by the anti-collapse floor: the unconstrained oracle action
+  distribution is `eat=8`, `move_east=1`, `stay=1`, so dominant oracle action
+  share is `0.8`, above the `0.5` cap. This is a useful result, but not a
+  runtime/distillation pass because it would reintroduce action collapse.
+
+v100 constrained broad branch residual diagnostic:
+
+- `output/mind/mind-v3-v100-broad-branch-residual-constrained-audit.json`
+  reuses the replay-verified v99 candidate outcomes and tests whether the
+  v99 collapse is structural or just an unconstrained teacher assignment
+  artifact. It does not reexecute the simulator, train a runtime policy, emit
+  a policy artifact, or run promotion.
+- `output/mind/mind-v3-v100-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v100-standard-progress-ledger-report.json` update the
+  standard v-ledger through v100. Under the strict progress definition, progress
+  versions in the v89-v100 window are `v90`, `v95`, `v96`, and `v100`.
+- The accepted rule is `greedy_diversity_constrained_broad_residual_v1`.
+  It changes the assignment from `eat=8, move_east=1, stay=1` to
+  `eat=5, move_east=2, stay=3`, exactly meeting the dominant-action cap
+  (`0.5`) while keeping replay-backed utility positive: mean target-local
+  score delta `+26.55233`, mean terminal alive delta `+0.1`, mean birth delta
+  `+0.1`, target-alive negative count `0`, and `9/10` safe non-logged
+  overrides.
+- Decision: v100 is accepted as a diagnostic support-floor pass only.
+  `v101` residual distillation is allowed as the next diagnostic, but runtime
+  promotion is still not allowed. v101 should learn a local, policy-visible,
+  support-gated residual over the linear controller from constrained broad
+  branch labels, with no strict-seed leakage, no global batch quota at runtime,
+  no planner outcome tables, and an explicit branch replay gate before any
+  rollout promotion attempt.
+
+v101 broad residual distillation training example:
+
+- `output/mind/mind-v3-v101-broad-branch-residual-distillation-example.json`
+  and
+  `output/mind/mind-v3-v101-broad-residual-distillation-example-artifact.json`
+  convert the accepted v100 constrained assignment into a deterministic,
+  serialized, policy-visible training contract. This is diagnostic/training
+  setup only: no runtime policy, promotion rollout, RTX training, or global
+  constrained assignment at inference was added.
+- The example contains `10` non-strict support rows from seeds
+  `2,3,7,11,17,23,31,47,53,59`, no strict-seed leakage, `10/10` legal teacher
+  labels, and `9/10` safe non-logged overrides. The constrained teacher action
+  distribution is `eat=5`, `move_east=2`, `stay=3`, so the dominant teacher
+  action share is exactly `0.5`.
+- The serialized artifact reloads deterministically and reproduces the teacher
+  choices on the training rows with accuracy `1.0`. Replay-backed utility from
+  the source assignment remains positive: mean target-local score delta
+  `+26.55233`, mean terminal alive delta `+0.1`, mean birth delta `+0.1`, and
+  target-alive negative count `0`.
+- `output/mind/mind-v3-v101-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v101-standard-progress-ledger-report.json` update the
+  standard v-ledger through v101. Under the strict progress definition,
+  progress versions in the v89-v101 window are `v90`, `v95`, `v96`, `v100`, and
+  `v101`.
+- Decision: v101 is accepted as a clean minimal training example only. It allows
+  a v102 expanded-training data pass, but it is too small to justify runtime
+  promotion or RTX training by itself.
+
+v102 expanded broad residual training-data diagnostic:
+
+- `output/mind/mind-v3-v102-expanded-broad-residual-oracle-source.json`
+  regenerates a larger replay-verified broad branch source on the same
+  non-strict support seeds `2,3,7,11,17,23,31,47,53,59`. The selector now uses
+  a true category round-robin before priority fill; the previous helper could
+  fill all per-seed slots from the first overlapping high-priority category.
+  The corrected source has `80` branch points and covers plant/food (`energy`)
+  `80`, hydration `76`, movement `80`, reproduction-readiness `10`,
+  pre-death `69`, recovery `72`, and animal-resource `80`.
+- The raw target-local oracle remains non-promotable: `68/80` safe non-logged
+  overrides and mean target-local score delta `+13.09015`, but dominant oracle
+  action share is `0.65`. The constrained source
+  `output/mind/mind-v3-v102-expanded-broad-residual-constrained-source.json`
+  repairs the teacher to dominant action share `0.5` with mean target-local
+  score delta `+13.01621`, terminal alive delta `+0.0375`, birth delta
+  `+0.0375`, and zero target-alive regressions.
+- `output/mind/mind-v3-v102-expanded-broad-residual-training.json` and
+  `output/mind/mind-v3-v102-expanded-broad-residual-training-artifact.json`
+  serialize the expanded policy-visible training contract. It has `80` rows,
+  `10` source seeds, no strict-seed leakage, replay verification true,
+  unsupported candidate/predicted action count `0`, teacher actions
+  `eat=40`, `drink=12`, `stay=10`, `move_east=8`, `move_south=5`,
+  `move_west=3`, `move_north=2`, four teacher modes, and reposition labels
+  `18/80` (`0.225`).
+- Leave-one-source-seed-out evaluation shows why v103 needs an explicit
+  anti-collapse scorer: the naive nearest-support decoder still predicts
+  `eat` on `50/80` rows (`0.625`) despite positive replay utility. A fixed
+  action-prior-balanced nearest-support diagnostic (`penalty=2.0`) keeps the
+  held-out dominant action share to `0.2625`, has zero target-alive
+  regressions, and keeps replay utility positive: mean target-local score
+  delta `+4.08732`, terminal alive delta `0.0`, and birth delta `0.0`.
+  Exact action accuracy is low (`0.225`), so the progress signal is utility and
+  support, not pointwise imitation.
+- `output/mind/mind-v3-v102-standard-progress-ledger.jsonl` and
+  `output/mind/mind-v3-v102-standard-progress-ledger-report.json` update the
+  standard v-ledger through v102. Under the strict progress definition,
+  progress versions in the v89-v102 window are `v90`, `v95`, `v96`, `v100`,
+  `v101`, and `v102`.
+- Decision: v102 is accepted as an expanded training-data/support pass. v103
+  may implement an opt-in support-gated residual runtime-feasibility artifact
+  over the linear Mind v3 baseline using the action-prior-balanced support
+  scorer, but this is not promotion and no RTX/runtime rollout was run here.
+
+v103 opt-in support-gated residual runtime feasibility:
+
+- `output/mind/mind-v3-v103-support-gated-residual-runtime-artifact.json`,
+  `output/mind/mind-v3-v103-branch-replay-feasibility.json`,
+  `output/mind/mind-v3-v103-shadow-strict-report.json`,
+  `output/mind/mind-v3-v103-support-gated-residual-runtime-ledger.jsonl`, and
+  `output/mind/mind-v3-v103-support-gated-residual-runtime-report.json` wire the
+  v102 action-prior-balanced nearest-support residual into an opt-in runtime
+  artifact over the linear Mind v3 controller. The artifact is runtime-ready
+  but not promotion-ready and keeps `runtime_promotion_allowed=false`.
+- Branch replay passed with abstention semantics: `47/80` applied overrides,
+  unsupported proposed/candidate actions `0`, dominant applied override action
+  `eat=14/47` (`0.297872`), mean target-local delta `+8.633547`, terminal alive
+  delta `+0.0375`, birth delta `+0.0375`, and non-negative per-source-seed
+  target-local means.
+- Strict broad shadow failed the stop rule before any live run:
+  gate-accepted shadow overrides collapsed to `drink=1470/2132` (`0.689493`,
+  cap `0.50`) with unsupported proposed actions still `0`. Non-strict live
+  feasibility was not run.
+- Decision: v103 is rejected for runtime transfer. v104 may audit and repair
+  this as action-conditioned support calibration or non-strict shadow-failure
+  mining, but strict live promotion remains blocked.
+
+v104 action-conditioned support-gated residual runtime feasibility:
+
+- `output/mind/mind-v3-v104-shadow-failure-audit.json` explains the v103 strict
+  shadow failure. The accepted v103 strict-shadow overrides were
+  `drink=1470`, `move_north=299`, `move_south=133`, `eat=102`, `stay=75`,
+  `move_west=28`, and `move_east=25`; drink dominated every strict seed except
+  seed `29`, where `move_north` was the largest accepted action. Accepted drink
+  was broadly distributed rather than a single repeated loop: `1470` accepted
+  drink rows covered `100` seed-agent pairs and `119` ticks, with the largest
+  seed-agent bucket only `71` rows (`0.048299`).
+- `output/mind/mind-v3-v104-action-conditioned-support-gated-residual-runtime-artifact.json`
+  replaces the single v103 global distance/margin gate with serialized
+  selected-action thresholds learned from v102 non-strict LOO distributions
+  only. Example thresholds are drink distance `2.515625` and margin `0.913199`,
+  eat distance `2.703125` and margin `0.8316`, move-north distance `3.097656`
+  and margin `0.316383`, and stay distance `2.546875` and margin `0.848957`.
+  Runtime inference remains one local row: linear Mind v3 acts by default, and
+  the residual only overrides when the legal/support and selected-action
+  distance/margin gates pass.
+- `output/mind/mind-v3-v104-branch-replay-feasibility.json` passed:
+  `45/80` applied overrides, unsupported proposed/candidate actions `0`,
+  dominant applied override action `eat=14/45` (`0.311111`), mean target-local
+  delta `+8.321042`, terminal alive delta `+0.0375`, birth delta `+0.0375`,
+  target-alive negative count `0`, and all per-source-seed target-local means
+  non-negative.
+- `output/mind/mind-v3-v104-shadow-strict-report.json` passed strict shadow
+  validation without live strict promotion: unsupported proposed actions `0`,
+  `2617` gate-accepted shadow overrides, and dominant gate-accepted action
+  `drink=1289/2617` (`0.492549`, cap `0.50`). Accepted strict-shadow actions
+  were `move_north=939`, `drink=1289`, `move_south=168`, `eat=102`,
+  `stay=61`, `move_east=31`, and `move_west=27`.
+- `output/mind/mind-v3-v104-nonstrict-live-feasibility.json` then failed
+  non-strict live feasibility, so v104 is rejected. The live residual regressed
+  mean alive agents by `-1.7` and births by `-1.1`, had unsupported action total
+  `85` from resolved-action invalidity (`unsupported_requested=0`,
+  `unsupported_proposed=0`), and had dominant applied override share
+  `drink=1619/3221` (`0.502639`, cap `0.50`). The first failing seed was
+  non-strict seed `2`: alive `29 -> 18`, births `26 -> 18`, unsupported total
+  `7`, with applied overrides `drink=120`, `move_north=48`, `move_south=42`,
+  `eat=15`, `stay=11`, and `move_west=10`.
+- Decision: v104 repaired the strict-shadow transfer failure but failed live
+  non-strict feasibility. Active shadow-failure mining was not run because the
+  action-conditioned gate cleared strict shadow; the stop rule fired at live
+  feasibility. v105 strict promotion is not allowed.
+
 ## Promotion Boundary
 
 Mind v3 can replace the current baseline only after it independently sustains
@@ -2832,6 +3905,199 @@ Major milestones from the current state:
   and coefficient family as exhausted for promotion. The next slice should open a
   rollout-context policy branch, not another extraction, prior-blend, or global
   action-share variant against the same acceptance surface.
+- v64: rollout-context audit boundary. Deterministic previous-row context
+  improved held-out action-label accuracy but reduced movement/drink/stay
+  predicted-as-`eat` by only `0.011829`, below the audit floor, and left
+  post-carrion `drink`/`stay` aliases. Do not train a v64 rollout-context IQL
+  candidate from this audit result alone.
+- v65: hydration-after-carrion audit boundary. A simple post-carrion hydration
+  threshold intervention did not materially reduce true-`drink` predicted-as-
+  `eat` and caused eat-label damage; drink-then-eat cycle aliasing explained
+  only `0.44375` of residual true-`drink`/predicted-`eat` cases. Stop before
+  training.
+- v66: exact branch-action oracle positive diagnostic. Ambiguous post-carrion
+  states can have a better first action than the logged action under exact
+  replay; the compact held-out carrion slice produced `+5` total terminal
+  alive, zero heuristic action sources, and replay-verified serialized
+  observation/action-mask labels. This justifies a small branch-oracle label
+  archive/distillation path before any RTX training.
+- v67/v68: branch-oracle label archive boundary. The expanded movement-aware
+  branch audit produced a replay-verified, action-share-clean label archive
+  with `12` labels and `+19` terminal alive versus logged. However, a
+  leave-one-source-seed-out nearest-vector probe reached only `0.166667`
+  accuracy, so the labels are not yet sufficient for a runtime classifier.
+  Continue with more branch labels or an outcome model; do not deploy a lookup
+  policy from this archive.
+- v69: larger branch-label preview confirms direction but not learnability.
+  Doubling branch points gives stronger oracle outcome deltas (`+36` terminal
+  alive, `+26` births) and clean action distribution, but classifier support is
+  still `0.166667` and action-conditioned value ranking is only `0.333333`.
+  Do not spend RTX on this label set as-is; test richer outcome features/model
+  capacity first.
+- v70-v76: compact world-model/option-mode diagnostic boundary. A
+  policy-visible compact outcome representation was added over serialized
+  observation inputs, action masks, local resources/navigation, first-action
+  action outcomes, and terminal branch values. The replay-verified 12-label
+  slice still ranked exact terminal oracle actions at only `0.333333`.
+  First-step dynamics were learnable (`0.75` immediate first-step accuracy),
+  but immediate outcomes aligned with terminal oracle actions only `0.25`, and
+  an upper-bound terminal model with actual first-step outcomes still reached
+  only `0.333333`. Larger unverified previews did not rescue the path:
+  24-label exact terminal support reached `0.416667`, while the 36-label preview
+  dropped to `0.277778`. Option-mode decomposition exposed a tempting but
+  collapsed signal: 24-label preview mode accuracy reached `0.625` by predicting
+  `reposition` for `23/24` rows, and 36-label mode accuracy fell to `0.416667`.
+  Reposition direction is partially learnable, but multi-move direction support
+  stayed below floor (`0.5` on the 24-label preview, `0.4` on the 36-label
+  preview). Do not train a runtime policy from this branch yet. The next
+  worthwhile slice is a longer-horizon branch value model or sequence/options
+  archive that predicts delayed value after repositioning, not a one-step
+  compact dynamics policy.
+- v77-v85: long-horizon branch trace boundary. Replay artifacts now serialize
+  target-agent and population horizon traces out to `89` ticks, and the larger
+  `24`-label branch archive is replay-verified and label-accepted with `+36`
+  terminal alive and `+26` births versus logged. Actual future traces expose a
+  delayed temporal-credit signal on the 12-label archive, but neither compact
+  nor filtered ecological one-row observation features can predict that signal
+  under leave-one-source-seed-out support on the expanded archive. Stop before
+  training; the next branch needs public target-agent sequence/history or
+  option/archive state, not a pointwise horizon model.
+- v86-v88: public history and scripted-option boundary. Branch points now carry
+  deterministic same-agent public history traces, but history-aware pointwise
+  support falls to `7/24` overall and `6/17` on material labels. Existing
+  counterfactual continuation scripts also do not beat the baseline
+  `carrion_then_water` branch continuation on the 12-point preview. Preserve
+  the history data contract, but the next real lever must score multi-step
+  archive/sequence continuations directly.
+- v89: standardized progress ledger and branch-continuation archive scorer
+  boundary. Every v-slice is now represented by a derived structured progress
+  row, and "progress" is defined as strict policy pass or predeclared support
+  floor pass. The compact archive scorer does not clear the floor (`0.25`
+  all-label, `0.352941` material-only, floor `0.55`), so no runtime policy was
+  trained from it.
+- v90: mode-balanced target-local objective boundary. Balanced archive
+  selection fixed the broad option-mode support signal (`0.766667`) and avoided
+  dominant-mode collapse, but exact reposition direction on multi-move rows
+  reached only `0.5` against the predeclared `0.55` floor. No runtime
+  hierarchical option policy was trained.
+- v91: failure-frontier reposition boundary. Enlarging the archive to `48`
+  frontier labels lifted best reposition direction accuracy to `0.625`, but
+  actual option-mode reposition support collapsed to `8` multi-move labels,
+  option-mode accuracy fell to `0.583333`, and predicted target-local branch
+  utility was negative (`-12.951134`). No runtime policy was trained.
+- v92: catastrophe-sensitive branch utility boundary. Candidate-action
+  utility/risk scoring over the same `48` labels and `263` action branches
+  still fails target-local utility (`-14.142929` best mean delta), repeats the
+  seed `41` target-death catastrophe, and collapses to `eat` with dominant
+  predicted action share `0.729167`. No runtime policy was trained.
+- v93: depleted-resource trap support boundary. Non-held-out trap support
+  generation clears the support floor (`51` selected rows from `56` eligible)
+  and avoids the named seed `41` tick `113` catastrophe, but strict frontier
+  utility is still negative (`-20.003307` best mean target-local delta), seed
+  `41` remains negative (`-149.153556`), one target-death regression remains,
+  and mean births regress (`-0.020833`). No runtime policy was trained.
+- v94: sequence-continuation scorer boundary. Replay-backed sequence targets
+  from the v93 support archive produce the first positive strict target-local
+  frontier result (`+8.359369`) while avoiding both seed `41` tick `113` and
+  tick `114` target-death catastrophes with zero target-alive regressions, but
+  the best scorer collapses to `eat` on `30/48` rows (`0.625`, cap `0.50`).
+  No runtime policy was trained; the next line should be simulator-in-the-loop
+  planning/search rather than more offline scoring on the same archive.
+- v95: simulator-in-the-loop constrained planning boundary. Replay-backed
+  global planning over the strict `48` frontier branches proves the action cap
+  is compatible with utility: a minimum-cost repair reduces `eat` from `30/48`
+  to `24/48` with zero utility cost, and the diversity-regularized planner
+  reaches dominant action share `0.25`, target-alive negative count `0`, mean
+  target-local score delta `+37.156839`, terminal alive delta `+0.791667`, and
+  birth delta `+0.166667`. This is diagnostic-only; v96 may test whether these
+  planner labels can be distilled into a runtime-feasible artifact without
+  replay outcome access.
+- v96: planner-distillation runtime-feasibility boundary. A support-only
+  constrained teacher over non-strict v93 rows can be distilled into a
+  deterministic serialized local scorer. On the strict `48` frontier rows it
+  clears all v96 floors with dominant action share `0.416667`, target-alive
+  negative count `0`, mean target-local score delta `+5.626813`, terminal alive
+  delta `+0.375`, and birth delta `+0.0625`. This is not promotion; v97 should
+  test opt-in runtime integration and the full broad-plus-fixture strict gate.
+- v97: planner-distilled runtime integration and strict promotion evaluation.
+  The artifact loads and runs without heuristic fallback, and online/offline
+  feature parity is tested, but strict promotion fails: broad alive mean delta
+  `-13.6666`, broad births mean delta `-12.1666`, dominant requested-action
+  share up to `0.6589`, unsupported action count `3`, and alive/birth
+  regressions on every broad seed. v98 should broaden support/objectives before
+  another runtime promotion attempt.
+- v98: broad-transfer support-gated residual diagnostic. A non-strict broad
+  linear support archive clears coverage floors (`960` rows, `10` source seeds,
+  no strict-seed leakage, `5` modes, dominant teacher action `0.344792`, and
+  reposition share `0.25`), and it identifies the first v97 collapse pattern
+  as seed `5`, tick `0`, agent `4` choosing high-margin `stay` despite legal
+  eat/move alternatives. The residual design is rejected because it mostly
+  abstains (`0.990398`) and the few accepted overrides collapse to `move_west`
+  (`0.857143`, cap `0.50`). v99 runtime work is not allowed from this gate.
+- v99: broad branch residual oracle diagnostic. Replay-backed broad linear
+  branch outcomes find safe non-logged improvements on `10/10` non-strict
+  support branches with mean target-local score delta `+26.75745`, but the
+  unconstrained target-local oracle collapses to `eat` (`8/10`, share `0.8`),
+  so distillation/runtime work remains blocked.
+- v100: constrained broad branch residual diagnostic. A greedy diversity
+  constrained assignment over the same replay-verified v99 outcomes passes
+  the diagnostic floor: action distribution `eat=5, move_east=2, stay=3`,
+  dominant action share `0.5`, target-alive negative count `0`, mean
+  target-local score delta `+26.55233`, mean terminal alive delta `+0.1`,
+  mean birth delta `+0.1`, and `9/10` safe non-logged overrides. This allows a
+  v101 residual-distillation diagnostic, not promotion.
+- v101: broad residual distillation training example. The accepted v100
+  constrained labels are serialized as a policy-visible, reload-tested training
+  contract with `10` non-strict rows, no strict-seed leakage, teacher action
+  distribution `eat=5, move_east=2, stay=3`, training-row reproduction accuracy
+  `1.0`, and no blockers. This allows v102 expanded training-data generation,
+  not runtime promotion.
+- v102: expanded broad residual training-data diagnostic. A corrected
+  category-balanced branch selector produces `80` replay-verified non-strict
+  branch rows covering plant/food, hydration, movement, reproduction-readiness,
+  pre-death, recovery, and animal-resource contexts. The constrained teacher
+  remains action-balanced (`eat=40/80`) and replay-positive, and an
+  action-prior-balanced leave-one-source-seed-out support scorer clears the
+  held-out action cap (`0.2625`) with mean target-local replay delta
+  `+4.08732`. This allows v103 runtime-feasibility work, not promotion.
+- v103: opt-in support-gated residual runtime feasibility. The runtime artifact
+  keeps linear Mind v3 as the default action and only permits residual
+  overrides through serialized legal/support, distance, and margin gates learned
+  from the v102 support/LOO distributions. Branch replay passed with abstention
+  semantics (`47/80` applied overrides, applied share `0.5875`, dominant
+  applied action `eat=14/47`, target-local mean delta `+8.633547`, terminal
+  alive mean delta `+0.0375`, birth mean delta `+0.0375`, unsupported count
+  `0`, and non-negative per-source-seed target-local means). Strict broad
+  shadow then failed the stop rule: gate-accepted shadow overrides collapsed to
+  `drink=1470/2132` (`0.689493`, cap `0.50`) despite unsupported proposed
+  actions remaining `0`. Non-strict live feasibility was not run, and runtime
+  promotion remains blocked.
+- v104: action-conditioned support-gated residual runtime feasibility. A
+  shadow-failure audit showed v103 drink acceptance was broad across strict
+  seeds, agents, and ticks, not one repeated identity. Per-action thresholds
+  learned from v102 non-strict LOO distributions repaired strict shadow:
+  branch replay passed with `45/80` applied overrides, target-local mean delta
+  `+8.321042`, terminal alive and birth deltas `+0.0375`, unsupported count
+  `0`, and dominant applied action `eat=14/45` (`0.311111`); strict shadow
+  passed with dominant gate-accepted action `drink=1289/2617` (`0.492549`).
+  Non-strict live feasibility then failed with mean alive delta `-1.7`, birth
+  delta `-1.1`, unsupported action total `85`, and dominant applied override
+  share `drink=1619/3221` (`0.502639`). v104 is rejected and v105 strict
+  promotion is not allowed.
+- v105: rollout-context controller checkpoint. The opt-in
+  `rollout_context_need_gated_local_navigation_feature_projection_linear_action_head_v5`
+  controller is implemented as a deterministic pure-Python architecture that
+  appends policy-owned previous-row public rollout context to the v4 safe
+  feature path. The same-shape diagnostic search improved broad holdout alive
+  by `+8.6666`, births by `+3.3333`, and deaths by `-5.3333` versus the v4
+  baseline, with `heuristic_action_source_count=0` and
+  `rollout_context_non_empty_share=0.9818`. It is rejected for promotion:
+  fixture gate failed on `carrion_only` and `mixed_stable` health, seed `29`
+  births regressed by `-3`, unsupported resolved actions increased by `+4`,
+  movement regressed, and dominant requested action stayed `eat` with share
+  `+0.0465`. Post-carrion rollout context was rare
+  (`rollout_context_post_carrion_context_share=0.0054`), so the result supports
+  public context capacity but not the carrion fixture blocker.
 
 External checks that support this direction:
 

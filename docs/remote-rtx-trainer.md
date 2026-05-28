@@ -1,17 +1,28 @@
-# Remote RTX Trainer
+# Remote Trainer
 
-The RTX trainer is a remote execution target, not a second source of truth.
+The remote trainer is an optional execution target, not a second source of
+truth. Keep source edits, review, local quick checks, and Git operations on the
+local workstation. Use GitHub to move source code to a configured trainer when
+long simulator runs or accelerator-backed training would block local work.
 
-Use the Mac for editing, review, local quick checks, and Git operations. Use
-GitHub to move source code to the trainer. Use the trainer for CUDA training,
-long sweeps, and heavier CPU-bound simulator runs.
+All trainer connection details are intentionally private local configuration.
+Do not commit real SSH aliases, account names, hostnames, local network details,
+or absolute remote paths.
 
-## Machine
+## Configuration
 
-- SSH alias: `gpu4070`
-- Remote repo: `/home/train/Projects/evolution-sim`
-- Remote venv: `/home/train/Projects/evolution-sim/.venv`
-- GPU: NVIDIA GeForce RTX 4070 SUPER
+Configure the trainer with environment variables or pass equivalent CLI flags:
+
+```bash
+export TRAINER_HOST="<trainer-host>"
+export TRAINER_REPO="<remote-repo>"
+export TRAINER_WHEELHOUSE="<optional-remote-wheelhouse>"
+```
+
+`TRAINER_HOST` should be an SSH target known to the local machine.
+`TRAINER_REPO` should point at the checked-out repository on that trainer.
+`TRAINER_WHEELHOUSE` is optional and is used only when an offline Python package
+cache is available.
 
 ## Daily Workflow
 
@@ -22,7 +33,7 @@ npm run trainer:status
 npm run trainer:doctor
 ```
 
-After pushing Mac changes to GitHub, fast-forward the trainer:
+After pushing local changes to GitHub, fast-forward the trainer:
 
 ```bash
 npm run trainer:pull
@@ -53,10 +64,10 @@ Stop a session if needed:
 npm run trainer -- stop mind-gate
 ```
 
-Fetch result artifacts back to the Mac only when needed:
+Fetch result artifacts back only when needed:
 
 ```bash
-npm run trainer -- fetch /home/train/Projects/evolution-sim/output/mind/mind-v1-gate-extended-report.json
+npm run trainer -- fetch "<remote-repo>/output/mind/<report>.json"
 ```
 
 For Mind v3 work, fetch the smallest set of artifacts needed to interpret the
@@ -76,30 +87,23 @@ npm run trainer -- start experiment --replace -- bash -lc 'npm run sim:bench && 
 
 Prefer the trainer for:
 
-- CUDA-backed `sim:mind:train` runs.
+- Accelerator-backed `sim:mind:train` runs.
 - Long `sim:mind:gate:*` runs.
-- Mind v3 strict candidate runs that need PyTorch, CUDA, or many seed/fixture
-  combinations.
+- Mind v3 strict candidate runs that need many seed/fixture combinations.
 - Long seed sweeps and benchmark runs.
 - Any CPU-bound simulator run that would block local development.
 
-Prefer the Mac for:
+Prefer the local workstation for:
 
 - Editing and code review.
 - Fast local checks before pushing.
 - Viewer/browser work.
-- Cross-platform golden checks until Linux/macOS replay float normalization is fixed.
+- Cross-platform replay/golden checks unless the task is specifically about the
+  trainer platform.
 
-## Known Caveats
+## Operational Notes
 
-The trainer currently negotiates Ethernet at `100Mb/s`. Training is local to the
-RTX box, so this mostly affects package downloads, dataset transfer, and artifact
-fetches. Fix the cable, switch port, or router port when convenient; target
-`1000Mb/s` or `2500Mb/s`.
-
-`sim:golden:quick` currently differs between Apple Silicon and Linux x86_64 by a
-last-bit viewer float in `seed7_ticks20`. Treat that as a repo determinism issue,
-not a trainer setup failure.
-
-Do not expose SSH directly to the public internet. For remote access outside the
-LAN, put the trainer behind WireGuard, Tailscale, or an equivalent VPN first.
+Keep the trainer reachable only through private local infrastructure. Avoid
+committing operational topology, network names, host aliases, usernames, or
+hardware identifiers. Treat generated trainer outputs as reproducible artifacts:
+fetch and document only the files needed for the current review.

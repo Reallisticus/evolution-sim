@@ -413,6 +413,62 @@
           role="tabpanel"
           aria-labelledby="advanced-tab"
         >
+          <div class="panel first-recovery-panel">
+            <div class="first-recovery-header">
+              <div>
+                <h2>First Recovery</h2>
+                <p class="muted">
+                  Read-only diagnostics bundle loaded outside the replay payload.
+                </p>
+              </div>
+              <span class="first-recovery-boundary">Audit-only · non-trainable</span>
+            </div>
+            <div class="first-recovery-loader">
+              <label for="first-recovery-url">Inspector Bundle URL</label>
+              <div class="row">
+                <input
+                  id="first-recovery-url"
+                  type="text"
+                  value="../output/mind/mind-v3-first-recovery-inspector-bundle.json"
+                />
+                <button id="load-first-recovery-url" type="button">Load</button>
+              </div>
+              <label class="file-input" for="first-recovery-file">
+                <span>Load Inspector File</span>
+                <input id="first-recovery-file" type="file" accept=".json,application/json" />
+              </label>
+              <div id="first-recovery-status" class="muted">No inspector bundle loaded.</div>
+            </div>
+            <div id="first-recovery-summary" class="first-recovery-summary">
+              <div class="muted">Load the inspector bundle to inspect the v115-v121 evidence chain.</div>
+            </div>
+            <div class="first-recovery-grid">
+              <section>
+                <h3>Classification Chain</h3>
+                <div id="first-recovery-chain" class="first-recovery-chain"></div>
+              </section>
+              <section>
+                <h3>Repaired Action Counts</h3>
+                <div id="first-recovery-repaired-counts" class="first-recovery-pills"></div>
+              </section>
+              <section>
+                <h3>Rare Action Gaps</h3>
+                <div id="first-recovery-rare-gaps" class="first-recovery-pills"></div>
+              </section>
+              <section>
+                <h3>v121 Candidates</h3>
+                <div id="first-recovery-candidate-counts" class="first-recovery-pills"></div>
+              </section>
+            </div>
+            <section>
+              <h3>Diagnostics Boundary</h3>
+              <div id="first-recovery-flags" class="first-recovery-flags"></div>
+            </section>
+            <section>
+              <h3>Top Branch Examples</h3>
+              <div id="first-recovery-examples" class="first-recovery-examples"></div>
+            </section>
+          </div>
           <div id="advanced-sidebar-grid" class="advanced-sidebar-grid"></div>
         </section>
 

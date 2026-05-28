@@ -5,6 +5,7 @@ import io
 import importlib.util
 import json
 import math
+import copy
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,7 +20,9 @@ from evolution_sim.cli import (
     mind_artifact_diagnostics,
     mind_gate,
     mind_v3_evaluate,
+    mind_v3_hydration_after_carrion_audit,
     mind_v3_labeled_iql_slice,
+    mind_v3_rollout_context_audit,
     mind_policy_eval,
     mind_train,
     run_headless,
@@ -84,9 +87,17 @@ from evolution_sim.mind.horizon_labels import (
     build_horizon_label_report,
     parse_horizon_ticks,
 )
+from evolution_sim.mind.hydration_after_carrion_audit import (
+    MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+    build_hydration_after_carrion_audit_report,
+)
 from evolution_sim.mind.temporal_credit_audit import (
     MIND_V3_TEMPORAL_CREDIT_AUDIT_SCHEMA_VERSION,
     build_temporal_credit_audit_report,
+)
+from evolution_sim.mind.rollout_context_audit import (
+    MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+    build_rollout_context_audit_report,
 )
 from evolution_sim.mind.policy_inputs import (
     CONTROLLER_DIAGNOSTIC_INPUT_FIELDS,
@@ -195,6 +206,10 @@ class MindV1Tests(unittest.TestCase):
         self.assertFalse(MIND_RUNTIME_ENABLED_DEFAULT)
         self.assertEqual(contract["model_artifact_version"], MIND_MODEL_ARTIFACT_VERSION)
         self.assertIn("trajectory_record_fields", contract)
+        self.assertEqual(
+            contract["action_mask_contract"]["mask_role"],
+            "resolution_affordance_mask",
+        )
         json.dumps(contract)
 
     def test_mind_online_learning_contract_declares_safe_ladder(self) -> None:
@@ -376,9 +391,78 @@ class MindV1Tests(unittest.TestCase):
             contract["promotion_metric_family"],
             "autonomous_survival_reproduction",
         )
+        handoff = contract["foundation_handoff"]
+        self.assertEqual(
+            handoff["policy"],
+            "foundation_to_mind_mixed_input_surface_v1",
+        )
+        self.assertIn(
+            "raw_ecological_self_state",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "engineered_local_patch_and_navigation_perception",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "utility_shaped_affordance_action_mask",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "controller_private_diagnostics",
+            handoff["input_surface_mix"],
+        )
+        self.assertIn(
+            "post_action_training_feedback",
+            handoff["input_surface_mix"],
+        )
+        self.assertTrue(
+            handoff["raw_encoded_observation"][
+                "contains_controller_private_diagnostics"
+            ]
+        )
+        self.assertFalse(
+            handoff["raw_encoded_observation"]["promotion_eligible_policy_input"]
+        )
+        self.assertIn(
+            "self.mind_inheritance_available",
+            handoff["raw_encoded_observation"][
+                "controller_private_diagnostic_fields"
+            ],
+        )
+        self.assertEqual(
+            handoff["action_mask"]["mask_role"],
+            "resolution_affordance_mask",
+        )
+        self.assertEqual(
+            handoff["action_mask"]["action_family_semantics"]["eat"][
+                "mask_basis"
+            ],
+            "utility_shaped_intake_affordance",
+        )
+        self.assertFalse(handoff["post_action_training_feedback"]["runtime_decision_input"])
+        self.assertEqual(
+            handoff["promotion_eligible_policy_input"][
+                "ecological_policy_input_contract"
+            ]["schema_version"],
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self.assertTrue(
+            handoff["promotion_eligible_policy_input"][
+                "must_exclude_controller_private_diagnostics"
+            ]
+        )
         self.assertEqual(
             contract["controller"]["feature_scope"],
             "policy_visible_self_local_patch_navigation",
+        )
+        self.assertEqual(
+            contract["controller"]["raw_feature_source"],
+            "mind_observation_v3_encoded_input",
+        )
+        self.assertEqual(
+            contract["controller"]["feature_source"],
+            "architecture_specific_safe_feature_selection_v1",
         )
         self.assertIn(
             "local_patch.food",
@@ -811,6 +895,167 @@ class MindV1Tests(unittest.TestCase):
             "mind_inheritance_available",
             MIND_V3_HOMEOSTATIC_FEATURE_FIELDS,
         )
+
+    def test_mind_v3_policy_visible_controller_architectures_are_invariant_to_controller_diagnostics(
+        self,
+    ) -> None:
+        from evolution_sim.env.runtime.observations import SELF_INPUT_FIELDS
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_ARCHITECTURE,
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE,
+            MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE,
+            mind_v3_controller_architecture_status,
+            mind_v3_parameter_count,
+            score_mind_v3_metadata,
+        )
+
+        architectures = {
+            MIND_V3_HOMEOSTATIC_CONTROLLER_ARCHITECTURE: 8,
+            MIND_V3_LOCAL_NAVIGATION_CONTROLLER_ARCHITECTURE: 16,
+            MIND_V3_CONTROLLER_ARCHITECTURE: 24,
+        }
+        unavailable = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE
+        unavailable[SELF_INPUT_FIELDS.index("energy_ratio")] = 0.42
+        unavailable[SELF_INPUT_FIELDS.index("hydration_ratio")] = 0.31
+        unavailable[SELF_INPUT_FIELDS.index("health_ratio")] = 0.89
+        unavailable[SELF_INPUT_FIELDS.index("matched_diet_ratio")] = 0.55
+        available = list(unavailable)
+        available[SELF_INPUT_FIELDS.index("mind_inheritance_available")] = 1.0
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        for architecture, hidden_units in architectures.items():
+            with self.subTest(architecture=architecture):
+                weights = {
+                    action: [0.01 * (index + 1) for index in range(hidden_units)]
+                    for action in ACTION_NAMES
+                }
+                metadata = {
+                    "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+                    "state_size": mind_v3_parameter_count(
+                        architecture=architecture
+                    ),
+                    "architecture": architecture,
+                    "action_head_weights": weights,
+                    "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+                }
+
+                self.assertEqual(
+                    mind_v3_controller_architecture_status(architecture),
+                    {
+                        "architecture": architecture,
+                        "loadable": True,
+                        "policy_input_safe": True,
+                        "promotion_eligible": True,
+                        "reason": None,
+                    },
+                )
+                self.assertEqual(
+                    score_mind_v3_metadata(
+                        metadata=metadata,
+                        observation_input=unavailable,
+                        action_mask=action_mask,
+                    ),
+                    score_mind_v3_metadata(
+                        metadata=metadata,
+                        observation_input=available,
+                        action_mask=action_mask,
+                    ),
+                )
+
+    def test_mind_v3_legacy_projection_is_historical_compatibility_only(
+        self,
+    ) -> None:
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            load_mind_v3_controller_metadata,
+            mind_v3_controller_architecture_status,
+            mind_v3_parameter_count,
+        )
+
+        weights = {action: [0.0] * 8 for action in ACTION_NAMES}
+        metadata = {
+            "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            "state_size": mind_v3_parameter_count(
+                architecture=MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            "action_head_weights": weights,
+            "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy.json"
+            path.write_text(json.dumps(metadata), encoding="utf-8")
+            loaded = load_mind_v3_controller_metadata(path)
+
+        self.assertEqual(
+            loaded["architecture"],
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+        )
+        self.assertEqual(
+            mind_v3_controller_architecture_status(
+                MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            {
+                "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+                "loadable": True,
+                "policy_input_safe": False,
+                "promotion_eligible": False,
+                "reason": MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            },
+        )
+
+    def test_mind_v3_eval_rejects_legacy_founder_template(self) -> None:
+        from evolution_sim.mind.evolution import (
+            MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            MIND_V3_LEGACY_COMPATIBILITY_REASON,
+            MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            mind_v3_parameter_count,
+        )
+
+        metadata = {
+            "schema_version": MIND_V3_CONTROLLER_SCHEMA_VERSION,
+            "state_size": mind_v3_parameter_count(
+                architecture=MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE
+            ),
+            "architecture": MIND_V3_LEGACY_CONTROLLER_ARCHITECTURE,
+            "action_head_weights": {
+                action: [0.0] * 8 for action in ACTION_NAMES
+            },
+            "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            template_path = tmp / "legacy-template.json"
+            output_path = tmp / "eval.json"
+            template_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_evaluate",
+                        "--seeds",
+                        "5",
+                        "--ticks",
+                        "1",
+                        "--founder-template",
+                        str(template_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+                self.assertRaisesRegex(
+                    SystemExit,
+                    MIND_V3_LEGACY_COMPATIBILITY_REASON,
+                ),
+            ):
+                mind_v3_evaluate.main()
 
     def test_ecological_policy_input_contract_excludes_controller_diagnostics(
         self,
@@ -3408,6 +3653,374 @@ class MindV1Tests(unittest.TestCase):
         self.assertTrue(report["readiness"]["ready"])
         self.assertEqual(report["horizons"]["2"]["survivor_count"], 1)
         self.assertEqual(report["horizons"]["2"]["post_contact_survivor_count"], 1)
+
+    def test_mind_v3_rollout_context_audit_separates_post_carrion_alias(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "base.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            base = dict(load_trajectory_jsonl(trajectory_path).records[0])
+
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        def record(
+            *,
+            seed: int,
+            episode: str,
+            index: int,
+            tick: int,
+            action: str,
+            ate: bool = False,
+            drank: bool = False,
+            moved: bool = False,
+            resource_gain: float = 0.0,
+            food_source: str | None = None,
+        ) -> dict[str, object]:
+            payload = copy.deepcopy(base)
+            payload.update(
+                {
+                    "tick": tick,
+                    "agent_id": 1,
+                    "requested_action": action,
+                    "resolved_action": action,
+                    "resolution_action_valid": True,
+                    "action_source": "test_policy",
+                    "moved": moved,
+                    "action_mask": dict(action_mask),
+                    TRAJECTORY_EPISODE_ID_FIELD: f"episode-seed-{seed}-{episode}",
+                    TRAJECTORY_SOURCE_PATH_FIELD: f"synthetic-seed-{seed}.jsonl.gz",
+                    TRAJECTORY_DATASET_RECORD_INDEX_FIELD: index,
+                    "before": {
+                        "alive": True,
+                        "energy_ratio": 0.5,
+                        "hydration_ratio": 0.5,
+                        "health_ratio": 0.9,
+                    },
+                    "after": {
+                        "alive": True,
+                        "energy_ratio": 0.5 + resource_gain,
+                        "hydration_ratio": 0.6 if drank else 0.5,
+                        "health_ratio": 0.9,
+                    },
+                }
+            )
+            outcome = copy.deepcopy(payload["outcome"])
+            outcome.update(
+                {
+                    "resource_gain": resource_gain,
+                    "feeding": {
+                        "ate": ate,
+                        "food_source": food_source,
+                        "gained_energy": resource_gain,
+                    },
+                    "drinking": {"drank": drank},
+                    "movement": {"moved": moved},
+                }
+            )
+            payload["outcome"] = outcome
+            return payload
+
+        records = [
+            record(
+                seed=1,
+                episode="context",
+                index=0,
+                tick=0,
+                action="eat",
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=1,
+                episode="context",
+                index=1,
+                tick=1,
+                action="move_north",
+                moved=True,
+            ),
+            record(
+                seed=1,
+                episode="context",
+                index=2,
+                tick=2,
+                action="drink",
+                drank=True,
+            ),
+            record(seed=1, episode="context", index=3, tick=3, action="stay"),
+            record(seed=2, episode="eat-heavy", index=4, tick=0, action="stay"),
+            record(seed=2, episode="eat-heavy", index=5, tick=1, action="eat"),
+            record(seed=2, episode="eat-heavy", index=6, tick=2, action="eat"),
+            record(seed=2, episode="eat-heavy", index=7, tick=3, action="eat"),
+            record(
+                seed=5,
+                episode="heldout",
+                index=8,
+                tick=0,
+                action="eat",
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                episode="heldout",
+                index=9,
+                tick=1,
+                action="move_north",
+                moved=True,
+            ),
+            record(
+                seed=5,
+                episode="heldout",
+                index=10,
+                tick=2,
+                action="drink",
+                drank=True,
+            ),
+            record(seed=5, episode="heldout", index=11, tick=3, action="stay"),
+        ]
+
+        report = build_rollout_context_audit_report(
+            records,
+            heldout_seed_values=(5,),
+            min_eat_overprediction_rate_reduction=0.1,
+        )
+
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+        )
+        matrix = report["confusion_matrices"]
+        ecological = matrix["ecological_only"]
+        context = matrix["ecological_plus_rollout_context"]
+        self.assertEqual(ecological["move_north"]["eat"], 1)
+        self.assertEqual(ecological["drink"]["eat"], 1)
+        self.assertEqual(ecological["stay"]["eat"], 1)
+        self.assertEqual(context["move_north"]["eat"], 0)
+        self.assertEqual(context["drink"]["eat"], 0)
+        self.assertEqual(context["stay"]["eat"], 0)
+        assessment = report["failure_mode_assessment"]
+        self.assertTrue(assessment["materially_improves_v62_failure_mode"])
+        self.assertGreater(
+            assessment["movement_drink_stay_absolute_rate_reduction"],
+            0.5,
+        )
+
+    def test_mind_v3_rollout_context_audit_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            output_path = tmp_path / "rollout-context-audit.json"
+            self._write_tiny_trajectory(trajectory_path)
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_rollout_context_audit",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_v3_rollout_context_audit.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("rollout_context_audit=", stdout.getvalue())
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_ROLLOUT_CONTEXT_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertIn("feature_contract", report)
+        self.assertIn("confusion_matrices", report)
+
+    def test_mind_v3_hydration_after_carrion_audit_rejects_high_hydration_alias(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            trajectory_path = Path(tmpdir) / "base.jsonl.gz"
+            self._write_tiny_trajectory(trajectory_path)
+            base = dict(load_trajectory_jsonl(trajectory_path).records[0])
+
+        action_mask = {action: True for action in ACTION_NAMES}
+
+        def record(
+            *,
+            seed: int,
+            index: int,
+            tick: int,
+            action: str,
+            before_energy: float,
+            before_hydration: float,
+            after_energy: float,
+            after_hydration: float,
+            ate: bool = False,
+            drank: bool = False,
+            resource_gain: float = 0.0,
+            food_source: str | None = None,
+        ) -> dict[str, object]:
+            payload = copy.deepcopy(base)
+            payload.update(
+                {
+                    "tick": tick,
+                    "agent_id": 1,
+                    "requested_action": action,
+                    "resolved_action": action,
+                    "resolution_action_valid": True,
+                    "action_source": "test_policy",
+                    "moved": False,
+                    "action_mask": dict(action_mask),
+                    TRAJECTORY_EPISODE_ID_FIELD: f"episode-seed-{seed}",
+                    TRAJECTORY_SOURCE_PATH_FIELD: f"synthetic-seed-{seed}.jsonl.gz",
+                    TRAJECTORY_DATASET_RECORD_INDEX_FIELD: index,
+                    "before": {
+                        "alive": True,
+                        "energy_ratio": before_energy,
+                        "hydration_ratio": before_hydration,
+                        "health_ratio": 0.95,
+                    },
+                    "after": {
+                        "alive": True,
+                        "energy_ratio": after_energy,
+                        "hydration_ratio": after_hydration,
+                        "health_ratio": 0.95,
+                    },
+                }
+            )
+            outcome = copy.deepcopy(payload["outcome"])
+            outcome.update(
+                {
+                    "resource_gain": resource_gain,
+                    "feeding": {
+                        "ate": ate,
+                        "food_source": food_source,
+                        "gained_energy": resource_gain,
+                    },
+                    "drinking": {"drank": drank},
+                    "movement": {"moved": False},
+                }
+            )
+            payload["outcome"] = outcome
+            return payload
+
+        records = [
+            record(
+                seed=1,
+                index=0,
+                tick=0,
+                action="eat",
+                before_energy=0.3,
+                before_hydration=0.93,
+                after_energy=0.55,
+                after_hydration=0.91,
+                ate=True,
+                resource_gain=0.25,
+                food_source="carcass",
+            ),
+            record(
+                seed=1,
+                index=1,
+                tick=1,
+                action="eat",
+                before_energy=0.55,
+                before_hydration=0.91,
+                after_energy=0.75,
+                after_hydration=0.89,
+                ate=True,
+                resource_gain=0.2,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                index=2,
+                tick=0,
+                action="eat",
+                before_energy=0.3,
+                before_hydration=0.93,
+                after_energy=0.55,
+                after_hydration=0.91,
+                ate=True,
+                resource_gain=0.25,
+                food_source="carcass",
+            ),
+            record(
+                seed=5,
+                index=3,
+                tick=1,
+                action="drink",
+                before_energy=0.55,
+                before_hydration=0.91,
+                after_energy=0.5,
+                after_hydration=0.99,
+                drank=True,
+            ),
+        ]
+
+        report = build_hydration_after_carrion_audit_report(
+            records,
+            heldout_seed_values=(5,),
+            hydration_thresholds=(0.8, 0.9),
+            min_true_drink_eat_rate_reduction=0.5,
+            min_cycle_alias_share=0.6,
+        )
+
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            report["focus"]["true_drink_predicted_as_eat_count"],
+            1,
+        )
+        self.assertEqual(
+            report["best_hydration_intervention"][
+                "true_drink_predicted_eat_absolute_rate_reduction"
+            ],
+            0.0,
+        )
+        self.assertEqual(
+            report["failure_mode_assessment"]["status"],
+            "audit_fail",
+        )
+
+    def test_mind_v3_hydration_after_carrion_audit_cli_writes_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            trajectory_path = tmp_path / "trajectory.jsonl.gz"
+            output_path = tmp_path / "hydration-after-carrion-audit.json"
+            self._write_tiny_trajectory(trajectory_path)
+            stdout = io.StringIO()
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mind_v3_hydration_after_carrion_audit",
+                        "--trajectory",
+                        str(trajectory_path),
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                patch("sys.stdout", stdout),
+            ):
+                mind_v3_hydration_after_carrion_audit.main()
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn("hydration_after_carrion_audit=", stdout.getvalue())
+        self.assertEqual(
+            report["schema_version"],
+            MIND_V3_HYDRATION_AFTER_CARRION_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertIn("failure_mode_assessment", report)
 
     def test_mind_fixture_labels_extract_floor_gaps_from_gate(self) -> None:
         report = {
@@ -9163,6 +9776,236 @@ class MindV1Tests(unittest.TestCase):
             [80, 120],
         )
 
+    def test_mind_v3_fixture_rerank_selector_probe_scope_is_opt_in(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        args = mind_v3_evolve.build_parser().parse_args([])
+        self.assertEqual(
+            args.fixture_rerank_selector_probe_scope,
+            mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY,
+        )
+        self.assertIsNone(args.fixture_recovery_archive_retention)
+        policy = mind_v3_evolve.MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY
+
+        self.assertEqual(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+                ),
+                phase="initial",
+            ),
+            policy,
+        )
+        self.assertIsNone(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_ONLY
+                ),
+                phase="repair",
+            )
+        )
+        self.assertEqual(
+            mind_v3_evolve._fixture_rerank_selector_probe_for_phase(
+                policy,
+                selector_probe_scope=(
+                    mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR
+                ),
+                phase="bridge_repair",
+            ),
+            policy,
+        )
+
+    def test_mind_v3_fixture_rerank_selector_probe_summary_counts_repair_scope(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = mind_v3_evolve.MIND_V3_GATE_ALIGNED_CARRION_SELECTOR_PROBE_POLICY
+        summary = mind_v3_evolve._fixture_rerank_selector_probe_summary(
+            [
+                {
+                    "candidate_id": "initial",
+                    "carrion_recovery_probe": {
+                        "available": True,
+                        "missing_fields": [],
+                    },
+                },
+                {
+                    "candidate_id": "repair",
+                    "fixture_repair": {
+                        "donor_selection_reason": "scavenger_lane",
+                    },
+                    "carrion_recovery_probe": {
+                        "available": True,
+                        "missing_fields": ["mean_water_distance"],
+                    },
+                },
+                {
+                    "candidate_id": "bridge",
+                    "fixture_repair": {
+                        "donor_selection_reason": "promotion_safe_bridge",
+                    },
+                    "carrion_recovery_probe": {
+                        "available": False,
+                        "missing_reason": "trajectory_output_dir_missing",
+                        "missing_fields": [],
+                    },
+                },
+            ],
+            selected_candidate_id="repair",
+            selector_probe=policy,
+            selector_probe_scope=(
+                mind_v3_evolve.MIND_V3_FIXTURE_SELECTOR_PROBE_SCOPE_INITIAL_AND_REPAIR
+            ),
+            initial_candidate_count=1,
+            standard_repair_candidate_count=1,
+            bridge_repair_candidate_count=1,
+        )
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["scope"], "initial-and-repair")
+        self.assertEqual(summary["initial_candidates_probed"], 1)
+        self.assertEqual(summary["repair_candidates_probed"], 1)
+        self.assertEqual(summary["bridge_repair_candidates_probed"], 1)
+        self.assertEqual(summary["complete_probe_count"], 1)
+        self.assertEqual(
+            summary["missing_probe_count_by_reason"],
+            {
+                "missing_fields": 1,
+                "trajectory_output_dir_missing": 1,
+            },
+        )
+        self.assertTrue(summary["selected_candidate_probe_present"])
+        self.assertFalse(summary["selected_candidate_probe_completed"])
+
+    def test_mind_v3_fixture_recovery_archive_retention_adds_archive_parents(
+        self,
+    ) -> None:
+        from random import Random
+
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        rerank_report = _mind_v3_recovery_retention_rerank_report()
+        retention = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=rerank_report,
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        self.assertIsNotNone(retention)
+        assert retention is not None
+        summary = retention["report"]
+        self.assertEqual(summary["policy"], policy)
+        self.assertEqual(summary["selected_candidate_id"], "selected")
+        self.assertFalse(summary["changes_final_selected_candidate"])
+        self.assertGreater(summary["archive_cell_count"], 1)
+        self.assertGreater(summary["retention_added_count"], 0)
+        self.assertIn("hydration", summary["retained_candidate_ids"])
+        self.assertTrue(summary["retained_source_cells"])
+
+        archive = mind_v3_evolve._archive_with_recovery_archive_retention(
+            {
+                "policy": mind_v3_evolve.MIND_V3_ARCHIVE_POLICY,
+                "elites": {
+                    "balanced": _mind_v3_recovery_retention_parent("selected")
+                },
+                "behavior_niches": {},
+                "niche_count": 0,
+            },
+            retention=retention,
+        )
+        parents = mind_v3_evolve._archive_parent_candidates(archive)
+        parent_ids = [str(parent["candidate_id"]) for parent in parents]
+        self.assertEqual(parent_ids[0], "selected")
+        self.assertIn("hydration", parent_ids)
+
+        def fake_inherit_mind_v3_metadata(**kwargs: object) -> dict[str, object]:
+            parent = dict(kwargs["primary_parent_metadata"])
+            return {"inherited_from": parent["source_marker"]}
+
+        with patch(
+            "evolution_sim.cli.mind_v3_evolve.inherit_mind_v3_metadata",
+            side_effect=fake_inherit_mind_v3_metadata,
+        ):
+            children = mind_v3_evolve._next_generation(
+                parents,
+                generation_index=1,
+                population_size=4,
+                rng=Random(5),
+            )
+
+        self.assertIn(
+            "hydration",
+            {str(child["parent_candidate_id"]) for child in children},
+        )
+
+    def test_mind_v3_fixture_recovery_archive_retention_is_deterministic(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        first = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=_mind_v3_recovery_retention_rerank_report(),
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+        second = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=_mind_v3_recovery_retention_rerank_report(),
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        assert first is not None
+        assert second is not None
+        self.assertEqual(first["report"], second["report"])
+        self.assertEqual(
+            first["report"]["retained_candidate_ids"],
+            second["report"]["retained_candidate_ids"],
+        )
+
+    def test_mind_v3_fixture_recovery_archive_retention_skips_missing_probes(
+        self,
+    ) -> None:
+        from evolution_sim.cli import mind_v3_evolve
+
+        policy = (
+            mind_v3_evolve
+            .MIND_V3_GATE_ALIGNED_CARRION_RECOVERY_ARCHIVE_RETENTION_POLICY
+        )
+        rerank_report = _mind_v3_recovery_retention_rerank_report()
+        rerank_report["candidates"][1]["carrion_recovery_probe"].pop(
+            "mean_water_distance"
+        )
+
+        retention = mind_v3_evolve._fixture_recovery_archive_retention_from_rerank(
+            policy,
+            rerank_report=rerank_report,
+            evaluated_runtimes=_mind_v3_recovery_retention_runtimes(),
+        )
+
+        self.assertIsNotNone(retention)
+        assert retention is not None
+        summary = retention["report"]
+        self.assertEqual(summary["retention_added_count"], 0)
+        self.assertEqual(summary["retained_candidate_ids"], [])
+        self.assertIn(
+            "missing_or_incomplete_recovery_probe_candidates",
+            summary["retention_blocked_reasons"],
+        )
+
     def test_mind_v3_fixture_summary_records_observed_animal_resource_intake(
         self,
     ) -> None:
@@ -10149,6 +10992,27 @@ class MindV1Tests(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "mind-v3-curriculum.json"
+            baseline_path = Path(tmpdir) / "mind-v3-baseline.json"
+            baseline_path.write_text(
+                json.dumps(
+                    {
+                        "holdout_evaluation": {
+                            "runs": [
+                                {
+                                    "seed": 13,
+                                    "alive_agents": 0,
+                                    "births": 0,
+                                    "deaths": 0,
+                                    "unsupported_requested_action_count": 0,
+                                    "unsupported_resolved_action_count": 0,
+                                    "requested_action_counts": {"stay": 1},
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             with (
                 patch(
                     "sys.argv",
@@ -10182,6 +11046,8 @@ class MindV1Tests(unittest.TestCase):
                         "2",
                         "--generations",
                         "1",
+                        "--comparison-baseline-report",
+                        str(baseline_path),
                         "--output",
                         str(report_path),
                     ],
@@ -10247,6 +11113,17 @@ class MindV1Tests(unittest.TestCase):
             ],
             0,
         )
+        comparison = report["comparison_baseline"]
+        self.assertEqual(
+            comparison["policy"],
+            "mind_v3_matched_holdout_baseline_report_delta_v1",
+        )
+        self.assertEqual(comparison["baseline_report"], str(baseline_path))
+        self.assertEqual(comparison["matched_seed_count"], 1)
+        delta = comparison["matched_holdout_seed_deltas"][0]
+        self.assertEqual(delta["seed"], 13)
+        self.assertIsNotNone(delta["alive_agents_delta"])
+        self.assertIsNotNone(delta["births_delta"])
 
     def test_mind_v3_evolve_cli_stops_curriculum_on_holdout_alive_floor(
         self,
@@ -15058,6 +15935,124 @@ class MindV1Tests(unittest.TestCase):
             gate["blockers"][0]["field"],
             "policy_diagnostics.guard_intervention_rate_reduction",
         )
+
+
+def _mind_v3_recovery_retention_rerank_report() -> dict[str, object]:
+    return {
+        "policy": "fixture_holdout_top_k_multi_horizon_scavenger_lane_rerank_v7",
+        "selected_candidate_id": "selected",
+        "candidates": [
+            _mind_v3_recovery_retention_rerank_entry(
+                "selected",
+                survival=0.2,
+                drink=0.8,
+                hydration=0.02,
+                water=2.0,
+                unsupported=4,
+                dominant=0.42,
+                score=20.0,
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "hydration",
+                survival=0.0,
+                drink=0.9,
+                hydration=0.2,
+                water=1.5,
+                unsupported=2,
+                dominant=0.4,
+                score=30.0,
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "repair",
+                survival=0.1,
+                drink=0.4,
+                hydration=-0.1,
+                water=3.0,
+                unsupported=3,
+                dominant=0.45,
+                score=15.0,
+                source="repair",
+            ),
+            _mind_v3_recovery_retention_rerank_entry(
+                "bridge",
+                survival=0.0,
+                drink=0.0,
+                hydration=-0.3,
+                water=5.0,
+                unsupported=9,
+                dominant=0.6,
+                score=10.0,
+                source="bridge-repair",
+            ),
+        ],
+    }
+
+
+def _mind_v3_recovery_retention_rerank_entry(
+    candidate_id: str,
+    *,
+    survival: float,
+    drink: float,
+    hydration: float,
+    water: float,
+    unsupported: int,
+    dominant: float,
+    score: float,
+    source: str = "initial",
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "candidate_id": candidate_id,
+        "prefilter_rank": 0 if candidate_id == "selected" else 1,
+        "search_score": score,
+        "carrion_recovery_probe": {
+            "available": True,
+            "fixture_blocker_count": 5,
+            "carrion_only_blocker_count": 5,
+            "post_contact_survival_rate": survival,
+            "drink_after_carrion_rate": drink,
+            "mean_hydration_delta_after_carrion": hydration,
+            "mean_water_distance": water,
+            "unsupported_requested_action_count": 0,
+            "unsupported_resolved_action_count": unsupported,
+            "dominant_requested_action_share": dominant,
+            "missing_fields": [],
+        },
+    }
+    if source == "repair":
+        entry["fixture_repair"] = {"donor_selection_reason": "scavenger_lane"}
+    elif source == "bridge-repair":
+        entry["fixture_repair"] = {
+            "donor_selection_reason": "promotion_safe_bridge"
+        }
+    return entry
+
+
+def _mind_v3_recovery_retention_parent(candidate_id: str) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "candidate_index": 0,
+        "generation_index": 0,
+        "score": 0.0,
+        "alive_agents_mean": 1.0,
+        "births_mean": 0.0,
+        "deaths_mean": 0.0,
+        "alive_agent_ticks_per_tick_mean": 1.0,
+        "resource_event_rate": 0.0,
+        "movement_event_rate": 0.0,
+        "heuristic_action_source_count": 0,
+        "controller_metadata": {
+            "schema_version": "mind_v3_controller_metadata_v1",
+            "state_size": 0,
+            "source_marker": candidate_id,
+        },
+    }
+
+
+def _mind_v3_recovery_retention_runtimes() -> list[dict[str, object]]:
+    return [
+        {"candidate": _mind_v3_recovery_retention_parent(candidate_id)}
+        for candidate_id in ("selected", "hydration", "repair", "bridge")
+    ]
 
 
 if __name__ == "__main__":

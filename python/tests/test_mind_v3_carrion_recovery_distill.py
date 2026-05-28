@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -8,7 +9,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from evolution_sim.cli import mind_v3_carrion_recovery_distill
+from evolution_sim.cli import (
+    mind_v3_carrion_recovery_distill,
+    mind_v3_carrion_recovery_residual_audit,
+)
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import (
     LOCAL_PATCH_RADIUS,
@@ -17,6 +21,8 @@ from evolution_sim.env.runtime.observations import (
     encode_observation_input,
 )
 from evolution_sim.mind.carrion_recovery_archive import (
+    MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED,
+    MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
     build_carrion_recovery_archive_report,
     write_carrion_recovery_archive_report,
 )
@@ -28,7 +34,18 @@ from evolution_sim.mind.carrion_recovery_distill import (
     MIND_V3_CARRION_RECOVERY_DISTILL_SCHEMA_VERSION,
     _acceptance,
     _branch_action_log_odds_bias,
+    _evaluation_action_balance,
+    _trajectory_action_balance,
     build_carrion_recovery_distillation_report,
+)
+from evolution_sim.mind.carrion_recovery_residual_audit import (
+    MIND_V3_CARRION_RECOVERY_RESIDUAL_AUDIT_SCHEMA_VERSION,
+    _calibration_classification,
+    _counter_reconciliation,
+    _failure_classification,
+    _fixture_diagnostic_summary,
+    _load_trajectory_records,
+    _shadow_calibration_for_snapshots,
 )
 from evolution_sim.mind.v3_neural import (
     MIND_V3_NEURAL_RECOVERY_PHASE_ACTION_BIAS_POLICY,
@@ -50,6 +67,395 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
                 "evolution_sim.cli.mind_v3_carrion_recovery_distill"
             ),
         )
+        self.assertEqual(
+            package["scripts"]["sim:mind:v3:carrion-recovery-residual-audit"],
+            (
+                "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m "
+                "evolution_sim.cli.mind_v3_carrion_recovery_residual_audit"
+            ),
+        )
+
+    def test_recovery_residual_audit_cli_writes_diagnostics_only_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "audit.json"
+            report = {
+                "schema_version": (
+                    MIND_V3_CARRION_RECOVERY_RESIDUAL_AUDIT_SCHEMA_VERSION
+                ),
+                "contract": {
+                    "diagnostics_only": True,
+                    "runtime_policy_effect": "none",
+                    "artifact_promotion_effect": "none",
+                },
+                "feature_contract_checks": {"passed": True},
+                "offline_score_summaries": {
+                    "heldout": {
+                        "configured_would_change_count": 0,
+                        "shadow_forced_gate_would_change_count": 0,
+                        "shadow_margin_ignored_would_change_count": 3,
+                    }
+                },
+                "fixture_replay_diagnostics": {
+                    "context_gate_pass_count": 4,
+                    "residual_applied_count": 0,
+                    "actual_changed_linear_count": 0,
+                },
+                "failure_classification": {"primary": "margin domination"},
+            }
+            stdout = StringIO()
+            with patch(
+                "sys.argv",
+                [
+                    "mind_v3_carrion_recovery_residual_audit",
+                    "--artifact",
+                    "artifact.json",
+                    "--distill-report",
+                    "distill.json",
+                    "--archive-report",
+                    "archive.json",
+                    "--split-report",
+                    "split.json",
+                    "--fixture-seeds",
+                    "13,19",
+                    "--fixture-ticks",
+                    "120",
+                    "--evaluation-report",
+                    "evaluation.json",
+                    "--activation-audit",
+                    "activation.json",
+                    "--margin-sweep",
+                    "0,0.008",
+                    "--scale-sweep",
+                    "0.01,0.03",
+                    "--output",
+                    str(output_path),
+                ],
+            ), patch(
+                (
+                    "evolution_sim.cli.mind_v3_carrion_recovery_residual_audit."
+                    "build_carrion_recovery_residual_audit_report"
+                ),
+                return_value=report,
+            ) as build_report, redirect_stdout(stdout):
+                mind_v3_carrion_recovery_residual_audit.main()
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            payload["schema_version"],
+            MIND_V3_CARRION_RECOVERY_RESIDUAL_AUDIT_SCHEMA_VERSION,
+        )
+        self.assertTrue(payload["contract"]["diagnostics_only"])
+        self.assertEqual(payload["contract"]["runtime_policy_effect"], "none")
+        build_report.assert_called_once()
+        self.assertEqual(
+            build_report.call_args.kwargs["fixture_seeds"],
+            (13, 19),
+        )
+        self.assertEqual(
+            build_report.call_args.kwargs["margin_sweep"],
+            (0.0, 0.008),
+        )
+        self.assertEqual(
+            build_report.call_args.kwargs["scale_sweep"],
+            (0.01, 0.03),
+        )
+        self.assertIn("classification=margin domination", stdout.getvalue())
+        self.assertIn("fixture_residual_applied_count=0", stdout.getvalue())
+
+    def test_recovery_residual_counter_reconciliation_flags_reporting_bug(
+        self,
+    ) -> None:
+        report = _counter_reconciliation(
+            evaluation_report={
+                "action_balance_diagnostics": {
+                    "open": {
+                        "mind_v3_recovery_distilled": {
+                            "record_count": 10,
+                            "requested_action_counts": {"eat": 10},
+                            "changed_linear_decision_count": 0,
+                            "residual_application_count": 0,
+                        }
+                    }
+                },
+                "open": {
+                    "comparison": {
+                        "mind_v3_recovery_distilled": {
+                            "aggregate": {
+                                "trajectory_record_count": 10,
+                                "requested_action_counts": {"eat": 10},
+                                "neural_anchor_diagnostics": {
+                                    "decision_count": 10,
+                                    "changed_linear_action_count": 2,
+                                    "residual_applied_count": 2,
+                                    "shadow_reason_counts": {
+                                        "context_gate:test": 3,
+                                        "none": 2,
+                                    },
+                                    "linear_anchor_action_counts": {"eat": 10},
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+            distill_report={
+                "heldout_branch_state_evaluation": {
+                    "aggregate_action_balance": {
+                        "record_count": 4,
+                        "missing_decision_diagnostics_count": 0,
+                        "requested_action_counts": {"stay": 4},
+                        "changed_linear_decision_count": 0,
+                        "residual_application_count": 0,
+                    }
+                }
+            },
+            activation_audit={
+                "fixture_replay_diagnostics": {
+                    "decision_count": 6,
+                    "context_gate_pass_count": 3,
+                    "context_gate_fail_count": 3,
+                    "residual_applied_count": 1,
+                    "actual_changed_linear_count": 1,
+                    "configured_residual_would_change_count": 1,
+                    "safety_guard_shadow_reason_counts": {"none": 1},
+                }
+            },
+            heldout_artifact_replay={
+                "decision_count": 4,
+                "residual_applied_count": 1,
+                "actual_changed_linear_count": 1,
+                "configured_would_change_count": 1,
+                "shadow_reason_counts": {"none": 1},
+            },
+            current_fixture_replay={},
+        )
+
+        self.assertEqual(report["classification"]["primary"], "reporting bug")
+        broad = report["surfaces"][0]
+        self.assertEqual(broad["surface"], "broad_open_evaluation")
+        self.assertEqual(broad["actual_changed_linear_count"], 0)
+        self.assertEqual(broad["configured_would_change_count"], 2)
+        self.assertTrue(broad["counter_mismatch"])
+
+    def test_recovery_residual_shadow_calibration_reports_margin_sweep(
+        self,
+    ) -> None:
+        snapshots = (
+            {
+                "seed": 13,
+                "linear_action": "eat",
+                "neural_action": "drink",
+                "linear_margin": 0.01,
+                "gate": "visible_carrion_or_recovery_phase_v1",
+                "gate_passed": True,
+                "gate_reason": "recovery_phase",
+                "safety_guard_reason": "none",
+                "action_mask": {"drink": True, "eat": True, "stay": True},
+                "linear_scores": {"drink": 0.99, "eat": 1.0, "stay": 0.0},
+                "neural_scores": {"drink": 1.0, "eat": 0.0, "stay": 0.0},
+            },
+            {
+                "seed": 19,
+                "linear_action": "eat",
+                "neural_action": "drink",
+                "linear_margin": 0.01,
+                "gate": "visible_carrion_or_recovery_phase_v1",
+                "gate_passed": True,
+                "gate_reason": "recovery_phase",
+                "safety_guard_reason": "none",
+                "action_mask": {"drink": True, "eat": True, "stay": True},
+                "linear_scores": {"drink": 0.99, "eat": 1.0, "stay": 0.0},
+                "neural_scores": {"drink": 1.0, "eat": 0.0, "stay": 0.0},
+            },
+        )
+
+        calibration = _shadow_calibration_for_snapshots(
+            snapshots,
+            configured_margin=0.0,
+            configured_scale=0.05,
+            margin_sweep=(0.0, 0.02),
+            scale_sweep=(0.01, 0.05),
+        )
+        classification = _calibration_classification(
+            feature_checks={"passed": True},
+            failure_classification={"primary": "margin domination"},
+            shadow_calibration={
+                "heldout_branch_states": calibration,
+                "carrion_fixture_rows": calibration,
+            },
+        )
+
+        self.assertEqual(calibration["configured"]["would_change_count"], 0)
+        self.assertGreater(
+            calibration["margin_ignored"]["would_change_count"],
+            calibration["configured"]["would_change_count"],
+        )
+        self.assertEqual(
+            calibration["margin_threshold_sweep"][1]["would_change_by_seed"],
+            {"13": 1, "19": 1},
+        )
+        self.assertEqual(classification["primary"], "margin domination")
+
+    def test_recovery_residual_shadow_calibration_marks_branch_state_sampling(
+        self,
+    ) -> None:
+        from evolution_sim.mind.carrion_recovery_residual_audit import (
+            _shadow_calibration,
+        )
+
+        calibration = _shadow_calibration(
+            artifact={
+                "neural_residual_max_linear_override_margin": 0.008,
+                "neural_residual_scale": 0.03,
+            },
+            heldout_rows=(),
+            fixture_records=(),
+            margin_sweep=(0.0,),
+            scale_sweep=(0.01,),
+        )
+
+        self.assertEqual(
+            calibration["heldout_branch_state_sampling_policy"],
+            "first_record_per_split_trajectory_v1",
+        )
+        self.assertEqual(
+            calibration["carrion_fixture_row_sampling_policy"],
+            "all_fixture_decision_rows_v1",
+        )
+
+    def test_recovery_residual_audit_classifies_margin_domination(self) -> None:
+        classification = _failure_classification(
+            feature_checks={"passed": True},
+            offline={
+                "train": {"neural_score_variance_abs_max": 0.03},
+                "heldout": {
+                    "neural_score_variance_abs_max": 0.04,
+                    "configured_would_change_count": 0,
+                    "shadow_forced_gate_would_change_count": 0,
+                    "shadow_margin_ignored_would_change_count": 5,
+                },
+            },
+            fixture_replay={
+                "decision_count": 12,
+                "context_gate_pass_count": 6,
+                "safety_guard_shadow_reason_counts": {
+                    "linear_margin_guard": 4,
+                },
+            },
+            distill_report={"acceptance": {"promotion_candidate_passed": False}},
+        )
+
+        self.assertEqual(classification["primary"], "margin domination")
+        self.assertIn(
+            "linear_margin_guard_shadowed_fixture_decisions",
+            classification["evidence"],
+        )
+        self.assertIn(
+            "margin_ignored_shadow_changes_more_than_configured",
+            classification["evidence"],
+        )
+
+    def test_recovery_residual_fixture_summary_counts_activation_bins(self) -> None:
+        summary = _fixture_diagnostic_summary(
+            [
+                {
+                    "neural_linear_anchor_policy": "linear_anchor",
+                    "neural_residual_context_gate_passed": True,
+                    "neural_residual_context_gate_reason": "recovery_phase",
+                    "neural_residual_shadow_reason": "linear_margin_guard",
+                    "neural_residual_effective_scale": 0.0,
+                    "linear_anchor_score_margin": 0.25,
+                    "neural_residual_recovery_phase_remaining": 3,
+                    "neural_top_action": "drink",
+                    "linear_anchor_action": "eat",
+                    "anchored_action": "eat",
+                    "neural_residual_changed_linear_action": False,
+                    "neural_residual_applied": False,
+                },
+                {
+                    "neural_linear_anchor_policy": "linear_anchor",
+                    "neural_residual_context_gate_passed": False,
+                    "neural_residual_context_gate_reason": "no_visible_carrion",
+                    "neural_residual_shadow_reason": (
+                        "context_gate:visible_carrion_or_recovery_phase_v1"
+                    ),
+                    "neural_residual_effective_scale": 0.0,
+                    "linear_anchor_score_margin": 0.01,
+                    "neural_residual_recovery_phase_remaining": 0,
+                    "neural_top_action": "eat",
+                    "linear_anchor_action": "eat",
+                    "anchored_action": "eat",
+                    "neural_residual_changed_linear_action": False,
+                    "neural_residual_applied": False,
+                },
+            ],
+            suite={
+                "fixtures": [
+                    {
+                        "comparison": {
+                            "mind_v3": {
+                                "aggregate": {
+                                    "alive_agents_mean": 0.0,
+                                    "births_mean": 0.0,
+                                    "heuristic_action_source_count": 0,
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+            seeds=(13,),
+            ticks=120,
+        )
+
+        self.assertEqual(summary["decision_count"], 2)
+        self.assertEqual(summary["context_gate_pass_count"], 1)
+        self.assertEqual(summary["context_gate_fail_count"], 1)
+        self.assertEqual(
+            summary["safety_guard_shadow_reason_counts"]["linear_margin_guard"],
+            1,
+        )
+        self.assertEqual(summary["recovery_phase_remaining_buckets"]["3_8"], 1)
+        self.assertEqual(summary["linear_margin_buckets"]["gt_0.15"], 1)
+        self.assertEqual(summary["actual_changed_linear_count"], 0)
+
+    def test_recovery_residual_audit_loads_existing_nonscalar_diagnostics(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "trajectory.jsonl.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps({"format": "test"}) + "\n")
+                handle.write(
+                    json.dumps(
+                        {
+                            "record": {
+                                "tick": 0,
+                                "agent_id": 7,
+                                "requested_action": "eat",
+                                "action_mask": _basic_action_mask(),
+                                "observation_input": _gated_observation_input(
+                                    meat_mode="scavenger",
+                                    carcass_energy=1.0,
+                                )["observation_input"],
+                                "policy_decision_diagnostics": {
+                                    "neural_head_predictions": {
+                                        "survival": 0.0,
+                                    }
+                                },
+                            }
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                handle.write(json.dumps({"footer": "test"}) + "\n")
+
+            records = _load_trajectory_records(path)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["requested_action"], "eat")
 
     def test_recovery_distill_trains_artifact_and_reports_outcomes(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -225,6 +631,159 @@ class MindV3CarrionRecoveryDistillTests(unittest.TestCase):
             "fixture_candidate_carrion_only_total_scavenger_carcass_events=",
             stdout.getvalue(),
         )
+
+    def test_recovery_distill_consumes_train_records_from_split_manifest(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            archive = _build_small_recovery_archive(tmp_path)
+            first_record = dict(archive["dataset"]["records"][0])
+            heldout_record = json.loads(json.dumps(first_record))
+            heldout_record["record_id"] = "heldout-record-not-used-for-training"
+            heldout_record["source"]["branch_id"] = "heldout-branch"
+            heldout_record["source"]["trajectory_path"] = str(
+                tmp_path / "missing-heldout.jsonl.gz"
+            )
+            archive["dataset"]["records"] = [first_record, heldout_record]
+            archive["dataset"]["record_count"] = 2
+            split_report = _split_report(
+                train_record=first_record,
+                heldout_record=heldout_record,
+            )
+
+            report = build_carrion_recovery_distillation_report(
+                archive_report=archive,
+                archive_split_report=split_report,
+                horizons=(1,),
+                hidden_units=4,
+                eval_seeds=(29,),
+                eval_ticks=8,
+                fixture_names=("carrion_only",),
+                fixture_seeds=(29,),
+                fixture_ticks=8,
+            )
+
+        self.assertTrue(report["training"]["archive_split_consumed"])
+        self.assertEqual(report["training"]["selected_trajectory_count"], 1)
+        self.assertEqual(
+            report["training"]["selected_trajectories"][0]["record_id"],
+            first_record["record_id"],
+        )
+        heldout = report["heldout_branch_state_evaluation"]
+        self.assertTrue(heldout["enabled"])
+        self.assertEqual(heldout["heldout_record_count"], 1)
+        self.assertEqual(heldout["load_failure_count"], 1)
+        self.assertFalse(report["promotion"]["promoted"])
+        action_balance = report["evaluation"]["action_balance_diagnostics"]
+        self.assertIn("candidate_vs_linear_delta", action_balance["open"])
+
+    def test_live_evaluation_action_balance_uses_neural_anchor_counters(
+        self,
+    ) -> None:
+        evaluation = {
+            "open": {
+                "comparison": {
+                    "mind_v3_linear": {
+                        "runs": [
+                            {
+                                "requested_action_counts": {"eat": 10},
+                                "resolved_action_counts": {"eat": 10},
+                            }
+                        ]
+                    },
+                    "mind_v3_recovery_distilled": {
+                        "runs": [
+                            {
+                                "requested_action_counts": {"eat": 8, "drink": 2},
+                                "resolved_action_counts": {"eat": 8, "drink": 2},
+                                "neural_anchor_diagnostics": {
+                                    "changed_linear_action_count": 2,
+                                    "residual_applied_count": 3,
+                                },
+                            }
+                        ]
+                    },
+                }
+            },
+            "fixture": {
+                "linear_baseline_suite": {
+                    "evaluated_policy_key": "mind_v3",
+                    "fixtures": [
+                        {
+                            "fixture": "carrion_only",
+                            "comparison": {
+                                "mind_v3": {
+                                    "aggregate": {
+                                        "requested_action_counts": {"eat": 10},
+                                        "dominant_requested_action": "eat",
+                                        "dominant_requested_action_share": 1.0,
+                                    }
+                                }
+                            },
+                        }
+                    ],
+                },
+                "candidate_suite": {
+                    "evaluated_policy_key": "mind_v3",
+                    "fixtures": [
+                        {
+                            "fixture": "carrion_only",
+                            "comparison": {
+                                "mind_v3": {
+                                    "aggregate": {
+                                        "requested_action_counts": {
+                                            "eat": 7,
+                                            "drink": 3,
+                                        },
+                                        "dominant_requested_action": "eat",
+                                        "dominant_requested_action_share": 0.7,
+                                        "neural_anchor_diagnostics": {
+                                            "changed_linear_action_count": 4,
+                                            "residual_applied_count": 5,
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    ],
+                },
+            },
+        }
+
+        balance = _evaluation_action_balance(evaluation)
+
+        open_candidate = balance["open"]["mind_v3_recovery_distilled"]
+        self.assertEqual(open_candidate["changed_linear_decision_count"], 2)
+        self.assertEqual(open_candidate["residual_application_count"], 3)
+        self.assertEqual(
+            balance["open"]["candidate_vs_linear_delta"][
+                "changed_linear_decision_count_delta"
+            ],
+            2,
+        )
+        fixture_candidate = balance["fixture"]["mind_v3_recovery_distilled"][
+            "carrion_only"
+        ]
+        self.assertEqual(fixture_candidate["changed_linear_decision_count"], 4)
+        self.assertEqual(fixture_candidate["residual_application_count"], 5)
+
+    def test_logged_trajectory_action_balance_does_not_invent_live_residuals(
+        self,
+    ) -> None:
+        balance = _trajectory_action_balance(
+            [
+                {
+                    "requested_action": "eat",
+                    "resolved_action": "eat",
+                    "action_source": "counterfactual_script:water_rescue",
+                }
+            ]
+        )
+
+        self.assertEqual(balance["changed_linear_decision_count"], 0)
+        self.assertEqual(balance["residual_application_count"], 0)
+        self.assertEqual(balance["missing_decision_diagnostics_count"], 1)
 
     def test_recovery_distill_blocks_per_seed_open_regression(self) -> None:
         report = {
@@ -620,6 +1179,74 @@ def _build_small_recovery_archive(tmp_path: Path) -> dict[str, object]:
     if not report["acceptance"]["archive_acceptance_passed"]:
         raise AssertionError(report["acceptance"])
     return report
+
+
+def _split_report(
+    *,
+    train_record: dict[str, object],
+    heldout_record: dict[str, object],
+) -> dict[str, object]:
+    train_ref = _split_record_ref(train_record, split_key="train-branch")
+    heldout_ref = _split_record_ref(heldout_record, split_key="heldout-branch")
+    return {
+        "schema_version": MIND_V3_CARRION_RECOVERY_SPLIT_SCHEMA_VERSION,
+        "split_policy": (
+            MIND_V3_CARRION_RECOVERY_SPLIT_POLICY_BRANCH_DIGEST_SEED_STRATIFIED
+        ),
+        "records": {
+            "train": [train_ref],
+            "heldout": [heldout_ref],
+        },
+        "record_ids": {
+            "train": [train_record["record_id"]],
+            "heldout": [heldout_record["record_id"]],
+        },
+        "branch_state_keys": {
+            "train": ["train-branch"],
+            "heldout": ["heldout-branch"],
+        },
+        "aggregate": {
+            "train_record_count": 1,
+            "heldout_record_count": 1,
+            "train_survivor_count": 1,
+            "train_failure_count": 0,
+            "heldout_survivor_count": 1,
+            "heldout_failure_count": 0,
+        },
+        "leakage_check": {
+            "passed": True,
+            "overlapping_branch_state_keys": [],
+        },
+        "acceptance": {
+            "validation_passed": True,
+            "training_blocked": False,
+            "blockers": [],
+        },
+    }
+
+
+def _split_record_ref(
+    record: dict[str, object],
+    *,
+    split_key: str,
+) -> dict[str, object]:
+    source = record["source"]
+    label = record["label"]
+    return {
+        "record_id": record["record_id"],
+        "dataset_record_index": 0,
+        "seed": source["seed"],
+        "branch_id": source["branch_id"],
+        "branch_state_digest": split_key,
+        "branch_state_key": split_key,
+        "branch_state_key_type": "branch_state_digest",
+        "branch_tick": source["branch_tick"],
+        "continuation_script": source["continuation_script"],
+        "trajectory_path": source["trajectory_path"],
+        "terminal_survivor": label["terminal_survivor"],
+        "outcome_class": label["outcome_class"],
+        "trajectory_record_count": 1,
+    }
 
 
 def _basic_action_mask() -> dict[str, bool]:

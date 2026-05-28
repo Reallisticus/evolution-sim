@@ -59,12 +59,14 @@ The likely next useful branch is rollout-context policy capacity derived from
 public trajectory/action outcomes, or a genuinely distinct sequence, flow,
 world-model, or archive-replay path.
 
-## Remote RTX Trainer
+## Remote Trainer
 
-The project has a remote RTX 4070 SUPER trainer available over SSH as `gpu4070`.
-Use it for CUDA-backed training, long Mind gates, long seed sweeps, and heavier
-CPU-bound simulator runs that would block local Mac development. The full
-workflow is documented in `docs/remote-rtx-trainer.md`.
+The project can use a locally configured remote trainer for accelerator-backed
+training, long Mind gates, long seed sweeps, and heavier CPU-bound simulator
+runs that would block local development. Keep host aliases, remote paths,
+network details, account names, and hardware identifiers in private local
+configuration. The generic workflow is documented in
+`docs/remote-rtx-trainer.md`.
 
 Default workflow:
 
@@ -87,9 +89,8 @@ Useful commands:
 
 Known trainer caveats:
 
-- Ethernet currently negotiates at `100Mb/s`; training is fine, large transfers are slow.
 - `sim:golden:quick` has a known Mac/Linux last-bit viewer-float mismatch, so treat that as a repo determinism issue rather than a trainer setup failure.
-- Do not expose SSH directly to the public internet; use a VPN first for off-LAN access.
+- Do not commit private trainer topology, host aliases, usernames, remote paths, or network details.
 
 ## Implementation Rules
 

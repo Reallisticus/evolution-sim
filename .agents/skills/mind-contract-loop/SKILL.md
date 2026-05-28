@@ -1,6 +1,6 @@
 ---
 name: mind-contract-loop
-description: Use for Mind-interface work in evolution-sim: observation schemas, action masks, policy interfaces, trajectory logging, reward components, trainable datasets, policy-owned runtime state, replayable update traces, environment reset semantics, and learned-controller readiness. Do not use for model training until the controller boundary and data contract are enforceable.
+description: "Use for Mind-interface work in evolution-sim: observation schemas, action masks, policy interfaces, trajectory logging, reward components, trainable datasets, policy-owned runtime state, replayable update traces, environment reset semantics, and learned-controller readiness. Do not use for model training until the controller boundary and data contract are enforceable."
 ---
 
 # Mind Contract Loop

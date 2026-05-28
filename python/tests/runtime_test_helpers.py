@@ -41,7 +41,9 @@ from evolution_sim.env.runtime.action_contract import (
     ACTIVE_ACTION_NAMES,
     MATE_ACTION,
     RESERVED_ACTION_NAMES,
+    ACTION_MASK_SEMANTICS_POLICY,
     action_contract,
+    action_mask_contract,
     action_names,
 )
 from evolution_sim.env.runtime.action_space import (

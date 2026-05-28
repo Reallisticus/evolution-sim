@@ -10,9 +10,9 @@ from evolution_sim.mind.carrion_autopsy import (
     DEFAULT_SEQUENCE_RECORD_LIMIT,
     CarrionAutopsyError,
     build_carrion_autopsy_report,
+    load_carrion_autopsy_trajectory_jsonl,
     write_carrion_autopsy_report,
 )
-from evolution_sim.mind.dataset import TrajectoryDatasetError, load_trajectory_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,8 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--trajectory",
         type=Path,
         action="append",
+        nargs="+",
         required=True,
-        help="Trajectory JSONL or JSONL.gz input. Repeat to combine datasets.",
+        help=(
+            "Trajectory JSONL or JSONL.gz input. Repeat to combine datasets; "
+            "shell-expanded globs after one --trajectory are also accepted."
+        ),
     )
     parser.add_argument(
         "--post-contact-window-ticks",
@@ -68,7 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     try:
-        datasets = [load_trajectory_jsonl(path) for path in args.trajectory]
+        datasets = [
+            load_carrion_autopsy_trajectory_jsonl(path)
+            for group in args.trajectory
+            for path in group
+        ]
         report = build_carrion_autopsy_report(
             datasets,
             post_contact_window_ticks=int(args.post_contact_window_ticks),
@@ -77,7 +85,7 @@ def main() -> None:
             critical_ratio_floor=float(args.critical_ratio_floor),
         )
         write_carrion_autopsy_report(report, args.output)
-    except (OSError, ValueError, TrajectoryDatasetError, CarrionAutopsyError) as exc:
+    except (OSError, ValueError, CarrionAutopsyError) as exc:
         raise SystemExit(f"failed to build carrion autopsy: {exc}") from exc
 
     aggregate = report["aggregate"]  # type: ignore[index]
