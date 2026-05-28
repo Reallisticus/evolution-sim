@@ -9,12 +9,16 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_HOST = os.environ.get("TRAINER_HOST", "gpu4070")
-DEFAULT_REPO = os.environ.get("TRAINER_REPO", "/home/train/Projects/evolution-sim")
-DEFAULT_WHEELHOUSE = os.environ.get(
-    "TRAINER_WHEELHOUSE", "/home/train/wheelhouse/evolution-sim-linux-cp314"
-)
+DEFAULT_HOST = os.environ.get("TRAINER_HOST")
+DEFAULT_REPO = os.environ.get("TRAINER_REPO")
+DEFAULT_WHEELHOUSE = os.environ.get("TRAINER_WHEELHOUSE")
 DEFAULT_SESSION = os.environ.get("TRAINER_SESSION", "train")
+
+
+def _require_config(value: str | None, *, option: str, env: str) -> str:
+    if value:
+        return value
+    raise SystemExit(f"missing {option}; pass {option} or set {env}")
 
 
 def _run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -58,8 +62,10 @@ def _command_from_remainder(command: list[str]) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
     command = _repo_command(
-        args.repo,
+        repo,
         "\n".join(
             [
                 'echo "host=$(hostname)"',
@@ -76,12 +82,14 @@ def cmd_status(args: argparse.Namespace) -> None:
             ]
         ),
     )
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_pull(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
     command = _repo_command(
-        args.repo,
+        repo,
         "\n".join(
             [
                 "git fetch --prune origin",
@@ -92,20 +100,25 @@ def cmd_pull(args: argparse.Namespace) -> None:
         ),
         activate=False,
     )
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_deps(args: argparse.Namespace) -> None:
-    pip_install = (
-        f'if [ -d {shlex.quote(args.wheelhouse)} ]; then '
-        f'python -m pip install --no-index --find-links={shlex.quote(args.wheelhouse)} '
-        "-r requirements-mind-ml.txt; "
-        "else "
-        "python -m pip install -r requirements-mind-ml.txt; "
-        "fi"
-    )
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
+    pip_install = "python -m pip install -r requirements-mind-ml.txt"
+    if args.wheelhouse:
+        wheelhouse = shlex.quote(args.wheelhouse)
+        pip_install = (
+            f"if [ -d {wheelhouse} ]; then "
+            f"python -m pip install --no-index --find-links={wheelhouse} "
+            "-r requirements-mind-ml.txt; "
+            "else "
+            "python -m pip install -r requirements-mind-ml.txt; "
+            "fi"
+        )
     command = _repo_command(
-        args.repo,
+        repo,
         "\n".join(
             [
                 "npm install",
@@ -114,15 +127,19 @@ def cmd_deps(args: argparse.Namespace) -> None:
             ]
         ),
     )
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
     remote_command = _command_from_remainder(args.command)
-    _run(_ssh(args.host, _repo_command(args.repo, remote_command)))
+    _run(_ssh(host, _repo_command(repo, remote_command)))
 
 
 def cmd_start(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
     # argparse.REMAINDER captures options after the session name, so accept the
     # documented `start SESSION --pull -- command` shape here as well.
     command = list(args.command)
@@ -146,10 +163,10 @@ def cmd_start(args: argparse.Namespace) -> None:
     if args.pull:
         cmd_pull(args)
     if args.replace:
-        _run(_ssh(args.host, f"tmux kill-session -t {session} 2>/dev/null || true"))
+        _run(_ssh(host, f"tmux kill-session -t {session} 2>/dev/null || true"))
     runner = (
-        f"cd {shlex.quote(args.repo)}; "
-        f". {shlex.quote(args.repo)}/.venv/bin/activate; "
+        f"cd {shlex.quote(repo)}; "
+        f". {shlex.quote(repo)}/.venv/bin/activate; "
         "export PYTHONHASHSEED=0 PYTHONPATH=python; "
         'echo "[trainer] started $(date -Is) on $(hostname)"; '
         f"echo {shlex.quote('[trainer] command: ' + remote_command)}; "
@@ -165,33 +182,40 @@ def cmd_start(args: argparse.Namespace) -> None:
             f"tmux display-message -p -t {session} '#S started'",
         ]
     )
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_attach(args: argparse.Namespace) -> None:
-    _run(_ssh(args.host, f"tmux attach -t {shlex.quote(args.session)}", tty=True))
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    _run(_ssh(host, f"tmux attach -t {shlex.quote(args.session)}", tty=True))
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
     command = f"tmux capture-pane -pt {shlex.quote(args.session)} -S -{int(args.lines)}"
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_sessions(args: argparse.Namespace) -> None:
-    _run(_ssh(args.host, "tmux list-sessions || true"))
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    _run(_ssh(host, "tmux list-sessions || true"))
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
-    _run(_ssh(args.host, f"tmux kill-session -t {shlex.quote(args.session)}"))
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    _run(_ssh(host, f"tmux kill-session -t {shlex.quote(args.session)}"))
 
 
 def cmd_gpu(args: argparse.Namespace) -> None:
-    _run(_ssh(args.host, "nvidia-smi"))
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    _run(_ssh(host, "nvidia-smi"))
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
     command = _repo_command(
-        args.repo,
+        repo,
         "\n".join(
             [
                 'echo "--- host ---"',
@@ -212,24 +236,25 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 'python - <<\'PY\'\nimport torch\nprint("torch", torch.__version__)\nprint("cuda_available", torch.cuda.is_available())\nprint("cuda_version", torch.version.cuda)\nprint("device_count", torch.cuda.device_count())\nprint("device_name", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none")\nPY',
                 'nvidia-smi --query-gpu=name,driver_version,memory.total,temperature.gpu,power.draw,utilization.gpu --format=csv,noheader',
                 'echo "--- network ---"',
-                'ethtool enp5s0 2>/dev/null | grep -E "Speed|Duplex|Auto-negotiation|Link detected" || true',
+                "ip -brief link 2>/dev/null || true",
             ]
         ),
     )
-    _run(_ssh(args.host, command))
+    _run(_ssh(host, command))
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
     destination = Path(args.destination)
     destination.mkdir(parents=True, exist_ok=True)
-    remote = f"{args.host}:{args.path}"
+    remote = f"{host}:{args.path}"
     _run(["rsync", "-av", "--partial", "--progress", remote, str(destination)])
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Control the remote RTX trainer over SSH.")
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser = argparse.ArgumentParser(description="Control a configured remote trainer over SSH.")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="Remote trainer SSH host, or TRAINER_HOST.")
+    parser.add_argument("--repo", default=DEFAULT_REPO, help="Remote repository path, or TRAINER_REPO.")
 
     subparsers = parser.add_subparsers(dest="command_name", required=True)
 
@@ -277,8 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     fetch = subparsers.add_parser("fetch", help="Fetch a remote artifact directory or file.")
-    fetch.add_argument("path", help="Remote path, usually under /home/train/Projects/evolution-sim/output.")
-    fetch.add_argument("destination", nargs="?", default="output/remote-gpu4070")
+    fetch.add_argument("path", help="Remote artifact path.")
+    fetch.add_argument("destination", nargs="?", default="output/remote-trainer")
     fetch.set_defaults(func=cmd_fetch)
 
     return parser

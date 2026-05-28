@@ -1775,9 +1775,9 @@ evaluate against the current compiled linear default. Omit
 `--anchored-neural-artifact` only when the v29 anchored reference is not part of
 the question.
 
-RTX v34 result:
+Remote trainer v34 result:
 
-- The CUDA train-gate completed on `gpu4070` and wrote
+- The accelerator-backed train-gate completed on the remote trainer and wrote
   `output/mind/mind-v3-v34-labeled-iql-artifact.json` plus
   `output/mind/mind-v3-v34-labeled-iql-train-gate.json`. The strict control
   gate passed but remains not promoted: hard guard `0.0998`, heuristic delegate
@@ -1795,7 +1795,7 @@ RTX v34 result:
   existing boundary above: vectorized rollout/model-based training or a
   different credit/data path, not another local anchor or scalar-weight tweak.
 
-RTX v35 rollout-search scout:
+Remote trainer v35 rollout-search scout:
 
 - A small RTX scout used the existing autonomous evolution CLI with process
   rollout workers, basic controlled fixtures, and the `80,120` fixture rerank:
@@ -1803,7 +1803,7 @@ RTX v35 rollout-search scout:
   --curriculum-ticks 80,120 --population-size 8 --generations 2
   --rollout-workers 8 --fixture-suite basic --fixture-selection-top-k 4
   --fixture-rerank-top-k 4 --fixture-rerank-ticks 80,120`.
-- The run completed on `gpu4070` and wrote
+- The run completed on the remote trainer and wrote
   `output/mind/mind-v3-v35-rollout-search-smoke.json`. The selected candidate
   was `g1-c1`: score `105.6799`, train-seed alive mean `15.6667`, births mean
   `7.0`, zero heuristic action sources, dominant requested action `eat` at
