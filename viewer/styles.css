@@ -1674,6 +1674,215 @@ input[type="range"] {
   min-height: 0;
 }
 
+.first-recovery-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.first-recovery-header,
+.first-recovery-loader {
+  display: grid;
+  gap: 10px;
+}
+
+.first-recovery-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.first-recovery-header h2,
+.first-recovery-header p {
+  margin: 0;
+}
+
+.first-recovery-boundary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid rgba(74, 222, 128, 0.28);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: rgba(22, 101, 52, 0.18);
+  color: #bbf7d0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.first-recovery-summary,
+.first-recovery-grid,
+.first-recovery-flags {
+  display: grid;
+  gap: 10px;
+}
+
+.first-recovery-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.first-recovery-status-card,
+.first-recovery-grid section,
+.first-recovery-flag,
+.first-recovery-branch {
+  min-width: 0;
+  border: 1px solid rgba(50, 69, 92, 0.74);
+  border-radius: 8px;
+  background: rgba(9, 15, 26, 0.55);
+}
+
+.first-recovery-status-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.first-recovery-status-card.pass {
+  border-color: rgba(74, 222, 128, 0.42);
+}
+
+.first-recovery-status-card.fail {
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.first-recovery-status-card span,
+.first-recovery-chain-item span,
+.first-recovery-branch span,
+.first-recovery-flag span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.first-recovery-status-card strong,
+.first-recovery-chain-item strong,
+.first-recovery-branch strong,
+.first-recovery-flag strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(248, 250, 252, 0.94);
+}
+
+.first-recovery-status-card small,
+.first-recovery-chain-item small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(159, 179, 209, 0.82);
+}
+
+.first-recovery-grid {
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(180px, 1fr));
+  align-items: start;
+}
+
+.first-recovery-grid h3,
+.first-recovery-panel h3 {
+  margin: 0 0 10px;
+  font-size: 0.92rem;
+}
+
+.first-recovery-grid section {
+  padding: 12px;
+}
+
+.first-recovery-chain {
+  display: grid;
+  gap: 8px;
+}
+
+.first-recovery-chain-item {
+  display: grid;
+  gap: 2px;
+  border-left: 3px solid rgba(140, 198, 255, 0.44);
+  padding-left: 8px;
+}
+
+.first-recovery-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.first-recovery-pill {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 126px;
+  align-items: center;
+  border: 1px solid rgba(140, 198, 255, 0.18);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.first-recovery-pill b {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(222, 232, 244, 0.86);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.first-recovery-pill strong {
+  color: rgba(248, 250, 252, 0.94);
+}
+
+.first-recovery-flags {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.first-recovery-flag {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.first-recovery-flag.pass strong {
+  color: #bbf7d0;
+}
+
+.first-recovery-flag.fail strong {
+  color: #fecaca;
+}
+
+.first-recovery-examples {
+  display: grid;
+  gap: 10px;
+}
+
+.first-recovery-branch {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.first-recovery-branch dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(154px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.first-recovery-branch dl div {
+  min-width: 0;
+  border: 1px solid rgba(34, 52, 84, 0.72);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(8, 16, 28, 0.46);
+}
+
+.first-recovery-branch dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.first-recovery-branch dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: rgba(248, 250, 252, 0.9);
+  font-weight: 700;
+}
+
 .scene-summary {
   margin: 0 0 14px;
   color: var(--text);
@@ -3290,6 +3499,11 @@ input[type="range"] {
     grid-template-columns: 1fr;
   }
 
+  .first-recovery-summary,
+  .first-recovery-grid {
+    grid-template-columns: 1fr;
+  }
+
   .legend-note {
     width: 100%;
     margin-left: 0;
@@ -3468,6 +3682,15 @@ input[type="range"] {
     min-width: 0;
     width: 100%;
     padding-inline: 6px;
+  }
+
+  .first-recovery-header {
+    grid-template-columns: 1fr;
+  }
+
+  .first-recovery-boundary {
+    width: fit-content;
+    white-space: normal;
   }
 
   body.presentation-mode .view-tabs {

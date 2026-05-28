@@ -22,6 +22,7 @@ import {
   tileExplanationSentence,
   tilePressureTags,
 } from "./episode_model.mjs";
+import { buildFirstRecoveryInspectorModel } from "./first_recovery_model.mjs";
 import {
   OVERLAY_CONTRACTS,
   VIEWER_STATE_STORAGE_VERSION,
@@ -130,6 +131,12 @@ const state = {
     lastBudget: null,
   },
   activeDetailView: "overview",
+  firstRecovery: {
+    bundle: null,
+    model: null,
+    source: null,
+    error: null,
+  },
   visualStats: {
     glyphs: 0,
     trailSegments: 0,
@@ -196,6 +203,17 @@ const elements = {
   replayFile: document.getElementById("replay-file"),
   loadUrl: document.getElementById("load-url"),
   loadStatus: document.getElementById("load-status"),
+  firstRecoveryUrl: document.getElementById("first-recovery-url"),
+  firstRecoveryFile: document.getElementById("first-recovery-file"),
+  firstRecoveryLoadUrl: document.getElementById("load-first-recovery-url"),
+  firstRecoveryStatus: document.getElementById("first-recovery-status"),
+  firstRecoverySummary: document.getElementById("first-recovery-summary"),
+  firstRecoveryChain: document.getElementById("first-recovery-chain"),
+  firstRecoveryRepairedCounts: document.getElementById("first-recovery-repaired-counts"),
+  firstRecoveryRareGaps: document.getElementById("first-recovery-rare-gaps"),
+  firstRecoveryCandidateCounts: document.getElementById("first-recovery-candidate-counts"),
+  firstRecoveryFlags: document.getElementById("first-recovery-flags"),
+  firstRecoveryExamples: document.getElementById("first-recovery-examples"),
   viewTabs: document.getElementById("view-tabs"),
   presentationToggle: document.getElementById("presentation-toggle"),
   shareViewLink: document.getElementById("share-view-link"),
@@ -433,6 +451,23 @@ function bindEvents() {
       loadReplay(JSON.parse(text), file.name);
     } catch (error) {
       setStatus(`Failed to load replay: ${error.message}`);
+    }
+  });
+
+  elements.firstRecoveryLoadUrl?.addEventListener("click", async () => {
+    const url = elements.firstRecoveryUrl?.value.trim();
+    if (!url) return;
+    await loadFirstRecoveryBundleFromUrl(url);
+  });
+
+  elements.firstRecoveryFile?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      loadFirstRecoveryBundle(JSON.parse(text), file.name);
+    } catch (error) {
+      setFirstRecoveryStatus(`Failed to load inspector bundle: ${error.message}`, "fail");
     }
   });
 
@@ -827,7 +862,16 @@ function updateShareUrlState(options = {}) {
 }
 
 async function bootstrapDefaultReplay() {
-  const replayParam = new URLSearchParams(window.location.search).get("replay");
+  const params = new URLSearchParams(window.location.search);
+  const firstRecoveryParam = params.get("firstRecoveryBundle") ?? params.get("firstRecovery");
+  if (firstRecoveryParam && elements.firstRecoveryUrl) {
+    elements.firstRecoveryUrl.value = firstRecoveryParam;
+    await loadFirstRecoveryBundleFromUrl(firstRecoveryParam);
+  } else {
+    renderFirstRecoveryInspector();
+  }
+
+  const replayParam = params.get("replay");
   if (replayParam) {
     elements.replayUrl.value = replayParam;
   }
@@ -836,6 +880,39 @@ async function bootstrapDefaultReplay() {
   if (initialUrl) {
     await loadReplayFromUrl(initialUrl);
   }
+}
+
+async function loadFirstRecoveryBundleFromUrl(url) {
+  setFirstRecoveryStatus(`Loading ${url} ...`, "loading");
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+    const payload = await response.json();
+    loadFirstRecoveryBundle(payload, url);
+  } catch (error) {
+    state.firstRecovery = {
+      bundle: null,
+      model: null,
+      source: url,
+      error: error.message,
+    };
+    renderFirstRecoveryInspector();
+    setFirstRecoveryStatus(`Failed to load inspector bundle: ${error.message}`, "fail");
+  }
+}
+
+function loadFirstRecoveryBundle(payload, sourceLabel) {
+  const model = buildFirstRecoveryInspectorModel(payload, { exampleLimit: 8 });
+  state.firstRecovery = {
+    bundle: payload,
+    model,
+    source: sourceLabel,
+    error: null,
+  };
+  renderFirstRecoveryInspector();
+  setFirstRecoveryStatus(`Loaded ${sourceLabel}`, model.sourceIntegrity.passed ? "pass" : "fail");
 }
 
 async function loadReplayFromUrl(url) {
@@ -5374,6 +5451,167 @@ function setStatus(message) {
   syncDebugState();
 }
 
+function setFirstRecoveryStatus(message, kind = "neutral") {
+  if (!elements.firstRecoveryStatus) return;
+  elements.firstRecoveryStatus.textContent = message;
+  elements.firstRecoveryStatus.dataset.statusKind = kind;
+  syncDebugState();
+}
+
+function renderFirstRecoveryInspector() {
+  const model = state.firstRecovery.model;
+  if (!model) {
+    if (elements.firstRecoverySummary) {
+      elements.firstRecoverySummary.innerHTML = `
+        <div class="muted">Load the inspector bundle to inspect the v115-v121 evidence chain.</div>
+      `;
+    }
+    clearFirstRecoveryContainers();
+    return;
+  }
+  renderFirstRecoverySummary(model);
+  renderFirstRecoveryChain(model.classificationChain);
+  renderFirstRecoveryPills(elements.firstRecoveryRepairedCounts, model.repairedActionCounts, {
+    emptyLabel: "No repaired action counts in bundle.",
+  });
+  renderFirstRecoveryPills(elements.firstRecoveryRareGaps, model.rareSupportGaps, {
+    emptyLabel: "No rare action gaps reported.",
+  });
+  renderFirstRecoveryPills(elements.firstRecoveryCandidateCounts, model.candidateCounts, {
+    emptyLabel: "No candidate counts reported.",
+  });
+  renderFirstRecoveryFlags(model.diagnosticsOnlyFlags);
+  renderFirstRecoveryExamples(model.topBranchExamples);
+  syncDebugState();
+}
+
+function clearFirstRecoveryContainers() {
+  for (const node of [
+    elements.firstRecoveryChain,
+    elements.firstRecoveryRepairedCounts,
+    elements.firstRecoveryRareGaps,
+    elements.firstRecoveryCandidateCounts,
+    elements.firstRecoveryFlags,
+    elements.firstRecoveryExamples,
+  ]) {
+    if (node) node.innerHTML = "";
+  }
+}
+
+function renderFirstRecoverySummary(model) {
+  if (!elements.firstRecoverySummary) return;
+  const sourceClass = model.sourceIntegrity.passed ? "pass" : "fail";
+  elements.firstRecoverySummary.innerHTML = `
+    <div class="first-recovery-status-card ${sourceClass}">
+      <span>Source Integrity</span>
+      <strong>${escapeHtml(model.sourceIntegrity.passed ? "Pass" : "Fail")}</strong>
+      <small>${escapeHtml(model.sourceIntegrity.failures.length ? model.sourceIntegrity.failures.join(", ") : "No source integrity failures")}</small>
+    </div>
+    <div class="first-recovery-status-card">
+      <span>Rows</span>
+      <strong>${escapeHtml(formatInteger(model.sourceIntegrity.archiveRowCount))} archive · ${escapeHtml(formatInteger(model.sourceIntegrity.manifestRowCount))} manifest</strong>
+      <small>${escapeHtml(formatInteger(model.branchCount))} branch rows in this inspector bundle</small>
+    </div>
+    <div class="first-recovery-status-card">
+      <span>Bundle Boundary</span>
+      <strong>Read-only diagnostics</strong>
+      <small>Audit metadata is non-trainable; replay and training payloads are unchanged.</small>
+    </div>
+  `;
+}
+
+function renderFirstRecoveryChain(chain) {
+  if (!elements.firstRecoveryChain) return;
+  const entries = (chain ?? []).filter((entry) => entry.version !== "v115");
+  if (entries.length === 0) {
+    elements.firstRecoveryChain.innerHTML = `<div class="muted">No classification chain in bundle.</div>`;
+    return;
+  }
+  elements.firstRecoveryChain.innerHTML = entries
+    .map(
+      (entry) => `
+        <div class="first-recovery-chain-item">
+          <span>${escapeHtml(entry.version.toUpperCase())}</span>
+          <strong>${escapeHtml(entry.primary ?? "unknown")}</strong>
+          <small>${escapeHtml((entry.labels ?? []).slice(0, 3).join(" · ") || "No labels")}</small>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function renderFirstRecoveryPills(container, counts, options = {}) {
+  if (!container) return;
+  const entries = Object.entries(counts ?? {});
+  if (entries.length === 0) {
+    container.innerHTML = `<div class="muted">${escapeHtml(options.emptyLabel ?? "No values reported.")}</div>`;
+    return;
+  }
+  container.innerHTML = entries
+    .map(
+      ([name, count]) => `
+        <span class="first-recovery-pill">
+          <b>${escapeHtml(actionLabel(name))}</b>
+          <strong>${escapeHtml(formatValue(count))}</strong>
+        </span>
+      `,
+    )
+    .join("");
+}
+
+function renderFirstRecoveryFlags(flags) {
+  if (!elements.firstRecoveryFlags) return;
+  const entries = [
+    ["Diagnostics only", flags.diagnosticsOnly],
+    ["No runtime policy", flags.noRuntimePolicy],
+    ["No training", flags.noTraining],
+    ["Readiness blocked", flags.readinessBlocked],
+    ["Shadow scoring blocked", flags.shadowScorerBlocked],
+    ["Not replay contract", flags.notReplayContract],
+    ["Not training manifest", flags.notTrainingManifest],
+    ["Audit metadata non-trainable", flags.auditMetadataNotTrainable],
+  ];
+  elements.firstRecoveryFlags.innerHTML = entries
+    .map(
+      ([label, value]) => `
+        <div class="first-recovery-flag ${value ? "pass" : "fail"}">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value ? "Yes" : "No")}</strong>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function renderFirstRecoveryExamples(examples) {
+  if (!elements.firstRecoveryExamples) return;
+  if (!examples || examples.length === 0) {
+    elements.firstRecoveryExamples.innerHTML = `<div class="muted">No branch examples in bundle.</div>`;
+    return;
+  }
+  elements.firstRecoveryExamples.innerHTML = examples
+    .map(
+      (entry) => `
+        <article class="first-recovery-branch">
+          <div>
+            <span>Branch</span>
+            <strong>${escapeHtml(entry.branchId ?? "unknown")}</strong>
+          </div>
+          <dl>
+            <div><dt>Current Oracle</dt><dd>${escapeHtml(actionLabel(entry.currentOracleAction))}</dd></div>
+            <div><dt>Repaired</dt><dd>${escapeHtml(actionLabel(entry.repairedAction))}</dd></div>
+            <div><dt>Tied Legal Actions</dt><dd>${escapeHtml((entry.legalTiedCandidateActions ?? []).map(actionLabel).join(", ") || "None")}</dd></div>
+            <div><dt>Unique Objective Best</dt><dd>${escapeHtml(yesNoLabel(entry.uniqueObjectiveBest))}</dd></div>
+            <div><dt>Objective Equivalent</dt><dd>${escapeHtml(yesNoLabel(entry.objectiveEquivalenceVerified))}</dd></div>
+            <div><dt>Resolution Legal</dt><dd>${escapeHtml(yesNoLabel(entry.selectedResolutionLegal))}</dd></div>
+            <div><dt>Trainable Input Clean</dt><dd>${escapeHtml(yesNoLabel(entry.trainablePublicInputClean))}</dd></div>
+          </dl>
+        </article>
+      `,
+    )
+    .join("");
+}
+
 function clearPixiLayer(layer) {
   for (const child of layer.removeChildren()) {
     child.destroy({ children: true });
@@ -5737,8 +5975,13 @@ function decodeAgent(encoded) {
 
 function syncDebugState() {
   const payload = state.payload;
+  const firstRecoveryDebug = firstRecoveryDebugState();
   if (!payload) {
-    window.__viewerDebug = { loaded: false, status: elements.loadStatus.textContent };
+    window.__viewerDebug = {
+      loaded: false,
+      status: elements.loadStatus.textContent,
+      firstRecovery: firstRecoveryDebug,
+    };
     return;
   }
 
@@ -5791,5 +6034,20 @@ function syncDebugState() {
     lastStoryboardExport: state.lastStoryboardExport ? { ...state.lastStoryboardExport } : null,
     replayModel: { ...(state.replayModel?.cacheStats ?? {}) },
     visualStats: { ...state.visualStats },
+    firstRecovery: firstRecoveryDebug,
+  };
+}
+
+function firstRecoveryDebugState() {
+  const model = state.firstRecovery.model;
+  return {
+    loaded: Boolean(model),
+    source: state.firstRecovery.source,
+    error: state.firstRecovery.error,
+    sourceIntegrityPassed: model?.sourceIntegrity?.passed ?? false,
+    branchCount: model?.branchCount ?? 0,
+    candidateCounts: model?.candidateCounts ?? {},
+    rareSupportGaps: model?.rareSupportGaps ?? {},
+    diagnosticsOnlyFlags: model?.diagnosticsOnlyFlags ?? {},
   };
 }
