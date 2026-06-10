@@ -7,7 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
+from evolution_sim.mind import evaluation_harness as evaluate_cli
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.carrion_archive_override_autopsy import (
     DEFAULT_V148_CARRION_ARCHIVE_DATASET_PATH,

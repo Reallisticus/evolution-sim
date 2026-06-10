@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
+from evolution_sim.mind import evaluation_harness as evaluate_cli
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
