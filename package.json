@@ -117,6 +117,7 @@
         "sim:mind:v3:carrion-survivor-continuation-v174-mechanism-failure-battery": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v174_mechanism_failure_battery",
         "sim:mind:v3:carrion-survivor-continuation-v175-v174-route-correction-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v175_v174_route_correction_audit",
         "sim:mind:v3:carrion-survivor-continuation-v176-transition-diagnostic-planner": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v176_transition_diagnostic_planner",
+        "sim:mind:v3:carrion-survivor-continuation-v177-exact-branch-replay-expansion": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v177_exact_branch_replay_expansion",
         "sim:mind:v3:first-recovery-inspector-bundle": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_inspector_bundle",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
     "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",

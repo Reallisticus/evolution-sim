@@ -12,10 +12,11 @@ The v61-v63 IQL validation loop closed the current scalar coefficient,
 prior-blend, extraction-only, and global actor-bias family as non-promotable.
 The v137-v176 audit trail then closed the tiny support-archive /
 nearest-neighbor scorer loop as strategically saturated: the central carrion
-survival blocker did not move, strict seeds were consumed as support
-provenance, and the next useful branch is exact branch replay, transition-row
-data support, rollout-context policy capacity, or a distinct controller/data
-path.
+survival blocker did not move and strict seeds were consumed as support
+provenance. v177 restored transition-row data support through exact branch
+replay. The next useful branch is v178 transition-row dataset audit before
+rollout-context policy capacity, world-model/transition-value capacity, or a
+distinct controller/data path.
 
 2026-06-10 repository-audit checkpoint: the v137-v176 source backlog was
 preserved, committed, pushed, and paired with a documented `output/mind/`
