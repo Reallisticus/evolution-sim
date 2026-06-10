@@ -77,6 +77,8 @@ class MindV3CarrionSurvivorContinuationV178TransitionRowDatasetAuditTests(
         self.assertTrue(report["source_validation"]["passed"])
         self.assertTrue(report["row_schema_validation"]["passed"])
         self.assertTrue(report["leakage_scan"]["passed"])
+        self.assertTrue(report["value_leakage_scan"]["passed"])
+        self.assertTrue(report["feature_contract_audit"]["passed"])
         self.assertTrue(report["observation_audit"]["passed"])
         self.assertTrue(report["support_readiness"]["passed"])
         self.assertEqual(
@@ -158,6 +160,157 @@ class MindV3CarrionSurvivorContinuationV178TransitionRowDatasetAuditTests(
             )
 
         self.assertFalse(report["identity_audit"]["passed"])
+        self.assertEqual(
+            report["classification"]["primary"],
+            (
+                "m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_"
+                "dataset_contract_invalid_closed_no_training"
+            ),
+        )
+        self.assertFalse(report["training_ran"])
+
+    def test_smuggled_trainable_values_fail_closed_without_training(self) -> None:
+        row = _transition_row(
+            branch_id="branch-a",
+            seed=19,
+            forced_action="stay",
+            value_offset=0.01,
+        )
+        previous = row["previous_same_agent_public_context"]
+        self.assertIsInstance(previous, dict)
+        previous["note"] = "seed:41 reward:1.0"
+        row["trainable_public_features"][
+            "previous_same_agent_public_context"
+        ] = previous
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths, _rows = _write_inputs(tmpdir, [row])
+
+            report = v178.run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
+                transition_dataset_path=paths["dataset"],
+                v177_report_path=paths["v177_report"],
+                output_path=paths["report"],
+                min_row_count=1,
+                min_seed_count=1,
+                min_branch_count=1,
+                min_forced_action_count=1,
+            )
+
+        self.assertFalse(report["value_leakage_scan"]["passed"])
+        self.assertFalse(report["feature_contract_audit"]["passed"])
+        self.assertEqual(
+            report["classification"]["primary"],
+            (
+                "m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_"
+                "dataset_contract_invalid_closed_no_training"
+            ),
+        )
+        self.assertFalse(report["training_ran"])
+
+    def test_unexpected_numeric_trainable_context_value_fails_contract(self) -> None:
+        row = _transition_row(
+            branch_id="branch-a",
+            seed=19,
+            forced_action="stay",
+            value_offset=0.01,
+        )
+        previous = row["previous_same_agent_public_context"]
+        self.assertIsInstance(previous, dict)
+        previous["note"] = 41
+        row["trainable_public_features"][
+            "previous_same_agent_public_context"
+        ] = previous
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths, _rows = _write_inputs(tmpdir, [row])
+
+            report = v178.run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
+                transition_dataset_path=paths["dataset"],
+                v177_report_path=paths["v177_report"],
+                output_path=paths["report"],
+                min_row_count=1,
+                min_seed_count=1,
+                min_branch_count=1,
+                min_forced_action_count=1,
+            )
+
+        self.assertTrue(report["leakage_scan"]["passed"])
+        self.assertFalse(report["value_leakage_scan"]["passed"])
+        self.assertFalse(report["feature_contract_audit"]["passed"])
+        self.assertEqual(
+            report["classification"]["primary"],
+            (
+                "m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_"
+                "dataset_contract_invalid_closed_no_training"
+            ),
+        )
+        self.assertFalse(report["training_ran"])
+
+    def test_action_mask_audit_failure_fails_closed_without_training(self) -> None:
+        row = _transition_row(
+            branch_id="branch-a",
+            seed=19,
+            forced_action="stay",
+            value_offset=0.01,
+        )
+        row["current_public_action_mask"]["stay"] = False
+        row["trainable_public_features"]["current_public_action_mask"] = row[
+            "current_public_action_mask"
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths, _rows = _write_inputs(tmpdir, [row])
+
+            report = v178.run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
+                transition_dataset_path=paths["dataset"],
+                v177_report_path=paths["v177_report"],
+                output_path=paths["report"],
+                min_row_count=1,
+                min_seed_count=1,
+                min_branch_count=1,
+                min_forced_action_count=1,
+            )
+
+        self.assertFalse(report["action_mask_audit"]["passed"])
+        self.assertEqual(
+            report["action_mask_audit"]["failures"][0]["reason"],
+            "forced_action_not_current_mask_supported",
+        )
+        self.assertEqual(
+            report["classification"]["primary"],
+            (
+                "m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_"
+                "dataset_contract_invalid_closed_no_training"
+            ),
+        )
+        self.assertFalse(report["training_ran"])
+
+    def test_observation_decode_failure_fails_closed_without_training(self) -> None:
+        row = _transition_row(
+            branch_id="branch-a",
+            seed=19,
+            forced_action="stay",
+            value_offset=0.01,
+        )
+        row["current_public_observation"]["data"] = "not-valid-base64"
+        row["trainable_public_features"]["current_public_observation"] = row[
+            "current_public_observation"
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths, _rows = _write_inputs(tmpdir, [row])
+
+            report = v178.run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
+                transition_dataset_path=paths["dataset"],
+                v177_report_path=paths["v177_report"],
+                output_path=paths["report"],
+                min_row_count=1,
+                min_seed_count=1,
+                min_branch_count=1,
+                min_forced_action_count=1,
+            )
+
+        self.assertFalse(report["observation_audit"]["passed"])
+        self.assertEqual(
+            report["observation_audit"]["failures"][0]["field"],
+            "current_public_observation",
+        )
         self.assertEqual(
             report["classification"]["primary"],
             (
@@ -265,6 +418,8 @@ class MindV3CarrionSurvivorContinuationV178TransitionRowDatasetAuditTests(
             completed.stdout,
         )
         self.assertIn("classification=", completed.stdout)
+        self.assertIn("value_leakage_scan_passed=True", completed.stdout)
+        self.assertIn("feature_contract_audit_passed=True", completed.stdout)
         self.assertEqual(
             written["schema_version"],
             v178.M3_CARRION_SURVIVOR_CONTINUATION_V178_TRANSITION_ROW_DATASET_AUDIT_SCHEMA_VERSION,
