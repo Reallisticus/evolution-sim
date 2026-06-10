@@ -141,6 +141,38 @@ class RuntimeSurfaceContractTests(RuntimeContractTestHelpers):
 
         self.assertEqual(actual, expected)
 
+    def test_habitat_surface_codes_mark_water_as_non_land(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        surfaces = world._materialize_frame_surfaces(
+            surface_context=world._frame_surface_context(),
+        )
+
+        habitat_by_code = {
+            code: state for state, code in runtime_surfaces.HABITAT_STATE_CODES.items()
+        }
+        habitat_counts = surfaces["habitat_counts"]
+        land_recount = {state: 0 for state in habitat_counts}
+        water_tiles = 0
+        land_tiles = 0
+
+        for y, row in enumerate(world.grid):
+            for x, tile in enumerate(row):
+                code = surfaces["habitat_codes"][y][x]
+                state = surfaces["habitat_states"][y][x]
+                if tile.terrain == "water":
+                    water_tiles += 1
+                    self.assertEqual(code, runtime_surfaces.NON_LAND_ECOLOGY_CODE)
+                    self.assertEqual(state, runtime_surfaces.NON_LAND_HABITAT_STATE)
+                else:
+                    land_tiles += 1
+                    self.assertNotEqual(code, runtime_surfaces.NON_LAND_ECOLOGY_CODE)
+                    land_recount[habitat_by_code[code]] += 1
+
+        self.assertGreater(water_tiles, 0)
+        self.assertGreater(land_tiles, 0)
+        self.assertEqual(habitat_counts, land_recount)
+        self.assertEqual(sum(habitat_counts.values()), land_tiles)
+
     def test_summary_end_surface_state_uses_explicit_snapshot_context(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         context = world._surface_snapshot_context()

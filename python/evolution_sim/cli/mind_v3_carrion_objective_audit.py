@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     _aggregate_runs,
     _run_fixture_once,
 )

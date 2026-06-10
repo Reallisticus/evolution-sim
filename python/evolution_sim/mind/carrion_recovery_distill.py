@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import TextIO
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     _aggregate_runs,
-    _comparison_delta,
     _run_once,
     mind_v3_fixture_gate_config,
     mind_v3_fixture_gate_status,
@@ -24,6 +23,7 @@ from evolution_sim.mind.carrion_recovery_archive import (
     load_carrion_recovery_json_report,
 )
 from evolution_sim.mind.dataset import load_trajectory_jsonl
+from evolution_sim.mind.evaluation_helpers import comparison_delta as _comparison_delta
 from evolution_sim.mind.horizon_labels import (
     DEFAULT_HORIZON_TICKS,
     build_horizon_label_report,

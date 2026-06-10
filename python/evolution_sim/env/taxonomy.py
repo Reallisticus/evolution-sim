@@ -39,7 +39,13 @@ MEAT_MODES = ("scavenger", "hunter", "mixed")
 REPLAY_TAXONOMY_MODE = "replay_clade_species_v2"
 ECOTYPE_IDENTITY_MODE = "frame_local_genome_cluster"
 HYDROLOGY_SUPPORT_FLAGS = {"adjacent_to_water": 1, "wetland": 2, "flooded": 4}
-HABITAT_CODE_LEGEND = {0: "stable", 1: "bloom", 2: "flooded", 3: "parched"}
+HABITAT_CODE_LEGEND = {
+    -1: "non_land",
+    0: "stable",
+    1: "bloom",
+    2: "flooded",
+    3: "parched",
+}
 REQUIRED_AGENT_FIELDS = {
     "agent_id",
     "x",

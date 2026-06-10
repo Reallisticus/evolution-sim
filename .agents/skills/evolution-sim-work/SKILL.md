@@ -19,10 +19,12 @@ Use this as the default implementation workflow for this repository.
 2. Check the working tree with `git status --short`.
 3. Treat existing unrelated changes as user-owned. Do not revert them.
 4. For Mind v3 work, read
-   `docs/repository-audit-2026-06-10-remediation.md` before editing. If the
-   v137-v176 dirty-tree backlog is still uncommitted, do not start a new
-   experiment slice unless the user explicitly asks for docs-only work,
-   backlog triage, or a negative control.
+   `docs/repository-audit-2026-06-10-remediation.md` before editing. The
+   v137-v176 backlog has been committed and backed up; apply the same rule to
+   new work by stopping before any experiment slice that depends on dirty-tree
+   source, uncommitted entrypoints/tests/docs, or local-only digest-referenced
+   artifacts unless the user explicitly asks for docs-only work, backlog triage,
+   or a negative control.
 5. For non-trivial work, state:
    - what you found
    - what files are likely involved

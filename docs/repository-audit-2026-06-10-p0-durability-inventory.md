@@ -240,7 +240,11 @@ should explicitly state any compromise and reference this P0 inventory.
 
 ## Remaining Durability Work
 
+Post-inventory source durability was completed after this preservation pass:
+the backlog was committed on `codex/p0-durability-backlog`, pushed, and merged
+to `master` as `628ff1e`.
+
 1. Decide whether missing chunk directories are acceptable merged-evidence-only
    provenance or need regeneration.
-2. After explicit authorization, commit the source slices and push so CI and the
-   remote trainer can see them.
+2. Keep future Mind experiment source and digest-referenced evidence durable
+   before using the remote trainer or making promotion-style claims.

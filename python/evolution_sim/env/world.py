@@ -75,14 +75,22 @@ from evolution_sim.genome.species import (
 
 LAND_TERRAINS = ("plain", "forest", "wetland", "rocky")
 TERRAIN_CODES = {"plain": 0, "forest": 1, "wetland": 2, "rocky": 3, "water": 4}
-HABITAT_STATE_CODES = {"stable": 0, "bloom": 1, "flooded": 2, "parched": 3}
+LAND_HABITAT_STATES = ("stable", "bloom", "flooded", "parched")
+NON_LAND_HABITAT_STATE = "non_land"
+NON_LAND_ECOLOGY_CODE = -1
+HABITAT_STATE_CODES = {
+    "stable": 0,
+    "bloom": 1,
+    "flooded": 2,
+    "parched": 3,
+    NON_LAND_HABITAT_STATE: NON_LAND_ECOLOGY_CODE,
+}
 ECOLOGY_STATE_CODES = {"stable": 0, "lush": 1, "recovering": 2, "depleted": 3}
 HAZARD_TYPE_CODES = {"none": 0, "exposure": 1, "instability": 2}
 TROPHIC_ROLE_CODES = {"none": 0, "herbivore": 1, "omnivore": 2, "carnivore": 3}
 MEAT_MODE_CODES = {"none": 0, "scavenger": 1, "hunter": 2, "mixed": 3}
 ANIMAL_RESOURCE_KINDS = runtime_feeding.ANIMAL_RESOURCE_KINDS
 ANIMAL_RESOURCE_POLICY_BLOCKERS = runtime_feeding.ANIMAL_RESOURCE_POLICY_BLOCKERS
-NON_LAND_ECOLOGY_CODE = -1
 HYDROLOGY_REASON_CODES = {"none": 0, "adjacent_water": 1, "wetland": 2, "flooded": 3}
 HYDROLOGY_SUPPORT_FLAGS = {"adjacent_to_water": 1, "wetland": 2, "flooded": 4}
 SOFT_REFUGE_CODES = {"none": 0, "canopy_refuge": 1}
@@ -1348,12 +1356,12 @@ class SimulationWorld:
 
         climate_state = self._climate_state()
         grid: list[list[str]] = []
-        counts = {state: 0 for state in HABITAT_STATE_CODES}
+        counts = {state: 0 for state in LAND_HABITAT_STATES}
         for y, row in enumerate(self.grid):
             state_row: list[str] = []
             for x, tile in enumerate(row):
                 if tile.terrain == "water":
-                    state = "stable"
+                    state = NON_LAND_HABITAT_STATE
                 else:
                     fertility, moisture, heat = self._effective_tile_fields(x, y)
                     if (
@@ -1382,7 +1390,8 @@ class SimulationWorld:
         return grid, counts
 
     def _habitat_state_at(self, x: int, y: int) -> str:
-        return self._habitat_state_grid()[0][y][x]
+        state = self._habitat_state_grid()[0][y][x]
+        return "stable" if state == NON_LAND_HABITAT_STATE else state
 
     def _ecology_state_for_tile(self, tile: Tile) -> str:
         if tile.terrain == "water":

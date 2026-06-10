@@ -73,7 +73,7 @@ class ViewerContractsTests(unittest.TestCase):
             "water_access_reason": HYDROLOGY_REASONS,
             "soft_refuge_reason": REFUGE_REASONS,
             "hazard_type": HAZARD_TYPES,
-            "habitat_state": HABITAT_STATES,
+            "habitat_state": ("non_land", *HABITAT_STATES),
             "ecology_state": ECOLOGY_STATES,
             "food_source": tuple(sorted(FOOD_SOURCES)),
             "reproduction_mode": (
@@ -106,6 +106,7 @@ class ViewerContractsTests(unittest.TestCase):
         self.assertEqual(labels["meat_mode"]["none"], "Plant-focused")
         self.assertEqual(labels["water_access_reason"]["none"], "No water access")
         self.assertEqual(labels["hazard_type"]["none"], "No active hazard")
+        self.assertEqual(labels["habitat_state"]["non_land"], "Non-land")
 
     def test_viewer_empty_labels_are_generated_with_contracts(self) -> None:
         payload = viewer_contract_payload()

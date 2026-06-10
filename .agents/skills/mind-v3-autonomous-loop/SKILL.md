@@ -22,10 +22,11 @@ extraction, global actor bias, residual thresholds, or another micro-archive
 nearest-neighbor scorer unless the user explicitly asks for a negative-control
 probe.
 
-Current blocking constraint: the v137-v176 experiment chain and its
-digest-referenced `output/mind/` evidence are not durable until committed,
-pushed, and backed up. Because the RTX trainer pulls committed source, do not
-launch new Mind v3 experiments or trainer jobs while that backlog is still
+Current durability constraint: the v137-v176 experiment chain has been
+committed, pushed, and backed up, but the same failure mode must not recur.
+Because the RTX trainer pulls committed source, do not launch new Mind v3
+experiments or trainer jobs while the current slice's source, package
+entrypoints, tests, ledger entries, or digest-referenced artifacts are still
 local-only. A docs-only remediation pass or explicit git/backlog triage is
 allowed.
 

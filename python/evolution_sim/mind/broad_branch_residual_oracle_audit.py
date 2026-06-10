@@ -9,11 +9,6 @@ from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
 from evolution_sim.config import WorldConfig
-from evolution_sim.cli.mind_v3_evaluate import (
-    _dominant_action_summary,
-    _heuristic_action_source_count,
-    _json_ready,
-)
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.action_contract import (
     ACTION_NAMES,
@@ -46,6 +41,11 @@ from evolution_sim.mind.branch_utility_risk_audit import (
 from evolution_sim.mind.carrion_branch_explore import (
     _branch_state_digest,
     _configure_manual_summary_run,
+)
+from evolution_sim.mind.evaluation_helpers import (
+    dominant_action_summary as _dominant_action_summary,
+    heuristic_action_source_count as _heuristic_action_source_count,
+    json_ready as _json_ready,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.v3_planner_distilled import planner_distilled_runtime_row

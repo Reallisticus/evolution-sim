@@ -8,14 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
-from evolution_sim.cli.mind_v3_evaluate import (
-    _dominant_action_summary,
-    _fixture_world,
-    _heuristic_action_source_count,
-    _json_ready,
-    _round,
-    _safe_path_part,
-)
+from evolution_sim.mind.evaluation_harness import _fixture_world
 from evolution_sim.env import RunMode, SimulationWorld
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import (
@@ -44,6 +37,13 @@ from evolution_sim.mind.dataset import (
     TRAJECTORY_DATASET_RECORD_INDEX_FIELD,
     TRAJECTORY_EPISODE_ID_FIELD,
     TRAJECTORY_SOURCE_PATH_FIELD,
+)
+from evolution_sim.mind.evaluation_helpers import (
+    dominant_action_summary as _dominant_action_summary,
+    heuristic_action_source_count as _heuristic_action_source_count,
+    json_ready as _json_ready,
+    round_float as _round,
+    safe_path_part as _safe_path_part,
 )
 from evolution_sim.mind.outcome_metrics import (
     aggregate_run_outcome_metrics,

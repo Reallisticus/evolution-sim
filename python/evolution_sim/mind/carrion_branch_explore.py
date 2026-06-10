@@ -8,16 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     _aggregate_runs,
-    _dominant_action_summary,
     _fixture_world,
-    _heuristic_action_source_count,
-    _json_ready,
     _neural_anchor_diagnostics,
     _reproduction_failure_attribution,
-    _round,
-    _safe_path_part,
     _mind_v3_policy,
     _temporal_readiness_attribution,
     _write_trajectory_records,
@@ -36,6 +31,13 @@ from evolution_sim.mind.carrion_counterfactual import (
     DEFAULT_CARRION_COUNTERFACTUAL_TICKS,
     DEFAULT_COUNTERFACTUAL_SCRIPTS,
     CarrionCounterfactualPolicy,
+)
+from evolution_sim.mind.evaluation_helpers import (
+    dominant_action_summary as _dominant_action_summary,
+    heuristic_action_source_count as _heuristic_action_source_count,
+    json_ready as _json_ready,
+    round_float as _round,
+    safe_path_part as _safe_path_part,
 )
 from evolution_sim.mind.evolution import _validated_metadata
 from evolution_sim.mind.horizon_labels import ANIMAL_RESOURCE_FOOD_SOURCES

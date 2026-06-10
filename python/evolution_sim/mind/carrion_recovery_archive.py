@@ -6,13 +6,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
-from evolution_sim.cli.mind_v3_evaluate import _round
 from evolution_sim.mind.carrion_branch_explore import (
     DEFAULT_CARRION_BRANCH_BASE_SCRIPT,
     DEFAULT_CARRION_BRANCH_POINTS_PER_SEED,
     MIND_V3_CARRION_BRANCH_EXPLORE_SCHEMA_VERSION,
     build_carrion_branch_explore_report,
 )
+from evolution_sim.mind.evaluation_helpers import round_float as _round
 from evolution_sim.mind.carrion_counterfactual import (
     DEFAULT_CARRION_COUNTERFACTUAL_SEEDS,
     DEFAULT_CARRION_COUNTERFACTUAL_TICKS,

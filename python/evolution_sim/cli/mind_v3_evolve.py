@@ -10,7 +10,7 @@ from pathlib import Path
 from random import Random
 
 from evolution_sim.config import WorldConfig
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     CONTROLLED_FIXTURE_NAMES,
     MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY,
     MIND_V3_CONTROLLED_FIXTURE_SUITE_POLICY,

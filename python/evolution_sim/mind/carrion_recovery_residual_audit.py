@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TextIO
 
-from evolution_sim.cli.mind_v3_evaluate import run_mind_v3_fixture_suite
+from evolution_sim.mind.evaluation_harness import run_mind_v3_fixture_suite
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import decode_observation_input
 from evolution_sim.mind.carrion_recovery_archive import (
