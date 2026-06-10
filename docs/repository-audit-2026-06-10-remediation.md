@@ -38,11 +38,14 @@ reproducibility, and experiment direction.
   leakage scans live in `python/evolution_sim/mind/evaluation_harness.py`.
   The v141/v142 live A/B implementations now live under `mind/`; their CLI
   entrypoints are wrappers.
-- The first strategy-reset implementation slice is complete: v177 exact branch
+- The strategy-reset data-support slices are in progress: v177 exact branch
   replay expansion now emits compact transition rows with current/next public
-  observations and action masks plus previous same-agent public context. CI/ML
-  reproducibility now has compact push coverage plus an explicit
-  NVIDIA-trainer validation path for the optional torch stack.
+  observations and action masks plus previous same-agent public context, and
+  v178 audited those rows as source-valid, leakage-free, schema-valid, and
+  decodable but support-limited. The next route is v179 exact-branch
+  transition-row expansion before training-scale capacity work. CI/ML
+  reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
+  validation path for the optional torch stack.
 
 ## Confirmed Serious Findings
 
@@ -108,14 +111,16 @@ explicit user authorization.
 
 ### P1: Strategy Reset
 
-Status: v177 complete. The v176 recommendation,
+Status: v178 complete. The v176 recommendation,
 `v177_exact_branch_replay_expansion_no_training`, now materializes exact branch
 replay evidence and compact transition rows with `next_public_observation`,
-`next_public_action_mask`, and `previous_same_agent_public_context`. The next
-Mind v3 slice should audit the v177 transition-row dataset and decide the v178
-data-support route before any transition/world-model, rollout-context, or
-neural capacity work. Do not train another undersupported nearest-neighbor
-scorer.
+`next_public_action_mask`, and `previous_same_agent_public_context`. The v178
+transition-row dataset audit found the v177 dataset source-valid,
+schema-valid, leakage-free, and observation-decodable, but it has only `84`
+rows, `2` source seeds, and `16` branch points under the default support
+minimums. The next Mind v3 slice should expand exact branch transition-row
+support as v179 before any transition/world-model, rollout-context, or neural
+capacity work. Do not train another undersupported nearest-neighbor scorer.
 
 After source durability is restored, move scale/capacity work through the
 remote trainer: vectorized branch replay, quality-diversity archive expansion,
@@ -188,10 +193,11 @@ digest-referenced output/mind artifacts have a documented durable backup path.
 If git actions are not authorized, stop after producing the exact commit plan.
 
 If source durability, the habitat water contract fix, shared-harness
-extraction, CI/ML reproducibility hardening, and v177 exact-branch-replay
-transition-row support are already handled, take the next focused strategy
-slice: v178 transition-row dataset audit. Keep CI slices compact and do not
-turn push CI into promotion evidence.
+extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
+transition-row support, and the v178 transition-row dataset audit are already
+handled, take the next focused strategy slice: v179 exact-branch transition-row
+support expansion. Keep CI slices compact and do not turn push CI into
+promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

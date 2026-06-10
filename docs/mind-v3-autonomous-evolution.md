@@ -38,11 +38,13 @@ The v176 recommendation has been executed as
 `v177_exact_branch_replay_expansion_no_training`. It produces exact branch
 replay rows with current public observation/action mask, forced action,
 `next_public_observation`, `next_public_action_mask`, and
-`previous_same_agent_public_context` so a later rollout-context,
-transition-value, neural/recurrent, or world-model path has real data support.
-The next useful slice is a v178 transition-row dataset audit, not scalar IQL
-coefficients, actor-bias calibration, residual-threshold tuning, or another
-tiny nearest-neighbor micro-archive scorer on the same public representation.
+`previous_same_agent_public_context`. The follow-up v178 transition-row dataset
+audit found that data source-valid, schema-valid, leakage-free, and
+observation-decodable, but too small for training-scale capacity work: `84`
+rows from `2` source seeds and `16` branch points. The next useful slice is
+v179 exact-branch transition-row expansion, not scalar IQL coefficients,
+actor-bias calibration, residual-threshold tuning, or another tiny
+nearest-neighbor micro-archive scorer on the same public representation.
 
 Seeds `5,13,19,29,37,41` have been used as support/provenance for recent lanes.
 They remain useful diagnostics, but they are not clean promotion-heldout
@@ -5493,6 +5495,25 @@ Major milestones from the current state:
   The generated artifacts are local gitignored evidence; do not hardcode their
   exact digest in source/docs or use them as cross-machine evidence until a
   durable backup path is recorded.
+
+- v178: diagnostics-only transition-row dataset audit. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v178-transition-row-dataset-audit`.
+  The audit consumes the v177 report and compact transition JSONL, validates
+  source/report consistency, reuses the v177 row-schema and leakage checks, and
+  adds branch/action identity checks, public action-mask transition summaries,
+  encoded observation decoding/delta checks, source-seed coverage, and
+  diagnostic target summaries. The real local v177 dataset passed source
+  validation, row schema validation, leakage scan, action-mask audit, identity
+  audit, and decoded all `84` current and `84` next observations. Coverage is
+  support-limited under the default route minimums: `84` rows, `2` source seeds,
+  `16` branch points, and `7` forced actions. Classification is
+  `m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_valid_support_limited_expand_before_training`;
+  recommended next route is
+  `v179_expand_exact_branch_transition_rows_no_training`. Report:
+  `output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit.json`.
+  The generated report is local gitignored evidence; do not hardcode its exact
+  digest in source/docs or use it as cross-machine evidence until a durable
+  backup path is recorded.
 
 External checks that support this direction:
 
