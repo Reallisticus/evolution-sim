@@ -168,6 +168,23 @@ for package in torch torchrl tensordict gymnasium pettingzoo minari d3rlpy; do
 done
 ```
 
+Validate the optional Mind ML stack in an environment where it is installed:
+
+```bash
+npm run sim:mind:torch:validate
+```
+
+On the configured NVIDIA trainer, require CUDA and write a dependency/device
+report with:
+
+```bash
+npm run trainer -- run npm run sim:mind:torch:validate:cuda
+```
+
+This validation runs the torch-gated Mind tests and a tiny CUDA-backed training
+smoke. It records dependency versions and device metadata; it is not promotion
+evidence and does not replace the strict Mind gates.
+
 Run the reproducible Mind v1 gate to collect the default multi-seed bank, train
 the guarded baseline, and evaluate held-out seeds `5,13,19,29`:
 

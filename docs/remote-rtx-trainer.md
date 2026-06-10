@@ -39,6 +39,19 @@ After pushing local changes to GitHub, fast-forward the trainer:
 npm run trainer:pull
 ```
 
+For a review branch, switch the trainer to that branch before running remote
+checks:
+
+```bash
+npm run trainer -- checkout codex/<branch-name>
+```
+
+Install or refresh the optional Mind ML stack:
+
+```bash
+npm run trainer:deps
+```
+
 Run a short command synchronously on the trainer:
 
 ```bash
@@ -75,6 +88,24 @@ run: the trained artifact, strict slice report, train-gate report, diagnostics,
 and any ledger/report JSON that will be referenced in
 `docs/mind-v3-autonomous-evolution.md`. Do not bulk-transfer trajectory
 directories unless the next local step needs them.
+
+Validate the optional PyTorch/CUDA Mind stack on the NVIDIA trainer with:
+
+```bash
+npm run trainer -- run npm run sim:mind:torch:validate:cuda
+```
+
+This runs the torch-gated Mind unit tests, requires CUDA visibility, runs a tiny
+CUDA-backed training smoke, and writes
+`output/mind/mind-torch-validation-report.json` in the trainer checkout. Fetch
+that report only when it will be referenced in a review or artifact ledger:
+
+```bash
+npm run trainer -- fetch "<remote-repo>/output/mind/mind-torch-validation-report.json"
+```
+
+This is an optional ML-stack validation path, not promotion evidence and not a
+replacement for strict held-out Mind gates.
 
 For complex shell commands with pipes, redirects, or multiple steps, wrap the
 remote command in `bash -lc`:
