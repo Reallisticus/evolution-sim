@@ -41,8 +41,9 @@ reproducibility, and experiment direction.
 - The strategy-reset data-support slices are in progress: v177 exact branch
   replay expansion now emits compact transition rows with current/next public
   observations and action masks plus previous same-agent public context, and
-  v178 audited those rows as source-valid, leakage-free, schema-valid, and
-  decodable but support-limited. The next route is v179 exact-branch
+  v178 audited those rows as source-valid, key/value leakage-free, nested
+  trainable-feature contract-valid, schema-valid, and decodable but
+  support-limited. The next route is v179 exact-branch
   transition-row expansion before training-scale capacity work. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
@@ -116,11 +117,12 @@ Status: v178 complete. The v176 recommendation,
 replay evidence and compact transition rows with `next_public_observation`,
 `next_public_action_mask`, and `previous_same_agent_public_context`. The v178
 transition-row dataset audit found the v177 dataset source-valid,
-schema-valid, leakage-free, and observation-decodable, but it has only `84`
-rows, `2` source seeds, and `16` branch points under the default support
-minimums. The next Mind v3 slice should expand exact branch transition-row
-support as v179 before any transition/world-model, rollout-context, or neural
-capacity work. Do not train another undersupported nearest-neighbor scorer.
+schema-valid, key/value leakage-free, nested trainable-feature contract-valid,
+and observation-decodable, but it has only `84` rows, `2` source seeds, and
+`16` branch points under the default support minimums. The next Mind v3 slice
+should expand exact branch transition-row support as v179 before any
+transition/world-model, rollout-context, or neural capacity work. Do not train
+another undersupported nearest-neighbor scorer.
 
 After source durability is restored, move scale/capacity work through the
 remote trainer: vectorized branch replay, quality-diversity archive expansion,

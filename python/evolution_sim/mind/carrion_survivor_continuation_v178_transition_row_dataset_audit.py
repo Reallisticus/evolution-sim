@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 import json
 from math import isfinite
 from pathlib import Path
+import re
 from statistics import mean
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
@@ -25,10 +26,12 @@ from evolution_sim.mind.carrion_survivor_continuation_v171_replay_expansion impo
 from evolution_sim.mind.carrion_survivor_continuation_v177_exact_branch_replay_expansion import (
     DEFAULT_OUTPUT_PATH as DEFAULT_V177_REPORT_PATH,
     DEFAULT_TRANSITION_DATASET_OUTPUT_PATH,
+    FORBIDDEN_TRAINABLE_KEY_TOKENS,
     M3_CARRION_SURVIVOR_CONTINUATION_V177_COMPACT_TRANSITION_FEATURE_POLICY,
     M3_CARRION_SURVIVOR_CONTINUATION_V177_COMPACT_TRANSITION_ROW_SCHEMA_VERSION,
     M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_POLICY,
     M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_SCHEMA_VERSION,
+    TRAINABLE_PUBLIC_FEATURE_KEYS,
     trainable_payload_leakage_scan,
     validate_v177_transition_rows,
 )
@@ -52,6 +55,23 @@ DEFAULT_MIN_ROW_COUNT = 128
 DEFAULT_MIN_SEED_COUNT = 3
 DEFAULT_MIN_BRANCH_COUNT = 24
 DEFAULT_MIN_FORCED_ACTION_COUNT = 6
+ENCODED_OBSERVATION_INPUT_KEYS = {
+    "schema_version",
+    "encoder_version",
+    "decoded_dtype",
+    "storage_dtype",
+    "storage_encoding",
+    "shape",
+    "value_range",
+    "data",
+}
+PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS = {
+    "available",
+    "public_observation",
+    "public_action_mask",
+    "public_action",
+    "moved",
+}
 
 
 def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
@@ -78,6 +98,10 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
     leakage_scan = trainable_payload_leakage_scan(
         [_mapping(row.get("trainable_public_features")) for row in rows]
     )
+    value_leakage_scan = trainable_value_leakage_scan(
+        [_mapping(row.get("trainable_public_features")) for row in rows]
+    )
+    feature_contract_audit = trainable_feature_contract_audit(rows)
     identity_audit = transition_row_identity_audit(rows)
     action_mask_audit = transition_row_action_mask_audit(rows)
     observation_audit = transition_row_observation_audit(rows)
@@ -96,6 +120,8 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         source_validation=source_validation,
         row_schema_validation=row_schema_validation,
         leakage_scan=leakage_scan,
+        value_leakage_scan=value_leakage_scan,
+        feature_contract_audit=feature_contract_audit,
         identity_audit=identity_audit,
         action_mask_audit=action_mask_audit,
         observation_audit=observation_audit,
@@ -121,6 +147,8 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         "source_validation": source_validation,
         "row_schema_validation": row_schema_validation,
         "leakage_scan": leakage_scan,
+        "value_leakage_scan": value_leakage_scan,
+        "feature_contract_audit": feature_contract_audit,
         "identity_audit": identity_audit,
         "action_mask_audit": action_mask_audit,
         "observation_audit": observation_audit,
@@ -148,6 +176,109 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
     report["exact_digest"] = _json_round_trip_digest(report)
     write_json(output_path, report)
     return report
+
+
+def trainable_value_leakage_scan(
+    feature_payloads: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    failures: list[dict[str, object]] = []
+    for row_index, payload in enumerate(feature_payloads):
+        _scan_trainable_values(
+            value=payload,
+            row_index=row_index,
+            path=("trainable_public_features",),
+            failures=failures,
+            parent=None,
+        )
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_trainable_value_leakage_scan_v1",
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures[:96],
+        "forbidden_value_tokens": list(FORBIDDEN_TRAINABLE_KEY_TOKENS),
+        "opaque_encoded_observation_data_allowed": True,
+        "payload_count": len(feature_payloads),
+    }
+
+
+def trainable_feature_contract_audit(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    failures: list[dict[str, object]] = []
+    for row_index, row in enumerate(rows):
+        features = _mapping(row.get("trainable_public_features"))
+        _require_key_set(
+            failures=failures,
+            row_index=row_index,
+            path=("trainable_public_features",),
+            observed=features,
+            expected=TRAINABLE_PUBLIC_FEATURE_KEYS,
+        )
+        _audit_encoded_observation_contract(
+            failures=failures,
+            row_index=row_index,
+            path=("trainable_public_features", "current_public_observation"),
+            payload=features.get("current_public_observation"),
+            required=True,
+        )
+        _audit_action_mask_contract(
+            failures=failures,
+            row_index=row_index,
+            path=("trainable_public_features", "current_public_action_mask"),
+            payload=features.get("current_public_action_mask"),
+            required=True,
+        )
+        forced_action = features.get("forced_action")
+        if forced_action not in ACTION_NAMES:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": "trainable_public_features.forced_action",
+                    "reason": "invalid_forced_action",
+                    "observed": forced_action,
+                }
+            )
+        previous = _mapping(features.get("previous_same_agent_public_context"))
+        _require_key_set(
+            failures=failures,
+            row_index=row_index,
+            path=(
+                "trainable_public_features",
+                "previous_same_agent_public_context",
+            ),
+            observed=previous,
+            expected=PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS,
+        )
+        _audit_previous_context_contract(
+            failures=failures,
+            row_index=row_index,
+            previous=previous,
+        )
+        done = row.get("transition_done") is True
+        _audit_encoded_observation_contract(
+            failures=failures,
+            row_index=row_index,
+            path=("trainable_public_features", "next_public_observation"),
+            payload=features.get("next_public_observation"),
+            required=not done,
+        )
+        _audit_action_mask_contract(
+            failures=failures,
+            row_index=row_index,
+            path=("trainable_public_features", "next_public_action_mask"),
+            payload=features.get("next_public_action_mask"),
+            required=not done,
+        )
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_trainable_feature_contract_audit_v1",
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures[:128],
+        "row_count": len(rows),
+        "top_level_feature_keys": sorted(TRAINABLE_PUBLIC_FEATURE_KEYS),
+        "previous_context_keys": sorted(PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS),
+        "encoded_observation_keys": sorted(ENCODED_OBSERVATION_INPUT_KEYS),
+    }
 
 
 def validate_v178_sources(
@@ -679,6 +810,8 @@ def _classification(
     source_validation: Mapping[str, object],
     row_schema_validation: Mapping[str, object],
     leakage_scan: Mapping[str, object],
+    value_leakage_scan: Mapping[str, object],
+    feature_contract_audit: Mapping[str, object],
     identity_audit: Mapping[str, object],
     action_mask_audit: Mapping[str, object],
     observation_audit: Mapping[str, object],
@@ -690,6 +823,8 @@ def _classification(
     if (
         row_schema_validation.get("passed") is not True
         or leakage_scan.get("passed") is not True
+        or value_leakage_scan.get("passed") is not True
+        or feature_contract_audit.get("passed") is not True
         or identity_audit.get("passed") is not True
         or action_mask_audit.get("passed") is not True
         or observation_audit.get("passed") is not True
@@ -787,6 +922,311 @@ def _v177_lifecycle_validation(report: Mapping[str, object]) -> dict[str, object
         "failure_count": len(failures),
         "failures": failures[:64],
     }
+
+
+def _audit_previous_context_contract(
+    *,
+    failures: list[dict[str, object]],
+    row_index: int,
+    previous: Mapping[str, object],
+) -> None:
+    available = previous.get("available")
+    if not isinstance(available, bool):
+        failures.append(
+            {
+                "row_index": row_index,
+                "path": (
+                    "trainable_public_features."
+                    "previous_same_agent_public_context.available"
+                ),
+                "reason": "available_not_bool",
+                "observed": available,
+            }
+        )
+        return
+    if available:
+        _audit_encoded_observation_contract(
+            failures=failures,
+            row_index=row_index,
+            path=(
+                "trainable_public_features",
+                "previous_same_agent_public_context",
+                "public_observation",
+            ),
+            payload=previous.get("public_observation"),
+            required=True,
+        )
+        _audit_action_mask_contract(
+            failures=failures,
+            row_index=row_index,
+            path=(
+                "trainable_public_features",
+                "previous_same_agent_public_context",
+                "public_action_mask",
+            ),
+            payload=previous.get("public_action_mask"),
+            required=True,
+        )
+        action = previous.get("public_action")
+        if action not in ACTION_NAMES:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": (
+                        "trainable_public_features."
+                        "previous_same_agent_public_context.public_action"
+                    ),
+                    "reason": "invalid_previous_public_action",
+                    "observed": action,
+                }
+            )
+        if not isinstance(previous.get("moved"), bool):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": (
+                        "trainable_public_features."
+                        "previous_same_agent_public_context.moved"
+                    ),
+                    "reason": "previous_moved_not_bool",
+                    "observed": previous.get("moved"),
+                }
+            )
+    else:
+        for field in (
+            "public_observation",
+            "public_action_mask",
+            "public_action",
+            "moved",
+        ):
+            if previous.get(field) is not None:
+                failures.append(
+                    {
+                        "row_index": row_index,
+                        "path": (
+                            "trainable_public_features."
+                            f"previous_same_agent_public_context.{field}"
+                        ),
+                        "reason": "unavailable_previous_context_field_not_null",
+                        "observed": previous.get(field),
+                    }
+                )
+
+
+def _audit_encoded_observation_contract(
+    *,
+    failures: list[dict[str, object]],
+    row_index: int,
+    path: tuple[str, ...],
+    payload: object,
+    required: bool,
+) -> None:
+    if payload is None:
+        if required:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join(path),
+                    "reason": "encoded_observation_missing",
+                }
+            )
+        return
+    if not isinstance(payload, Mapping):
+        failures.append(
+            {
+                "row_index": row_index,
+                "path": ".".join(path),
+                "reason": "encoded_observation_not_object",
+            }
+        )
+        return
+    _require_key_set(
+        failures=failures,
+        row_index=row_index,
+        path=path,
+        observed=payload,
+        expected=ENCODED_OBSERVATION_INPUT_KEYS,
+    )
+
+
+def _audit_action_mask_contract(
+    *,
+    failures: list[dict[str, object]],
+    row_index: int,
+    path: tuple[str, ...],
+    payload: object,
+    required: bool,
+) -> None:
+    if payload is None:
+        if required:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join(path),
+                    "reason": "action_mask_missing",
+                }
+            )
+        return
+    if not isinstance(payload, Mapping):
+        failures.append(
+            {
+                "row_index": row_index,
+                "path": ".".join(path),
+                "reason": "action_mask_not_object",
+            }
+        )
+        return
+    _require_key_set(
+        failures=failures,
+        row_index=row_index,
+        path=path,
+        observed=payload,
+        expected=set(ACTION_NAMES),
+    )
+    for action in ACTION_NAMES:
+        if not isinstance(payload.get(action), bool):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join((*path, action)),
+                    "reason": "action_mask_value_not_bool",
+                    "observed": payload.get(action),
+                }
+            )
+
+
+def _require_key_set(
+    *,
+    failures: list[dict[str, object]],
+    row_index: int,
+    path: tuple[str, ...],
+    observed: Mapping[str, object],
+    expected: set[str],
+) -> None:
+    observed_keys = {str(key) for key in observed}
+    missing = sorted(expected - observed_keys)
+    extra = sorted(observed_keys - expected)
+    if missing or extra:
+        failures.append(
+            {
+                "row_index": row_index,
+                "path": ".".join(path),
+                "reason": "key_set_mismatch",
+                "missing": missing,
+                "extra": extra,
+            }
+        )
+
+
+def _scan_trainable_values(
+    *,
+    value: object,
+    row_index: int,
+    path: tuple[str, ...],
+    failures: list[dict[str, object]],
+    parent: Mapping[str, object] | None,
+) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            current_path = (*path, str(key))
+            if _is_opaque_encoded_observation_data(
+                key=str(key),
+                value=item,
+                parent=value,
+            ):
+                continue
+            _scan_trainable_values(
+                value=item,
+                row_index=row_index,
+                path=current_path,
+                failures=failures,
+                parent=value,
+            )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _scan_trainable_values(
+                value=item,
+                row_index=row_index,
+                path=(*path, str(index)),
+                failures=failures,
+                parent=parent,
+            )
+        return
+    if isinstance(value, str):
+        token = _matching_forbidden_value_token(value)
+        if token:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join(path),
+                    "reason": "forbidden_string_value_token",
+                    "token": token,
+                }
+            )
+        elif _looks_like_private_path_value(value):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join(path),
+                    "reason": "path_like_string_value",
+                    "token": "path",
+                }
+            )
+    elif isinstance(value, (int, float)) and parent is not None:
+        key = path[-1] if path else ""
+        if key not in {"available", "moved"} and _parent_has_unexpected_keys(parent):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "path": ".".join(path),
+                    "reason": "numeric_value_under_unexpected_feature_key",
+                }
+            )
+
+
+def _is_opaque_encoded_observation_data(
+    *,
+    key: str,
+    value: object,
+    parent: Mapping[str, object],
+) -> bool:
+    return (
+        key == "data"
+        and isinstance(value, str)
+        and set(str(item) for item in parent) == ENCODED_OBSERVATION_INPUT_KEYS
+        and parent.get("storage_encoding") == "zlib_base64_little_endian_int16"
+    )
+
+
+def _matching_forbidden_value_token(text: str) -> str | None:
+    lowered = text.lower()
+    parts = set(re.findall(r"[a-z0-9]+", lowered))
+    for token in FORBIDDEN_TRAINABLE_KEY_TOKENS:
+        token_parts = tuple(part for part in token.split("_") if part)
+        if len(token_parts) == 1:
+            if token_parts[0] in parts:
+                return token
+        elif token in lowered:
+            return token
+    return None
+
+
+def _looks_like_private_path_value(text: str) -> bool:
+    if "/" in text or "\\" in text:
+        return True
+    return text.endswith((".json", ".jsonl", ".jsonl.gz", ".gz"))
+
+
+def _parent_has_unexpected_keys(parent: Mapping[str, object]) -> bool:
+    keys = {str(key) for key in parent}
+    known_sets = (
+        TRAINABLE_PUBLIC_FEATURE_KEYS,
+        PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS,
+        ENCODED_OBSERVATION_INPUT_KEYS,
+        set(ACTION_NAMES),
+    )
+    return not any(keys <= known for known in known_sets)
 
 
 def _decode_values(payload: Mapping[str, object]) -> tuple[list[float] | None, str | None]:

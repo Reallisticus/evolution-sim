@@ -39,12 +39,13 @@ The v176 recommendation has been executed as
 replay rows with current public observation/action mask, forced action,
 `next_public_observation`, `next_public_action_mask`, and
 `previous_same_agent_public_context`. The follow-up v178 transition-row dataset
-audit found that data source-valid, schema-valid, leakage-free, and
-observation-decodable, but too small for training-scale capacity work: `84`
-rows from `2` source seeds and `16` branch points. The next useful slice is
-v179 exact-branch transition-row expansion, not scalar IQL coefficients,
-actor-bias calibration, residual-threshold tuning, or another tiny
-nearest-neighbor micro-archive scorer on the same public representation.
+audit found that data source-valid, schema-valid, key/value leakage-free,
+nested trainable-feature contract-valid, and observation-decodable, but too
+small for training-scale capacity work: `84` rows from `2` source seeds and
+`16` branch points. The next useful slice is v179 exact-branch transition-row
+expansion, not scalar IQL coefficients, actor-bias calibration,
+residual-threshold tuning, or another tiny nearest-neighbor micro-archive
+scorer on the same public representation.
 
 Seeds `5,13,19,29,37,41` have been used as support/provenance for recent lanes.
 They remain useful diagnostics, but they are not clean promotion-heldout
@@ -5499,12 +5500,14 @@ Major milestones from the current state:
 - v178: diagnostics-only transition-row dataset audit. Command:
   `npm run sim:mind:v3:carrion-survivor-continuation-v178-transition-row-dataset-audit`.
   The audit consumes the v177 report and compact transition JSONL, validates
-  source/report consistency, reuses the v177 row-schema and leakage checks, and
-  adds branch/action identity checks, public action-mask transition summaries,
-  encoded observation decoding/delta checks, source-seed coverage, and
-  diagnostic target summaries. The real local v177 dataset passed source
-  validation, row schema validation, leakage scan, action-mask audit, identity
-  audit, and decoded all `84` current and `84` next observations. Coverage is
+  source/report consistency, reuses the v177 row-schema and key-name leakage
+  checks, and adds value-level trainable leakage scanning, exact nested
+  trainable-feature contract checks, branch/action identity checks, public
+  action-mask transition summaries, encoded observation decoding/delta checks,
+  source-seed coverage, and diagnostic target summaries. The real local v177
+  dataset passed source validation, row schema validation, key/value leakage
+  scans, trainable feature contract audit, action-mask audit, identity audit,
+  and decoded all `84` current and `84` next observations. Coverage is
   support-limited under the default route minimums: `84` rows, `2` source seeds,
   `16` branch points, and `7` forced actions. Classification is
   `m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_valid_support_limited_expand_before_training`;
