@@ -28,8 +28,8 @@ from evolution_sim.mind.sequence_history_shadow_scorer import (
     SequenceHistoryShadowScorer,
     sequence_history_shadow_sequence_keys,
 )
+from evolution_sim.mind import evaluation_harness as evaluate_harness
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -118,7 +118,7 @@ class MindV3SequenceHistoryShadowRuntimeTests(unittest.TestCase):
         )
 
     def test_runtime_diagnostics_aggregate_shadow_counts(self) -> None:
-        diagnostics = evaluate_cli._sequence_history_shadow_scorer_diagnostics(
+        diagnostics = evaluate_harness._sequence_history_shadow_scorer_diagnostics(
             [
                 {
                     "sequence_history_shadow_scorer": {

@@ -8,7 +8,7 @@ import math
 import time
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
+from evolution_sim.mind import evaluation_harness as evaluate_cli
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.mind.broad_regression_branch_intervention import (

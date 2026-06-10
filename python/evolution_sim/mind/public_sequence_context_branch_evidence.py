@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
+from evolution_sim.mind import evaluation_harness as evaluate_cli
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import SimulationWorld
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES

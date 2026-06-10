@@ -36,6 +36,8 @@ reproducibility, and experiment direction.
   in `python/evolution_sim/mind/evaluation_helpers.py`, and fixture
   construction, run aggregation, strict gate helpers, digest validation, and
   leakage scans live in `python/evolution_sim/mind/evaluation_harness.py`.
+  The v141/v142 live A/B implementations now live under `mind/`; their CLI
+  entrypoints are wrappers.
 - The first strategy-reset implementation slice is complete: v177 exact branch
   replay expansion now emits compact transition rows with current/next public
   observations and action masks plus previous same-agent public context. CI/ML
@@ -144,8 +146,9 @@ aggregation, strict gate helpers, digest validation, and leakage scans live in
 
 `python/evolution_sim/cli/mind_v3_evaluate.py` now defines only parser/main
 orchestration and keeps compatibility imports for historical callers. Mind
-modules and sibling CLIs import shared helpers from the Mind layer rather than
-private CLI helpers.
+modules and sibling live A/B CLIs import shared helpers from the Mind layer
+rather than private CLI helpers. A focused boundary regression rejects new
+production `mind/` imports from `evolution_sim.cli`.
 
 ### P2: CI And ML Reproducibility
 

@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
+from evolution_sim.mind import evaluation_harness as evaluate_cli
 from evolution_sim.config import WorldConfig
 from evolution_sim.env import SimulationWorld
 from evolution_sim.mind.branch_intervention_residual import write_json

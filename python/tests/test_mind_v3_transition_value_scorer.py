@@ -5,8 +5,6 @@ import math
 import unittest
 from pathlib import Path
 
-from evolution_sim.cli import mind_v3_evaluate as evaluate_cli
-from evolution_sim.cli import mind_v3_transition_value_live_ab as live_ab_cli
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_INPUT_VECTOR_SIZE,
@@ -20,6 +18,8 @@ from evolution_sim.mind.evolution import (
     mind_v3_parameter_count,
 )
 from evolution_sim.mind.rollout_context import RolloutContextState
+from evolution_sim.mind import evaluation_harness as evaluate_harness
+from evolution_sim.mind import transition_value_live_ab
 from evolution_sim.mind.transition_value_scorer import (
     MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION,
     build_transition_value_scorer_report,
@@ -133,7 +133,7 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
             _action_mask("stay", "eat", "drink"),
         )
         diagnostics = decision.diagnostics["transition_value_scorer"]
-        flattened = evaluate_cli._trajectory_safe_policy_decision_diagnostics(
+        flattened = evaluate_harness._trajectory_safe_policy_decision_diagnostics(
             decision.diagnostics
         )
 
@@ -149,7 +149,7 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
         self.assertTrue(all(_scalar_safe(value) for value in flattened.values()))
 
     def test_evaluator_rejects_non_ready_transition_value_report(self) -> None:
-        integrity = evaluate_cli._transition_value_scorer_source_integrity(
+        integrity = evaluate_harness._transition_value_scorer_source_integrity(
             {
                 "schema_version": MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION,
                 "artifact": {
@@ -212,14 +212,14 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
             "aggregate_delta": {"alive_agents_mean": 0.0},
         }
 
-        acceptance = live_ab_cli._acceptance(
+        acceptance = transition_value_live_ab._acceptance(
             broad=broad,
             carrion=carrion,
             artifact_report=artifact_report,
-            broad_seeds=live_ab_cli.STRICT_BROAD_SEEDS,
-            fixture_seeds=live_ab_cli.STRICT_CARRION_FIXTURE_SEEDS,
-            ticks=live_ab_cli.STRICT_TICKS,
-            fixture_ticks=live_ab_cli.STRICT_TICKS,
+            broad_seeds=transition_value_live_ab.STRICT_BROAD_SEEDS,
+            fixture_seeds=transition_value_live_ab.STRICT_CARRION_FIXTURE_SEEDS,
+            ticks=transition_value_live_ab.STRICT_TICKS,
+            fixture_ticks=transition_value_live_ab.STRICT_TICKS,
         )
 
         self.assertFalse(acceptance["passed"])
