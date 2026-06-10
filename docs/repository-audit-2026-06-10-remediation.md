@@ -36,8 +36,9 @@ reproducibility, and experiment direction.
   in `python/evolution_sim/mind/evaluation_helpers.py`, and fixture
   construction, run aggregation, strict gate helpers, digest validation, and
   leakage scans live in `python/evolution_sim/mind/evaluation_harness.py`.
-- The remaining high-leverage items are strategy reset and CI/ML
-  reproducibility.
+- The remaining high-leverage item is strategy reset. CI/ML reproducibility now
+  has compact push coverage plus an explicit NVIDIA-trainer validation path for
+  the optional torch stack.
 
 ## Confirmed Serious Findings
 
@@ -144,12 +145,16 @@ private CLI helpers.
 
 ### P2: CI And ML Reproducibility
 
-Status: partially complete. Push-time CI now runs a compact 20-tick Mind gate
-with default non-vacuous criteria and temporary outputs. Keep strict Mind gates
-on scheduled/manual lanes. Remaining work: add a torch-installed CI lane or
-explicit non-CI validation script so torch-dependent tests stop silently
-skipping everywhere, and lock or otherwise record the Mind-ML dependency
-environment used for trained artifacts.
+Status: complete for audit remediation. Push-time CI now runs a compact 20-tick
+Mind gate with default non-vacuous criteria and temporary outputs. Keep strict
+Mind gates on scheduled/manual lanes. The optional torch stack now has an
+explicit non-CI validation path:
+`npm run sim:mind:torch:validate` for any local ML environment and
+`npm run trainer -- run npm run sim:mind:torch:validate:cuda` for the configured
+NVIDIA trainer. The CUDA path requires torch CUDA visibility, runs the
+torch-gated Mind tests, executes a tiny CUDA-backed training smoke, and records
+dependency versions plus device metadata in
+`output/mind/mind-torch-validation-report.json`.
 
 ### P3: Orientation Cleanup
 

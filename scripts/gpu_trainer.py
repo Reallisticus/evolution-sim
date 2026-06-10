@@ -103,6 +103,35 @@ def cmd_pull(args: argparse.Namespace) -> None:
     _run(_ssh(host, command))
 
 
+def cmd_checkout(args: argparse.Namespace) -> None:
+    host = _require_config(args.host, option="--host", env="TRAINER_HOST")
+    repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
+    branch = shlex.quote(args.branch)
+    command = _repo_command(
+        repo,
+        "\n".join(
+            [
+                f"branch={branch}",
+                "git fetch --prune origin",
+                (
+                    'git switch "$branch" '
+                    '|| git switch --track -c "$branch" "origin/$branch"'
+                ),
+                (
+                    'git branch --set-upstream-to="origin/$branch" "$branch" '
+                    "2>/dev/null || true"
+                ),
+                "git pull --ff-only",
+                "git status --short",
+                'echo "branch=$(git branch --show-current)"',
+                'echo "head=$(git rev-parse --short HEAD)"',
+            ]
+        ),
+        activate=False,
+    )
+    _run(_ssh(host, command))
+
+
 def cmd_deps(args: argparse.Namespace) -> None:
     host = _require_config(args.host, option="--host", env="TRAINER_HOST")
     repo = _require_config(args.repo, option="--repo", env="TRAINER_REPO")
@@ -263,6 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     pull = subparsers.add_parser("pull", help="Fast-forward the remote repo from origin.")
     pull.set_defaults(func=cmd_pull)
+
+    checkout = subparsers.add_parser(
+        "checkout",
+        help="Fetch and switch the remote repo to a branch.",
+    )
+    checkout.add_argument("branch", help="Branch name to check out on the trainer.")
+    checkout.set_defaults(func=cmd_checkout)
 
     deps = subparsers.add_parser("deps", help="Install remote npm/Python dependencies.")
     deps.add_argument("--wheelhouse", default=DEFAULT_WHEELHOUSE)
