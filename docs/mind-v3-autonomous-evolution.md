@@ -34,14 +34,15 @@ evidence has a documented backup path in
 remote trainer pulls committed source, future capacity and scale work must still
 move through pushed source and durable artifact provenance before long runs.
 
-The next experimental route remains the v176 recommendation:
-`v177_exact_branch_replay_expansion_no_training`. It should produce exact branch
-replay shards and compact transition rows with `next_public_observation`,
-`next_public_action_mask`, and `previous_same_agent_public_context` so a later
-rollout-context, transition-value, neural/recurrent, or world-model path has
-real data support. Do not spend the next slice on scalar IQL coefficients,
-actor-bias calibration, residual-threshold tuning, or another tiny
-nearest-neighbor micro-archive scorer on the same public representation.
+The v176 recommendation has been executed as
+`v177_exact_branch_replay_expansion_no_training`. It produces exact branch
+replay rows with current public observation/action mask, forced action,
+`next_public_observation`, `next_public_action_mask`, and
+`previous_same_agent_public_context` so a later rollout-context,
+transition-value, neural/recurrent, or world-model path has real data support.
+The next useful slice is a v178 transition-row dataset audit, not scalar IQL
+coefficients, actor-bias calibration, residual-threshold tuning, or another
+tiny nearest-neighbor micro-archive scorer on the same public representation.
 
 Seeds `5,13,19,29,37,41` have been used as support/provenance for recent lanes.
 They remain useful diagnostics, but they are not clean promotion-heldout
@@ -5471,6 +5472,27 @@ Major milestones from the current state:
   `output/mind/mind-v3-v177-carrion-survivor-continuation-exact-branch-replay-shards.jsonl`;
   digest:
   `a2583369d4a05ad93504dfdbccbbe2ee65b72710f7d3581a6f3b2c4b653b6f33`.
+
+- v177: diagnostics-only exact branch replay expansion for compact transition
+  rows. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v177-exact-branch-replay-expansion`.
+  The slice consumes the v176 shard plan, validates the v176 source report and
+  plan digest, materializes the `16` planned exact branch points, and replays
+  each public forced-action candidate twice for determinism. The generated
+  compact transition dataset has `84` rows: every row has current public
+  observation/action mask, forced action, previous same-agent public context,
+  next public observation, and next public action mask; all `84` forced actions
+  were used and all `84` replay checks verified. Leakage and row-schema
+  validation passed. Classification is
+  `m3_carrion_survivor_continuation_v177_exact_branch_replay_expansion_compact_transition_rows_ready_no_training`;
+  recommended next route is `v178_transition_row_dataset_audit_no_training`.
+  Report:
+  `output/mind/mind-v3-v177-carrion-survivor-continuation-exact-branch-replay-expansion.json`.
+  Compact transition JSONL:
+  `output/mind/mind-v3-v177-carrion-survivor-continuation-compact-transition-rows.jsonl`.
+  The generated artifacts are local gitignored evidence; do not hardcode their
+  exact digest in source/docs or use them as cross-machine evidence until a
+  durable backup path is recorded.
 
 External checks that support this direction:
 
