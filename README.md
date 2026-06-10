@@ -197,12 +197,25 @@ neural/offline-to-online plan.
 
 Mind v3 is the current no-heuristic autonomous-controller track. Its durable
 ledger and next direction are in `docs/mind-v3-autonomous-evolution.md`. The
-May 11 deep-system audit keeps v3 as the strategic path, but changes the next
-work from scalar reward/search tuning toward horizon labels, fixture blocker
-labels, a policy-input/diagnostic split, counterfactual carrion-fixture
-rollouts, and constrained torch/IQL or vectorized rollout training. The bounded
-v31 pure-Python direct artifact was tested and rejected; do not spend another
-slice on residual scale, anchor margin, or trajectory-weight tuning.
+project versioning policy is in `docs/versioning.md`; product SemVer is separate
+from historical Mind experiment and artifact/schema identifiers. The
+2026-06-10 full-repository audit is summarized in
+`docs/repository-audit-2026-06-10-remediation.md`. It keeps v3 as the strategic
+path, but changes the immediate work order:
+
+- restore source/evidence durability before more experiments;
+- do not spend another slice on scalar tuning, residual thresholds, actor bias,
+  or tiny nearest-neighbor support probes on the same representation;
+- continue from the v176 recommendation toward exact branch replay expansion,
+  transition-row support, rollout-context policy capacity, or a distinct
+  controller/data path;
+- mint a fresh promotion-heldout seed matrix before making promotion-style
+  claims from scorers trained or selected using artifacts that consumed
+  `5,13,19,29,37,41` as support/provenance.
+
+The bounded v31 pure-Python direct artifact and later residual/support-scorer
+families are recorded as non-promotable diagnostics, not as active promotion
+routes.
 
 Generate the first label reports with:
 
@@ -364,7 +377,7 @@ The viewer shows:
 - habitat overlay and habitat-pressure time-series chart
 - separate hard-water and support/refuge charts so primary adjacent water, primary wetland, primary flooded, shoreline support, and canopy refuge stay semantically distinct
 - separate hazard, carcass, and combat charts so damage pressure, carrion stock and flow, and predation activity can be attributed over time
-- ecology overlay and vegetation-recovery time-series chart, with water kept visually separate from land ecology
+- ecology overlay and vegetation-recovery time-series chart, with water kept visually separate from land ecology. The 2026-06-10 audit found a separate habitat-code bug where water is serialized as stable habitat; fix that as a dedicated replay/viewer contract change before relying on habitat hover labels over water.
 - time-series charts for alive population, species count, births/deaths, and trait drift
 - species ecology panels for terrain occupancy, shoreline support exposure, hard water access, refuge exposure, hazard exposure, trophic composition, stress, reproduction pressure, attack outcomes, and carcass use, with refuge averages labeled by denominator
 - collapse and extinction event visibility tied to the replay timeline

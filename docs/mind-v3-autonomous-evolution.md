@@ -17,6 +17,39 @@ terrain, diet, movement, communication, and reproduction pressures differently
 enough that emergent inter-species behavior can be observed rather than erased
 by a single global winner.
 
+## 2026-06-10 Repository Audit Checkpoint
+
+The full repository audit upheld the Foundation/replay/viewer/Mind safety-floor
+contracts as broadly sound, with one replay/viewer contract bug to fix
+separately: `habitat_state_codes` currently encodes water as stable habitat
+instead of using the non-land sentinel. That issue does not invalidate the
+recorded Mind v3 results, but it must be handled as an explicit contract change
+with tests, viewer handling, and golden regeneration.
+
+The active Mind v3 blocker is now source/evidence durability and strategy, not
+another local scorer tweak. The v137-v176 chain is present in the dirty working
+tree, while digest-referenced `output/mind/` evidence is gitignored and local.
+Because the remote trainer pulls committed source, capacity and scale work is
+mechanically blocked until the backlog is committed and pushed, and the
+referenced artifacts have a durable backup path.
+
+The next experimental route remains the v176 recommendation:
+`v177_exact_branch_replay_expansion_no_training`. It should produce exact branch
+replay shards and compact transition rows with `next_public_observation`,
+`next_public_action_mask`, and `previous_same_agent_public_context` so a later
+rollout-context, transition-value, neural/recurrent, or world-model path has
+real data support. Do not spend the next slice on scalar IQL coefficients,
+actor-bias calibration, residual-threshold tuning, or another tiny
+nearest-neighbor micro-archive scorer on the same public representation.
+
+Seeds `5,13,19,29,37,41` have been used as support/provenance for recent lanes.
+They remain useful diagnostics, but they are not clean promotion-heldout
+evidence for any scorer trained or selected on those artifacts. Mint a fresh
+promotion-heldout broad matrix before promotion-style Mind v3 claims.
+
+See `docs/repository-audit-2026-06-10-remediation.md` for the remediation
+order, git durability plan, and next-coder prompt.
+
 ## Foundation Handoff Inputs
 
 The Foundation-to-Mind boundary is intentionally mixed. Mind receives raw
@@ -4098,6 +4131,1345 @@ Major milestones from the current state:
   `+0.0465`. Post-carrion rollout context was rare
   (`rollout_context_post_carrion_context_share=0.0054`), so the result supports
   public context capacity but not the carrion fixture blocker.
+- v106-v135 closeout/current state: the post-carrion and first-recovery branch
+  continued through constructible recovery rows, branch archives, public-signal
+  audits, state-action readiness, coverage repair, rare-action archive
+  expansion, shadow scoring, candidate-ranker capacity, and refreshed public
+  context/history probes. The path did not become promotable. v135 closed the
+  first-recovery public-context ranker surface with held-out accuracy
+  `0.2222222222222222`, action-only held-out accuracy `0.2222222222222222`,
+  action-order held-out accuracy `0.3888888888888889`, seed `29` accuracy
+  `0.0`, dominant predicted action `move_north` at share `0.56`, leakage count
+  `0`, and unsupported action count `0`. The current durable route decision is
+  `output/mind/mind-v3-v136-current-route-decision.json`; it sets
+  `training_authorized=false`, `runtime_policy_change_authorized=false`, and
+  `shadow_scorer_execution_authorized=false` for the closed first-recovery
+  public-context ranker path. Do not run another v136 first-recovery
+  ranker/feature probe, scalar IQL tuning pass, prior-blend tuning pass, global
+  actor-bias calibration, or runtime promotion from this surface. The next
+  allowed research direction is a rollout-level sequence or world-model
+  diagnostic with the same deterministic replay, public-input, held-out gate,
+  and no-heuristic boundaries.
+- v137: rollout-level sequence/world-model support audit. The diagnostics-only
+  report `output/mind/mind-v3-v137-rollout-sequence-support-audit.json` requires
+  v136 to have `source_integrity.passed=true` and
+  `next_allowed_research_direction=rollout_level_sequence_or_world_model_diagnostic`
+  before evaluating support. On the non-strict v98 open Mind v3 broad-support
+  trajectory bank (`10` numeric-seed trajectories, `9912` rows), a deterministic
+  public same-agent prior-history lookup beats both action-only and action-order
+  held-out source baselines: held-out accuracy `0.805619`, delta versus each
+  baseline `+0.443972`, dominant predicted action `stay` share `0.421431`,
+  unsupported action count `0`, leakage scan passed, and strict-seed leakage
+  count `0`. This justifies only a future sequence/world-model scorer
+  diagnostic. It does not train, create a runtime artifact, relax gates, change
+  replay/viewer contracts, or reopen the first-recovery public-context ranker
+  path; `training_authorized=false` and
+  `runtime_policy_change_authorized=false` remain explicit.
+  Safe reproduction command:
+  `npm run sim:mind:v3:rollout-sequence-support-audit -- --trajectory-glob 'output/mind/v98-broad-support-trajectories/open-mind-v3-[0-9]*-120.jsonl.gz'`.
+- v138: strict-seed rollout sequence support recheck. The diagnostics-only
+  report
+  `output/mind/mind-v3-v138-rollout-sequence-strict-seed-support-recheck.json`
+  combines the v98 numeric train bank with strict Mind v3 heldout trajectories
+  for seeds `5,13,19,29,37,41`, forces those seeds to heldout with
+  `heldout_fraction=0.0`, and fails closed unless v137 source integrity passed,
+  v137 classification was ready, and every strict seed is present only in the
+  heldout role. Safe strict trajectory generation command:
+  `npm run sim:mind:v3:evaluate -- --seeds 5,13,19,29,37,41 --ticks 120 --output output/mind/mind-v3-v138-strict-heldout-eval.json --trajectory-output-dir output/mind/v138-strict-heldout-trajectories`.
+  Safe recheck command:
+  `npm run sim:mind:v3:rollout-sequence-strict-seed-support-recheck -- --train-trajectory-glob 'output/mind/v98-broad-support-trajectories/open-mind-v3-[0-9]*-120.jsonl.gz' --strict-heldout-trajectory-glob 'output/mind/v138-strict-heldout-trajectories/open-mind-v3-[0-9]*-120.jsonl.gz'`.
+  Re-running the recheck against these existing paths regenerates the report
+  byte-for-byte. A full temp-directory regeneration of strict trajectories is
+  expected to be metric-identical but not byte-for-byte, because source paths
+  and row IDs are serialized in the report.
+  The strict recheck loaded `10` train sources and `6` heldout sources, with
+  `11512` strict heldout examples, aggregate strict heldout accuracy `0.372481`,
+  deltas `+0.189889` versus both action-only and action-order baselines,
+  dominant predicted action `stay` at share `0.309851`, unsupported action
+  count `0`, leakage count `0`, and configured heldout seed leakage count `0`.
+  This remains diagnostics-only: no training, no runtime artifact, no replay or
+  viewer contract change, no gate relaxation, no runtime promotion, and all
+  authorization fields remain false.
+- v139: deterministic sequence-history shadow scorer artifact. The
+  diagnostics-only report/artifact
+  `output/mind/mind-v3-v139-sequence-history-shadow-scorer.json` serializes the
+  v138-supported public sequence-history lookup as train-derived sequence-key
+  counts plus explicit train-derived mask/action-count backoffs. There is no
+  action-contract-order fallback; unsupported no-data cases are reported as
+  `no_data_supported_action` and fail the unsupported-action floor. Build command:
+  `npm run sim:mind:v3:sequence-history-shadow-scorer -- --train-trajectory-glob 'output/mind/v98-broad-support-trajectories/open-mind-v3-[0-9]*-120.jsonl.gz' --strict-heldout-trajectory-glob 'output/mind/v138-strict-heldout-trajectories/open-mind-v3-[0-9]*-120.jsonl.gz'`.
+  The artifact is built only from the v98 numeric train bank, evaluates only
+  strict heldout seeds `5,13,19,29,37,41`, uses the same pre-decision public
+  sequence context and current action mask as v137/v138, and excludes seed,
+  path, provenance, fixture identity, current-row outcome, future rows, private
+  world state, and replay result fields as score features. Loaded artifact
+  scores match pre-serialization scores exactly across `11512` strict heldout
+  examples. v139 also fails closed unless the loaded v138 report has source
+  integrity passed, support floors passed, and the ready strict-seed
+  classification. Strict heldout metrics match v138: accuracy `0.372481`, deltas
+  `+0.189889` versus action-only and action-order baselines, dominant predicted
+  action `stay` share `0.309851`, and unsupported action count `0`. This still
+  does not select runtime actions, create a runtime artifact, relax gates, alter
+  replay/viewer contracts, or promote a controller; all authorization fields
+  remain false.
+- v140: sequence-history shadow-runtime logging only. `mind_v3_evaluate` accepts
+  `--sequence-history-shadow-scorer <path>` and loads the serialized v139 scorer
+  only to log runtime diagnostics: decision count, supported count,
+  would-change count/share, predicted action counts, score-source counts, and
+  unsupported prediction count. Mind v3 keeps an independent per-agent public
+  rollout-context state for the shadow scorer and updates it only from
+  finalized non-passive public trajectory records. The scorer prediction is
+  never used as `requested_action`; there is no score blending, gate
+  relaxation, replay/viewer schema change, default runtime load, or promoted
+  controller. Rich nested shadow diagnostics stay in the in-memory evaluation
+  report/aggregation path. When trajectory output is explicitly enabled,
+  persisted `policy_decision_diagnostics` carries only scalar-safe flattened
+  shadow fields so standard trajectory loading remains valid.
+- v141: first controlled live A/B sequence-history action-selection experiment.
+  This is explicitly opt-in and not default runtime behavior. `mind_v3_evaluate`
+  accepts `--sequence-history-action-override` only with
+  `--sequence-history-shadow-scorer` pointing at a full ready v139 report; the
+  policy can replace the current Mind v3 requested action only when the scorer
+  returns a non-null currently valid supported prediction and the v139
+  source-integrity/support/classification checks still pass. The report command
+  is `npm run sim:mind:v3:sequence-history-live-ab`, writing
+  `output/mind/mind-v3-v141-sequence-history-live-ab.json`. It compares current
+  Mind v3 against the opt-in override on broad seeds `5,13,19,29,37,41` at
+  `120` ticks and the `carrion_only` fixture seeds `13,19,29,37,41,43` at
+  `120` ticks. Acceptance is fixed for this slice: zero heuristic action-source
+  count, zero unsupported requested actions, dominant requested-action share
+  `<=0.50`, no broad per-seed alive or birth regression, carrion fixture alive
+  improvement or blocker-count reduction, and nonzero override application. Any
+  failed floor classifies the live override path as blocked/non-promotable; do
+  not tune thresholds in this slice.
+  Final closeout: classification
+  `sequence_history_live_override_blocked_non_promotable`, first failed floor
+  `dominant_requested_action_share_lte_0_50`, override applied `9583 / 1.0`,
+  broad dominant requested-action share `0.7267`, carrion dominant
+  requested-action share `0.9769`, with broad alive and birth regressions. This
+  route is closed: no further sequence-history count overrides or threshold
+  tuning.
+- v142: public transition-value/world-model scorer route. The serialized scorer
+  `output/mind/mind-v3-v142-transition-value-scorer.json` trains only from
+  public non-strict Mind v3 trajectory rows and public action masks/history,
+  with strict seeds `5,13,19,29,37,41` held out. Its target is observed
+  transition outcome utility by action, not action frequency: alive
+  continuation, birth/reproduction, reproduction readiness, death risk,
+  energy/hydration/health deltas, and unsupported-action rejection. Source
+  integrity passed for schema, train/heldout split, strict-seed separation,
+  finite features, forbidden feature-token scan, action support counts, zero
+  heuristic action-source rows, and exact JSON score roundtrip across `11512`
+  strict heldout examples. The evaluator flag is explicit:
+  `--transition-value-action-override` requires `--transition-value-scorer`.
+  Default runtime behavior remains unchanged, and trajectory persistence keeps
+  only scalar-safe flattened transition-value diagnostics.
+  Controlled live A/B command:
+  `npm run sim:mind:v3:transition-value-live-ab`, writing
+  `output/mind/mind-v3-v142-transition-value-live-ab.json`. Final result:
+  classification `transition_value_live_override_blocked_non_promotable`, first
+  failed floor `broad_seed_5_alive_no_regression`, override applied `3166`
+  decisions (`0.274588` share), zero heuristic action-source count, zero
+  unsupported requested actions, broad dominant requested-action share `0.3682`,
+  and carrion dominant requested-action share `0.4783`. Broad baseline
+  alive/birth means were `13.8333`/`12.3333`; the override regressed to
+  `5.1667`/`4.1667`. First failing seed `5` regressed alive by `-2` with no
+  birth regression; additional broad regressions occurred on seeds `13`, `19`,
+  `29`, and `37`. Carrion alive did not improve (`0.0` delta) and blocker count
+  did not drop (`1 -> 1`). First-failure action distribution: broad requested
+  actions `{eat: 3287, drink: 2514, stay: 1113, move_east: 504, move_west: 502,
+  move_north: 495, move_south: 493, attack_east: 9, attack_north: 7,
+  attack_south: 2, attack_west: 1}`; carrion requested actions `{eat: 1248,
+  stay: 310, move_east: 274, move_west: 233, move_north: 219, move_south: 211,
+  drink: 98, attack_east: 9, attack_north: 6, attack_west: 1}`. Stop rule
+  applies: do not tune margins and do not add another diagnostic-only v143.
+- v143: broad-regression branch-intervention archive. This is a real
+  deterministic branch-replay archive built from the v142 broad live override
+  failure, not a runtime policy and not training. Command:
+  `npm run sim:mind:v3:broad-regression-branch-intervention`, writing
+  `output/mind/mind-v3-v143-broad-regression-branch-intervention-report.json`
+  and
+  `output/mind/mind-v3-v143-broad-regression-branch-intervention-dataset.jsonl`.
+  The command regenerated the required v142 baseline/override broad and carrion
+  trajectories under
+  `output/mind/v143-broad-regression-branch-intervention/v142-trajectories`.
+  Source integrity passed: the v142 scorer was ready, the v142 live report was
+  blocked on broad regression, the strict seed matrix remained intact, branch
+  replay verification was deterministic across `20` candidate runs, and
+  trainable JSONL rows passed the leakage scan. The archive selected one
+  override-applied branch point per broad regression seed (`5`, `13`, `19`,
+  `29`, `37`) and evaluated the baseline Mind v3 action, v142 requested action,
+  and deterministic public-mask alternatives bounded to four candidate actions.
+  Final result: classification
+  `broad_regression_branch_intervention_supported_for_v144_training`,
+  acceptance passed, dataset row count `5`, zero heuristic action-source count,
+  zero unsupported requested actions for supported labels, label actions
+  `{drink: 2, eat: 1, move_north: 1, stay: 1}`, dominant intervention-label
+  share `0.4`, and support for every broad regression seed. Trainable rows
+  contain only public `observation_input`, public `action_mask`, and the action
+  label; seed, fixture, branch id, paths, replay digests, provenance, and
+  outcome evidence stay in non-trainable metadata/report fields. No runtime
+  action-selection change, training, replay/viewer schema change, golden update,
+  or gate relaxation was made. Next step is v144 training from this archive.
+- v144: branch-intervention support-gated residual training and strict live
+  A/B. Command:
+  `npm run sim:mind:v3:branch-intervention-residual-live-ab`, writing
+  `output/mind/mind-v3-v144-branch-intervention-residual-artifact.json` and
+  `output/mind/mind-v3-v144-branch-intervention-residual-live-ab.json`. The
+  artifact trains only from each v143 JSONL row's public `observation_input`,
+  public `action_mask`, and label action. Source integrity passed for v143
+  report schema/classification, dataset digest, leakage scan, label legality
+  under the action mask, dominant label share `0.4 <= 0.5`, support for
+  regression seeds `5,13,19,29,37`, and seed `41` recorded as non-regression
+  rather than missing support. The artifact is opt-in only, serialized, reloads
+  through the existing support-gated residual runtime path, and matched
+  pre-serialization scores on all `5` training rows after JSON roundtrip.
+  Strict broad shadow passed: `4` gate-accepted shadow overrides, zero
+  unsupported proposed actions, dominant accepted action share `0.5`, and zero
+  heuristic action sources. The command therefore ran live strict broad A/B and
+  the controlled `carrion_only` fixture matrix. Final result: classification
+  `branch_intervention_residual_blocked_non_promotable`, first failed floor
+  `broad_resolved_invalid_not_increased`, first failing seed `5`, first failing
+  fixture `broad`, applied override count `4`, zero unsupported requested
+  actions, zero unsupported proposed actions, dominant requested-action share
+  below the `0.50` cap, and dominant applied residual action share `0.5`.
+  Broad alive mean improved by `+1.5` and births mean by `+1.0`, but
+  resolved-invalid count increased from `32` to `36`; seed `5` also regressed
+  births by `-1`. Carrion had no applied overrides, alive delta `0.0`, and no
+  blocker-count reduction. Stop rule applies: do not promote, do not authorize
+  training/runtime promotion, and do not tune thresholds to pass this v144
+  residual.
+- v145: branch-label causal audit and invalid-resolution attribution. Command:
+  `npm run sim:mind:v3:branch-label-causal-audit`, writing
+  `output/mind/mind-v3-v145-branch-label-causal-audit.json`. This is audit
+  only: no runtime policy, no training, no threshold tuning, and no promotion
+  authorization. The audit consumes the v143 report/dataset plus the v144 live
+  A/B report, reloads the v144 artifact referenced by that report, and
+  deterministically traces only the broad seeds with applied v144 overrides.
+  Result: classification `branch_label_causal_audit_recommends_label_blacklist`,
+  route `recommend_label_blacklist_for_later_archive_rebuild`, applied label
+  count `4`, and label blacklist count `4`. Applied labels were seed `5`
+  `eat -> stay`, seed `13` `stay -> drink`, seed `19` `move_east -> drink`,
+  and seed `29` `drink -> eat`; each mapped back to its v143 label source row
+  and exact support example, and each was classified
+  `label_resolution_invalid_risk`. The downstream invalid-resolution examples
+  after those overrides attributed to occupancy conflicts in this run. Seed `5`
+  is explicit: v143 branch-local evidence had alive `+7` and births `+4` versus
+  baseline, but the v144 full run had alive `+1`, births `-1`, and
+  resolved-invalid `+1`, so the label is not population-safe despite local
+  evidence. Broad resolved-invalid remained the v144 blocker (`32 -> 36`,
+  delta `+4`). Stop rule: rebuild a later branch-label archive with the
+  blacklisted rows excluded; do not tune exact-match residual thresholds.
+- v146: Mind v3 candidate campaign runner. Command:
+  `npm run sim:mind:v3:candidate-campaign -- --mode smoke --workers 2`, writing
+  `output/mind/mind-v3-v146-candidate-campaign-report.json`,
+  `output/mind/mind-v3-v146-candidate-campaign-ledger.jsonl`, and
+  per-candidate reports under `output/mind/v146-candidate-campaign/`. This is
+  research acceleration infrastructure, not promotion: the linear Mind v3
+  baseline is cached once, candidate arms are evaluated against that same
+  baseline with deterministic output ordering, and no runtime default,
+  heuristic fallback, gate, replay/viewer/golden contract, or promotion
+  authorization changes. Initial arms are `linear_control`,
+  `v144_branch_intervention_residual`, `v146_blacklist_safe_branch_residual`,
+  `safe_exact_support`, `safe_action_conditioned_support`,
+  `safe_public_history_support`, and `neural_offline`. The v146 safe archive
+  reads v143 labels and the v145 blacklist, excludes all blacklisted labels,
+  and safety-vets remaining labels before any training. Current result:
+  classification `candidate_campaign_archive_support_insufficient`; v145
+  blacklisted `4` labels and only `1` safe label remained, below the `20` label
+  stop rule, so all new safe-support and neural arms were skipped before
+  training. `linear_control` ranked first as the cached baseline control.
+  `v144_branch_intervention_residual` reproduced the negative-control failure:
+  first failed floor `broad_resolved_invalid_not_increased`, failed floor count
+  `3`, broad per-seed regression count `1`, resolved-invalid delta `+4`, and
+  dominant requested-action share `0.4178`. No candidate applied nonzero
+  carrion overrides, so the next route is carrion-specific archive expansion.
+  Worker determinism was checked with a bounded two-candidate campaign and
+  matching leaderboards for `--workers 1` and `--workers 4`. Full mode also ran
+  and reached the same archive-support-insufficient stop rule because no new
+  arm could train under the safe-label floor.
+- v147: diagnostics-only public sequence-context branch evidence collection.
+  Command:
+  `npm run sim:mind:v3:public-sequence-context-branch-evidence`.
+  The report collects later branch points only when the current decision has
+  prior finalized same-agent public transition summaries, evaluates public-mask
+  candidate actions with deterministic replay verification, and compares bp3
+  one-step `observation_input`/`action_mask`/action aliases against the same
+  rows with prior public sequence context included. Trainable fields are limited
+  to current public `observation_input`, current public `action_mask`, and prior
+  public action/outcome summaries; seed, fixture, branch, tick, agent, path,
+  digest, private state, and future outcome fields remain metadata or are
+  rejected by source integrity. The command supports `--resume`, shard controls
+  (`--fixture`, `--seed-include`, `--branch-index-*`, `--shard-id`), and
+  `--merge-shards`. It fails closed on missing replay verification, digest
+  mismatch, stale resumed chunks, partial evidence, trainable leakage, source
+  integrity failures, and authorization drift. Smoke validation wrote
+  `output/mind/shards/smoke-public-sequence-context-branch-evidence-report.json`
+  for broad seed `5`, branch index `0`: source integrity passed, branch result
+  count `1`, action-only alias count `0`, sequence-separated alias count `0`,
+  and all authorization fields remained false. This is evidence collection
+  only: no training, no runtime action-selection change, no replay/viewer/golden
+  contract change, and no promotion authorization.
+- v148: diagnostics-only carrion-specific archive expansion. Command:
+  `npm run sim:mind:v3:carrion-specific-archive-expansion`. The canonical
+  preserved evidence for the completed batch is the merged shard report/dataset
+  at `output/mind/shards/v148-carrion/merged-report.json` and
+  `output/mind/shards/v148-carrion/merged-dataset.jsonl`, with per-shard
+  chunk directories under `output/mind/shards/v148-carrion/*-chunks/`. The
+  generic direct report/dataset paths from the command defaults were not present
+  in the 2026-06-10 P0 durability inventory and should not be treated as the
+  evidence dependency for this slice. Preserved merged exact digest:
+  `322586a04f00435814f6524cd82aa8b27280df5693d1fe6b2b52c7bc744b538e`.
+  This is the next archive-support slice after the negative v147 public
+  sequence-context bp3 sweep. It targets only `carrion_only` seeds
+  `13,19,29,37,41,43`, selects branch points around actual carrion contact,
+  post-carrion hydration risk, movement stalls, and terminal extinction, then
+  evaluates every currently valid public-mask action with deterministic replay
+  verification. The trainable row surface remains public
+  `observation_input`, public `action_mask`, and label action only; seed,
+  fixture, branch id, tick, agent id, digests, paths, private state, and future
+  outcomes stay metadata-only or are rejected by the leakage scan. The v145
+  invalid-resolution-risk blacklist is applied before safe labels are counted.
+  The report is diagnostics-only with `training_authorized=false`,
+  `promotion_authorized=false`, `runtime_promotion_allowed=false`, and no
+  runtime default change. Acceptance remains strict: zero heuristic action
+  sources, complete replay verification, no trainable leakage, safe label count
+  at least `20` or classification `archive_support_insufficient`, dominant
+  safe-label action share at most `0.50`, and explicit per-seed carrion support
+  with missing seeds reported as blockers.
+- v149: diagnostics-only carrion-specific archive train/eval. Command:
+  `npm run sim:mind:v3:carrion-specific-archive-train-eval`, consuming the
+  merged v148 batch inputs
+  `output/mind/shards/v148-carrion/merged-report.json` and
+  `output/mind/shards/v148-carrion/merged-dataset.jsonl`. The v148 batch
+  produced `88` safe labels from `23` carrion branch results, dataset digest
+  `5ed2e76c5f98a6a55a6e4a8ea9b5fda91783faaa6ae4ba600137fd9fa80b5161`,
+  and branch-evidence digest
+  `e85af9912dada7bcff871236a7fed397593cbfd8dd9ada13b3f2afd374ca1c57`.
+  The v149 artifact is
+  `output/mind/mind-v3-v149-carrion-specific-archive-support-gated-artifact.json`
+  with digest
+  `899ed196baf0b9e42155b7d12d4475e4de55cf09950b807eb8e4f850affb9356`;
+  the report is
+  `output/mind/mind-v3-v149-carrion-specific-archive-train-eval.json`.
+  Classification is `m3_safe_archive_diagnostic_failed_non_promotional`.
+  Good evidence: no broad alive/birth regression, no broad live overrides,
+  carrion live overrides applied `11` times, dominant requested-action share
+  `0.4179`, and heuristic action-source count `0`. Stop evidence: strict
+  blockers remain on carrion births and invalid resolution: seed `13` birth
+  delta `-1` and resolved-invalid delta `+1`, seed `19` birth delta `-1`,
+  seed `29` birth delta `-1` and resolved-invalid delta `+1`, seed `41`
+  birth delta `-1`, aggregate carrion birth delta `-0.6667`, and the carrion
+  fixture gate remains blocked on `alive_agents_mean=0.0`. This route should
+  not promote. The next useful slice is a targeted override autopsy or a
+  successor archive that explains why movement overrides near carrion reduce
+  births and sometimes increase invalid resolution.
+- v150: diagnostics-only carrion archive override autopsy. Command:
+  `npm run sim:mind:v3:carrion-archive-override-autopsy`, consuming the v148
+  merged carrion archive report/dataset and the v149 train/eval report plus
+  support-gated artifact. The report writes
+  `output/mind/mind-v3-v150-carrion-archive-override-autopsy.json`.
+  It reruns only the opt-in v149 support-gated artifact on `carrion_only`
+  seeds `13,19,29,37,41,43`, joins the `11` live overrides back to support
+  rows, v148 branch evidence, per-seed deltas, and action legality/resolution
+  diagnostics, and remains diagnostics-only:
+  `training_authorized=false`, `promotion_authorized=false`,
+  `runtime_promotion_allowed=false`, no runtime default change, and no new
+  trainable input surface. The v150 output is complete: observed live carrion
+  overrides `11` equals expected `11`, exact digest
+  `ba3a64496a365f08ead391d74c0c7478bb2a2c7cb71cf9d0376ccf9aa607947d`.
+  All live overrides were directly legal and resolved valid; direct invalid
+  override count is `0`. The blocker is classified primarily as missing
+  hydration/reproduction context, with stale one-step aliasing,
+  movement-near-carrion side effects, and downstream resolution conflict also
+  present. The three support labels/actions driving the regressions are:
+  source seed `29` carrion-contact `move_north` used `4` times, attached to
+  birth-regression seeds `13,29,41` and resolved-invalid-increase seeds
+  `13,29`; source seed `41` movement-stall `move_east` used `4` times,
+  attached to birth-regression seeds `13,19,41` and resolved-invalid-increase
+  seed `13`; and source seed `19` movement-stall `move_south` used `3` times,
+  attached to birth-regression seeds `19,29,41` and resolved-invalid-increase
+  seed `29`. This is not a promotion path. The next route is a carrion
+  hydration/reproduction sequence-context archive before any further live
+  override attempt.
+- v151: diagnostics-only carrion hydration/reproduction sequence-context
+  archive. Command: `npm run sim:mind:v3:carrion-sequence-context-archive`,
+  consuming the v148 merged carrion archive report/dataset, the v149 carrion
+  train/eval report, and the v150 override autopsy. It writes
+  `output/mind/mind-v3-v151-carrion-sequence-context-archive.json` and
+  `output/mind/mind-v3-v151-carrion-sequence-context-archive-dataset.jsonl`.
+  The path is batch/shard-ready from the start (`--shard-id`,
+  `--seed-include`, `--branch-index-include`, `--branch-index-start/count`,
+  `--merge-shards`, repeated `--merge-shard-report`, repeated
+  `--merge-shard-chunk-dir`, and fail-closed partial-shard handling unless
+  `--allow-partial-shard-evidence` is explicit). It remains diagnostics-only:
+  `training_authorized=false`, `promotion_authorized=false`,
+  `runtime_promotion_allowed=false`, no runtime default change, and no runtime
+  action-selection change. The trainable input surface is public current
+  `observation_input`, public `action_mask`, and prior finalized public
+  sequence context only; action remains a target label, and seed, fixture,
+  branch id, tick identity, agent id, paths, digests, private world state,
+  future outcomes, and labels are excluded from trainable input.
+  The real report produced `39` rows: the three v150 harmful support sources
+  (`move_north` seed `29` carrion-contact, `move_east` seed `41`
+  movement-stall, and `move_south` seed `19` movement-stall) plus `36`
+  same-action safe comparators. Replay verification is complete, leakage scan
+  passed, source integrity passed, and all authorization fields are false.
+  Dataset digest:
+  `b635ee880bba2c827afce79c016ad674990ba81f769c2544ed82b3b51c322663`;
+  branch-evidence digest:
+  `787439cd3cde838a528261f29c930d58d5140af99ee77e7ef89a1f8b487c6fe4`;
+  exact digest:
+  `c7a4a6c1aeb9bb31e242e5bd0c673a1e0603389d0b5040eca2a1be7db5ca768f`.
+  Classification is
+  `m3_carrion_sequence_context_archive_separates_harmful_sources_no_training`:
+  all three harmful sources have zero prior public history, while every
+  same-action safe comparator has non-empty prior public history; same-sequence
+  safe comparator count is `0` for each harmful source. This is useful
+  diagnostics for stale early carrion movement labels, but the report also
+  records `exact_one_step_comparator_count=0`, so this is not an exact
+  one-step-alias proof inside the v148 support rows and does not authorize
+  training or promotion.
+- v152: diagnostics-only carrion sequence-context ablation/shadow audit.
+  Command:
+  `npm run sim:mind:v3:carrion-sequence-context-ablation-shadow-audit`,
+  consuming the v151 sequence-context report and dataset. It writes
+  `output/mind/mind-v3-v152-carrion-sequence-context-ablation-shadow-audit.json`.
+  The path remains report-only: `diagnostics_only=true`,
+  `training_authorized=false`, `promotion_authorized=false`,
+  `runtime_promotion_allowed=false`, no runtime default change, no runtime
+  action-selection change, and no runtime artifact creation. It is
+  batch/shard-ready from the start (`--shard-id`, `--seed-include`,
+  `--branch-index-include`, `--row-index-include`,
+  `--row-index-start/count`, `--merge-shards`, repeated
+  `--merge-shard-report`, and fail-closed partial-shard handling unless
+  `--allow-partial-shard-evidence` is explicit). The audit reports exact and
+  near-exact comparator availability for the three v150 harmful labels,
+  including same label action, same/similar action mask, same harmful-source
+  branch reason where possible, zero-prior safe comparators, and nonzero-prior
+  harmful comparators. Its ablations split one-step-only features,
+  prior-length-only features, public hydration/reproduction marker features,
+  and full public prior sequence features, with classification separating
+  strong hydration/reproduction sequence evidence from coarse prior-presence
+  evidence. The optional `--shadow-live-probe` remains report-only and uses
+  in-memory suppression of the three harmful support labels; the default run
+  does not execute the live probe. The real default report produced `39`
+  audited v151 rows (`3` harmful support rows and `36` safe comparators),
+  source integrity passed, no trainable leakage was detected, and all
+  authorization/runtime fields remain false. Same-label-action comparators are
+  available for all three harmful labels, but exact one-step comparators,
+  zero-prior safe comparators, and nonzero-prior harmful comparators are all
+  unavailable. Full public prior sequence, prior-length-only, and one-step-only
+  ablations all separate the three harmful labels, while public
+  hydration/reproduction marker features separate `0` of `3` because
+  same-marker safe comparators exist. Classification is
+  `m3_carrion_sequence_context_ablation_one_step_and_prior_presence_support_limited_no_training`.
+  Audit-row digest:
+  `b635ee880bba2c827afce79c016ad674990ba81f769c2544ed82b3b51c322663`;
+  exact digest:
+  `db0468fa826ddcc50127cc75e3683a29d0d1bc54032f65961ffacb3e6a7c198e`.
+- v153: diagnostics-only carrion sequence-context comparator-support
+  expansion/closeout. Command:
+  `npm run sim:mind:v3:carrion-sequence-context-comparator-support-closeout`,
+  consuming the v151 carrion sequence-context archive report/dataset and the
+  v152 ablation/shadow audit. It writes
+  `output/mind/mind-v3-v153-carrion-sequence-context-comparator-support-closeout.json`.
+  This is a report-only closeout: `diagnostics_only=true`,
+  `training_authorized=false`, `promotion_authorized=false`,
+  `runtime_promotion_allowed=false`, no runtime default change, no runtime
+  action-selection change, and no runtime artifact creation. The path is
+  batch/shard-ready from the start (`--shard-id`, `--seed-include`,
+  `--branch-index-include`, `--row-index-include`,
+  `--row-index-start/count`, `--merge-shards`, repeated
+  `--merge-shard-report`, repeated `--merge-shard-chunk-dir`, and fail-closed
+  partial-shard handling unless `--allow-partial-shard-evidence` is explicit).
+  The comparator evidence cross-products the three v150/v151 harmful support
+  labels against selected v151 rows using only public trainable inputs:
+  current public `observation_input`, public `action_mask`, prior finalized
+  public sequence context, and the action label as target only. Seed, fixture,
+  branch id, tick identity, agent id, paths, digests, provenance, private world
+  state, future rows, future outcomes, and labels remain outside trainable
+  input. The closeout requires v151 and v152 source integrity to have passed
+  and accepts only the expected v151/v152 non-promotional classifications. It
+  reports exact one-step safe comparators, zero-prior safe comparators,
+  nonzero-prior harmful comparators, and weaker same-label-action exact/similar
+  action-mask comparators. If strong comparator support remains unavailable,
+  it closes the v151/v152 sequence-context route as support-limited and
+  recommends returning to the carrion recovery archive or Go-Explore-style
+  survivor-continuation evidence. The real default report produced `117`
+  comparator evidence rows (`3` harmful sources by `39` v151 rows), source
+  integrity passed, leakage scan passed, and all authorization/runtime fields
+  remain false. Strong comparator support remains unavailable:
+  exact one-step safe comparator total `0`, zero-prior safe comparator total
+  `0`, and nonzero-prior harmful comparator total `0`. Weaker support exists
+  only as same-label action-mask evidence: same-label exact-mask safe
+  comparator total `3`, and same-label similar-mask safe comparator total
+  `12`. Classification is
+  `m3_carrion_sequence_context_comparator_support_limited_closed_no_training`;
+  recommended next route is
+  `return_to_carrion_recovery_archive_or_go_explore_survivor_continuation_evidence`.
+  Comparator-evidence digest:
+  `36056ba939c34fd9ad285632ff2c9c6814fe731eb3812321754cb36d1a141c83`;
+  exact digest:
+  `30134d4699e2043695aaa9b7bc388404971dcf8a59e4cc2bd802d28407a37c73`.
+- v154: diagnostics-only carrion survivor-continuation archive. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-archive`, consuming the
+  v150 carrion archive override autopsy, the v153 comparator-support closeout,
+  and the v145 invalid-resolution blacklist. It writes
+  `output/mind/mind-v3-v154-carrion-survivor-continuation-archive.json` and
+  `output/mind/mind-v3-v154-carrion-survivor-continuation-archive-dataset.jsonl`.
+  This returns from the closed v151-v153 sequence-context comparator route to
+  direct branch replay evidence: carrion-only seeds `13,19,29,37,41,43`,
+  branch contexts from carrion contact, post-carrion hydration risk, movement
+  stalls, and terminal extinction, all valid public-mask first actions, and
+  short Go-Explore-style continuations. It is batch/shard-ready from the start
+  (`--shard-id`, `--seed-include`, repeated `--branch-index-include`, repeated
+  `--continuation-index-include`, `--merge-shards`, repeated
+  `--merge-shard-report`, repeated `--merge-shard-chunk-dir`, and fail-closed
+  partial-shard handling unless `--allow-partial-shard-evidence` is explicit).
+  The emitted trainable rows contain only public `observation_input`, public
+  `action_mask`, an empty public prior/continuation context, and the label
+  action target; seed, fixture, branch id, tick, agent id, path, digest,
+  private world state, future outcome, and provenance stay metadata-only. The
+  label vet requires deterministic replay verification, public-mask support,
+  zero heuristic action-source count, no unsupported requested actions, no
+  resolved-invalid increase, and at least one replay-verified improvement
+  signal across survival, hydration recovery, reproduction readiness, or fewer
+  blockers. The real default run evaluated `23` branch points and `476`
+  continuation action runs, with replay verification complete, leakage scan
+  passed, source integrity passed, and all authorization/runtime fields false.
+  It produced `123` labels, with explicit per-seed support: seed `13` has `12`
+  labels, seed `19` has `36`, seed `29` has `28`, seed `37` has `9`, seed `41`
+  has `18`, and seed `43` has `20`. The dominant label action is `eat` with
+  share `0.300813`, below the `0.50` floor; v145 blacklist hits were `0`.
+  Classification is
+  `m3_carrion_survivor_continuation_archive_support_ready_no_training`, and
+  the route recommendation is to review the replay-verified survivor
+  continuation archive before any training design. Continuation branch-evidence
+  digest: `4d0246c0931eb94df08229fcaa6659b41b202817561a41ab8b1fa07c3949524f`;
+  dataset digest:
+  `5028e1b54b9c9c27d1a5c3172f61738eb83bb550a55dc53a3c2a99c5f469600b`;
+  exact digest:
+  `a93b3f9ab9a823105daaef30e59e7c2612da3f283ee5740b3e3ed3f7ef9f0d55`.
+- v155: opt-in carrion survivor-continuation archive train/eval. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-train-eval`, consuming
+  only the v154 report/dataset. The v154 source gates passed for the real
+  inputs: classification
+  `m3_carrion_survivor_continuation_archive_support_ready_no_training`,
+  source integrity passed, replay verification complete, leakage scan passed,
+  support floors passed, label count `123`, all carrion seeds have labels, and
+  dominant label action share `0.300813`. v155 then failed closed before
+  artifact creation or training because the public-only trainable surface is
+  not sufficient to disambiguate the labels. The nearest-neighbor/alias audit
+  found only `11` exact public feature groups for `123` labels, with `10`
+  conflicting exact-feature groups and `119` rows inside conflicting groups.
+  Leave-one-seed-out nearest-neighbor label accuracy was `0.089431`, below
+  the action-only baseline `0.300813` and mask-only baseline `0.276423`
+  (`nearest_neighbor_minus_best_trivial_accuracy=-0.211382`). Classification
+  is
+  `m3_carrion_survivor_continuation_train_eval_pretraining_alias_prior_blocked_closed_no_training`.
+  No artifact was created, diagnostic training did not run, shadow/live A/B
+  were skipped, and all lifecycle authorization fields remain false:
+  `training_authorized=false`, `promotion_authorized=false`,
+  `runtime_promotion_allowed=false`, with no default runtime behavior change and
+  no runtime action-selection change.
+  Report:
+  `output/mind/mind-v3-v155-carrion-survivor-continuation-train-eval.json`;
+  exact digest:
+  `ec74b0a8c275bad70fd4dbf212c3c124ed20d61118255798e712b800fca0c476`.
+- v156: diagnostics-only carrion survivor-continuation public feature
+  sufficiency audit. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-feature-sufficiency-audit`,
+  consuming the v154 survivor-continuation report/dataset and the v155
+  train/eval closeout report. It creates no artifact, runs no training,
+  performs no shadow/live A/B, and leaves default runtime behavior unchanged.
+  The audit requires the expected v155 closed classification
+  `m3_carrion_survivor_continuation_train_eval_pretraining_alias_prior_blocked_closed_no_training`
+  before evaluating candidate public feature surfaces. It evaluates five
+  public-only pre-decision policies: current observation/action mask,
+  existing public prior trajectory context, public hydration/energy/health
+  recent deltas, public recent action/result history, and decoded public local
+  resource/carrion/contact indicators. Seed, fixture, branch id, tick id,
+  agent id, path, digest, provenance, private world state, future outcome, and
+  branch-reason identity remain outside trainable feature payloads; leakage
+  scans passed for every policy. The real default run validated `123` v154
+  labels with dataset digest
+  `5028e1b54b9c9c27d1a5c3172f61738eb83bb550a55dc53a3c2a99c5f469600b`.
+  All five policies still produced only `11` exact feature groups with `10`
+  conflicting groups and `119` conflicting rows. The best policy was
+  `current_observation_action_mask_public_recent_action_result_history`, with
+  leave-one-seed-out 1-NN accuracy `0.276423`, action-only baseline
+  `0.300813`, mask-only baseline `0.276423`, and NN margin `-0.02439`;
+  dominant predicted action share was `0.926829`. Classification is
+  `m3_carrion_survivor_continuation_public_feature_sufficiency_public_feature_surface_insufficient_no_training`,
+  so the v154 label surface remains closed for training until archive
+  generation finds more distinct public pre-decision context. Report:
+  `output/mind/mind-v3-v156-carrion-survivor-continuation-public-feature-sufficiency-audit.json`;
+  exact digest:
+  `ea7d6b4f213778e2a6ccea191bdb592bfa1a80813b90cab0cad13c6534978dae`.
+- v157: diagnostics-only carrion survivor-continuation public-state
+  action-value audit. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-action-value-audit`,
+  consuming the v154 survivor-continuation report/dataset, the v155 closed
+  train/eval report, and the v156 public-feature insufficiency report. It
+  requires the exact v156 classification
+  `m3_carrion_survivor_continuation_public_feature_sufficiency_public_feature_surface_insufficient_no_training`
+  before auditing action values, creates no artifact, runs no training,
+  performs no shadow/live A/B, and leaves all runtime/promotion fields false.
+  The audit groups v154 evidence by exact public feature key for each v156
+  feature policy, then reconstructs action-level continuation evidence from
+  `continuation_branch_results`: survival, hydration recovery, reproduction
+  readiness, blocker reduction, resolved-invalid risk, and unsupported
+  requested-action counts. The hard trainable-feature leakage scan also
+  forbids seed, fixture, branch/tick/agent identity, paths, digests,
+  provenance, private world state, future outcome, and branch-reason signals.
+  The real default run passed source validation and leakage scans for all five
+  policies. Each policy saw `23` public-state evidence groups; across all
+  groups the action-value classifications were `8` unique robust winners, `3`
+  multi-action safe sets, `12` conflicting/no-public-winner groups, and `0`
+  insufficient-coverage groups. The `10` single-label conflicting groups
+  containing the original `119` conflicting rows were all resolvable as either
+  unique robust action-value winners or multi-action safe sets, so replacing
+  single-label imitation with set-valued or action-value targets would reduce
+  the v155 `119` conflicting rows to `0` for this archive. This is diagnostic
+  design evidence only, not training authorization. Classification is
+  `m3_carrion_survivor_continuation_public_state_action_value_audit_set_or_action_value_targets_reduce_conflicts_no_training`.
+  Report:
+  `output/mind/mind-v3-v157-carrion-survivor-continuation-public-state-action-value-audit.json`;
+  exact digest:
+  `6be2d0374572f9bb091678ffbf764265071bf6e92f0cf8d1532dcb9bf91dfd31`.
+- v158: diagnostics-only carrion survivor-continuation set-valued/action-value
+  target dataset. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-action-value-target-dataset`,
+  consuming the v154 survivor-continuation report/dataset, the v155 train/eval
+  closeout, the v156 public feature sufficiency audit, and the v157
+  public-state action-value audit. It requires the exact v157 classification
+  `m3_carrion_survivor_continuation_public_state_action_value_audit_set_or_action_value_targets_reduce_conflicts_no_training`.
+  The JSONL rows are grouped by exact v154 public feature state and contain
+  only trainable public features, the public action mask, per-action score/value
+  targets, the safe action set, and a `robust_winner_action` only for v157
+  unique-winner groups. Multi-action safe sets are emitted as sets, not
+  single-label rows. Seed, fixture, branch id, tick id, agent id, path, digest,
+  provenance, private world state, future outcome, and branch-reason identity
+  remain outside trainable features. The real default run passed source
+  validation and leakage scan, left all lifecycle authorization/runtime fields
+  false, and emitted `11` action-value target rows: `8` unique-winner groups,
+  `3` multi-action safe-set groups, and `0` unresolved trainable groups.
+  Per-action safe support counts are `eat:5`, `move_east:2`, `move_north:5`,
+  `move_south:1`, `move_west:1`, and `stay:2`; dominant safe-action share is
+  `0.3125`. Classification is
+  `m3_carrion_survivor_continuation_public_state_action_value_target_dataset_support_ready_no_training`.
+  Report:
+  `output/mind/mind-v3-v158-carrion-survivor-continuation-set-valued-action-value-target-dataset.json`;
+  dataset:
+  `output/mind/mind-v3-v158-carrion-survivor-continuation-set-valued-action-value-target-dataset.jsonl`;
+  dataset digest:
+  `801ae178801532d208bf1d341a7f71e39f61f87801a493d8462563173f7b81ed`;
+  exact digest:
+  `297cb644d70091b41050b92313c9ab5f495ae89094ca5a04d5c77fe64e8cb0e6`.
+- v159: diagnostics-only carrion survivor-continuation action-value scorer
+  readiness report. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v159-scorer-readiness`,
+  consuming the v154-v158 reports plus the v154 and v158 JSONL datasets. It
+  creates no artifact, runs no training, performs no shadow/live A/B, and
+  leaves all runtime/promotion fields false. The report validates the source
+  classification chain, v154/v158 dataset digests, v157/v158 exact digests,
+  lifecycle false fields, v158 row schema, trainable public-feature leakage,
+  public action masks, safe-action legality, and complete per-action value
+  targets before computing scorer-readiness diagnostics. The real default run
+  passed source validation, row-contract validation, and leakage scan. It kept
+  the v158 dataset digest
+  `801ae178801532d208bf1d341a7f71e39f61f87801a493d8462563173f7b81ed`.
+  Safe-action support remained non-collapsed (`eat:5`, `move_east:2`,
+  `move_north:5`, `move_south:1`, `move_west:1`, `stay:2`) with dominant
+  safe-action share `0.3125`. Exact top-value shadow scoring hit a safe action
+  for `11/11` rows, versus best fixed-action safe coverage `5/11`; same-mask
+  near-exact shadow coverage had comparators for `9/11` rows and safe hits for
+  `6/11` rows. Proposed exact-shadow actions were also non-collapsed:
+  `eat:3`, `move_east:2`, `move_north:3`, `move_south:1`, `stay:2`, with
+  dominant proposed-action share `0.272727`. Pairwise action-value preferences
+  were nonempty (`92` strict preferences, `15` ties), and unavailable targets
+  stayed concentrated on public-mask-unavailable actions (`167/220`, share
+  `0.759091`). Classification is
+  `m3_carrion_survivor_continuation_v159_scorer_readiness_recommends_separate_opt_in_training_diagnostic_no_training`.
+  This is only authorization to scope a separate opt-in scorer-training
+  diagnostic contract; it is not live runtime action-selection authorization
+  and does not promote v158. Report:
+  `output/mind/mind-v3-v159-carrion-survivor-continuation-scorer-readiness-report.json`;
+  exact digest:
+  `f3f1db45c996ceb94a06feb2db8258c4e29b4ff96a6b24c3c10ac1dfa53558ec`.
+
+- v160: separate opt-in, diagnostics-only carrion survivor-continuation
+  action-value scorer training diagnostic. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v160-action-value-scorer`,
+  consuming only the v158 target JSONL dataset and the v159 scorer-readiness
+  report. It writes a serialized 1-nearest-neighbor public-feature/action-mask
+  scorer artifact for inspection only; it does not add runtime policy
+  integration, live A/B, runtime override flags, replay/viewer schema changes,
+  or promotion authorization. The scorer trains only from each row's public
+  trainable features, public action mask, `safe_action_set`, and
+  `action_value_targets`. Source validation requires the expected v159
+  classification and exact digest, v159 route recommendation, v158 dataset
+  digest match, row-contract validation, leakage scan, and runtime/promotion
+  lifecycle fields remaining false. The real default run passed source
+  validation, row-contract validation, and leakage scan, and retained v158
+  dataset digest
+  `801ae178801532d208bf1d341a7f71e39f61f87801a493d8462563173f7b81ed`.
+  Leave-one-row-out diagnostics produced zero unsupported predictions and
+  predicted actions `{eat:5, move_east:3, move_north:2, stay:1}`, with dominant
+  predicted-action share `0.454545` below the `0.50` cap. Safe-hit rate was
+  modest at `0.272727`, but it beat both held-out trivial baselines, best fixed
+  safe action and first public action by action order, which were each
+  `0.181818`; the predeclared margin over best trivial was `0.090909`, above
+  the `0.05` floor. The v159 exact top-value upper bound remains explicitly
+  target-leaky and non-runtime (`11/11`, safe-hit rate `1.0`). Classification
+  is
+  `m3_carrion_survivor_continuation_v160_action_value_scorer_diagnostic_scorer_ready_for_future_shadow_eval`.
+  The next allowed route is a separate opt-in shadow-scorer evaluation without
+  runtime override; threshold tuning, runtime promotion, and live action
+  selection remain unauthorized. Report:
+  `output/mind/mind-v3-v160-carrion-survivor-continuation-action-value-scorer-training.json`;
+  diagnostics-only artifact:
+  `output/mind/mind-v3-v160-carrion-survivor-continuation-action-value-scorer-artifact.json`;
+  artifact digest:
+  `2ef234635e26e06a8520854b107ce006aad7db62ce646db7808dd7b3250dce97`;
+  exact report digest:
+  `91d5b073fac525930c2ded74d6d05703088ebb6e1bdf69a10f071a14a36697ac`.
+- v161: diagnostics-only shadow evaluation of the v160 carrion
+  survivor-continuation action-value scorer. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v161-shadow-eval`,
+  consuming the v160 report/artifact and the closest existing strict held-out
+  broad deterministic evaluation records
+  `output/mind/v138-strict-heldout-trajectories/open-mind-v3-*-120.jsonl.gz`.
+  It validates the v160 report exact digest
+  `91d5b073fac525930c2ded74d6d05703088ebb6e1bdf69a10f071a14a36697ac`,
+  the diagnostics-only artifact digest
+  `2ef234635e26e06a8520854b107ce006aad7db62ce646db7808dd7b3250dce97`,
+  the artifact contract, lifecycle false fields, and source dataset lineage
+  before using the scorer. The command skipped `3` passive non-policy records.
+  The shadow scorer made `11512` predictions with
+  zero unsupported shadow predictions, but the predicted action distribution
+  collapsed: `{eat:444, move_east:34, move_north:2007, move_south:2,
+  move_west:5, stay:9020}`, with dominant action `stay` at share `0.78353`
+  above the `0.50` cap. It would have differed from the recorded runtime
+  requested action on `9545` comparable decisions (`0.829135` share), but this
+  was comparison-only: runtime action selection changed `false`, runtime
+  artifact created `false`, live override allowed `false`, promotion allowed
+  `false`, and no new heuristic action source was introduced. Classification
+  is
+  `m3_carrion_survivor_continuation_v161_shadow_eval_action_distribution_collapsed_blocked_no_live_ab`.
+  The next route is archive expansion or public feature-contract work, not
+  threshold tuning or live A/B. Report:
+  `output/mind/mind-v3-v161-carrion-survivor-continuation-action-value-shadow-eval.json`;
+  exact report digest:
+  `7e5105e4e67b76d97f41b81d3f5b8b9298eee2a9ce869641c0756fc8a2409b05`.
+
+- v162: diagnostics-only shadow tie-collapse and nearest-neighbor
+  concentration autopsy for the v160/v161 carrion survivor-continuation scorer
+  path. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v162-shadow-tie-collapse-autopsy`,
+  consuming the v160 report/artifact, the v161 shadow-eval report, and the same
+  strict held-out broad deterministic evaluation records. It validates the v160
+  report exact digest
+  `91d5b073fac525930c2ded74d6d05703088ebb6e1bdf69a10f071a14a36697ac`,
+  the v160 diagnostics-only artifact exact digest
+  `76d2a3119768fbed4d68dec40afe00229bb8335acb39d9a6c1f8d68509aab790`,
+  the v160 artifact digest
+  `2ef234635e26e06a8520854b107ce006aad7db62ce646db7808dd7b3250dce97`,
+  the v161 report exact digest
+  `7e5105e4e67b76d97f41b81d3f5b8b9298eee2a9ce869641c0756fc8a2409b05`,
+  and the expected collapsed v161 classification before analysis. The autopsy
+  confirms that rows `7` and `4` dominate nearest-neighbor attribution:
+  row `7` accounts for `5722/11512` predictions (`0.497047`) and row `4`
+  accounts for `2903/11512` (`0.252172`), with top-two share `0.749218`
+  above the v162 concentration threshold `0.70`. Both rows predict `stay`.
+  Overall nearest-distance stats were min `0.827342`, median `2.636147`,
+  p95 `3.396629`, max `3.812302`; by predicted action, `stay` had median
+  `2.562567` and p95 `3.399916`. After public action-mask filtering, tied
+  top-value sets covered `8659/11512` predictions (`0.752172`), with set-size
+  distribution `{1:2853, 2:917, 3:2912, 4:4830}`. Candidate membership was
+  much less collapsed than deterministic argmax output:
+  `{eat:9024, move_east:34, move_north:8902, move_south:5724, move_west:39,
+  stay:9020}`, dominant membership share `0.275601`; however the sets are too
+  broad for direct runtime use. Deterministic tie-break attribution explains
+  most `stay` predictions: `8625/9020` `stay` predictions (`0.956208`) came
+  from tied top-value sets where other actions had equal value. Public feature
+  vectors were unique at the exact normalized-vector level (`11512` unique,
+  duplicate share `0.0`), so the collapse is nearest-row support concentration
+  plus action-value tie collapse rather than exact duplicate aliasing. Action
+  masks filtered `165311/230240` target entries before candidate scoring, and
+  the candidate-count distribution after filtering was
+  `{2:312, 3:875, 4:2437, 5:3464, 6:4424}`. The v161 comparison-only
+  would-change metrics were preserved exactly: `9545/11512`, share `0.829135`,
+  with matching predicted-action counts. Lifecycle proof remained false for
+  runtime action selection changed, runtime artifact created, live A/B allowed,
+  and promotion authorized. Classification is
+  `m3_carrion_survivor_continuation_v162_shadow_tie_collapse_autopsy_tie_collapse_archive_feature_support_blocked_no_live_ab`.
+  The next route is public feature-contract expansion or a separate set-valued
+  resolver diagnostic without live A/B; threshold tuning, runtime promotion,
+  and live action selection remain unauthorized. Report:
+  `output/mind/mind-v3-v162-carrion-survivor-continuation-shadow-tie-collapse-autopsy.json`;
+  exact report digest:
+  `2fe14bae43086bee7945762bfe0240074b076036397b9c864168466fdb2c9547`.
+
+- v163: diagnostics-only tied-set branch target expansion slice for the
+  v162 autopsy path. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v163-tied-set-branch-target-expansion`,
+  consuming the exact v162 report and validating its exact digest
+  `2fe14bae43086bee7945762bfe0240074b076036397b9c864168466fdb2c9547`
+  plus the expected blocked v162 classification before any branch work. The
+  representative plan selected one late tied top-value decision from each
+  strict broad seed `5,13,19,29,37,41`, all at tick `119`, all nearest row
+  `7`, all tied candidate set `stay|eat|move_north|move_south`; runtime
+  requested action was retained only as comparison/reference evidence. Exact
+  branch materialization was proven for all `6/6` selected points, and all
+  `24/24` candidate forced-action replays matched their second verification
+  digest. The slice therefore proves that exact deterministic branch replay can
+  be used for this diagnostic sample, but the outcome support is still
+  collapsed: the best-supported action was `eat` for `6/6` branch points
+  (`1.0` dominant share, above the `0.75` noncollapse ceiling), so action-value
+  target expansion is not yet feasible. Terminal alive/birth/death totals were
+  deterministic for every forced candidate, target agents remained alive in all
+  candidate runs, and per-candidate deltas versus recorded runtime stayed
+  comparison-only. Lifecycle proof remained diagnostics-only with runtime action
+  selection unchanged, no runtime artifact, no live A/B, and no promotion.
+  Classification is `branch_target_support_insufficient_no_live_ab`. The next
+  route is branch/replay contract work before target expansion; threshold
+  tuning, live A/B, runtime integration, and promotion remain unauthorized.
+  Report:
+  `output/mind/mind-v3-v163-carrion-survivor-continuation-tied-set-branch-target-expansion.json`;
+  exact report digest:
+  `8e3298dc7b64a81bee56ebceba8a6375b090ee1f186fe1a7515cf8cc0b9e0074`.
+
+- v164: diagnostics-only pre-terminal tied-set branch target expansion slice
+  for the v163 scorer/tie-set branch path. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v164-preterminal-tied-set-branch-target-expansion`,
+  consuming the exact v163 report and validating its exact digest
+  `8e3298dc7b64a81bee56ebceba8a6375b090ee1f186fe1a7515cf8cc0b9e0074`
+  plus the expected `branch_target_support_insufficient_no_live_ab`
+  classification before recomputing tied candidates from the v160 artifact and
+  strict broad v138 trajectories. The pre-terminal selector required
+  `branch_tick <= 100`, excluded final-tick decisions, and reported available
+  preferred tied-candidate counts by tick bucket before selection:
+  `{000-019:1883, 020-039:1548, 040-059:1064, 060-079:921,
+  080-099:767, 100-119:31}`. The selected plan used strict broad seeds
+  `5,13,19,29,37,41`, two branch points per seed, no duplicate tick per seed,
+  nearest-row coverage `{4:6, 7:6}`, tied-set coverage
+  `{stay|eat|move_north:6, stay|eat|move_north|move_south:6}`, and tick
+  distribution `{97:1, 99:5, 100:6}` with remaining horizons `{20:6, 21:5,
+  23:1}`. Exact branch materialization was proven for all `12/12` selected
+  points, and all `42/42` forced tied-candidate replays matched their second
+  verification digest. Outcome support was horizon-sensitive and noncollapsed
+  under both scoring views. Terminal population support counts were
+  `{eat:9, move_north:9, move_south:4, stay:10}` with dominant share
+  `0.3125` and `5` informative branches; target-local continuation support
+  counts were `{eat:3, move_north:5, move_south:1, stay:3}` with dominant
+  share `0.416667` and all `12` branches informative. Lifecycle proof remained
+  diagnostics-only with runtime action selection unchanged, no runtime artifact,
+  no live A/B, no override path, and no promotion. Classification is
+  `preterminal_tied_set_target_support_ready_no_training`; the next route is
+  v165 target-dataset expansion from the replay-verified pre-terminal tied-set
+  branch evidence, still without threshold tuning or live A/B. Report:
+  `output/mind/mind-v3-v164-carrion-survivor-continuation-preterminal-tied-set-branch-target-expansion.json`;
+  exact report digest:
+  `a375cbb7f287d4829bb94cab02c5fdb79133fd567a7f8269ab5da5be5332936f`.
+
+- v165: diagnostics-only target-dataset expansion from v164 pre-terminal
+  tied-set branch evidence. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v165-preterminal-target-dataset-expansion`,
+  consuming the exact v164 report and validating its exact digest
+  `a375cbb7f287d4829bb94cab02c5fdb79133fd567a7f8269ab5da5be5332936f`,
+  its `preterminal_tied_set_target_support_ready_no_training` classification,
+  exact materialization, and `42/42` replay verification before emitting any
+  rows. The command writes a combined diagnostics JSONL dataset with the
+  original v158 base rows preserved plus v164-derived pre-terminal branch rows:
+  base rows `11`, pre-terminal rows `12`, combined rows `23`; combined dataset
+  digest `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`.
+  Each new row uses only public branch-decision observation input and the
+  public action mask as trainable fields; seed, tick, agent, path, branch, and
+  replay digests are retained only under non-trainable metadata. Future replay
+  outcomes are action-value targets only, not inputs. The leakage scan over
+  trainable fields passed with `0` failures. Pre-terminal candidate support
+  remained usable after target conversion: per-action safe support
+  `{eat:4, move_north:5, move_south:1, stay:2}`, dominant safe action
+  `move_north`, dominant share `0.416667`, unique winner rows `12`,
+  multi-action safe-set rows `0`, unresolved rows `0`; value-target coverage
+  was `{eat:12, move_north:12, move_south:6, stay:12}`. Source seed overlap
+  with the strict broad held-out matrix is complete:
+  `{5,13,19,29,37,41}`. These seeds are now explicitly support/provenance
+  seeds for this dataset and are not valid held-out promotion seeds for any
+  future scorer trained on it; future evaluation must use leave-source-seed-out
+  diagnostics and/or new held-out broad seeds. Lifecycle proof remained
+  diagnostics-only with no training, no runtime artifact, no live A/B, no
+  override path, no promotion, no threshold tuning, and runtime action
+  selection unchanged. Classification is
+  `expanded_target_dataset_support_ready_no_training`; the only recommended
+  next route is v166 diagnostics-only scorer retraining with source-split
+  evaluation, not live A/B or promotion. Report:
+  `output/mind/mind-v3-v165-carrion-survivor-continuation-preterminal-target-dataset-expansion.json`;
+  dataset:
+  `output/mind/mind-v3-v165-carrion-survivor-continuation-preterminal-target-dataset-expansion.jsonl`;
+  exact report digest:
+  `74b5d4bde49fb594fabb2ac7982ab872f9aa154c9b470a296f57a921f3b5134b`.
+
+- v166: diagnostics-only source-split action-value scorer retraining slice
+  using the exact v165 expanded target dataset. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v166-source-split-action-value-scorer`,
+  consuming the v165 report exact digest
+  `74b5d4bde49fb594fabb2ac7982ab872f9aa154c9b470a296f57a921f3b5134b`
+  and v165 dataset digest
+  `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`.
+  The command validates the v165 `expanded_target_dataset_support_ready_no_training`
+  classification, leakage scan, future evaluation policy requiring
+  leave-source-seed-out diagnostics and new held-out broad seeds, and false
+  lifecycle/runtime authorization fields before reporting. It writes a
+  diagnostics-only serialized 1NN public-feature/action-mask scorer artifact;
+  no runtime artifact, live A/B path, override path, threshold tuning, runtime
+  integration, or promotion is authorized. Source validation, mixed row-contract
+  validation, and leakage scan passed. Source-split diagnostics produced
+  `23` predictions, `0` no-predictions, `0` unsupported predictions, predicted
+  actions `{eat:7, move_east:3, move_north:10, move_south:1, stay:2}`, and
+  dominant predicted-action share `0.434783`, below the `0.50` cap. Safe-hit
+  rate was `0.217391`; best trivial baseline hit rate was `0.173913`; the
+  margin was `0.043478`, below the `0.05` source-split floor, so the route
+  remains closed for archive/source expansion. Per-source-seed safe-hit rates
+  were seed `5`: `0.5`, `13`: `0.0`, `19`: `0.0`, `29`: `0.0`, `37`: `0.5`,
+  `41`: `0.0`; first zero-safe-hit preterminal source seed was `13`. The
+  target-leaky exact-top upper bound remains explicitly non-runtime. Base v158
+  rows without source seed used the conservative row fallback and were reported
+  separately (`11` rows, safe-hit rate `0.272727`). Classification is
+  `m3_carrion_survivor_continuation_v166_source_split_action_value_scorer_source_split_generalization_failed_closed_archive_source_expansion`.
+  Report:
+  `output/mind/mind-v3-v166-carrion-survivor-continuation-source-split-action-value-scorer-training.json`;
+  diagnostics-only artifact:
+  `output/mind/mind-v3-v166-carrion-survivor-continuation-source-split-action-value-scorer-artifact.json`;
+  artifact digest:
+  `e1b5f8cb9b7ca8e916fe6ff0e162e7d451d9c5c25affb1a2eaf000eafc8a0e7d`;
+  exact report digest:
+  `afbbd681be7279f49b477c55bf85c73f7bff082e9c81f90059c3e0497e70a6fa`.
+
+- v167: diagnostics-only source-split failure autopsy for the closed v166
+  scorer. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v167-source-split-failure-autopsy`,
+  consuming the exact v166 report digest
+  `afbbd681be7279f49b477c55bf85c73f7bff082e9c81f90059c3e0497e70a6fa`,
+  v166 diagnostics artifact digest
+  `e1b5f8cb9b7ca8e916fe6ff0e162e7d451d9c5c25affb1a2eaf000eafc8a0e7d`,
+  and v165 dataset digest
+  `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`.
+  The command independently recomputed the v166 source-split predictions from
+  the v165 rows and matched the reported prediction digest, margin
+  `0.043478`, and zero-safe-hit preterminal source seeds `13,19,29,41`.
+  It did not retrain, tune k, tune thresholds, run shadow eval, create a runtime
+  artifact, alter replay/viewer schema, or change runtime action selection.
+  Autopsy result: all `10` failed pre-terminal rows were classified as
+  nearest-neighbor feature aliasing, with `0` source-action-support-missing
+  rows. Safe-action label support existed after excluding each failing source
+  seed: seed `13` had support for `move_north` and `stay`, seed `19` for
+  `eat` and `stay`, seed `29` for `eat` and `move_north`, and seed `41` for
+  `eat`. The failing rows were pulled to nearby unsafe public-feature neighbors:
+  zero-hit seed predicted-action counts were seed `13` `{eat:1, move_north:1}`,
+  seed `19` `{move_north:2}`, seed `29` `{eat:1, move_south:1}`, and seed `41`
+  `{move_north:2}`. Top-k diagnostics were analysis-only: safe-support
+  neighbors appeared in top-1 for `2/12` preterminal rows, top-3 for `6/12`,
+  and top-5 for `10/12`; no k tuning is recommended or authorized. Classification
+  is
+  `m3_carrion_survivor_continuation_v167_source_split_failure_autopsy_nearest_neighbor_feature_aliasing_closed_feature_contract_expansion`.
+  The only recommended route is public feature-contract expansion, not
+  retraining, shadow eval, live A/B, threshold tuning, k tuning, or promotion.
+  Report:
+  `output/mind/mind-v3-v167-carrion-survivor-continuation-source-split-failure-autopsy.json`;
+  exact report digest:
+  `8c527c7afc9c36474d32969bbaf6625b2d66472789cee4c9203fb8845de5684c`.
+
+- v168: diagnostics-only public feature-contract expansion probe for the v167
+  nearest-neighbor feature-aliasing failure. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v168-public-feature-contract-probe`,
+  consuming the v167 exact report digest
+  `8c527c7afc9c36474d32969bbaf6625b2d66472789cee4c9203fb8845de5684c`,
+  v166 exact report digest
+  `afbbd681be7279f49b477c55bf85c73f7bff082e9c81f90059c3e0497e70a6fa`,
+  and v165 dataset digest
+  `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`.
+  The command validates the required v167
+  `m3_carrion_survivor_continuation_v167_source_split_failure_autopsy_nearest_neighbor_feature_aliasing_closed_feature_contract_expansion`
+  classification before running. It recomputes the v166 baseline source-split
+  diagnostics and probes three diagnostics-only trainable public payload
+  families: `current_encoded_public_observation_mask`,
+  `decoded_public_numeric_projection`, and `feature_policy_token_projection`.
+  Candidate payload leakage scans passed and forbade seed, fixture, branch,
+  tick, agent, path, digest, provenance, private, future, outcome, runtime
+  action, and reason fields. No runtime observation schema, runtime policy,
+  replay/viewer schema, k value, threshold, shadow/live path, runtime action
+  selection, promotion path, or runtime artifact changed. Recomputed baseline
+  safe-hit rate remained `0.217391`, margin over best trivial remained
+  `0.043478`, dominant predicted-action share was `0.434783`, unsupported
+  predictions were `0`, and zero-safe-hit preterminal source seeds remained
+  `13,19,29,41`. The decoded public numeric projection also produced safe-hit
+  rate `0.217391` and margin `0.043478`, lowered dominant share to `0.347826`,
+  kept unsupported predictions at `0`, and moved `1/10` v167 failed rows'
+  nearest safe-support rank to `1`, but it swapped the zero-hit set to
+  `5,19,29,41` instead of reducing the zero-safe-hit seed count. The feature
+  policy token projection matched the baseline zero-hit set and moved `0/10`
+  failed rows' nearest safe-support rank to `1`. Classification is
+  `m3_carrion_survivor_continuation_v168_public_feature_contract_probe_partial_feature_contract_support_recommend_another_feature_probe`.
+  The route remains closed and recommends another public feature-contract probe
+  rather than retraining, shadow eval, live A/B, k tuning, threshold tuning,
+  runtime integration, or promotion. Report:
+  `output/mind/mind-v3-v168-carrion-survivor-continuation-public-feature-contract-probe.json`;
+  exact report digest:
+  `1aed29173ba099366aaa4e138b4a2abaaec8a11f6e256be3e999afa8b7d20cfc`.
+
+- v169: diagnostics-only public temporal-context feature probe for the v168
+  partial feature-contract result. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v169-public-temporal-context-probe`,
+  consuming the v168 exact report digest
+  `1aed29173ba099366aaa4e138b4a2abaaec8a11f6e256be3e999afa8b7d20cfc`,
+  v167 exact report digest
+  `8c527c7afc9c36474d32969bbaf6625b2d66472789cee4c9203fb8845de5684c`,
+  and v165 dataset digest
+  `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`.
+  The command requires the v168
+  `m3_carrion_survivor_continuation_v168_public_feature_contract_probe_partial_feature_contract_support_recommend_another_feature_probe`
+  classification, validates exact digests, and uses source path, tick, and
+  agent identity only to locate same-agent prior records. Trainable temporal
+  payloads contain only public `observation_input` and public `action_mask`
+  summaries from records strictly before the decision row; candidate payload
+  leakage scans passed for seed, fixture, branch, tick, agent, path, digest,
+  provenance, private state, future/outcome fields, runtime action, requested
+  action, and resolved action. Prior context loaded for all `12/12`
+  preterminal rows, with at least `1` and at most `5` strict prior public
+  records per row. No training, retraining, runtime artifact, runtime action
+  change, live/shadow eval, k tuning, threshold tuning, replay/viewer schema
+  change, or promotion was authorized. Recomputed baseline metrics matched
+  v166/v168: safe-hit rate `0.217391`, margin over best trivial `0.043478`,
+  unsupported predictions `0`, failed preterminal row count `10`, dominant
+  predicted-action share `0.434783`, and zero-safe-hit seeds `13,19,29,41`.
+  The best temporal candidate,
+  `decoded_public_numeric_plus_previous_same_agent_public_summary`, kept
+  safe-hit rate `0.217391`, margin `0.043478`, unsupported predictions `0`,
+  failed preterminal row count `10`, and moved `1/10` v167 failed rows'
+  nearest safe-support rank to `1`, but it only swapped zero-hit seeds to
+  `5,13,19,29`; net zero-hit seed count change was `0` and new zero-hit seed
+  `5` was introduced. The windowed prior-observation delta and action-mask
+  transition probes for windows `1`, `3`, and `5` all regressed safe-hit rate
+  to `0.173913`, margin `0.0`, failed preterminal row count `11`, and zero-hit
+  seeds `5,13,19,29,41`. Classification is
+  `m3_carrion_survivor_continuation_v169_public_temporal_context_probe_public_temporal_context_probe_no_net_viable_projection_closed`.
+  The route remains closed and recommends keeping the public temporal-context
+  probe closed rather than retraining, shadow eval, live A/B, k tuning,
+  threshold tuning, runtime integration, or promotion. Report:
+  `output/mind/mind-v3-v169-carrion-survivor-continuation-public-temporal-context-probe.json`;
+  exact report digest:
+  `dbc96a211b76447d7f97cc26c79d207ca6f697e050b99e6a1f09dd8f46efbcfd`.
+
+- v170: diagnostics-only carrion survivor-continuation portfolio matrix.
+  Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v170-diagnostic-portfolio-matrix`,
+  consuming the exact v169 closeout digest
+  `dbc96a211b76447d7f97cc26c79d207ca6f697e050b99e6a1f09dd8f46efbcfd`,
+  the required v169 closed classification
+  `m3_carrion_survivor_continuation_v169_public_temporal_context_probe_public_temporal_context_probe_no_net_viable_projection_closed`,
+  v168 exact digest
+  `1aed29173ba099366aaa4e138b4a2abaaec8a11f6e256be3e999afa8b7d20cfc`,
+  v167 exact digest
+  `8c527c7afc9c36474d32969bbaf6625b2d66472789cee4c9203fb8845de5684c`,
+  v165 dataset digest
+  `e022efbf5eb88b688d052dc3532626be5bd1484109d2369829f34293fa1fe091`,
+  v155 exact digest
+  `ec74b0a8c275bad70fd4dbf212c3c124ed20d61118255798e712b800fca0c476`,
+  v154 exact digest
+  `a93b3f9ab9a823105daaef30e59e7c2612da3f283ee5740b3e3ed3f7ef9f0d55`,
+  and v153 exact digest
+  `30134d4699e2043695aaa9b7bc388404971dcf8a59e4cc2bd802d28407a37c73`.
+  It runs no training, shadow/live eval, runtime integration, k tuning,
+  threshold tuning, replay/viewer schema change, staging, commit, reset, or
+  clean operation. The set-valued/ranking lane evaluates all v169 public
+  feature families with source-split top-`1`, top-`3`, and top-`5` neighbor
+  action sets as a matrix, not a runtime N selection. The best cheap lane was
+  `decoded_public_numeric_plus_prior_observation_delta_window_1` at top-`5`:
+  set-safe-hit rate `0.913043`, zero-safe-hit preterminal source seeds `[]`,
+  average set width `3.391304`, full-action-set share `0.086957`, and
+  unsupported prediction rows `8`. This clears the v167/v169 zero-hit seeds
+  `13,19,29,41` only by using broad sets, so it is partial diagnostic support,
+  not runtime support. The randomized-safe-set control for the best entry
+  passed (`0.73913` control set-safe-hit rate, remaining zero-hit seed `13`),
+  while the report keeps `9` weaker suspicious matrix entries visible instead
+  of choosing among them. The sequence-memory alias lane recomputed the v154
+  123-label archive with current public observation/action mask and existing
+  legal prior public sequence summaries where available; leakage scans passed,
+  but conflicts did not improve against the v155 reference: exact feature
+  groups `11`, conflicting groups `10`, and conflicting rows `119`. The
+  shuffled-label control produced `123` conflicting rows and did not invalidate
+  the lane. v170 also emits a deterministic v171 replay-expansion shard plan,
+  not evidence, targeting baseline zero-hit seeds `13,19,29,41`, v169
+  regression/new-zero seed `5`, and low-support edge seed `37`, with branch
+  windows around source ticks `97`, `99`, and `100`, per-seed shard ids,
+  expected command shapes, a merge-all-shards policy, and fail-closed
+  partial-shard behavior. Classification is
+  `m3_carrion_survivor_continuation_v170_diagnostic_portfolio_matrix_set_valued_ranking_support_partial_no_runtime`.
+  Report:
+  `output/mind/mind-v3-v170-carrion-survivor-continuation-diagnostic-portfolio-matrix.json`;
+  shard plan:
+  `output/mind/mind-v3-v170-carrion-survivor-continuation-replay-expansion-shards.jsonl`;
+  shard-plan digest:
+  `599a5dbab5635124e9a024a0140140fd529b90b20f3d8ceed06e567fe09cd840`;
+  exact report digest:
+  `ad44a0e89fe9248297a5ec6a3d158c70db6947d76ceb58e9a0ce32eca28da366`.
+
+- v171: diagnostics-only carrion survivor-continuation replay expansion from
+  the v170 shard plan. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v171-replay-expansion`,
+  consuming v170 exact report digest
+  `ad44a0e89fe9248297a5ec6a3d158c70db6947d76ceb58e9a0ce32eca28da366`,
+  v170 classification
+  `m3_carrion_survivor_continuation_v170_diagnostic_portfolio_matrix_set_valued_ranking_support_partial_no_runtime`,
+  and v170 shard-plan digest
+  `599a5dbab5635124e9a024a0140140fd529b90b20f3d8ceed06e567fe09cd840`.
+  Source validation fails closed on any mismatch. The CLI supports exact
+  shard execution with `--shard-plan`, `--shard-id`, `--seed-include`,
+  repeated `--branch-window START:END`, `--output`, `--dataset-output`, and
+  `--fail-on-partial-shard`; it also supports merge mode with
+  `--merge-shards`, repeated shard report/dataset inputs, and
+  `--allow-partial-shard-evidence` defaulting false. The v170 JSONL command
+  shapes remain valid because `--shard-plan` defaults to the v170 plan path.
+  v171 uses source path, tick, and agent only for exact materialization lookup;
+  trainable dataset rows contain only public observation and public action
+  mask, while seed, fixture, branch id, tick, agent id, path, digest,
+  provenance, runtime requested/resolved action, target safe action, future
+  outcome, private state, and labels stay out of trainable payloads. Local
+  validation completed the planned seed-`41` shard from the v170 JSONL:
+  `92` branch points materialized, `454/454` candidate first-action runs replay
+  verified, `1386` illegal first actions were skipped, support narrowed the
+  broad v170 set-valued candidates (`2.097826` average replay safe-set width
+  vs `3.391304` v170 set width), and the shard dataset has `92` rows with
+  digest `dc82b3b4abec68476775a91dc76073ef4c6ad81b7a7963b0e4c94af19266b96f`.
+  The shard classification is
+  `m3_carrion_survivor_continuation_v171_replay_expansion_replay_expansion_support_limited_no_training`;
+  shard report:
+  `output/mind/shards/v171-carrion-survivor-continuation-expansion-seed-041.json`;
+  shard dataset:
+  `output/mind/shards/v171-carrion-survivor-continuation-expansion-seed-041.jsonl`;
+  shard exact digest:
+  `91f2697de44e67fe123ec877cd7bdd1accf34bb610238fe75af48c6050ce1b60`.
+  That single-shard note is historical. The current preserved artifact tree
+  contains the complete six-shard merged replay expansion for seeds
+  `5,13,19,29,37,41`: `910` dataset rows, `4,730/4,730` candidate replays
+  verified, no partial shards, no missing shard ids, and no training
+  authorization. Complete merged classification:
+  `m3_carrion_survivor_continuation_v171_replay_expansion_replay_expansion_support_ready_for_v172_target_dataset_expansion_no_training`;
+  complete merged report:
+  `output/mind/mind-v3-v171-carrion-survivor-continuation-replay-expansion.json`;
+  complete merged dataset:
+  `output/mind/mind-v3-v171-carrion-survivor-continuation-replay-expansion.jsonl`;
+  complete merged exact digest:
+  `80d46c17927cdf33ebb7ea23d2e5d24d1bcf7d560ac856ae790f8d456a67904e`;
+  complete merged dataset digest:
+  `4050d8c0642175baa99d9ecd0df17eabab7ee6538329d8be6b3f286628b60532`.
+  No training, scorer retraining, runtime artifact, runtime action change,
+  shadow/live A/B, k tuning, threshold tuning, replay/viewer schema change,
+  promotion, staging, commit, reset, or clean operation was authorized.
+
+- v172: diagnostics-only replay target-dataset expansion from the complete
+  v171 merged replay evidence. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v172-replay-target-dataset-expansion`,
+  consuming the complete v171 exact digest
+  `80d46c17927cdf33ebb7ea23d2e5d24d1bcf7d560ac856ae790f8d456a67904e`,
+  v171 dataset digest
+  `4050d8c0642175baa99d9ecd0df17eabab7ee6538329d8be6b3f286628b60532`,
+  v171 classification
+  `m3_carrion_survivor_continuation_v171_replay_expansion_replay_expansion_support_ready_for_v172_target_dataset_expansion_no_training`,
+  `4730/4730` replay-verified candidate runs, `910` v171 rows, average
+  replay-safe set width `1.763736`, and v170 best set width `3.391304`.
+  v172 writes a deterministic action-value target JSONL dataset with only
+  public observation and public action mask as trainable fields. Replay-derived
+  best outcome action sets and outcome summaries are target fields; seed,
+  source, branch, tick, agent, path, and digest fields are retained only as
+  non-trainable provenance. Leakage scan and row-schema validation passed.
+  Action support distribution is `{drink:155, eat:311, move_east:247,
+  move_north:237, move_south:189, move_west:212, stay:254}` with dominant
+  support action `eat` at share `0.193769`, so support is noncollapsed.
+  Safe-set width distribution is `{1:742, 2:15, 3:9, 4:11, 5:42, 6:85,
+  7:6}`, improving width versus v170; unique-action rows are `742` and tied
+  action-set rows are `168`. Seeds `5,13,19,29,37,41` are explicitly
+  support-provenance seeds, not future promotion heldout seeds. The v173 plan
+  is diagnostics-only source-split scorer evaluation with leave-one-support-seed
+  out grouping and new promotion-heldout broad seeds; no training, scorer
+  retraining, runtime artifact, shadow/live A/B, k tuning, threshold tuning,
+  runtime action change, replay/viewer schema change, promotion, staging,
+  commit, reset, or clean operation is authorized by v172. Classification is
+  `m3_carrion_survivor_continuation_v172_replay_target_dataset_expansion_replay_target_dataset_support_ready_for_v173_source_split_scorer_no_training`.
+  Report:
+  `output/mind/mind-v3-v172-carrion-survivor-continuation-replay-target-dataset-expansion.json`;
+  dataset:
+  `output/mind/mind-v3-v172-carrion-survivor-continuation-replay-target-dataset-expansion.jsonl`;
+  dataset digest:
+  `206f0b8f11db854da59bbece74590d34b64034ad7c1b3bf5b0cbca34321d122d`;
+  exact report digest:
+  `e731a2899cf84149e0ed2df6b11c525ce1614768c4ecd2e020a9557e973d9404`.
+
+- v173: diagnostics-only source-split scorer evaluation over the v172 replay
+  target dataset. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v173-source-split-scorer`,
+  consuming v172 exact report digest
+  `e731a2899cf84149e0ed2df6b11c525ce1614768c4ecd2e020a9557e973d9404`
+  and v172 dataset digest
+  `206f0b8f11db854da59bbece74590d34b64034ad7c1b3bf5b0cbca34321d122d`.
+  Source validation requires the v172 row count `910`, leakage scan passed,
+  row schema passed, and route
+  `v173_diagnostics_only_source_split_scorer_no_training`. The evaluation
+  leaves one support-provenance seed out by `metadata.seed` across
+  `5,13,19,29,37,41`; those seeds remain support-provenance only and are not
+  future promotion heldout seeds. Trainable scoring input is limited to
+  `trainable_public_features` and public action mask; seed, branch, tick,
+  agent, path, digest, provenance, target/outcome, runtime requested/resolved
+  action, and private state are not scorer inputs. v173 evaluates a singleton
+  public-feature similarity ranker, a set-valued positive-support ranker,
+  action-frequency, mask-only, first-public-action baselines, and a shuffled
+  target negative control. Unique rows and tied rows are reported separately
+  (`742` unique, `168` tied). Result: singleton safe-hit rate `0.341758`,
+  robust-winner hit rate on unique rows `0.196765`, best trivial singleton
+  baseline `0.364835`, margin `-0.023077`, unsupported predictions `0`,
+  no-predictions `0`, and dominant singleton predicted action share `0.97033`
+  (`eat`), so singleton source-split support is collapsed and below the
+  required `0.05` margin. Every left-out seed had nonzero singleton safe-hit
+  support, but this was not enough for shadow readiness. The broad set-valued
+  ranker hit all rows (`set_hit_rate=1.0`, tied-row set-hit rate `1.0`) only by
+  returning full public-mask candidate sets for every row, with average
+  candidate set width `5.197802` and full-set share `1.0`. Classification is
+  `m3_carrion_survivor_continuation_v173_source_split_scorer_source_split_set_valued_partial_no_shadow`.
+  No training, scorer retraining, diagnostic artifact, runtime artifact,
+  runtime action change, shadow/live eval, k tuning, threshold tuning,
+  replay/viewer schema change, promotion, staging, commit, reset, or clean
+  operation was authorized. Report:
+  `output/mind/mind-v3-v173-carrion-survivor-continuation-source-split-scorer.json`;
+  exact report digest:
+  `571534801bff339863214dccbfa24b3d070ca3a4bf004a57b69ddad0686f6f07`.
+
+- v174: diagnostics-only mechanism-aware failure battery over the known v173
+  failure mechanisms. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v174-mechanism-failure-battery`,
+  consuming v173 exact report digest
+  `571534801bff339863214dccbfa24b3d070ca3a4bf004a57b69ddad0686f6f07`,
+  v173 classification
+  `m3_carrion_survivor_continuation_v173_source_split_scorer_source_split_set_valued_partial_no_shadow`,
+  and v172 dataset digest
+  `206f0b8f11db854da59bbece74590d34b64034ad7c1b3bf5b0cbca34321d122d`.
+  The battery runs lanes A-F in one deterministic report: v173 score-mechanics
+  autopsy, k-nearest and radius-local support, diagnostics-only action
+  ranking, conformal/action-conditional set calibration, public context
+  sufficiency projections, and the next-route planner. Lane A proves the
+  v173 set-valued success was produced by the `score > 0` rule: full public-mask
+  set share `1.0` and positive-count-equals-public-mask-width share `1.0`.
+  Lane B's best local support entry was `k_nearest_50`, with singleton hit
+  rate `0.353846`, top-3 set hit rate `0.674725`, robust unique-row hit rate
+  `0.212938`, no unsupported or no-pred rows, and dominant action share
+  `0.22967`; this still failed the local readiness floor because the matching
+  mask-only width-1 baseline was `0.364835`. Lane C found only weak but real
+  diagnostics-only ranking capacity: all-train pairwise accuracy `0.539206`,
+  shuffled-target control `0.477038`, margin `0.062168`, and top-3 safe-hit
+  rate `0.721978`; top-1 remained near trivial at `0.373626`. Lane D achieved
+  coverage `0.993407` only with average width `5.113187` and full-set share
+  `0.925275`, so calibrated safety is explicitly not accepted. Lane E found
+  that action-mask geometry improved best local singleton hit by `0.040659`,
+  while previous same-agent public deltas and short public trajectory windows
+  are unavailable in v172 rows without a schema change. Classification is
+  `v174_action_ranking_capacity_ready_for_v175_diagnostic_fit_no_runtime`.
+  No training, runtime artifact, runtime action change, shadow/live eval, gate
+  relaxation, promotion, staging, commit, reset, or clean operation was
+  authorized. The optional v175 replay/world-model plan JSONL was not written
+  because the planner did not choose replay/world-model expansion. Report:
+  `output/mind/mind-v3-v174-carrion-survivor-continuation-mechanism-failure-battery.json`;
+  exact report digest:
+  `26b0e68d71b46acd85faeccc3c525d19f096908388ea1ee0dd77a76be1d070bd`.
+
+- v175: diagnostics-only v174 route-correction audit. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v175-v174-route-correction-audit`,
+  consuming v174 exact report digest
+  `26b0e68d71b46acd85faeccc3c525d19f096908388ea1ee0dd77a76be1d070bd`,
+  v174 classification
+  `v174_action_ranking_capacity_ready_for_v175_diagnostic_fit_no_runtime`,
+  v173 exact report digest
+  `571534801bff339863214dccbfa24b3d070ca3a4bf004a57b69ddad0686f6f07`,
+  and v172 dataset digest
+  `206f0b8f11db854da59bbece74590d34b64034ad7c1b3bf5b0cbca34321d122d`.
+  The audit recomputes v174 Lane C per support seed, replaces the adjacent-row
+  shuffled target with deterministic controls that never pull labels from the
+  held-out seed, separates unique and tied rows, and corrects the route before
+  any fit, runtime artifact, shadow/live eval, or promotion. The audited
+  v174 ranking config was `all_train`: aggregate pairwise accuracy remained
+  `0.539206` and aggregate top-3 safe-hit rate `0.721978`, but strict per-seed
+  floors failed on seeds `19` and `41`. Seed `41` is the first hard blocker:
+  pairwise accuracy `0.28125`, top-3 safe-hit rate `0.608696`, unique-row
+  pairwise accuracy `0.285714`, and unique-row top-1 safe-hit rate `0.046875`.
+  Seed `19` also failed pairwise accuracy at `0.484642`. Clean controls erased
+  the pairwise margin for every support seed (`5,13,19,29,37,41`) even though
+  they passed held-out label-source validation. Unique/tied separation showed
+  tied rows were much easier by top-1 (`tied - unique = 0.600292`), but the
+  route was already invalidated by per-seed and clean-control checks.
+  Classification is
+  `v175_v174_route_overstated_static_ranking_not_ready`; recommended next
+  route is `v176_exact_branch_replay_or_world_model_transition_diagnostic`.
+  No training, fit, runtime artifact, runtime action change, shadow/live eval,
+  gate relaxation, promotion, staging, commit, reset, or clean operation was
+  authorized. Report:
+  `output/mind/mind-v3-v175-carrion-survivor-continuation-v174-route-correction-audit.json`;
+  exact report digest:
+  `ab398ae0c5958f3551598437602d3ca59efcae627a9125ee18963f15d64ab869`.
+  Optional v176 plan JSONL:
+  `output/mind/mind-v3-v176-carrion-survivor-continuation-replay-or-world-model-plan.jsonl`;
+  plan digest:
+  `5f28206ae4ccd4359678518f4f6a7e2c9f51f540b60f6fe980d327f33e3a7d2f`.
+
+- v176: diagnostics-only exact branch replay / transition diagnostic planner.
+  Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v176-transition-diagnostic-planner`,
+  consuming v175 exact report digest
+  `ab398ae0c5958f3551598437602d3ca59efcae627a9125ee18963f15d64ab869`,
+  v175 classification
+  `v175_v174_route_overstated_static_ranking_not_ready`, v176 plan digest
+  `5f28206ae4ccd4359678518f4f6a7e2c9f51f540b60f6fe980d327f33e3a7d2f`,
+  v174 exact report digest
+  `26b0e68d71b46acd85faeccc3c525d19f096908388ea1ee0dd77a76be1d070bd`,
+  and v172 dataset digest
+  `206f0b8f11db854da59bbece74590d34b64034ad7c1b3bf5b0cbca34321d122d`.
+  Source validation passed, all lifecycle flags remained diagnostics-only, and
+  no training, fit, replay expansion, world-model training, runtime artifact,
+  runtime action-selection change, shadow/live eval, promotion, staging,
+  commit, reset, or clean operation was authorized or run. Lane A mapped the
+  failed support seeds from v175: seed `41` first, then seed `19`, with
+  unique-row failure counts `{41: 61, 19: 121}`, `219` grouped failure targets,
+  and `32` deterministic priority rows. Lane B found all `910` v172 rows have
+  current public observation, current public action mask, action-value targets,
+  and replay outcome summaries, but missing transition fields
+  `next_public_observation`, `next_public_action_mask`, and
+  `previous_same_agent_public_context`; current evidence is terminal/summary
+  only and is not enough for the compact transition diagnostic dataset. Lane C
+  therefore defines the future compact transition/world-model row contract with
+  replay provenance metadata-only and no seed/fixture/branch/tick/agent/path/
+  digest/provenance/private/outcome/target fields in trainable inputs. Lane D
+  writes the v177 exact branch replay shard plan with `16` rows, capped at `8`
+  per failed seed and prioritized seed `41` before `19`. Lane E implements the
+  deterministic training-free group-relative transition-experience probe
+  inspired by arXiv:2510.08191 without LLM calls, prompting, semantic priors, or
+  nondeterminism: `768` branch groups had clear winner/loser actions, `142`
+  were all-tied, `4730` candidate JSONL rows were emitted, and failed seeds had
+  enough winner/loser contrast (`41`: `74` clear groups, `18` tied; `19`: `163`
+  clear groups, `28` tied). These rows are useful diagnostics but do not support
+  v177 compact transition/world-model diagnostics without next-state fields.
+  Classification is `v176_exact_branch_replay_plan_ready_no_training`;
+  recommended next route is `v177_exact_branch_replay_expansion_no_training`.
+  Report:
+  `output/mind/mind-v3-v176-carrion-survivor-continuation-transition-diagnostic-planner.json`;
+  exact report digest:
+  `f24086c6f40bd508e75eef1b18c5f160408a039d759b774c3008ab0ded15bc69`.
+  Group-relative JSONL:
+  `output/mind/mind-v3-v176-carrion-survivor-continuation-group-relative-transition-experience.jsonl`;
+  digest:
+  `5cb324a86b96a0fe7fba8dee60841956619a00c82a074e8d58e9c0000aca9cd7`.
+  v177 shard plan JSONL:
+  `output/mind/mind-v3-v177-carrion-survivor-continuation-exact-branch-replay-shards.jsonl`;
+  digest:
+  `a2583369d4a05ad93504dfdbccbbe2ee65b72710f7d3581a6f3b2c4b653b6f33`.
 
 External checks that support this direction:
 

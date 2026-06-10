@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from random import Random
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from evolution_sim.config import ClimateConfig, ResourceRegrowthConfig, WorldConfig
 from evolution_sim.env import RunMode, SimulationWorld
@@ -38,6 +39,12 @@ from evolution_sim.mind.v3_planner_distilled import (
     load_mind_v3_planner_distilled_artifact,
 )
 
+if TYPE_CHECKING:
+    from evolution_sim.mind.sequence_history_shadow_scorer import (
+        SequenceHistoryShadowScorer,
+    )
+    from evolution_sim.mind.transition_value_scorer import TransitionValueScorer
+
 MIND_V3_EVALUATION_SCHEMA_VERSION = (
     "mind_v3_autonomous_evolution_evaluation_v1"
 )
@@ -55,6 +62,24 @@ MIND_V3_CONTROLLED_FIXTURE_GATE_POLICY = (
 )
 MIND_V3_NEURAL_ANCHOR_DIAGNOSTICS_POLICY = (
     "mind_v3_neural_anchor_diagnostics_v1"
+)
+MIND_V3_SEQUENCE_HISTORY_SHADOW_RUNTIME_DIAGNOSTICS_POLICY = (
+    "mind_v3_v140_sequence_history_shadow_runtime_diagnostics_v1"
+)
+MIND_V3_SEQUENCE_HISTORY_SHADOW_SCORER_SCHEMA_VERSION = (
+    "mind_v3_v139_sequence_history_shadow_scorer_v1"
+)
+MIND_V3_SEQUENCE_HISTORY_SHADOW_READY_CLASSIFICATION = (
+    "sequence_history_shadow_scorer_passed_diagnostics_only_ready_for_shadow_runtime_logging"
+)
+MIND_V3_TRANSITION_VALUE_RUNTIME_DIAGNOSTICS_POLICY = (
+    "mind_v3_v142_transition_value_runtime_diagnostics_v1"
+)
+MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION = (
+    "mind_v3_v142_public_transition_value_scorer_v1"
+)
+MIND_V3_TRANSITION_VALUE_READY_CLASSIFICATION = (
+    "transition_value_scorer_ready_for_opt_in_live_ab"
 )
 MIND_V3_V97_PLANNER_DISTILLED_PROMOTION_POLICY = (
     "mind_v3_v97_planner_distilled_runtime_promotion_gate_v1"
@@ -127,6 +152,42 @@ def build_parser() -> argparse.ArgumentParser:
             "artifact or v96 report containing distilled_artifact. This is a "
             "runtime-feasibility artifact and is evaluated without planner "
             "outcome tables or global assignment."
+        ),
+    )
+    parser.add_argument(
+        "--sequence-history-shadow-scorer",
+        type=Path,
+        help=(
+            "Optional diagnostics-only v139 sequence-history shadow scorer "
+            "artifact. The scorer logs what it would predict during Mind v3 "
+            "evaluation without changing requested actions."
+        ),
+    )
+    parser.add_argument(
+        "--sequence-history-action-override",
+        action="store_true",
+        help=(
+            "Explicitly opt into v141 sequence-history action selection. "
+            "Requires --sequence-history-shadow-scorer with a full v139 report "
+            "whose source-integrity and support floors passed."
+        ),
+    )
+    parser.add_argument(
+        "--transition-value-scorer",
+        type=Path,
+        help=(
+            "Optional v142 public transition-value scorer artifact. The "
+            "scorer logs transition utility predictions unless the explicit "
+            "--transition-value-action-override flag is also set."
+        ),
+    )
+    parser.add_argument(
+        "--transition-value-action-override",
+        action="store_true",
+        help=(
+            "Explicitly opt into v142 transition-value action selection. "
+            "Requires --transition-value-scorer with a full v142 report whose "
+            "source-integrity, support floors, and JSON score roundtrip passed."
         ),
     )
     parser.add_argument(
@@ -271,6 +332,78 @@ def main() -> None:
         if args.anchored_neural_artifact is not None
         else None
     )
+    if args.sequence_history_action_override and args.sequence_history_shadow_scorer is None:
+        raise SystemExit(
+            "--sequence-history-action-override requires "
+            "--sequence-history-shadow-scorer"
+        )
+    if args.transition_value_action_override and args.transition_value_scorer is None:
+        raise SystemExit(
+            "--transition-value-action-override requires --transition-value-scorer"
+        )
+    if args.sequence_history_action_override and args.transition_value_action_override:
+        raise SystemExit(
+            "--sequence-history-action-override and "
+            "--transition-value-action-override are mutually exclusive"
+        )
+    sequence_history_shadow_payload = (
+        _load_json_mapping(args.sequence_history_shadow_scorer)
+        if args.sequence_history_shadow_scorer is not None
+        else None
+    )
+    sequence_history_shadow_source_integrity = (
+        _sequence_history_shadow_scorer_source_integrity(
+            sequence_history_shadow_payload
+        )
+        if sequence_history_shadow_payload is not None
+        else {
+            "passed": False,
+            "failures": ["missing_sequence_history_shadow_scorer"],
+        }
+    )
+    if (
+        args.sequence_history_action_override
+        and sequence_history_shadow_source_integrity.get("passed") is not True
+    ):
+        raise SystemExit(
+            "--sequence-history-action-override requires a valid full v139 "
+            "sequence-history scorer report; failures="
+            f"{sequence_history_shadow_source_integrity.get('failures')}"
+        )
+    sequence_history_shadow_scorer = (
+        _load_sequence_history_shadow_scorer_artifact(
+            sequence_history_shadow_payload
+        )
+        if sequence_history_shadow_payload is not None
+        else None
+    )
+    transition_value_payload = (
+        _load_json_mapping(args.transition_value_scorer)
+        if args.transition_value_scorer is not None
+        else None
+    )
+    transition_value_source_integrity = (
+        _transition_value_scorer_source_integrity(transition_value_payload)
+        if transition_value_payload is not None
+        else {
+            "passed": False,
+            "failures": ["missing_transition_value_scorer"],
+        }
+    )
+    if (
+        args.transition_value_action_override
+        and transition_value_source_integrity.get("passed") is not True
+    ):
+        raise SystemExit(
+            "--transition-value-action-override requires a valid full v142 "
+            "transition-value scorer report; failures="
+            f"{transition_value_source_integrity.get('failures')}"
+        )
+    transition_value_scorer = (
+        _load_transition_value_scorer_artifact(transition_value_payload)
+        if transition_value_payload is not None
+        else None
+    )
     if planner_distilled_artifact is not None and neural_artifact is not None:
         raise SystemExit(
             "--planner-distilled-artifact and --neural-artifact are mutually exclusive"
@@ -324,6 +457,22 @@ def main() -> None:
                 policy=_mind_v3_policy(
                     seed=seed,
                     founder_template=founder_template,
+                    sequence_history_shadow_scorer=(
+                        sequence_history_shadow_scorer
+                    ),
+                    sequence_history_action_override=(
+                        args.sequence_history_action_override
+                    ),
+                    sequence_history_action_override_source_integrity_passed=(
+                        sequence_history_shadow_source_integrity.get("passed") is True
+                    ),
+                    transition_value_scorer=transition_value_scorer,
+                    transition_value_action_override=(
+                        args.transition_value_action_override
+                    ),
+                    transition_value_action_override_source_integrity_passed=(
+                        transition_value_source_integrity.get("passed") is True
+                    ),
                 ),
                 trajectory_output_path=_trajectory_output_path(
                     args.trajectory_output_dir,
@@ -348,6 +497,20 @@ def main() -> None:
                 founder_template=founder_template,
                 neural_artifact=neural_artifact,
                 planner_distilled_artifact=planner_distilled_artifact,
+                sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+                sequence_history_action_override=(
+                    args.sequence_history_action_override
+                ),
+                sequence_history_action_override_source_integrity_passed=(
+                    sequence_history_shadow_source_integrity.get("passed") is True
+                ),
+                transition_value_scorer=transition_value_scorer,
+                transition_value_action_override=(
+                    args.transition_value_action_override
+                ),
+                transition_value_action_override_source_integrity_passed=(
+                    transition_value_source_integrity.get("passed") is True
+                ),
             ),
             trajectory_output_path=_trajectory_output_path(
                 args.trajectory_output_dir,
@@ -369,6 +532,22 @@ def main() -> None:
                     seed=seed,
                     founder_template=founder_template,
                     neural_artifact=anchored_neural_artifact,
+                    sequence_history_shadow_scorer=(
+                        sequence_history_shadow_scorer
+                    ),
+                    sequence_history_action_override=(
+                        args.sequence_history_action_override
+                    ),
+                    sequence_history_action_override_source_integrity_passed=(
+                        sequence_history_shadow_source_integrity.get("passed") is True
+                    ),
+                    transition_value_scorer=transition_value_scorer,
+                    transition_value_action_override=(
+                        args.transition_value_action_override
+                    ),
+                    transition_value_action_override_source_integrity_passed=(
+                        transition_value_source_integrity.get("passed") is True
+                    ),
                 ),
                 trajectory_output_path=_trajectory_output_path(
                     args.trajectory_output_dir,
@@ -448,6 +627,42 @@ def main() -> None:
                 _planner_distilled_source_reload_actions_match(
                     planner_distilled_source_payload
                 )
+            ),
+            "sequence_history_shadow_scorer_source": (
+                str(args.sequence_history_shadow_scorer)
+                if args.sequence_history_shadow_scorer is not None
+                else None
+            ),
+            "sequence_history_shadow_scorer_runtime_effect": (
+                "explicit_opt_in_action_override"
+                if args.sequence_history_action_override
+                else "diagnostics_only_no_action_selection_change"
+                if sequence_history_shadow_scorer is not None
+                else None
+            ),
+            "sequence_history_action_override_enabled": bool(
+                args.sequence_history_action_override
+            ),
+            "sequence_history_shadow_scorer_source_integrity": (
+                sequence_history_shadow_source_integrity
+            ),
+            "transition_value_scorer_source": (
+                str(args.transition_value_scorer)
+                if args.transition_value_scorer is not None
+                else None
+            ),
+            "transition_value_scorer_runtime_effect": (
+                "explicit_opt_in_action_override"
+                if args.transition_value_action_override
+                else "diagnostics_only_no_action_selection_change"
+                if transition_value_scorer is not None
+                else None
+            ),
+            "transition_value_action_override_enabled": bool(
+                args.transition_value_action_override
+            ),
+            "transition_value_scorer_source_integrity": (
+                transition_value_source_integrity
             ),
             "linear_baseline_compared": bool(args.compare_linear_baseline),
         },
@@ -534,6 +749,16 @@ def main() -> None:
             founder_template=founder_template,
             neural_artifact=neural_artifact,
             planner_distilled_artifact=planner_distilled_artifact,
+            sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+            sequence_history_action_override=args.sequence_history_action_override,
+            sequence_history_action_override_source_integrity_passed=(
+                sequence_history_shadow_source_integrity.get("passed") is True
+            ),
+            transition_value_scorer=transition_value_scorer,
+            transition_value_action_override=args.transition_value_action_override,
+            transition_value_action_override_source_integrity_passed=(
+                transition_value_source_integrity.get("passed") is True
+            ),
             trajectory_output_dir=args.trajectory_output_dir,
             trajectory_prefix="fixture",
         )
@@ -548,6 +773,20 @@ def main() -> None:
                 seeds=fixture_seeds,
                 ticks=fixture_ticks,
                 founder_template=founder_template,
+                sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+                sequence_history_action_override=(
+                    args.sequence_history_action_override
+                ),
+                sequence_history_action_override_source_integrity_passed=(
+                    sequence_history_shadow_source_integrity.get("passed") is True
+                ),
+                transition_value_scorer=transition_value_scorer,
+                transition_value_action_override=(
+                    args.transition_value_action_override
+                ),
+                transition_value_action_override_source_integrity_passed=(
+                    transition_value_source_integrity.get("passed") is True
+                ),
                 trajectory_output_dir=args.trajectory_output_dir,
                 trajectory_prefix="fixture_linear_baseline",
             )
@@ -575,6 +814,16 @@ def main() -> None:
                 ticks=fixture_ticks,
                 founder_template=founder_template,
                 neural_artifact=anchored_neural_artifact,
+                sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+                sequence_history_action_override=args.sequence_history_action_override,
+                sequence_history_action_override_source_integrity_passed=(
+                    sequence_history_shadow_source_integrity.get("passed") is True
+                ),
+                transition_value_scorer=transition_value_scorer,
+                transition_value_action_override=args.transition_value_action_override,
+                transition_value_action_override_source_integrity_passed=(
+                    transition_value_source_integrity.get("passed") is True
+                ),
                 trajectory_output_dir=args.trajectory_output_dir,
                 trajectory_prefix="fixture_anchored_neural",
             )
@@ -640,12 +889,28 @@ def _mind_v3_policy(
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
     planner_distilled_artifact: dict[str, object] | None = None,
+    sequence_history_shadow_scorer: SequenceHistoryShadowScorer | None = None,
+    sequence_history_action_override: bool = False,
+    sequence_history_action_override_source_integrity_passed: bool = False,
+    transition_value_scorer: TransitionValueScorer | None = None,
+    transition_value_action_override: bool = False,
+    transition_value_action_override_source_integrity_passed: bool = False,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
         founder_template_metadata=founder_template,
         neural_artifact=neural_artifact,
         planner_distilled_artifact=planner_distilled_artifact,
+        sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+        sequence_history_action_override=sequence_history_action_override,
+        sequence_history_action_override_source_integrity_passed=(
+            sequence_history_action_override_source_integrity_passed
+        ),
+        transition_value_scorer=transition_value_scorer,
+        transition_value_action_override=transition_value_action_override,
+        transition_value_action_override_source_integrity_passed=(
+            transition_value_action_override_source_integrity_passed
+        ),
     )
 
 
@@ -757,6 +1022,16 @@ def _run_world(
         "neural_anchor_diagnostics": _neural_anchor_diagnostics(
             world.policy_decision_diagnostics_records
         ),
+        "sequence_history_shadow_scorer_diagnostics": (
+            _sequence_history_shadow_scorer_diagnostics(
+                world.policy_decision_diagnostics_records
+            )
+        ),
+        "transition_value_scorer_diagnostics": (
+            _transition_value_scorer_diagnostics(
+                world.policy_decision_diagnostics_records
+            )
+        ),
         "trajectory_record_count": len(world.trajectory_records),
         "heuristic_action_source_count": _heuristic_action_source_count(
             action_source_counts
@@ -821,12 +1096,19 @@ def _trajectory_records_with_optional_metadata(
     enriched_records: list[dict[str, object]] = []
     for index, record in enumerate(records):
         enriched = dict(record)
+        raw_diagnostics = enriched.get("policy_decision_diagnostics")
         if (
             "policy_decision_diagnostics" not in enriched
             and diagnostics_aligned
             and isinstance(diagnostics[index], dict)
         ):
-            enriched["policy_decision_diagnostics"] = dict(diagnostics[index])
+            raw_diagnostics = diagnostics[index]
+        if isinstance(raw_diagnostics, Mapping):
+            enriched["policy_decision_diagnostics"] = (
+                _trajectory_safe_policy_decision_diagnostics(raw_diagnostics)
+            )
+        elif raw_diagnostics is not None:
+            enriched["policy_decision_diagnostics"] = None
         if (
             "policy_update_trace" not in enriched
             and update_traces_aligned
@@ -835,6 +1117,114 @@ def _trajectory_records_with_optional_metadata(
             enriched["policy_update_trace"] = dict(update_traces[index])
         enriched_records.append(enriched)
     return enriched_records
+
+
+def _trajectory_safe_policy_decision_diagnostics(
+    diagnostics: Mapping[str, object],
+) -> dict[str, object]:
+    safe: dict[str, object] = {}
+    for key, value in diagnostics.items():
+        if not isinstance(key, str) or not key:
+            continue
+        if key == "sequence_history_shadow_scorer":
+            safe.update(_flatten_sequence_history_shadow_diagnostics(value))
+            continue
+        if key == "transition_value_scorer":
+            safe.update(_flatten_transition_value_diagnostics(value))
+            continue
+        if _is_scalar_safe_diagnostic_value(value):
+            safe[key] = value
+    return safe
+
+
+def _flatten_sequence_history_shadow_diagnostics(
+    value: object,
+) -> dict[str, object]:
+    shadow = _mapping(value)
+    if not shadow:
+        return {}
+    flattened = {
+        "sequence_history_shadow_original_mind_v3_requested_action": (
+            shadow.get("original_mind_v3_requested_action")
+        ),
+        "sequence_history_shadow_final_requested_action": (
+            shadow.get("final_requested_action")
+        ),
+        "sequence_history_shadow_predicted_action": shadow.get("predicted_action"),
+        "sequence_history_shadow_score_source": shadow.get("score_source"),
+        "sequence_history_shadow_supported_prediction": shadow.get(
+            "supported_prediction"
+        ),
+        "sequence_history_shadow_override_applied": shadow.get(
+            "override_applied"
+        ),
+        "sequence_history_shadow_override_rejected_reason": shadow.get(
+            "override_rejected_reason"
+        ),
+        "sequence_history_shadow_would_change_action": shadow.get(
+            "would_change_action"
+        ),
+        "sequence_history_shadow_unsupported_prediction": shadow.get(
+            "unsupported_prediction"
+        ),
+        "sequence_history_shadow_runtime_action_selection_changed": shadow.get(
+            "runtime_action_selection_changed"
+        ),
+    }
+    return {
+        key: field_value
+        for key, field_value in flattened.items()
+        if _is_scalar_safe_diagnostic_value(field_value)
+    }
+
+
+def _flatten_transition_value_diagnostics(
+    value: object,
+) -> dict[str, object]:
+    transition = _mapping(value)
+    if not transition:
+        return {}
+    flattened = {
+        "transition_value_original_mind_v3_requested_action": (
+            transition.get("original_mind_v3_requested_action")
+        ),
+        "transition_value_final_requested_action": (
+            transition.get("final_requested_action")
+        ),
+        "transition_value_predicted_action": transition.get("predicted_action"),
+        "transition_value_score_source": transition.get("score_source"),
+        "transition_value_utility_margin": transition.get("utility_margin"),
+        "transition_value_selected_utility": transition.get("selected_utility"),
+        "transition_value_supported_scores_for_all_valid_actions": (
+            transition.get("supported_scores_for_all_valid_actions")
+        ),
+        "transition_value_clear_best_valid_action": (
+            transition.get("clear_best_valid_action")
+        ),
+        "transition_value_override_applied": transition.get("override_applied"),
+        "transition_value_override_rejected_reason": transition.get(
+            "override_rejected_reason"
+        ),
+        "transition_value_would_change_action": transition.get(
+            "would_change_action"
+        ),
+        "transition_value_runtime_action_selection_changed": transition.get(
+            "runtime_action_selection_changed"
+        ),
+    }
+    return {
+        key: field_value
+        for key, field_value in flattened.items()
+        if _is_scalar_safe_diagnostic_value(field_value)
+    }
+
+
+def _is_scalar_safe_diagnostic_value(value: object) -> bool:
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return math.isfinite(float(value))
+    return False
 
 
 def _trajectory_output_path(
@@ -867,6 +1257,12 @@ def run_mind_v3_fixture_suite(
     founder_template: dict[str, object] | list[dict[str, object]] | None,
     neural_artifact: dict[str, object] | None = None,
     planner_distilled_artifact: dict[str, object] | None = None,
+    sequence_history_shadow_scorer: SequenceHistoryShadowScorer | None = None,
+    sequence_history_action_override: bool = False,
+    sequence_history_action_override_source_integrity_passed: bool = False,
+    transition_value_scorer: TransitionValueScorer | None = None,
+    transition_value_action_override: bool = False,
+    transition_value_action_override_source_integrity_passed: bool = False,
     trajectory_output_dir: Path | None = None,
     trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
@@ -881,6 +1277,16 @@ def run_mind_v3_fixture_suite(
                 founder_template=founder_template,
                 neural_artifact=neural_artifact,
                 planner_distilled_artifact=planner_distilled_artifact,
+                sequence_history_shadow_scorer=sequence_history_shadow_scorer,
+                sequence_history_action_override=sequence_history_action_override,
+                sequence_history_action_override_source_integrity_passed=(
+                    sequence_history_action_override_source_integrity_passed
+                ),
+                transition_value_scorer=transition_value_scorer,
+                transition_value_action_override=transition_value_action_override,
+                transition_value_action_override_source_integrity_passed=(
+                    transition_value_action_override_source_integrity_passed
+                ),
             )
         ),
         learned_policy_key="mind_v3",
@@ -1157,6 +1563,138 @@ def _load_json_mapping(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise SystemExit(f"JSON report must be an object: {path}")
     return payload
+
+
+def _load_sequence_history_shadow_scorer_artifact(
+    payload_or_path: Mapping[str, object] | Path,
+) -> "SequenceHistoryShadowScorer":
+    from evolution_sim.mind.sequence_history_shadow_scorer import (
+        load_sequence_history_shadow_scorer_artifact,
+    )
+
+    try:
+        return load_sequence_history_shadow_scorer_artifact(payload_or_path)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            "failed to load sequence-history shadow scorer: "
+            f"{payload_or_path}: {exc}"
+        ) from exc
+
+
+def _sequence_history_shadow_scorer_source_integrity(
+    payload: Mapping[str, object] | None,
+) -> dict[str, object]:
+    failures: list[str] = []
+    artifact = _mapping(_mapping(payload).get("artifact"))
+    classification = _mapping(_mapping(payload).get("classification"))
+    source_integrity = _mapping(_mapping(payload).get("source_integrity"))
+    support_floors = _mapping(_mapping(payload).get("support_floors"))
+    roundtrip = _mapping(_mapping(payload).get("artifact_roundtrip"))
+    feature_leakage = _mapping(_mapping(payload).get("artifact_feature_leakage_scan"))
+    if _mapping(payload).get("schema_version") != (
+        MIND_V3_SEQUENCE_HISTORY_SHADOW_SCORER_SCHEMA_VERSION
+    ):
+        failures.append("v139_report_schema_mismatch_or_missing")
+    if artifact.get("schema_version") != (
+        MIND_V3_SEQUENCE_HISTORY_SHADOW_SCORER_SCHEMA_VERSION
+    ):
+        failures.append("v139_artifact_schema_mismatch_or_missing")
+    if source_integrity.get("passed") is not True:
+        failures.append("v139_source_integrity_not_passed")
+    if support_floors.get("passed") is not True:
+        failures.append("v139_support_floors_not_passed")
+    if classification.get("primary") != (
+        MIND_V3_SEQUENCE_HISTORY_SHADOW_READY_CLASSIFICATION
+    ):
+        failures.append("v139_classification_not_ready")
+    if roundtrip.get("loaded_artifact_scores_match_pre_serialization") is not True:
+        failures.append("v139_artifact_roundtrip_not_verified")
+    if feature_leakage.get("passed") is not True:
+        failures.append("v139_artifact_feature_leakage_scan_failed")
+    return {
+        "policy": "v141_requires_ready_v139_sequence_history_shadow_scorer_v1",
+        "passed": not failures,
+        "failures": sorted(set(failures)),
+        "v139_source_integrity_passed": source_integrity.get("passed"),
+        "v139_support_floors_passed": support_floors.get("passed"),
+        "v139_classification": classification.get("primary"),
+        "required_v139_classification": (
+            MIND_V3_SEQUENCE_HISTORY_SHADOW_READY_CLASSIFICATION
+        ),
+        "v139_artifact_roundtrip_verified": roundtrip.get(
+            "loaded_artifact_scores_match_pre_serialization"
+        ),
+        "v139_artifact_feature_leakage_scan_passed": feature_leakage.get(
+            "passed"
+        ),
+    }
+
+
+def _load_transition_value_scorer_artifact(
+    payload_or_path: Mapping[str, object] | Path,
+) -> "TransitionValueScorer":
+    from evolution_sim.mind.transition_value_scorer import (
+        load_transition_value_scorer_artifact,
+    )
+
+    try:
+        return load_transition_value_scorer_artifact(payload_or_path)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            "failed to load transition-value scorer: "
+            f"{payload_or_path}: {exc}"
+        ) from exc
+
+
+def _transition_value_scorer_source_integrity(
+    payload: Mapping[str, object] | None,
+) -> dict[str, object]:
+    failures: list[str] = []
+    artifact = _mapping(_mapping(payload).get("artifact"))
+    classification = _mapping(_mapping(payload).get("classification"))
+    source_integrity = _mapping(_mapping(payload).get("source_integrity"))
+    support_floors = _mapping(_mapping(payload).get("support_floors"))
+    roundtrip = _mapping(_mapping(payload).get("artifact_roundtrip"))
+    feature_leakage = _mapping(_mapping(payload).get("artifact_feature_leakage_scan"))
+    action_support = _mapping(_mapping(payload).get("action_support"))
+    if _mapping(payload).get("schema_version") != (
+        MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION
+    ):
+        failures.append("v142_report_schema_mismatch_or_missing")
+    if artifact.get("schema_version") != (
+        MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION
+    ):
+        failures.append("v142_artifact_schema_mismatch_or_missing")
+    if source_integrity.get("passed") is not True:
+        failures.append("v142_source_integrity_not_passed")
+    if support_floors.get("passed") is not True:
+        failures.append("v142_support_floors_not_passed")
+    if classification.get("primary") != MIND_V3_TRANSITION_VALUE_READY_CLASSIFICATION:
+        failures.append("v142_classification_not_ready")
+    if roundtrip.get("loaded_artifact_scores_match_pre_serialization") is not True:
+        failures.append("v142_artifact_roundtrip_not_verified")
+    if feature_leakage.get("passed") is not True:
+        failures.append("v142_artifact_feature_leakage_scan_failed")
+    if _int(action_support.get("heuristic_action_source_count")) != 0:
+        failures.append("v142_heuristic_action_source_rows_present")
+    return {
+        "policy": "v142_requires_ready_transition_value_scorer_v1",
+        "passed": not failures,
+        "failures": sorted(set(failures)),
+        "v142_source_integrity_passed": source_integrity.get("passed"),
+        "v142_support_floors_passed": support_floors.get("passed"),
+        "v142_classification": classification.get("primary"),
+        "required_v142_classification": (
+            MIND_V3_TRANSITION_VALUE_READY_CLASSIFICATION
+        ),
+        "v142_artifact_roundtrip_verified": roundtrip.get(
+            "loaded_artifact_scores_match_pre_serialization"
+        ),
+        "v142_artifact_feature_leakage_scan_passed": feature_leakage.get("passed"),
+        "v142_heuristic_action_source_count": action_support.get(
+            "heuristic_action_source_count"
+        ),
+    }
 
 
 def _planner_distilled_source_reload_actions_match(
@@ -2180,6 +2718,12 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
     reproduction_attribution = _aggregate_reproduction_failure_attribution(runs)
     temporal_readiness = _aggregate_temporal_readiness_attribution(runs)
     neural_anchor_diagnostics = _aggregate_neural_anchor_diagnostics(runs)
+    sequence_history_shadow_scorer_diagnostics = (
+        _aggregate_sequence_history_shadow_scorer_diagnostics(runs)
+    )
+    transition_value_scorer_diagnostics = (
+        _aggregate_transition_value_scorer_diagnostics(runs)
+    )
     terminal_viability = reproduction_attribution[
         "terminal_viability_shares_mean"
     ]
@@ -2270,10 +2814,311 @@ def _aggregate_runs(runs: list[dict[str, object]]) -> dict[str, object]:
         "reproduction_failure_attribution": reproduction_attribution,
         "temporal_readiness_attribution": temporal_readiness,
         "neural_anchor_diagnostics": neural_anchor_diagnostics,
+        "sequence_history_shadow_scorer_diagnostics": (
+            sequence_history_shadow_scorer_diagnostics
+        ),
+        "transition_value_scorer_diagnostics": (
+            transition_value_scorer_diagnostics
+        ),
         "outcome_metrics": aggregate_run_outcome_metrics(runs),
         "primary_temporal_readiness_blocker": temporal_readiness[
             "primary_temporal_readiness_blocker"
         ],
+    }
+
+
+def _sequence_history_shadow_scorer_diagnostics(
+    decision_diagnostics: list[dict[str, object] | None],
+) -> dict[str, object]:
+    stats = _empty_sequence_history_shadow_scorer_stats()
+    stats["total_decision_count"] = len(decision_diagnostics)
+    for diagnostic in decision_diagnostics:
+        if not isinstance(diagnostic, Mapping):
+            continue
+        shadow = _mapping(diagnostic.get("sequence_history_shadow_scorer"))
+        if not shadow:
+            continue
+        _update_sequence_history_shadow_scorer_stats(stats, shadow)
+    return _finalize_sequence_history_shadow_scorer_stats(stats, run_count=1)
+
+
+def _aggregate_sequence_history_shadow_scorer_diagnostics(
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    stats = _empty_sequence_history_shadow_scorer_stats()
+    for run in runs:
+        diagnostics = run.get("sequence_history_shadow_scorer_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        for key in (
+            "total_decision_count",
+            "decision_count",
+            "supported_count",
+            "would_change_count",
+            "override_applied_count",
+            "unsupported_prediction_count",
+            "no_prediction_count",
+        ):
+            stats[key] = int(stats[key]) + int(diagnostics.get(key, 0))
+        for source_key, target_key in (
+            ("predicted_action_counts", "predicted_action_counts"),
+            ("score_source_counts", "score_source_counts"),
+            (
+                "override_rejected_reason_counts",
+                "override_rejected_reason_counts",
+            ),
+        ):
+            counter = stats[target_key]
+            if isinstance(counter, Counter):
+                counter.update(_int_counter(diagnostics.get(source_key, {})))
+    return _finalize_sequence_history_shadow_scorer_stats(
+        stats,
+        run_count=len(runs),
+    )
+
+
+def _empty_sequence_history_shadow_scorer_stats() -> dict[str, object]:
+    return {
+        "total_decision_count": 0,
+        "decision_count": 0,
+        "supported_count": 0,
+        "would_change_count": 0,
+        "override_applied_count": 0,
+        "unsupported_prediction_count": 0,
+        "no_prediction_count": 0,
+        "predicted_action_counts": Counter(),
+        "score_source_counts": Counter(),
+        "override_rejected_reason_counts": Counter(),
+    }
+
+
+def _update_sequence_history_shadow_scorer_stats(
+    stats: dict[str, object],
+    shadow: Mapping[str, object],
+) -> None:
+    stats["decision_count"] = int(stats["decision_count"]) + 1
+    predicted_action = shadow.get("predicted_action")
+    if isinstance(predicted_action, str) and predicted_action:
+        counter = stats["predicted_action_counts"]
+        if isinstance(counter, Counter):
+            counter.update([predicted_action])
+    else:
+        stats["no_prediction_count"] = int(stats["no_prediction_count"]) + 1
+    if shadow.get("supported_prediction") is True:
+        stats["supported_count"] = int(stats["supported_count"]) + 1
+    else:
+        stats["unsupported_prediction_count"] = (
+            int(stats["unsupported_prediction_count"]) + 1
+        )
+    if shadow.get("would_change_action") is True:
+        stats["would_change_count"] = int(stats["would_change_count"]) + 1
+    if shadow.get("override_applied") is True:
+        stats["override_applied_count"] = int(stats["override_applied_count"]) + 1
+    override_rejected_reason = shadow.get("override_rejected_reason")
+    if isinstance(override_rejected_reason, str) and override_rejected_reason:
+        counter = stats["override_rejected_reason_counts"]
+        if isinstance(counter, Counter):
+            counter.update([override_rejected_reason])
+    score_source = shadow.get("score_source")
+    if isinstance(score_source, str) and score_source:
+        counter = stats["score_source_counts"]
+        if isinstance(counter, Counter):
+            counter.update([score_source])
+
+
+def _finalize_sequence_history_shadow_scorer_stats(
+    stats: Mapping[str, object],
+    *,
+    run_count: int,
+) -> dict[str, object]:
+    decision_count = int(stats.get("decision_count", 0))
+    supported_count = int(stats.get("supported_count", 0))
+    would_change_count = int(stats.get("would_change_count", 0))
+    override_applied_count = int(stats.get("override_applied_count", 0))
+    unsupported_prediction_count = int(
+        stats.get("unsupported_prediction_count", 0)
+    )
+    return {
+        "policy": MIND_V3_SEQUENCE_HISTORY_SHADOW_RUNTIME_DIAGNOSTICS_POLICY,
+        "run_count": int(run_count),
+        "total_decision_count": int(stats.get("total_decision_count", 0)),
+        "decision_count": decision_count,
+        "supported_count": supported_count,
+        "supported_share": _share(supported_count, decision_count),
+        "would_change_count": would_change_count,
+        "would_change_share": _share(would_change_count, decision_count),
+        "override_applied_count": override_applied_count,
+        "override_applied_share": _share(override_applied_count, decision_count),
+        "unsupported_prediction_count": unsupported_prediction_count,
+        "unsupported_prediction_share": _share(
+            unsupported_prediction_count,
+            decision_count,
+        ),
+        "no_prediction_count": int(stats.get("no_prediction_count", 0)),
+        "predicted_action_counts": dict(
+            sorted(_int_counter(stats.get("predicted_action_counts", {})).items())
+        ),
+        "score_source_counts": dict(
+            sorted(_int_counter(stats.get("score_source_counts", {})).items())
+        ),
+        "override_rejected_reason_counts": dict(
+            sorted(
+                _int_counter(
+                    stats.get("override_rejected_reason_counts", {})
+                ).items()
+            )
+        ),
+    }
+
+
+def _transition_value_scorer_diagnostics(
+    decision_diagnostics: list[dict[str, object] | None],
+) -> dict[str, object]:
+    stats = _empty_transition_value_scorer_stats()
+    stats["total_decision_count"] = len(decision_diagnostics)
+    for diagnostic in decision_diagnostics:
+        if not isinstance(diagnostic, Mapping):
+            continue
+        transition = _mapping(diagnostic.get("transition_value_scorer"))
+        if not transition:
+            continue
+        _update_transition_value_scorer_stats(stats, transition)
+    return _finalize_transition_value_scorer_stats(stats, run_count=1)
+
+
+def _aggregate_transition_value_scorer_diagnostics(
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    stats = _empty_transition_value_scorer_stats()
+    for run in runs:
+        diagnostics = run.get("transition_value_scorer_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        for key in (
+            "total_decision_count",
+            "decision_count",
+            "supported_score_count",
+            "clear_best_count",
+            "would_change_count",
+            "override_applied_count",
+            "no_prediction_count",
+            "missing_supported_score_count",
+        ):
+            stats[key] = int(stats[key]) + int(diagnostics.get(key, 0))
+        for source_key, target_key in (
+            ("predicted_action_counts", "predicted_action_counts"),
+            ("score_source_counts", "score_source_counts"),
+            (
+                "override_rejected_reason_counts",
+                "override_rejected_reason_counts",
+            ),
+        ):
+            counter = stats[target_key]
+            if isinstance(counter, Counter):
+                counter.update(_int_counter(diagnostics.get(source_key, {})))
+    return _finalize_transition_value_scorer_stats(
+        stats,
+        run_count=len(runs),
+    )
+
+
+def _empty_transition_value_scorer_stats() -> dict[str, object]:
+    return {
+        "total_decision_count": 0,
+        "decision_count": 0,
+        "supported_score_count": 0,
+        "clear_best_count": 0,
+        "would_change_count": 0,
+        "override_applied_count": 0,
+        "no_prediction_count": 0,
+        "missing_supported_score_count": 0,
+        "predicted_action_counts": Counter(),
+        "score_source_counts": Counter(),
+        "override_rejected_reason_counts": Counter(),
+    }
+
+
+def _update_transition_value_scorer_stats(
+    stats: dict[str, object],
+    transition: Mapping[str, object],
+) -> None:
+    stats["decision_count"] = int(stats["decision_count"]) + 1
+    predicted_action = transition.get("predicted_action")
+    if isinstance(predicted_action, str) and predicted_action:
+        counter = stats["predicted_action_counts"]
+        if isinstance(counter, Counter):
+            counter.update([predicted_action])
+    else:
+        stats["no_prediction_count"] = int(stats["no_prediction_count"]) + 1
+    if transition.get("supported_scores_for_all_valid_actions") is True:
+        stats["supported_score_count"] = int(stats["supported_score_count"]) + 1
+    else:
+        stats["missing_supported_score_count"] = (
+            int(stats["missing_supported_score_count"]) + 1
+        )
+    if transition.get("clear_best_valid_action") is True:
+        stats["clear_best_count"] = int(stats["clear_best_count"]) + 1
+    if transition.get("would_change_action") is True:
+        stats["would_change_count"] = int(stats["would_change_count"]) + 1
+    if transition.get("override_applied") is True:
+        stats["override_applied_count"] = int(stats["override_applied_count"]) + 1
+    override_rejected_reason = transition.get("override_rejected_reason")
+    if isinstance(override_rejected_reason, str) and override_rejected_reason:
+        counter = stats["override_rejected_reason_counts"]
+        if isinstance(counter, Counter):
+            counter.update([override_rejected_reason])
+    score_source = transition.get("score_source")
+    if isinstance(score_source, str) and score_source:
+        counter = stats["score_source_counts"]
+        if isinstance(counter, Counter):
+            counter.update([score_source])
+
+
+def _finalize_transition_value_scorer_stats(
+    stats: Mapping[str, object],
+    *,
+    run_count: int,
+) -> dict[str, object]:
+    decision_count = int(stats.get("decision_count", 0))
+    supported_score_count = int(stats.get("supported_score_count", 0))
+    clear_best_count = int(stats.get("clear_best_count", 0))
+    would_change_count = int(stats.get("would_change_count", 0))
+    override_applied_count = int(stats.get("override_applied_count", 0))
+    missing_supported_score_count = int(
+        stats.get("missing_supported_score_count", 0)
+    )
+    return {
+        "policy": MIND_V3_TRANSITION_VALUE_RUNTIME_DIAGNOSTICS_POLICY,
+        "run_count": int(run_count),
+        "total_decision_count": int(stats.get("total_decision_count", 0)),
+        "decision_count": decision_count,
+        "supported_score_count": supported_score_count,
+        "supported_score_share": _share(supported_score_count, decision_count),
+        "clear_best_count": clear_best_count,
+        "clear_best_share": _share(clear_best_count, decision_count),
+        "would_change_count": would_change_count,
+        "would_change_share": _share(would_change_count, decision_count),
+        "override_applied_count": override_applied_count,
+        "override_applied_share": _share(override_applied_count, decision_count),
+        "missing_supported_score_count": missing_supported_score_count,
+        "missing_supported_score_share": _share(
+            missing_supported_score_count,
+            decision_count,
+        ),
+        "no_prediction_count": int(stats.get("no_prediction_count", 0)),
+        "predicted_action_counts": dict(
+            sorted(_int_counter(stats.get("predicted_action_counts", {})).items())
+        ),
+        "score_source_counts": dict(
+            sorted(_int_counter(stats.get("score_source_counts", {})).items())
+        ),
+        "override_rejected_reason_counts": dict(
+            sorted(
+                _int_counter(
+                    stats.get("override_rejected_reason_counts", {})
+                ).items()
+            )
+        ),
     }
 
 

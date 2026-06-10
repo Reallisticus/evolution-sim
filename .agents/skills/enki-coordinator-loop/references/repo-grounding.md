@@ -139,10 +139,13 @@ Mind v3 files:
 - `python/evolution_sim/mind/recovery_context.py`: recovery context feature
   contract and update trace.
 - `python/evolution_sim/cli/mind_v3_evaluate.py`: broad and controlled fixture
-  evaluation. Audited promotion-style constants include broad seeds
-  `5,13,19,29,37,41`, current fixture seeds `13,19,29,37,41,43`, `120` ticks,
-  maximum dominant requested-action share `0.50`, and zero heuristic
-  action-source expectation for autonomous candidates.
+  evaluation. Historical broad diagnostic seeds include `5,13,19,29,37,41`,
+  but the 2026-06-10 audit records that recent lanes consumed those seeds as
+  support/provenance. Promotion-style claims for scorers trained or selected on
+  those artifacts need a fresh held-out broad matrix. Current fixture diagnostics
+  still use `13,19,29,37,41,43` at `120` ticks, maximum dominant
+  requested-action share `0.50`, and zero heuristic action-source expectation
+  for autonomous candidates.
 - `python/evolution_sim/cli/mind_gate.py`: train/evaluate gate. Audited strict
   control targets include hard guard rate `0.1190` and total fallback rate
   `0.4780`; promotion-review targets include hard guard rate `0.0568` and total
@@ -266,7 +269,7 @@ npm run sim:mind:v3:labeled-iql-slice -- \
   --candidate-artifact <artifact.json> \
   --enable-mind \
   --mind-runtime-mode autonomous \
-  --seeds 5,13,19,29,37,41 \
+  --seeds <fresh-promotion-heldout-seeds> \
   --ticks 120 \
   --fixture-names carrion_only \
   --fixture-seeds 13,19,29,37,41,43 \

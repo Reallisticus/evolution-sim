@@ -1,6 +1,6 @@
 # Senior Developer Onboarding
 
-Date: 2026-05-13
+Date: 2026-06-10
 Audience: senior engineers joining Foundation-boundary and Mind v3 autonomous-controller work.
 
 This repository is a deterministic artificial-life simulator. Foundation,
@@ -18,11 +18,14 @@ Read in this order:
 2. `README.md` for command entrypoints and the current Foundation feature set.
 3. `docs/mind-v3-autonomous-evolution.md` for the current autonomous-controller
    ledger, latest non-promotable candidates, and next research boundary.
-4. `docs/pre-mind-reproductive-and-signal-readiness-plan.md`,
+4. `docs/repository-audit-2026-06-10-remediation.md` for the current audit
+   remediation order, source/evidence durability blocker, and next-coder
+   prompt.
+5. `docs/pre-mind-reproductive-and-signal-readiness-plan.md`,
    `docs/mind-readiness-audit-2026-04-27.md`, and
    `output/audits/deep-system-audit-2026-05-11.md` for historical findings,
    fixed issues, and remaining measurement risk.
-5. `docs/replay-invariants.md` and `docs/benchmark-protocol.md` for durable
+6. `docs/replay-invariants.md` and `docs/benchmark-protocol.md` for durable
    output contracts.
 
 Do not start by editing `world.py`. Read it as the runtime spine, then move to
@@ -174,59 +177,30 @@ Latest validated boundary state:
   movement failures. The next useful branch should add rollout-context policy
   capacity or a distinct sequence, flow, world-model, or archive-replay path,
   with the existing strict gates kept hard.
+- 2026-06-10 full-repository audit: the Foundation measurement boundary remains
+  sound, but Mind v3 source/evidence durability is now blocking. The v137-v176
+  chain is in the dirty working tree, digest-referenced `output/mind/`
+  artifacts are local and gitignored, and the remote trainer cannot run this
+  work until source is committed and pushed. The next Mind v3 slice should
+  follow the v176 exact-branch-replay/transition-row route after durability is
+  restored, not another tiny support-scorer probe. Seeds `5,13,19,29,37,41`
+  are no longer clean promotion-heldout evidence for scorers trained or
+  selected using recent support/provenance artifacts.
 
 ## Boundary Audit Snapshot
 
-The main risk is hidden coupling through the live `SimulationWorld` object.
-Recent extractions created useful module boundaries, but many runtime modules
-still call private `world._*` helpers. Treat those calls as migration debt. When
-extracting, preserve behavior first, then make the boundary explicit.
+Do not rely on stale private-call count tables from old onboarding notes. When a
+boundary claim matters, regenerate it mechanically for the exact slice under
+review and document the command. Treat private `SimulationWorld` access from
+policy or trainable Mind inputs as a hard error; controlled diagnostics may
+inspect world internals only when the report marks those fields metadata-only
+and keeps them out of trainable/runtime payloads.
 
-Highest-priority remaining leaks after the current Foundation hardening slice:
-
-- `runtime/reproduction.py` now routes private world authority through the
-  `ReproductionContext` adapter, including reproductive signal context access.
-  Keep future birth planning and biological readiness work context-only.
-- `runtime/derived.py`, `runtime/biotic.py`, `runtime/signals.py`,
-  `runtime/actions.py`, `runtime/observations.py`, `runtime/surfaces.py`, and
-  `runtime/action_space.py` are clean of direct private world reads. Do not
-  reintroduce compatibility fallbacks there.
-- `runtime/frames.py`, `runtime/summary.py`, `runtime/lifecycle_summary.py`,
-  and `runtime/collectors.py` are the next reporting/export authority cluster.
-- `runtime/surface_snapshots.py` gathers frame/summary snapshots through a
-  single snapshot adapter; reporting should stay on the extracted authority
-  modules.
-- `runtime/feeding.py` now routes private world authority through the
-  `FeedingContext` adapter. Keep telemetry and opportunity accounting split.
-
-Latest mechanical private-call audit after the resource/lifecycle/tick context
-and derived/biotic/signal context extractions:
-
-- `runtime/reproduction.py`: 10 private world reads, all in context adapters.
-- `runtime/feeding.py`: 10 private world reads, all in the context adapter.
-- `runtime/surface_snapshots.py`: 9 private world reads, all in the snapshot
-  adapter.
-- `runtime/frames.py`: 10 private world reads across frame assembly/reporting
-  authority.
-- `runtime/summary.py`: 7 private world reads across summary finalization.
-- `runtime/lifecycle_summary.py`: 8 private world reads across trophic lifecycle
-  aggregation.
-- `runtime/collectors.py`: 5 private world reads in collector orchestration
-  adapters.
-- `runtime/derived.py`: 0 private world reads.
-- `runtime/biotic.py`: 0 private world reads.
-- `runtime/signals.py`: 0 private world reads.
-- `runtime/action_space.py`: 0 private world reads.
-- `runtime/actions.py`: 0 private world reads.
-- `runtime/observations.py`: 0 private world reads.
-- `runtime/surfaces.py`: 0 private world reads.
-- `runtime/resources.py`: 0 private world reads.
-- `runtime/ticks.py`: 0 private world reads.
-- `runtime/lifecycle.py`: 0 private world reads.
-
-Do not paper over these with new world wrappers. Convert the next boundary leak
-by passing explicit runtime arguments or moving the authority into the runtime
-module that owns the behavior.
+The current architectural leak with the highest leverage is not in the
+Foundation tick path. It is the Mind v3 experiment harness: several `mind/`
+modules import private helpers from `python/evolution_sim/cli/mind_v3_evaluate.py`.
+Move shared fixture, gate, digest, report, and leakage-scan helpers into a
+versioned `mind/` module before building more experiment chains on top of them.
 
 ## Working Rules
 

@@ -10,9 +10,19 @@ held-out diagnostics, strict per-seed gates, and Foundation release behavior.
 
 The v61-v63 IQL validation loop closed the current scalar coefficient,
 prior-blend, extraction-only, and global actor-bias family as non-promotable.
-The next useful Mind v3 branch should add rollout-context policy capacity or a
-distinct controller/data path, not another scalar tuning pass on the same
-single-observation representation.
+The v137-v176 audit trail then closed the tiny support-archive /
+nearest-neighbor scorer loop as strategically saturated: the central carrion
+survival blocker did not move, strict seeds were consumed as support
+provenance, and the next useful branch is exact branch replay, transition-row
+data support, rollout-context policy capacity, or a distinct controller/data
+path.
+
+2026-06-10 repository-audit checkpoint: source and evidence durability is now a
+blocking constraint for Mind v3. Do not start a new Mind v3 experiment while the
+v137-v176 dirty-tree backlog is uncommitted and the digest-referenced
+`output/mind/` evidence is only local, unless the user explicitly asks for a
+docs-only or negative-control slice. See
+`docs/repository-audit-2026-06-10-remediation.md`.
 
 ## Environment
 
@@ -60,6 +70,11 @@ Gate boundary checks:
 - Mind v3 promotion requires strict broad held-out seed behavior and controlled fixture evidence; aggregate gains do not excuse per-seed alive or birth regressions.
 - Do not relax action-collapse, heuristic-action, or per-seed gates to make a candidate pass. Record the first failing seed, fixture, and action distribution instead.
 - Keep novel controller work opt-in, serialized, deterministic, and replayable. Do not add hidden heuristic action selection or fixture-specific runtime identity.
+- Do not treat seeds `5,13,19,29,37,41` as clean promotion-heldout evidence for scorers trained or selected using recent support/provenance artifacts that consumed those seeds. Mint and document a fresh promotion-heldout matrix before promotion-style claims.
+- Do not hardcode digests of gitignored Mind artifacts without a durable artifact backup path and retrieval note.
+- Do not make `python/evolution_sim/cli/` a shared library for new Mind experiment code. Shared fixture, gate, digest, and report helpers belong under `python/evolution_sim/mind/` and CLIs should be thin wrappers.
+- The habitat water encoding bug is a replay/viewer contract issue. Fix it only in a dedicated contract-change slice with tests, docs, viewer handling, and golden regeneration.
+- Push-time CI Mind gates are smoke coverage, not promotion evidence. Strict Mind claims require the explicit strict commands and recorded per-seed blockers.
 
 ## Agent skills
 
