@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from random import Random
+from typing import TYPE_CHECKING
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import (
@@ -68,6 +69,12 @@ from evolution_sim.mind.support_gated_residual import (
     validate_support_gated_residual_artifact,
 )
 
+if TYPE_CHECKING:
+    from evolution_sim.mind.sequence_history_shadow_scorer import (
+        SequenceHistoryShadowScorer,
+    )
+    from evolution_sim.mind.transition_value_scorer import TransitionValueScorer
+
 MIND_V3_ELIGIBILITY_TRACE_POLICY = (
     "policy_valid_requested_action_horizon_eligibility_trace_v3"
 )
@@ -90,6 +97,24 @@ MIND_V3_HORIZON_FIXTURE_DIRECT_POLICY = (
 )
 MIND_V3_SUPPORT_RESIDUAL_RUNTIME_MODES = frozenset({"live", "shadow"})
 MIND_V3_PLANNER_DISTILLED_HISTORY_STEPS = 8
+MIND_V3_SEQUENCE_HISTORY_SHADOW_RUNTIME_POLICY = (
+    "diagnostics_only_v140_sequence_history_shadow_runtime_logging_v1"
+)
+MIND_V3_SEQUENCE_HISTORY_ACTION_OVERRIDE_RUNTIME_POLICY = (
+    "opt_in_v141_sequence_history_action_override_v1"
+)
+MIND_V3_SEQUENCE_HISTORY_SHADOW_SCORER_POLICY = (
+    "diagnostics_only_v139_public_sequence_history_shadow_scorer_v1"
+)
+MIND_V3_TRANSITION_VALUE_RUNTIME_POLICY = (
+    "diagnostics_only_v142_transition_value_runtime_logging_v1"
+)
+MIND_V3_TRANSITION_VALUE_ACTION_OVERRIDE_RUNTIME_POLICY = (
+    "opt_in_v142_transition_value_action_override_v1"
+)
+MIND_V3_TRANSITION_VALUE_SCORER_POLICY = (
+    "opt_in_v142_public_transition_value_world_model_scorer_v1"
+)
 MIND_V3_NEURAL_RESIDUAL_SCALE = 0.05
 MIND_V3_NEURAL_RESIDUAL_MAX_LINEAR_OVERRIDE_MARGIN = 0.015
 MIND_V3_NEURAL_COLLAPSE_GUARDED_ACTIONS = frozenset({"eat"})
@@ -158,6 +183,12 @@ class MindV3EvolutionPolicy:
         planner_distilled_artifact: Mapping[str, object] | None = None,
         support_residual_artifact: Mapping[str, object] | None = None,
         support_residual_runtime_mode: str = "live",
+        sequence_history_shadow_scorer: SequenceHistoryShadowScorer | None = None,
+        sequence_history_action_override: bool = False,
+        sequence_history_action_override_source_integrity_passed: bool = False,
+        transition_value_scorer: TransitionValueScorer | None = None,
+        transition_value_action_override: bool = False,
+        transition_value_action_override_source_integrity_passed: bool = False,
     ) -> None:
         active_artifact_count = sum(
             artifact is not None
@@ -176,6 +207,20 @@ class MindV3EvolutionPolicy:
             raise ValueError(
                 "unsupported Mind v3 support-residual runtime mode: "
                 f"{support_residual_runtime_mode!r}"
+            )
+        if sequence_history_action_override and sequence_history_shadow_scorer is None:
+            raise ValueError(
+                "sequence_history_action_override requires "
+                "sequence_history_shadow_scorer"
+            )
+        if transition_value_action_override and transition_value_scorer is None:
+            raise ValueError(
+                "transition_value_action_override requires transition_value_scorer"
+            )
+        if sequence_history_action_override and transition_value_action_override:
+            raise ValueError(
+                "sequence history and transition value action overrides are "
+                "mutually exclusive"
             )
         self._rng = Random(seed)
         self._founder_template_pool = _founder_template_pool(
@@ -201,6 +246,18 @@ class MindV3EvolutionPolicy:
             else None
         )
         self._support_residual_runtime_mode = support_residual_runtime_mode
+        self._sequence_history_shadow_scorer = sequence_history_shadow_scorer
+        self._sequence_history_action_override = bool(
+            sequence_history_action_override
+        )
+        self._sequence_history_action_override_source_integrity_passed = bool(
+            sequence_history_action_override_source_integrity_passed
+        )
+        self._transition_value_scorer = transition_value_scorer
+        self._transition_value_action_override = bool(transition_value_action_override)
+        self._transition_value_action_override_source_integrity_passed = bool(
+            transition_value_action_override_source_integrity_passed
+        )
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[
             int,
@@ -217,6 +274,8 @@ class MindV3EvolutionPolicy:
         self._recovery_phase_ticks_remaining: dict[int, int] = {}
         self._public_history_records: dict[int, list[dict[str, object]]] = {}
         self._rollout_context_states: dict[int, RolloutContextState] = {}
+        self._sequence_history_shadow_states: dict[int, RolloutContextState] = {}
+        self._transition_value_states: dict[int, RolloutContextState] = {}
         self._pending_rollout_context_values: dict[
             int,
             list[tuple[float, ...]],
@@ -611,6 +670,33 @@ class MindV3EvolutionPolicy:
             score = None
         if requested_action is None or score is None:
             requested_action, score = _best_action(scores, action_mask)
+        original_requested_action = requested_action
+        original_score = score
+        shadow_diagnostics = self._sequence_history_shadow_decision_diagnostics(
+            agent_id=agent_id,
+            action_mask=action_mask,
+            requested_action=original_requested_action,
+        )
+        if (
+            shadow_diagnostics is not None
+            and shadow_diagnostics.get("override_applied") is True
+            and isinstance(shadow_diagnostics.get("predicted_action"), str)
+        ):
+            requested_action = str(shadow_diagnostics["predicted_action"])
+            score = float(scores.get(requested_action, score))
+        transition_value_diagnostics = self._transition_value_decision_diagnostics(
+            agent_id=agent_id,
+            observation_input=observation_input,
+            action_mask=action_mask,
+            requested_action=requested_action,
+        )
+        if (
+            transition_value_diagnostics is not None
+            and transition_value_diagnostics.get("override_applied") is True
+            and isinstance(transition_value_diagnostics.get("predicted_action"), str)
+        ):
+            requested_action = str(transition_value_diagnostics["predicted_action"])
+            score = float(scores.get(requested_action, score))
         diagnostics: dict[str, object] = {
             "runtime_mode": "mind-v3-autonomous-evolution",
             "heuristic_free": True,
@@ -642,6 +728,16 @@ class MindV3EvolutionPolicy:
                 scores=scores,
             )
         )
+        if shadow_diagnostics is not None:
+            shadow_diagnostics["final_requested_action"] = requested_action
+            shadow_diagnostics["original_mind_v3_score"] = original_score
+            shadow_diagnostics["final_requested_action_score"] = score
+            diagnostics["sequence_history_shadow_scorer"] = shadow_diagnostics
+        if transition_value_diagnostics is not None:
+            transition_value_diagnostics["final_requested_action"] = requested_action
+            transition_value_diagnostics["original_mind_v3_score"] = original_score
+            transition_value_diagnostics["final_requested_action_score"] = score
+            diagnostics["transition_value_scorer"] = transition_value_diagnostics
         if self._planner_distilled_artifact is not None:
             diagnostics.update(
                 {
@@ -690,6 +786,14 @@ class MindV3EvolutionPolicy:
             return None
         if record.get("action_source") != "passive":
             self._record_public_history(agent_id=agent_id, record=record)
+            self._update_sequence_history_shadow_state(
+                agent_id=agent_id,
+                record=record,
+            )
+            self._update_transition_value_state(
+                agent_id=agent_id,
+                record=record,
+            )
         if self._neural_artifact is not None and is_horizon_fixture_neural_artifact(
             self._neural_artifact
         ):
@@ -839,6 +943,230 @@ class MindV3EvolutionPolicy:
             agent_id,
             RecoveryContextState(),
         )
+
+    def _sequence_history_shadow_state(self, agent_id: int) -> RolloutContextState:
+        return self._sequence_history_shadow_states.setdefault(
+            agent_id,
+            RolloutContextState(),
+        )
+
+    def _transition_value_state(self, agent_id: int) -> RolloutContextState:
+        return self._transition_value_states.setdefault(
+            agent_id,
+            RolloutContextState(),
+        )
+
+    def _sequence_history_shadow_decision_diagnostics(
+        self,
+        *,
+        agent_id: int,
+        action_mask: Mapping[str, bool],
+        requested_action: str,
+    ) -> dict[str, object] | None:
+        scorer = self._sequence_history_shadow_scorer
+        if scorer is None:
+            return None
+        valid_actions = tuple(
+            action for action in ACTION_NAMES if bool(action_mask.get(action))
+        )
+        from evolution_sim.mind.sequence_history_shadow_scorer import (
+            sequence_history_shadow_sequence_keys,
+        )
+
+        sequence_keys = sequence_history_shadow_sequence_keys(
+            state=self._sequence_history_shadow_state(agent_id),
+            valid_action_mask=action_mask,
+        )
+        score = scorer.score(
+            sequence_keys=sequence_keys,
+            valid_actions=valid_actions,
+        )
+        predicted_action = score.get("predicted_action")
+        supported_prediction = (
+            isinstance(predicted_action, str)
+            and predicted_action in set(valid_actions)
+            and score.get("supported_prediction") is True
+        )
+        unsupported_prediction = (
+            isinstance(predicted_action, str) and predicted_action not in valid_actions
+        )
+        override_rejected_reason = self._sequence_history_override_rejected_reason(
+            predicted_action=predicted_action,
+            valid_actions=valid_actions,
+            supported_prediction=supported_prediction,
+        )
+        override_applied = override_rejected_reason is None
+        runtime_action_selection_changed = (
+            override_applied
+            and isinstance(predicted_action, str)
+            and predicted_action != requested_action
+        )
+        return {
+            "runtime_policy": (
+                MIND_V3_SEQUENCE_HISTORY_ACTION_OVERRIDE_RUNTIME_POLICY
+                if self._sequence_history_action_override
+                else MIND_V3_SEQUENCE_HISTORY_SHADOW_RUNTIME_POLICY
+            ),
+            "artifact_policy": MIND_V3_SEQUENCE_HISTORY_SHADOW_SCORER_POLICY,
+            "action_override_policy": (
+                MIND_V3_SEQUENCE_HISTORY_ACTION_OVERRIDE_RUNTIME_POLICY
+            ),
+            "diagnostics_only": not self._sequence_history_action_override,
+            "sequence_history_action_override_enabled": (
+                self._sequence_history_action_override
+            ),
+            "source_integrity_passed_for_action_override": (
+                self._sequence_history_action_override_source_integrity_passed
+            ),
+            "runtime_action_selection_changed": runtime_action_selection_changed,
+            "original_mind_v3_requested_action": requested_action,
+            "requested_action": requested_action,
+            "predicted_action": predicted_action,
+            "override_applied": override_applied,
+            "override_rejected_reason": override_rejected_reason,
+            "supported_prediction": supported_prediction,
+            "unsupported_prediction": unsupported_prediction,
+            "would_change_action": (
+                supported_prediction and predicted_action != requested_action
+            ),
+            "score_source": score.get("score_source"),
+            "valid_actions": list(valid_actions),
+            "sequence_keys": list(sequence_keys),
+            "score": score,
+        }
+
+    def _sequence_history_override_rejected_reason(
+        self,
+        *,
+        predicted_action: object,
+        valid_actions: Sequence[str],
+        supported_prediction: bool,
+    ) -> str | None:
+        if not self._sequence_history_action_override:
+            return "override_disabled"
+        if not self._sequence_history_action_override_source_integrity_passed:
+            return "source_integrity_failed"
+        if not isinstance(predicted_action, str) or not predicted_action:
+            return "no_prediction"
+        if predicted_action not in set(valid_actions):
+            return "invalid_prediction"
+        if supported_prediction is not True:
+            return "unsupported_prediction"
+        return None
+
+    def _transition_value_decision_diagnostics(
+        self,
+        *,
+        agent_id: int,
+        observation_input: Mapping[str, object],
+        action_mask: Mapping[str, bool],
+        requested_action: str,
+    ) -> dict[str, object] | None:
+        scorer = self._transition_value_scorer
+        if scorer is None:
+            return None
+        valid_actions = tuple(
+            action for action in ACTION_NAMES if bool(action_mask.get(action))
+        )
+        score = scorer.score(
+            observation_input=observation_input,
+            valid_action_mask=action_mask,
+            state=self._transition_value_state(agent_id),
+        )
+        predicted_action = score.get("predicted_action")
+        supported_scores = (
+            score.get("supported_scores_for_all_valid_actions") is True
+        )
+        clear_best = score.get("clear_best_valid_action") is True
+        override_rejected_reason = self._transition_value_override_rejected_reason(
+            predicted_action=predicted_action,
+            valid_actions=valid_actions,
+            supported_scores=supported_scores,
+            clear_best=clear_best,
+        )
+        override_applied = override_rejected_reason is None
+        runtime_action_selection_changed = (
+            override_applied
+            and isinstance(predicted_action, str)
+            and predicted_action != requested_action
+        )
+        return {
+            "runtime_policy": (
+                MIND_V3_TRANSITION_VALUE_ACTION_OVERRIDE_RUNTIME_POLICY
+                if self._transition_value_action_override
+                else MIND_V3_TRANSITION_VALUE_RUNTIME_POLICY
+            ),
+            "artifact_policy": MIND_V3_TRANSITION_VALUE_SCORER_POLICY,
+            "action_override_policy": (
+                MIND_V3_TRANSITION_VALUE_ACTION_OVERRIDE_RUNTIME_POLICY
+            ),
+            "diagnostics_only": not self._transition_value_action_override,
+            "transition_value_action_override_enabled": (
+                self._transition_value_action_override
+            ),
+            "source_integrity_passed_for_action_override": (
+                self._transition_value_action_override_source_integrity_passed
+            ),
+            "runtime_action_selection_changed": runtime_action_selection_changed,
+            "original_mind_v3_requested_action": requested_action,
+            "requested_action": requested_action,
+            "predicted_action": predicted_action,
+            "score_source": score.get("score_source"),
+            "utility_margin": score.get("utility_margin"),
+            "selected_utility": score.get("selected_utility"),
+            "override_applied": override_applied,
+            "override_rejected_reason": override_rejected_reason,
+            "supported_scores_for_all_valid_actions": supported_scores,
+            "clear_best_valid_action": clear_best,
+            "would_change_action": (
+                isinstance(predicted_action, str) and predicted_action != requested_action
+            ),
+            "valid_action_count": len(valid_actions),
+            "source_key": score.get("source_key"),
+            "score": score,
+        }
+
+    def _transition_value_override_rejected_reason(
+        self,
+        *,
+        predicted_action: object,
+        valid_actions: Sequence[str],
+        supported_scores: bool,
+        clear_best: bool,
+    ) -> str | None:
+        if not self._transition_value_action_override:
+            return "override_disabled"
+        if not self._transition_value_action_override_source_integrity_passed:
+            return "source_integrity_failed"
+        if supported_scores is not True:
+            return "missing_supported_scores_for_valid_actions"
+        if clear_best is not True:
+            return "no_clear_best_valid_action"
+        if not isinstance(predicted_action, str) or not predicted_action:
+            return "no_prediction"
+        if predicted_action not in set(valid_actions):
+            return "invalid_prediction"
+        return None
+
+    def _update_sequence_history_shadow_state(
+        self,
+        *,
+        agent_id: int,
+        record: Mapping[str, object],
+    ) -> None:
+        if self._sequence_history_shadow_scorer is None:
+            return
+        self._sequence_history_shadow_state(agent_id).update_from_record(record)
+
+    def _update_transition_value_state(
+        self,
+        *,
+        agent_id: int,
+        record: Mapping[str, object],
+    ) -> None:
+        if self._transition_value_scorer is None:
+            return
+        self._transition_value_state(agent_id).update_from_record(record)
 
     def _rollout_context_values_for_decision(
         self,

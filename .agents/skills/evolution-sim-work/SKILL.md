@@ -18,7 +18,12 @@ Use this as the default implementation workflow for this repository.
    - recent audit docs when the task touches Foundation or Mind readiness
 2. Check the working tree with `git status --short`.
 3. Treat existing unrelated changes as user-owned. Do not revert them.
-4. For non-trivial work, state:
+4. For Mind v3 work, read
+   `docs/repository-audit-2026-06-10-remediation.md` before editing. If the
+   v137-v176 dirty-tree backlog is still uncommitted, do not start a new
+   experiment slice unless the user explicitly asks for docs-only work,
+   backlog triage, or a negative control.
+5. For non-trivial work, state:
    - what you found
    - what files are likely involved
    - what behavior or invariant will change
@@ -40,10 +45,14 @@ Mind v3 is the active autonomous-controller track. Read
 dataset, training, gate, artifact, ledger, or acceptance code.
 
 As of the v61-v63 closeout, the current single-observation IQL
-coefficient/prior/extraction family is exhausted for promotion. Do not spend a
-new slice on scalar IQL tuning, prior blends, action-share losses, risk
-extraction, or global actor-bias calibration unless the user explicitly asks for
-a negative-control probe.
+coefficient/prior/extraction family is exhausted for promotion. The 2026-06-10
+audit also closed the recent tiny support-archive / nearest-neighbor scorer loop
+as strategically saturated until exact branch replay, transition-row support, or
+scaled policy capacity changes the data path. Do not spend a new slice on
+scalar IQL tuning, prior blends, action-share losses, risk extraction, global
+actor-bias calibration, residual-threshold tuning, or another micro-archive
+nearest-neighbor probe unless the user explicitly asks for a negative-control
+probe.
 
 Preserve these boundaries:
 
@@ -58,6 +67,10 @@ Preserve these boundaries:
 The likely next useful branch is rollout-context policy capacity derived from
 public trajectory/action outcomes, or a genuinely distinct sequence, flow,
 world-model, or archive-replay path.
+
+Current durability constraint: source and evidence for v137-v176 must be made
+durable before remote-trainer scale work can run. The trainer pulls committed
+source from GitHub; it cannot execute local-only dirty-tree experiments.
 
 ## Remote Trainer
 
@@ -103,6 +116,11 @@ Known trainer caveats:
 - Do not make long sweeps part of the normal fast loop.
 - Do not add dependencies unless the repo clearly needs them.
 - Avoid touching viewer, replay schema, runtime contracts, and goldens in the same change unless the task requires it.
+- Do not hardcode a digest of a gitignored Mind artifact without documenting
+  where that artifact is durably stored or how source-integrity should be
+  overridden for regenerated, metric-equivalent artifacts.
+- Do not add new imports from `python/evolution_sim/cli/` into `mind/` modules;
+  shared experiment harness code belongs under `python/evolution_sim/mind/`.
 
 ## Test Discipline
 

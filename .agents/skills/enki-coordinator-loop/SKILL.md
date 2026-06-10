@@ -46,6 +46,8 @@ Before non-trivial work, inspect:
 - `git status --short`
 - `package.json`
 - `.github/workflows/ci.yml`
+- `docs/repository-audit-2026-06-10-remediation.md` when Mind v3, CI,
+  trainer, docs, or agent-loop direction is in scope
 - the relevant source files under `python/evolution_sim/`
 - the relevant tests under `python/tests/`
 - the relevant viewer files under `viewer/` when replay or UI changes are in scope
@@ -72,6 +74,12 @@ If a task crosses boundaries, sequence it contract-first:
 3. Policy/training change.
 4. Viewer/replay presentation.
 5. Gates, docs, and ledgers.
+
+For Mind v3 work after the 2026-06-10 audit, insert a durability checkpoint
+before any new experiment: the coordinator must decide whether existing dirty
+source and local-only `output/mind/` evidence block reproducibility or trainer
+execution. If they do, route to backlog commit/artifact triage before policy
+work.
 
 ## Coordinator Cycle
 
@@ -112,7 +120,8 @@ Write a short implementation plan only after the audit. A good plan names:
 - risks to replay compatibility, determinism, or gates.
 
 For learned-controller work, the plan must include the falsification metric
-before any training command.
+before any training command. For Mind v3, it must also state whether the
+candidate uses a fresh promotion-heldout matrix or only a diagnostic matrix.
 
 ### 4. Build
 
@@ -127,6 +136,8 @@ Rules:
 - add tests through public behavior, not cache internals;
 - do not relax gates to make an experiment pass;
 - do not introduce hidden heuristic action selection in autonomous Mind v3.
+- do not add new `mind/` imports from private CLI helper modules; extract shared
+  harness code into `python/evolution_sim/mind/`.
 
 ### 5. Review
 
@@ -141,6 +152,10 @@ Review the diff as if it came from another agent:
 - long-run claims without seeds, ticks, modes, and report paths.
 
 Run `git diff --check` before completion.
+
+For dirty-tree remediation, review git actions separately from code changes.
+Never commit, push, reset, clean, or delete artifacts unless the user explicitly
+authorized that operation in the current task.
 
 ### 6. Report
 

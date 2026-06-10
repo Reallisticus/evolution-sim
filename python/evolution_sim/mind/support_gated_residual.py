@@ -19,11 +19,17 @@ MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION = (
 MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION = (
     "mind_v3_v104_action_conditioned_support_gated_residual_runtime_artifact_v1"
 )
+MIND_V3_V144_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION = (
+    "mind_v3_v144_branch_intervention_residual_artifact_v1"
+)
 MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY = (
     "mind_v3_v103_support_gated_residual_runtime_v1"
 )
 MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY = (
     "mind_v3_v104_action_conditioned_support_gated_residual_runtime_v1"
+)
+MIND_V3_V144_SUPPORT_GATED_RESIDUAL_POLICY = (
+    "mind_v3_v144_branch_intervention_residual_runtime_v1"
 )
 MIND_V3_V103_BRANCH_REPLAY_FEASIBILITY_SCHEMA_VERSION = (
     "mind_v3_v103_branch_replay_feasibility_v1"
@@ -36,6 +42,9 @@ MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY = (
 )
 MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY = (
     "mind_v3_v104_action_conditioned_support_gated_residual_runtime_diagnostics_v1"
+)
+MIND_V3_V144_RUNTIME_DIAGNOSTICS_POLICY = (
+    "mind_v3_v144_branch_intervention_residual_runtime_diagnostics_v1"
 )
 MIND_V3_V103_THRESHOLD_POLICY = (
     "v102_loo_p75_distance_p75_margin_support_gate_v1"
@@ -54,12 +63,14 @@ SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSIONS = frozenset(
     {
         MIND_V3_V103_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
         MIND_V3_V104_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
+        MIND_V3_V144_SUPPORT_GATED_RESIDUAL_ARTIFACT_SCHEMA_VERSION,
     }
 )
 SUPPORT_GATED_RESIDUAL_POLICIES = frozenset(
     {
         MIND_V3_V103_SUPPORT_GATED_RESIDUAL_POLICY,
         MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY,
+        MIND_V3_V144_SUPPORT_GATED_RESIDUAL_POLICY,
     }
 )
 
@@ -596,11 +607,12 @@ def support_gated_residual_runtime_diagnostics(
     gate_dominant = _dominant_count_share(gate_accepted_counts)
     proposed_dominant = _dominant_count_share(proposed_override_counts)
     applied_dominant = _dominant_count_share(applied_counts)
-    diagnostics_policy = (
-        MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
-        if observed_policies.get(MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY, 0) > 0
-        else MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY
-    )
+    if observed_policies.get(MIND_V3_V144_SUPPORT_GATED_RESIDUAL_POLICY, 0) > 0:
+        diagnostics_policy = MIND_V3_V144_RUNTIME_DIAGNOSTICS_POLICY
+    elif observed_policies.get(MIND_V3_V104_SUPPORT_GATED_RESIDUAL_POLICY, 0) > 0:
+        diagnostics_policy = MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
+    else:
+        diagnostics_policy = MIND_V3_V103_RUNTIME_DIAGNOSTICS_POLICY
     return {
         "policy": diagnostics_policy,
         "run_count": int(run_count),
@@ -648,7 +660,12 @@ def aggregate_support_gated_residual_runtime_diagnostics(
         payload = run.get("support_residual_diagnostics")
         if isinstance(payload, Mapping):
             diagnostics.append(payload)
-            if payload.get("policy") == MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY:
+            if payload.get("policy") == MIND_V3_V144_RUNTIME_DIAGNOSTICS_POLICY:
+                observed_policy = MIND_V3_V144_RUNTIME_DIAGNOSTICS_POLICY
+            elif (
+                observed_policy != MIND_V3_V144_RUNTIME_DIAGNOSTICS_POLICY
+                and payload.get("policy") == MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
+            ):
                 observed_policy = MIND_V3_V104_RUNTIME_DIAGNOSTICS_POLICY
     total_decision_count = sum(int(item.get("total_decision_count", 0)) for item in diagnostics)
     decision_count = sum(int(item.get("decision_count", 0)) for item in diagnostics)

@@ -14,10 +14,20 @@ Foundation, replay/viewer contracts, trajectory data contract, and guarded Mind
 v1/v2 gates are the safety floor.
 
 As of the v61-v63 closeout, the current single-observation IQL
-coefficient/prior/extraction family is exhausted for promotion. Do not start a
-new slice by tuning scalar IQL weights, prior blends, action-distribution loss,
-risk extraction, or global actor bias unless the user explicitly asks for a
-negative-control probe.
+coefficient/prior/extraction family is exhausted for promotion. The 2026-06-10
+full-repository audit also closes the recent tiny support-archive /
+nearest-neighbor scorer loop as strategically saturated. Do not start a new
+slice by tuning scalar IQL weights, prior blends, action-distribution loss, risk
+extraction, global actor bias, residual thresholds, or another micro-archive
+nearest-neighbor scorer unless the user explicitly asks for a negative-control
+probe.
+
+Current blocking constraint: the v137-v176 experiment chain and its
+digest-referenced `output/mind/` evidence are not durable until committed,
+pushed, and backed up. Because the RTX trainer pulls committed source, do not
+launch new Mind v3 experiments or trainer jobs while that backlog is still
+local-only. A docs-only remediation pass or explicit git/backlog triage is
+allowed.
 
 ## Inspect First
 
@@ -25,6 +35,7 @@ Read the smallest relevant set:
 
 - `AGENTS.md`
 - `README.md`
+- `docs/repository-audit-2026-06-10-remediation.md`
 - `docs/mind-v3-autonomous-evolution.md`, especially the latest milestone
   sections and research direction
 - `python/evolution_sim/cli/mind_v3_labeled_iql_slice.py`
@@ -44,6 +55,9 @@ user-owned.
 Novel controller ideas are welcome, but they must pass through repo contracts.
 Good next directions include:
 
+- exact branch replay expansion from v176 into transition rows containing
+  `next_public_observation`, `next_public_action_mask`, and
+  `previous_same_agent_public_context`;
 - policy-owned rollout context or option memory derived from public trajectory
   rows and finalized outcomes;
 - exact branch replay, Go-Explore-style archive replay, and robustification;
@@ -62,20 +76,32 @@ Do not use:
 ## Work Loop
 
 1. Define the hypothesis and first falsification metric.
-2. Add or update the smallest diagnostic/report contract before heavy training.
-3. Implement the smallest opt-in policy/data/artifact path.
-4. Run focused tests and JSON parse checks before RTX work.
-5. Use the RTX trainer only for CUDA or long seed/gate runs.
-6. Evaluate on the strict broad-plus-fixture matrix.
-7. Document the exact command, artifact/report paths, blockers, and next stop
+2. Run the durability checkpoint: inspect `git status --short`, identify
+   whether the work depends on local-only source or gitignored evidence, and
+   stop for commit/artifact triage when the backlog blocks reproducibility.
+3. Add or update the smallest diagnostic/report contract before heavy training.
+4. Implement the smallest opt-in policy/data/artifact path.
+5. Run focused tests and JSON parse checks before RTX work.
+6. Before ending a completed source slice, make a Git durability decision:
+   commit and push when authorized, or record the exact reason the slice is
+   intentionally left local-only. Do not let code, tests, package scripts, or
+   digest-bound ledger entries accumulate as an undocumented dirty backlog.
+7. Use the RTX trainer only for CUDA or long seed/gate runs after source has
+   been pushed.
+8. Evaluate on the strict broad-plus-fixture matrix or on a freshly declared
+   diagnostic matrix when prior held-out seeds have been consumed as support.
+9. Document the exact command, artifact/report paths, blockers, and next stop
    rule in `docs/mind-v3-autonomous-evolution.md`.
 
 ## Acceptance Surface
 
 For promotion-style Mind v3 candidates, keep these hard:
 
-- broad held-out seeds `5,13,19,29,37,41` at `120` ticks unless a document
-  explicitly declares a different diagnostic slice;
+- broad held-out seeds must be uncontaminated by the candidate's training,
+  selection, support, or provenance artifacts. The historical broad diagnostic
+  seeds `5,13,19,29,37,41` are no longer clean promotion-heldout evidence for
+  scorers trained or selected on recent v165+ support/provenance artifacts;
+  mint and document a fresh promotion-heldout matrix before promotion claims;
 - controlled `carrion_only` fixture seeds `13,19,29,37,41,43` at `120` ticks
   for the current carrion recovery boundary;
 - dominant requested-action share `<= 0.50`;
@@ -108,7 +134,7 @@ npm run sim:mind:v3:labeled-iql-slice -- \
   --candidate-artifact <artifact.json> \
   --enable-mind \
   --mind-runtime-mode autonomous \
-  --seeds 5,13,19,29,37,41 \
+  --seeds <fresh-promotion-heldout-seeds> \
   --ticks 120 \
   --fixture-names carrion_only \
   --fixture-seeds 13,19,29,37,41,43 \
