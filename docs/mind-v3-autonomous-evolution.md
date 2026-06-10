@@ -26,12 +26,13 @@ the `-1` non-land sentinel for water cells, with viewer handling, tests, and
 regenerated replay goldens. The original issue did not invalidate the recorded
 Mind v3 results.
 
-The active Mind v3 blocker is now source/evidence durability and strategy, not
-another local scorer tweak. The v137-v176 chain is present in the dirty working
-tree, while digest-referenced `output/mind/` evidence is gitignored and local.
-Because the remote trainer pulls committed source, capacity and scale work is
-mechanically blocked until the backlog is committed and pushed, and the
-referenced artifacts have a durable backup path.
+The active Mind v3 blocker is now strategy, plus keeping the restored durability
+discipline intact, not another local scorer tweak. The v137-v176 chain has been
+preserved, committed, and pushed, and the digest-referenced `output/mind/`
+evidence has a documented backup path in
+`docs/repository-audit-2026-06-10-p0-durability-inventory.md`. Because the
+remote trainer pulls committed source, future capacity and scale work must still
+move through pushed source and durable artifact provenance before long runs.
 
 The next experimental route remains the v176 recommendation:
 `v177_exact_branch_replay_expansion_no_training`. It should produce exact branch

@@ -9,7 +9,7 @@ invalid. The Foundation measurement boundary is mostly sound. The urgent
 failures are process and strategy failures around Mind v3 durability,
 reproducibility, and experiment direction.
 
-## Current State
+## Audit Intake State
 
 - Last commit: `e7d7e3a` on 2026-05-28.
 - Current dirty tree at audit intake: 7 modified tracked paths and 126
@@ -21,6 +21,24 @@ reproducibility, and experiment direction.
   Mind gate is a two-tick smoke with vacuous thresholds. Strict Mind gates run
   only in the expensive scheduled/manual job.
 
+## Current Remediation State
+
+- P0 source preservation is complete: the v137-v176 backlog was inventoried,
+  backed up locally, uploaded to the documented Google Drive archive, committed
+  on `codex/p0-durability-backlog`, and merged to `master` as `628ff1e`.
+- The habitat water encoding fix is complete in commit `36c1ab7` with
+  runtime/viewer handling, focused regressions, generated viewer-contract
+  refresh, and regenerated replay goldens.
+- The first CI hardening slice is complete: push CI now runs a 20-tick
+  non-vacuous Mind gate with default criteria and temporary outputs. This is
+  still compact contract coverage, not promotion evidence.
+- The shared Mind v3 harness extraction is complete: report/metric helpers live
+  in `python/evolution_sim/mind/evaluation_helpers.py`, and fixture
+  construction, run aggregation, strict gate helpers, digest validation, and
+  leakage scans live in `python/evolution_sim/mind/evaluation_harness.py`.
+- The remaining high-leverage items are strategy reset and CI/ML
+  reproducibility.
+
 ## Confirmed Serious Findings
 
 1. At audit intake, `habitat_state_codes` encoded water tiles as habitat code
@@ -28,25 +46,28 @@ reproducibility, and experiment direction.
    excluded water, so the per-cell matrix and `habitat_state_counts` disagreed,
    and the viewer could label water as stable habitat. This was a replay/viewer
    contract bug, not a taxonomy or simulation-evolution bug.
-2. The v137-v176 Mind v3 chain exists only in the dirty working tree while the
-   evidence artifacts behind hardcoded digests are gitignored. The chain cannot
-   be reproduced on another machine without the exact local `output/mind/`
-   state.
-3. The uncommitted backlog blocks the prescribed remote-trainer path because
-   the trainer workflow pulls committed GitHub source. The capacity/scale route
-   cannot run until the source is committed and pushed.
+2. At audit intake, the v137-v176 Mind v3 chain existed only in the dirty
+   working tree while the evidence artifacts behind hardcoded digests were
+   gitignored. That source backlog is now committed and pushed, and the artifact
+   tree is backed up as recorded in the P0 durability inventory.
+3. At audit intake, the uncommitted backlog blocked the prescribed
+   remote-trainer path because the trainer workflow pulls committed GitHub
+   source. The v137-v176 source blocker is resolved; future trainer work still
+   requires pushed source and durable artifact provenance.
 4. Mind v3 strategy has drifted into small 1-nearest-neighbor and micro-archive
    diagnostics after the lane itself showed support starvation, feature
    aliasing, and tie collapse. The central carrion survival blocker has not
    moved materially.
-5. `mind/` library modules import private helpers from the CLI
-   `mind_v3_evaluate.py`. That makes a CLI file a live shared library and
-   prevents safe refactoring of historical experiment records.
+5. At audit intake, `mind/` library modules imported private helpers from the
+   CLI `mind_v3_evaluate.py`. The harness now lives under
+   `python/evolution_sim/mind/`, and `mind_v3_evaluate.py` is back to a thin
+   parser/orchestrator with compatibility imports.
 
 ## Immediate Operating Rules
 
-- Do not start a new Mind v3 experiment slice until the dirty-tree backlog is
-  either committed and pushed or intentionally shelved with a documented reason.
+- Do not start a new Mind v3 experiment slice while that slice depends on
+  dirty-tree source, uncommitted package entrypoints/tests/docs, or
+  local-only digest-referenced artifacts.
 - Do not create another scalar tuning, actor-bias, residual-threshold, or
   tiny-nearest-neighbor support probe on the current representation unless it is
   explicitly labeled as a negative control.
@@ -66,17 +87,16 @@ reproducibility, and experiment direction.
 
 ### P0: Source And Evidence Durability
 
-Inventory the dirty tree, then slice commits so CI, review, and the remote
-trainer can see the v137-v176 work. The cleanest long-term shape is one commit
-per experiment slice: CLI wrapper, `mind/` implementation, tests, `package.json`
-script, and ledger entry together. If patch staging that many historical ledger
-chunks is too costly, use reviewable lane ranges and record the compromise in
-the commit message.
+Status: complete for the audit backlog. The dirty tree was inventoried, the
+source backlog was committed and pushed, and `output/mind/` was copied locally
+and uploaded to the documented backup target. Future experiment slices should
+use the clean long-term shape: CLI wrapper, `mind/` implementation, tests,
+`package.json` script, and ledger entry together in a reviewable unit.
 
-Back up `output/mind/` artifacts referenced by hardcoded digests before relying
-on them from another machine. The backup location must not expose private host
-paths or secrets, but reports should record enough provenance to fetch the
-artifact again.
+Back up any new `output/mind/` artifacts referenced by hardcoded digests before
+relying on them from another machine. The backup location must not expose
+private host paths or secrets, but reports should record enough provenance to
+fetch the artifact again.
 
 No commit, push, reset, clean, or destructive git command should be run without
 explicit user authorization.
@@ -103,27 +123,33 @@ encode stale strategy anchors as the default path.
 
 ### P2: Habitat Water Contract Fix
 
-Change habitat per-cell water encoding to the non-land sentinel, update viewer
-handling, add a regression that matrix recounts match land-only counts, update
-contract docs, regenerate generated viewer contracts if necessary, and
-regenerate goldens in a dedicated contract-change commit.
+Status: complete on the dedicated habitat-water contract branch. Water cells now
+serialize as the non-land sentinel in `habitat_state_codes`; viewer labels and
+colors handle that sentinel; focused regressions cover the land-count recount;
+generated viewer contracts and replay goldens were refreshed.
 
 ### P2: Mind v3 Shared Harness Extraction
 
-Move fixture construction, report aggregation, strict gate helpers, digest
-validation, JSON rounding, and leakage scans out of
-`python/evolution_sim/cli/mind_v3_evaluate.py` into a versioned shared module
-under `python/evolution_sim/mind/`. Then update CLI wrappers to import from
-that module. Historical experiment modules should not import private CLI
-helpers.
+Status: complete. Pure report/metric helpers, including JSON canonicalization,
+safe path fragments, rounding, counter conversion, dominant action summaries,
+shares, means, and comparison deltas, live in
+`python/evolution_sim/mind/evaluation_helpers.py`. Fixture construction, report
+aggregation, strict gate helpers, digest validation, and leakage scans live in
+`python/evolution_sim/mind/evaluation_harness.py`.
+
+`python/evolution_sim/cli/mind_v3_evaluate.py` now defines only parser/main
+orchestration and keeps compatibility imports for historical callers. Mind
+modules and sibling CLIs import shared helpers from the Mind layer rather than
+private CLI helpers.
 
 ### P2: CI And ML Reproducibility
 
-Give push-time CI at least one non-vacuous Mind gate or focused Mind v3
-contract check, and keep strict Mind gates on scheduled/manual lanes. Add a
-torch-installed CI lane or explicit non-CI validation script so torch-dependent
-tests stop silently skipping everywhere. Lock or otherwise record the
-Mind-ML dependency environment used for trained artifacts.
+Status: partially complete. Push-time CI now runs a compact 20-tick Mind gate
+with default non-vacuous criteria and temporary outputs. Keep strict Mind gates
+on scheduled/manual lanes. Remaining work: add a torch-installed CI lane or
+explicit non-CI validation script so torch-dependent tests stop silently
+skipping everywhere, and lock or otherwise record the Mind-ML dependency
+environment used for trained artifacts.
 
 ### P3: Orientation Cleanup
 
@@ -149,12 +175,11 @@ v137-v176 dirty tree, prepare reviewable commit slices, and make sure any
 digest-referenced output/mind artifacts have a documented durable backup path.
 If git actions are not authorized, stop after producing the exact commit plan.
 
-If source durability is already handled, take the next focused code slice:
-implement the habitat water-encoding contract fix as a dedicated
-replay/viewer/golden change. Add a regression proving water tiles use the
-non-land sentinel and land habitat counts still match the matrix recount, update
-viewer/contract docs, regenerate goldens, and run the narrowest relevant tests
-before broader replay/viewer checks.
+If source durability, the habitat water contract fix, and the shared-harness
+extraction are already handled, take the next focused remediation slice:
+CI/ML reproducibility hardening or the v177 exact-branch-replay transition-row
+support path. Keep CI slices compact and do not turn push CI into promotion
+evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

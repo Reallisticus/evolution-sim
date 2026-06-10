@@ -38,12 +38,19 @@ jobs:
       - run: npm run sim:golden
       - run: npm run sim:test
       - run: npm run sim:gate:quick -- --fail-on-blockers
-      - run: >
-          npm run sim:mind:gate -- --train-seed 7 --validation-seed 8 --ticks 2
-          --max-guard-intervention-rate 1.0
-          --max-guard-intervention-rate-by-group 1.0
-          --min-plant-energy-available-per-land-tile 0.0
-          --fail-on-blockers
+      - run: |
+          MIND_GATE_TMP="$(mktemp -d)"
+          npm run sim:mind:gate -- \
+            --train-seed 7 \
+            --validation-seed 8 \
+            --ticks 20 \
+            --validation-ticks 20 \
+            --trajectory-dir "$MIND_GATE_TMP/trajectories" \
+            --artifact-output "$MIND_GATE_TMP/artifact.json" \
+            --output "$MIND_GATE_TMP/report.json" \
+            --experiment-ledger-output "$MIND_GATE_TMP/ledger.jsonl" \
+            --skip-artifact-diagnostics \
+            --fail-on-blockers
       - run: npx playwright install --with-deps chromium
       - run: |
           npm run sim:run -- --seed 7 --ticks 120 --output output/sim-runs/species-check.json

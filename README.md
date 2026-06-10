@@ -203,7 +203,7 @@ from historical Mind experiment and artifact/schema identifiers. The
 `docs/repository-audit-2026-06-10-remediation.md`. It keeps v3 as the strategic
 path, but changes the immediate work order:
 
-- restore source/evidence durability before more experiments;
+- keep source/evidence durable before more experiments;
 - do not spend another slice on scalar tuning, residual thresholds, actor bias,
   or tiny nearest-neighbor support probes on the same representation;
 - continue from the v176 recommendation toward exact branch replay expansion,
@@ -377,7 +377,7 @@ The viewer shows:
 - habitat overlay and habitat-pressure time-series chart
 - separate hard-water and support/refuge charts so primary adjacent water, primary wetland, primary flooded, shoreline support, and canopy refuge stay semantically distinct
 - separate hazard, carcass, and combat charts so damage pressure, carrion stock and flow, and predation activity can be attributed over time
-- ecology overlay and vegetation-recovery time-series chart, with water kept visually separate from land ecology. The 2026-06-10 audit found a separate habitat-code bug where water is serialized as stable habitat; fix that as a dedicated replay/viewer contract change before relying on habitat hover labels over water.
+- ecology overlay and vegetation-recovery time-series chart, with water kept visually separate from land ecology and habitat. The 2026-06-10 habitat-code audit finding was fixed as a dedicated replay/viewer contract change: water now serializes with the `-1` non-land sentinel instead of stable habitat.
 - time-series charts for alive population, species count, births/deaths, and trait drift
 - species ecology panels for terrain occupancy, shoreline support exposure, hard water access, refuge exposure, hazard exposure, trophic composition, stress, reproduction pressure, attack outcomes, and carcass use, with refuge averages labeled by denominator
 - collapse and extinction event visibility tied to the replay timeline

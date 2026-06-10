@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from random import Random
 
-from evolution_sim.cli.mind_v3_evaluate import _fixture_world
+from evolution_sim.mind.evaluation_harness import _fixture_world
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.mind.evolution import founder_mind_v3_metadata

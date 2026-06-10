@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence, TextIO
 
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     _aggregate_runs,
     _fixture_world,
     _run_world,

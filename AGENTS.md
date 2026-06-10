@@ -17,10 +17,11 @@ provenance, and the next useful branch is exact branch replay, transition-row
 data support, rollout-context policy capacity, or a distinct controller/data
 path.
 
-2026-06-10 repository-audit checkpoint: source and evidence durability is now a
-blocking constraint for Mind v3. Do not start a new Mind v3 experiment while the
-v137-v176 dirty-tree backlog is uncommitted and the digest-referenced
-`output/mind/` evidence is only local, unless the user explicitly asks for a
+2026-06-10 repository-audit checkpoint: the v137-v176 source backlog was
+preserved, committed, pushed, and paired with a documented `output/mind/`
+backup. Keep that durability bar for new Mind v3 work: do not start a new
+experiment while its source, package entrypoints, tests, ledger entries, or
+digest-referenced artifacts are local-only unless the user explicitly asks for a
 docs-only or negative-control slice. See
 `docs/repository-audit-2026-06-10-remediation.md`.
 
@@ -73,8 +74,8 @@ Gate boundary checks:
 - Do not treat seeds `5,13,19,29,37,41` as clean promotion-heldout evidence for scorers trained or selected using recent support/provenance artifacts that consumed those seeds. Mint and document a fresh promotion-heldout matrix before promotion-style claims.
 - Do not hardcode digests of gitignored Mind artifacts without a durable artifact backup path and retrieval note.
 - Do not make `python/evolution_sim/cli/` a shared library for new Mind experiment code. Shared fixture, gate, digest, and report helpers belong under `python/evolution_sim/mind/` and CLIs should be thin wrappers.
-- The habitat water encoding bug is a replay/viewer contract issue. Fix it only in a dedicated contract-change slice with tests, docs, viewer handling, and golden regeneration.
-- Push-time CI Mind gates are smoke coverage, not promotion evidence. Strict Mind claims require the explicit strict commands and recorded per-seed blockers.
+- The habitat water encoding bug was fixed as a dedicated replay/viewer contract change. Future replay/viewer contract changes need the same tests, docs, viewer handling, and golden regeneration.
+- Push-time CI Mind gates are compact contract coverage, not promotion evidence. Strict Mind claims require the explicit strict commands and recorded per-seed blockers.
 
 ## Agent skills
 

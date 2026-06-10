@@ -19,7 +19,7 @@ Read in this order:
 3. `docs/mind-v3-autonomous-evolution.md` for the current autonomous-controller
    ledger, latest non-promotable candidates, and next research boundary.
 4. `docs/repository-audit-2026-06-10-remediation.md` for the current audit
-   remediation order, source/evidence durability blocker, and next-coder
+   remediation order, source/evidence durability status, and next-coder
    prompt.
 5. `docs/pre-mind-reproductive-and-signal-readiness-plan.md`,
    `docs/mind-readiness-audit-2026-04-27.md`, and
@@ -177,15 +177,14 @@ Latest validated boundary state:
   movement failures. The next useful branch should add rollout-context policy
   capacity or a distinct sequence, flow, world-model, or archive-replay path,
   with the existing strict gates kept hard.
-- 2026-06-10 full-repository audit: the Foundation measurement boundary remains
-  sound, but Mind v3 source/evidence durability is now blocking. The v137-v176
-  chain is in the dirty working tree, digest-referenced `output/mind/`
-  artifacts are local and gitignored, and the remote trainer cannot run this
-  work until source is committed and pushed. The next Mind v3 slice should
-  follow the v176 exact-branch-replay/transition-row route after durability is
-  restored, not another tiny support-scorer probe. Seeds `5,13,19,29,37,41`
-  are no longer clean promotion-heldout evidence for scorers trained or
-  selected using recent support/provenance artifacts.
+- 2026-06-10 full-repository audit and remediation: the Foundation measurement
+  boundary remains sound. The v137-v176 source backlog has been committed and
+  pushed, and digest-referenced `output/mind/` evidence has a documented backup
+  path. Keep that durability bar for new work. The next Mind v3 slice should
+  follow the v176 exact-branch-replay/transition-row route, not another tiny
+  support-scorer probe. Seeds `5,13,19,29,37,41` are no longer clean
+  promotion-heldout evidence for scorers trained or selected using recent
+  support/provenance artifacts.
 
 ## Boundary Audit Snapshot
 
@@ -196,11 +195,12 @@ policy or trainable Mind inputs as a hard error; controlled diagnostics may
 inspect world internals only when the report marks those fields metadata-only
 and keeps them out of trainable/runtime payloads.
 
-The current architectural leak with the highest leverage is not in the
-Foundation tick path. It is the Mind v3 experiment harness: several `mind/`
-modules import private helpers from `python/evolution_sim/cli/mind_v3_evaluate.py`.
-Move shared fixture, gate, digest, report, and leakage-scan helpers into a
-versioned `mind/` module before building more experiment chains on top of them.
+The 2026-06-10 harness leak has been remediated: shared report/metric helpers
+live in `python/evolution_sim/mind/evaluation_helpers.py`, and shared fixture,
+gate, digest, report, and leakage-scan helpers live in
+`python/evolution_sim/mind/evaluation_harness.py`. Keep new Mind experiment
+helpers in the Mind layer; `python/evolution_sim/cli/` should stay parser and
+orchestration code, not a shared library.
 
 ## Working Rules
 

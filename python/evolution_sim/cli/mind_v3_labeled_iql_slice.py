@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from evolution_sim.cli.evaluate import parse_seed_selection
-from evolution_sim.cli.mind_v3_evaluate import (
+from evolution_sim.mind.evaluation_harness import (
     _aggregate_runs,
     _comparison_delta,
     _mind_v3_policy,
