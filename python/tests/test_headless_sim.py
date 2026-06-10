@@ -344,6 +344,7 @@ class HeadlessSimulationTests(unittest.TestCase):
             self.assertEqual(sum(frame["hydrology_primary_counts"].values()), land_tiles)
             self.assertEqual(sum(frame["hazard_counts"].values()), land_tiles)
             self.assertEqual(sum(frame["refuge_counts"].values()), land_tiles)
+            self.assertEqual(sum(frame["habitat_state_counts"].values()), land_tiles)
             self.assertEqual(sum(frame["ecology_state_counts"].values()), land_tiles)
             self.assertEqual(
                 frame["hydrology_primary_stats"]["hard_access_tiles"],
@@ -398,6 +399,12 @@ class HeadlessSimulationTests(unittest.TestCase):
                 for code in row
                 if code == -1
             )
+            habitat_non_land = sum(
+                1
+                for row in frame["habitat_state_codes"]
+                for code in row
+                if code == -1
+            )
             hazard_non_land = sum(
                 1
                 for row in frame["hazard_type_codes"]
@@ -426,6 +433,7 @@ class HeadlessSimulationTests(unittest.TestCase):
             self.assertEqual(hydrology_support_non_land, result.summary["terrain_counts"]["water"])
             self.assertEqual(refuge_non_land, result.summary["terrain_counts"]["water"])
             self.assertEqual(refuge_score_non_land, result.summary["terrain_counts"]["water"])
+            self.assertEqual(habitat_non_land, result.summary["terrain_counts"]["water"])
             self.assertEqual(ecology_non_land, result.summary["terrain_counts"]["water"])
             self.assertEqual(hazard_non_land, result.summary["terrain_counts"]["water"])
             self.assertEqual(hazard_level_non_land, result.summary["terrain_counts"]["water"])

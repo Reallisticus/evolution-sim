@@ -5179,13 +5179,17 @@ function fieldColor(mode, value) {
 }
 
 function habitatStateColor(code) {
+  const numericCode = Number(code);
+  if (Number.isFinite(numericCode) && numericCode < 0) {
+    return terrainColor(terrainCodeByName("water"));
+  }
   const palette = {
     0: 0x6b7280,
     1: 0x4ade80,
     2: 0x38bdf8,
     3: 0xf97316,
   };
-  return palette[code] ?? palette[0];
+  return palette[numericCode] ?? palette[0];
 }
 
 function hydrologyReasonColor(code, terrainCode) {
@@ -5818,12 +5822,16 @@ function isKnownTerrainCode(code) {
 }
 
 function habitatStateNameFromCode(code) {
+  const numericCode = Number(code);
+  if (Number.isFinite(numericCode) && numericCode < 0) {
+    return "non_land";
+  }
   return {
     0: "stable",
     1: "bloom",
     2: "flooded",
     3: "parched",
-  }[code] ?? "stable";
+  }[numericCode] ?? "stable";
 }
 
 function ecologyStateNameFromCode(code) {

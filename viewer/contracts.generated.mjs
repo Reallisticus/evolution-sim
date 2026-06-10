@@ -238,6 +238,7 @@ export const VIEWER_DISPLAY_LABELS = {
     "instability": "Instability hazard"
   },
   "habitat_state": {
+    "non_land": "Non-land",
     "stable": "Stable habitat",
     "bloom": "Bloom habitat",
     "flooded": "Flooded habitat",

@@ -20,11 +20,11 @@ by a single global winner.
 ## 2026-06-10 Repository Audit Checkpoint
 
 The full repository audit upheld the Foundation/replay/viewer/Mind safety-floor
-contracts as broadly sound, with one replay/viewer contract bug to fix
-separately: `habitat_state_codes` currently encodes water as stable habitat
-instead of using the non-land sentinel. That issue does not invalidate the
-recorded Mind v3 results, but it must be handled as an explicit contract change
-with tests, viewer handling, and golden regeneration.
+contracts as broadly sound. The replay/viewer contract bug found at audit time
+has been handled as an explicit contract change: `habitat_state_codes` now uses
+the `-1` non-land sentinel for water cells, with viewer handling, tests, and
+regenerated replay goldens. The original issue did not invalidate the recorded
+Mind v3 results.
 
 The active Mind v3 blocker is now source/evidence durability and strategy, not
 another local scorer tweak. The v137-v176 chain is present in the dirty working

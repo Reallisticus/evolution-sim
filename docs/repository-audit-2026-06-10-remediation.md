@@ -23,11 +23,11 @@ reproducibility, and experiment direction.
 
 ## Confirmed Serious Findings
 
-1. `habitat_state_codes` encodes water tiles as habitat code `0` (`stable`)
-   while sibling surfaces use the `-1` non-land sentinel. Counts exclude water,
-   so the per-cell matrix and `habitat_state_counts` disagree, and the viewer
-   can label water as stable habitat. This is a replay/viewer contract bug, not
-   a taxonomy or simulation-evolution bug.
+1. At audit intake, `habitat_state_codes` encoded water tiles as habitat code
+   `0` (`stable`) while sibling surfaces used the `-1` non-land sentinel. Counts
+   excluded water, so the per-cell matrix and `habitat_state_counts` disagreed,
+   and the viewer could label water as stable habitat. This was a replay/viewer
+   contract bug, not a taxonomy or simulation-evolution bug.
 2. The v137-v176 Mind v3 chain exists only in the dirty working tree while the
    evidence artifacts behind hardcoded digests are gitignored. The chain cannot
    be reproduced on another machine without the exact local `output/mind/`
@@ -58,8 +58,9 @@ reproducibility, and experiment direction.
   durable backup path and the report records where to retrieve it.
 - Do not relax action-collapse, heuristic-action, or per-seed gates to pass a
   candidate.
-- Treat the habitat water encoding fix as an explicit replay/viewer contract
-  change requiring tests, contract notes, and golden regeneration.
+- The habitat water encoding fix was treated as an explicit replay/viewer
+  contract change with tests, viewer handling, contract notes, and regenerated
+  replay goldens.
 
 ## Action Order
 

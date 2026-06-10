@@ -6,10 +6,17 @@ from typing import Any, Callable
 from evolution_sim.env.runtime.state import Agent
 
 
-HABITAT_STATE_CODES = {"stable": 0, "bloom": 1, "flooded": 2, "parched": 3}
+NON_LAND_ECOLOGY_CODE = -1
+NON_LAND_HABITAT_STATE = "non_land"
+HABITAT_STATE_CODES = {
+    "stable": 0,
+    "bloom": 1,
+    "flooded": 2,
+    "parched": 3,
+    NON_LAND_HABITAT_STATE: NON_LAND_ECOLOGY_CODE,
+}
 ECOLOGY_STATE_CODES = {"stable": 0, "lush": 1, "recovering": 2, "depleted": 3}
 HAZARD_TYPE_CODES = {"none": 0, "exposure": 1, "instability": 2}
-NON_LAND_ECOLOGY_CODE = -1
 HYDROLOGY_REASON_CODES = {"none": 0, "adjacent_water": 1, "wetland": 2, "flooded": 3}
 HYDROLOGY_SUPPORT_FLAGS = {"adjacent_to_water": 1, "wetland": 2, "flooded": 4}
 SOFT_REFUGE_CODES = {"none": 0, "canopy_refuge": 1}
