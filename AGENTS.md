@@ -26,9 +26,22 @@ backup
 with archive SHA256
 `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`
 and `rclone check` verification of `0` differences and `2` matching files. The
-next useful step after that durability checkpoint is v181 failure-response work,
-not gate relaxation, runtime integration, promotion, another pre-training design
-audit, or a rerun of the first transition-row training slice.
+v181 failure-response autopsy then validated the pinned v180 report, artifact,
+and dataset and diagnosed the failure as sparse imputed transition-value support
+driving broad `eat` overrides while carrion fixture states had no complete
+valid-action support. v181 wrote diagnostics only: no training, no slice-2
+consumption, no runtime artifact, no runtime action-selection change, and no
+promotion. Its report has exact digest
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751` and is
+durable after
+`gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+with archive SHA256
+`a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`
+and `rclone check` verification of `0` differences and `2` matching files.
+Future work should not route back to v179/v180 authorization or rerun the first
+transition-row training slice; after explicit direction, the next lane is v182
+failure-response design that fixes imputed utility abstention/support coverage
+before any new training slice.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -46,7 +59,9 @@ share was under the cap and heuristic action sources stayed zero, but the
 survivor and broad regression gates failed. The first opt-in transition-row
 training slice has already been spent; do not route future work back to
 pre-v180 authorization unless a later durability check proves the recorded
-artifacts are unavailable and the user explicitly asks for regeneration.
+artifacts are unavailable and the user explicitly asks for regeneration. v181
+was diagnostics-only and does not consume slice 2; the budget remains 1/10 until
+a future explicitly authorized training slice runs.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
