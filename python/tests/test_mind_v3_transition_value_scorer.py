@@ -21,9 +21,11 @@ from evolution_sim.mind.rollout_context import RolloutContextState
 from evolution_sim.mind import evaluation_harness as evaluate_harness
 from evolution_sim.mind import transition_value_live_ab
 from evolution_sim.mind.transition_value_scorer import (
+    MIND_V3_TRANSITION_VALUE_MODEL_ID,
     MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION,
     build_transition_value_scorer_report,
     load_transition_value_scorer_artifact,
+    transition_value_feature_keys,
 )
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
@@ -123,6 +125,7 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
             transition_value_scorer=scorer,
             transition_value_action_override=True,
             transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
         )
         metadata = _metadata()
         metadata["action_head_bias"]["eat"] = 1.0
@@ -144,9 +147,110 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
         self.assertTrue(diagnostics["override_applied"])
         self.assertIsNone(diagnostics["override_rejected_reason"])
         self.assertGreater(diagnostics["utility_margin"], 0.0)
+        self.assertFalse(diagnostics["has_imputed_valid_action_score"])
+        self.assertTrue(
+            diagnostics["observed_support_floor_satisfied_for_all_valid_actions"]
+        )
+        self.assertEqual(diagnostics["imputed_valid_action_score_count"], 0)
+        self.assertEqual(
+            diagnostics["low_observed_support_valid_action_score_count"],
+            0,
+        )
         self.assertIn("transition_value_utility_margin", flattened)
+        self.assertIn(
+            "transition_value_has_imputed_valid_action_score",
+            flattened,
+        )
         self.assertNotIn("transition_value_score", flattened)
         self.assertTrue(all(_scalar_safe(value) for value in flattened.values()))
+
+    def test_policy_override_abstains_on_imputed_valid_action_score(self) -> None:
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(
+                        count=1,
+                        utility=-5.0,
+                        imputed=True,
+                    ),
+                }
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertEqual(diagnostics["predicted_action"], "drink")
+        self.assertFalse(diagnostics["override_applied"])
+        self.assertEqual(
+            diagnostics["override_rejected_reason"],
+            "imputed_valid_action_score",
+        )
+        self.assertTrue(diagnostics["has_imputed_valid_action_score"])
+        self.assertFalse(diagnostics["observed_scores_for_all_valid_actions"])
+        self.assertFalse(
+            diagnostics["observed_support_floor_satisfied_for_all_valid_actions"]
+        )
+        self.assertEqual(diagnostics["imputed_valid_action_score_count"], 1)
+
+    def test_policy_override_abstains_below_observed_support_floor(self) -> None:
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=2, utility=0.25),
+                    "drink": _action_stat(count=1, utility=1.25),
+                    "stay": _action_stat(count=2, utility=0.0),
+                }
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=2,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertEqual(diagnostics["predicted_action"], "drink")
+        self.assertFalse(diagnostics["override_applied"])
+        self.assertEqual(
+            diagnostics["override_rejected_reason"],
+            "low_observed_support_for_valid_actions",
+        )
+        self.assertFalse(diagnostics["has_imputed_valid_action_score"])
+        self.assertEqual(
+            diagnostics["valid_actions_below_observed_support_floor"],
+            ["drink"],
+        )
+        self.assertEqual(
+            diagnostics["low_observed_support_valid_action_score_count"],
+            1,
+        )
 
     def test_evaluator_rejects_non_ready_transition_value_report(self) -> None:
         integrity = evaluate_harness._transition_value_scorer_source_integrity(
@@ -306,6 +410,45 @@ def _metadata() -> dict[str, object]:
             action: [0.0] * MIND_V3_HIDDEN_UNITS for action in ACTION_NAMES
         },
         "action_head_bias": {action: 0.0 for action in ACTION_NAMES},
+    }
+
+
+def _manual_artifact(action_stats: dict[str, dict[str, object]]) -> dict[str, object]:
+    key = transition_value_feature_keys(
+        observation_input={"values": _observation_values()},
+        valid_action_mask=_action_mask("stay", "eat", "drink"),
+        state=RolloutContextState(),
+    )[0]
+    return {
+        "schema_version": MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION,
+        "artifact_policy": "test_transition_value_artifact",
+        "model_id": MIND_V3_TRANSITION_VALUE_MODEL_ID,
+        "diagnostics_only": True,
+        "explicit_opt_in_required": True,
+        "runtime_action_selection_authorized": False,
+        "runtime_policy_change_requires_explicit_flag": True,
+        "promotion_authorized": False,
+        "utility_tables": {
+            "policy": "test",
+            "feature_action_utility": {key: action_stats},
+        },
+    }
+
+
+def _action_stat(
+    *,
+    count: int,
+    utility: float,
+    imputed: bool = False,
+) -> dict[str, object]:
+    return {
+        "count": count,
+        "utility_mean": utility,
+        "component_means": (
+            {"imputed_unobserved_action": 1.0}
+            if imputed
+            else {"target_terminal_alive": 1.0}
+        ),
     }
 
 

@@ -123,6 +123,7 @@ def _mind_v3_policy(
     transition_value_scorer: TransitionValueScorer | None = None,
     transition_value_action_override: bool = False,
     transition_value_action_override_source_integrity_passed: bool = False,
+    transition_value_min_observed_support_count: int = 2,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
@@ -138,6 +139,9 @@ def _mind_v3_policy(
         transition_value_action_override=transition_value_action_override,
         transition_value_action_override_source_integrity_passed=(
             transition_value_action_override_source_integrity_passed
+        ),
+        transition_value_min_observed_support_count=(
+            transition_value_min_observed_support_count
         ),
     )
 
@@ -426,6 +430,27 @@ def _flatten_transition_value_diagnostics(
         "transition_value_supported_scores_for_all_valid_actions": (
             transition.get("supported_scores_for_all_valid_actions")
         ),
+        "transition_value_observed_scores_for_all_valid_actions": (
+            transition.get("observed_scores_for_all_valid_actions")
+        ),
+        "transition_value_has_imputed_valid_action_score": (
+            transition.get("has_imputed_valid_action_score")
+        ),
+        "transition_value_imputed_valid_action_score_count": (
+            transition.get("imputed_valid_action_score_count")
+        ),
+        "transition_value_observed_valid_action_score_count": (
+            transition.get("observed_valid_action_score_count")
+        ),
+        "transition_value_valid_action_observed_support_floor": (
+            transition.get("valid_action_observed_support_floor")
+        ),
+        "transition_value_low_observed_support_valid_action_score_count": (
+            transition.get("low_observed_support_valid_action_score_count")
+        ),
+        "transition_value_observed_support_floor_satisfied_for_all_valid_actions": (
+            transition.get("observed_support_floor_satisfied_for_all_valid_actions")
+        ),
         "transition_value_clear_best_valid_action": (
             transition.get("clear_best_valid_action")
         ),
@@ -480,6 +505,7 @@ def run_mind_v3_fixture_suite(
     transition_value_scorer: TransitionValueScorer | None = None,
     transition_value_action_override: bool = False,
     transition_value_action_override_source_integrity_passed: bool = False,
+    transition_value_min_observed_support_count: int = 2,
     trajectory_output_dir: Path | None = None,
     trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
@@ -503,6 +529,9 @@ def run_mind_v3_fixture_suite(
                 transition_value_action_override=transition_value_action_override,
                 transition_value_action_override_source_integrity_passed=(
                     transition_value_action_override_source_integrity_passed
+                ),
+                transition_value_min_observed_support_count=(
+                    transition_value_min_observed_support_count
                 ),
             )
         ),
@@ -2220,6 +2249,11 @@ def _aggregate_transition_value_scorer_diagnostics(
             "override_applied_count",
             "no_prediction_count",
             "missing_supported_score_count",
+            "observed_support_floor_satisfied_count",
+            "imputed_valid_action_decision_count",
+            "imputed_valid_action_score_count",
+            "low_observed_support_decision_count",
+            "low_observed_support_valid_action_score_count",
         ):
             stats[key] = int(stats[key]) + int(diagnostics.get(key, 0))
         for source_key, target_key in (
@@ -2249,6 +2283,11 @@ def _empty_transition_value_scorer_stats() -> dict[str, object]:
         "override_applied_count": 0,
         "no_prediction_count": 0,
         "missing_supported_score_count": 0,
+        "observed_support_floor_satisfied_count": 0,
+        "imputed_valid_action_decision_count": 0,
+        "imputed_valid_action_score_count": 0,
+        "low_observed_support_decision_count": 0,
+        "low_observed_support_valid_action_score_count": 0,
         "predicted_action_counts": Counter(),
         "score_source_counts": Counter(),
         "override_rejected_reason_counts": Counter(),
@@ -2273,6 +2312,30 @@ def _update_transition_value_scorer_stats(
         stats["missing_supported_score_count"] = (
             int(stats["missing_supported_score_count"]) + 1
         )
+    if (
+        transition.get("observed_support_floor_satisfied_for_all_valid_actions")
+        is True
+    ):
+        stats["observed_support_floor_satisfied_count"] = (
+            int(stats["observed_support_floor_satisfied_count"]) + 1
+        )
+    if transition.get("has_imputed_valid_action_score") is True:
+        stats["imputed_valid_action_decision_count"] = (
+            int(stats["imputed_valid_action_decision_count"]) + 1
+        )
+    stats["imputed_valid_action_score_count"] = int(
+        stats["imputed_valid_action_score_count"]
+    ) + _int(transition.get("imputed_valid_action_score_count"))
+    low_support_count = _int(
+        transition.get("low_observed_support_valid_action_score_count")
+    )
+    if low_support_count > 0:
+        stats["low_observed_support_decision_count"] = (
+            int(stats["low_observed_support_decision_count"]) + 1
+        )
+    stats["low_observed_support_valid_action_score_count"] = int(
+        stats["low_observed_support_valid_action_score_count"]
+    ) + low_support_count
     if transition.get("clear_best_valid_action") is True:
         stats["clear_best_count"] = int(stats["clear_best_count"]) + 1
     if transition.get("would_change_action") is True:
@@ -2304,6 +2367,15 @@ def _finalize_transition_value_scorer_stats(
     missing_supported_score_count = int(
         stats.get("missing_supported_score_count", 0)
     )
+    observed_support_floor_satisfied_count = int(
+        stats.get("observed_support_floor_satisfied_count", 0)
+    )
+    imputed_valid_action_decision_count = int(
+        stats.get("imputed_valid_action_decision_count", 0)
+    )
+    low_observed_support_decision_count = int(
+        stats.get("low_observed_support_decision_count", 0)
+    )
     return {
         "policy": MIND_V3_TRANSITION_VALUE_RUNTIME_DIAGNOSTICS_POLICY,
         "run_count": int(run_count),
@@ -2321,6 +2393,29 @@ def _finalize_transition_value_scorer_stats(
         "missing_supported_score_share": _share(
             missing_supported_score_count,
             decision_count,
+        ),
+        "observed_support_floor_satisfied_count": (
+            observed_support_floor_satisfied_count
+        ),
+        "observed_support_floor_satisfied_share": _share(
+            observed_support_floor_satisfied_count,
+            decision_count,
+        ),
+        "imputed_valid_action_decision_count": imputed_valid_action_decision_count,
+        "imputed_valid_action_decision_share": _share(
+            imputed_valid_action_decision_count,
+            decision_count,
+        ),
+        "imputed_valid_action_score_count": int(
+            stats.get("imputed_valid_action_score_count", 0)
+        ),
+        "low_observed_support_decision_count": low_observed_support_decision_count,
+        "low_observed_support_decision_share": _share(
+            low_observed_support_decision_count,
+            decision_count,
+        ),
+        "low_observed_support_valid_action_score_count": int(
+            stats.get("low_observed_support_valid_action_score_count", 0)
         ),
         "no_prediction_count": int(stats.get("no_prediction_count", 0)),
         "predicted_action_counts": dict(
@@ -3107,5 +3202,3 @@ def _parse_seeds(raw: str) -> list[int]:
     if not seeds:
         raise SystemExit("--seeds must include at least one integer seed")
     return seeds
-
-

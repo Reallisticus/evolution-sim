@@ -50,9 +50,14 @@ shadow acceptance. v181 then ran as diagnostics-only failure-response work:
 it validated the pinned v180 report, artifact, and dataset, diagnosed sparse
 imputed transition-value support driving broad `eat` overrides while
 `carrion_only@120` had no complete valid-action support, and consumed no second
-training slice. The current route after explicit direction is v182
-failure-response design, not another pre-training audit, not a v179/v180
-authorization reroute, and not a rerun of the first training slice.
+training slice. v182 then ran as diagnostics-only failure-response design. It
+added explicit imputed-valid-action and observed-support-floor diagnostics,
+made opt-in transition-value overrides abstain on imputed or below-floor
+currently valid action scores, and evaluated the pinned v180 artifact offline
+with observed support floor `2`. It consumed no second training slice. The
+current route is exact transition-support expansion before any slice-2
+training, not another pre-training audit, not a v179/v180 authorization reroute,
+and not a rerun of the first training slice.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -87,8 +92,25 @@ is durable after
 with archive SHA256
 `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
 `rclone check` reported `0` differences and `2` matching files. After explicit
-direction, the next useful work is v182 failure-response design that fixes
-imputed utility abstention/support coverage before any new training slice.
+direction, v182 wrote
+`output/mind/mind-v3-v182-carrion-survivor-continuation-imputed-abstention-design.json`
+with exact digest
+`3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b`.
+Its classification is
+`m3_carrion_survivor_continuation_v182_imputed_abstention_design_strict_support_routes_to_exact_transition_support_expansion_no_training`.
+Lifecycle flags stayed closed: `training_ran=false`,
+`training_artifact_created=false`, `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, `promotion_authorized=false`, and
+`slice_2_training_consumed=false`. With observed support floor `2`, broad
+transition-value overrides dropped to `122`; broad seed `19` still regressed
+alive/birth by `-1/-2`; `carrion_only@120` still had `0` terminal survivors;
+and carrion observed support-floor coverage stayed `0/2122`. The v182 report is
+durable after
+`gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+with archive SHA256
+`d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
+`rclone check` reported `0` differences and `2` matching files. The next useful
+work is exact transition-support expansion before any slice-2 training.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -201,9 +223,11 @@ autonomous baseline and a clear blocker. The population-search recommendation
 was superseded by the 2026-06-10 checkpoint and the v179 local expansion. The
 first opt-in transition-row training route was then consumed by v180 and failed
 shadow acceptance as slice 1/10. v181 failure-response has now run as
-diagnostics-only autopsy work and consumed no second training slice. After
-explicit direction, the current lane is v182 failure-response design, not
-another pre-training audit and not a rerun of the first training slice.
+diagnostics-only autopsy work and consumed no second training slice. v182
+failure-response design has also run as diagnostics-only work and consumed no
+second training slice. The current lane is exact transition-support expansion
+before any slice-2 training, not another pre-training audit and not a rerun of
+the first training slice.
 
 ## Population Search Smoke
 
@@ -5715,10 +5739,42 @@ Major milestones from the current state:
   `rclone check /Users/njm/evolution-sim-p0-backups
   gdrive:evolution-sim-backups/archives --include
   "20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst*" --one-way`
-  reported `0` differences and `2` matching files. Do not start v182
-  automatically; after explicit direction, the next useful lane is a
-  failure-response design that fixes imputed utility abstention/support
-  coverage before any new training slice.
+  reported `0` differences and `2` matching files.
+- v182: diagnostics-only imputed-abstention failure-response design. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v182-imputed-abstention-design`.
+  The run validated the pinned v181 report exact digest
+  `a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`, v180
+  report exact digest
+  `ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`, v180
+  artifact digest
+  `66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`, and
+  v179 transition dataset digest
+  `df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+  It wrote
+  `output/mind/mind-v3-v182-carrion-survivor-continuation-imputed-abstention-design.json`
+  with exact digest
+  `3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b`.
+  Classification:
+  `m3_carrion_survivor_continuation_v182_imputed_abstention_design_strict_support_routes_to_exact_transition_support_expansion_no_training`.
+  Lifecycle flags: `training_ran=false`, `training_artifact_created=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `slice_2_training_consumed=false`.
+  The design makes opt-in transition-value overrides abstain when any currently
+  valid action score is imputed or below observed support floor `2`. The shadow
+  evidence reduced broad overrides to `122`, but broad seed `19` still regressed
+  alive/birth by `-1/-2`, and `carrion_only@120` still had `0` terminal
+  survivors with observed support-floor coverage `0/2122`. The next same-lane
+  route is exact transition-support expansion before any slice-2 training. The
+  v182 report is durable after the recorded backup:
+  `/Users/njm/evolution-sim-p0-backups/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`,
+  archive SHA256
+  `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260611T165440Z-v182-imputed-abstention-design.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files.
 
 External checks that support this direction:
 
