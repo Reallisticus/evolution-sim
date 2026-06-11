@@ -86,10 +86,19 @@ durable after
 `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
 with archive SHA256
 `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`.
-Future same-lane work should be a directioned v182 failure-response design, not
-another pre-training audit, v179/v180 authorization reroute, or rerun of the
-first training slice. CLI `--min-*` support overrides are diagnostic only and
-must not authorize training routes.
+The v182 failure-response design then ran as diagnostics-only work. It added
+imputed-valid-action and observed-support-floor diagnostics, made opt-in
+transition-value overrides abstain on imputed or below-floor currently valid
+action scores, and consumed no second training slice. Its report exact digest is
+`3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b`; it is
+durable after
+`gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+with archive SHA256
+`d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`.
+Future same-lane work should be exact transition-support expansion before any
+slice-2 training, not another pre-training audit, v179/v180 authorization
+reroute, or rerun of the first training slice. CLI `--min-*` support overrides
+are diagnostic only and must not authorize training routes.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.

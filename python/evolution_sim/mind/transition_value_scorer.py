@@ -123,6 +123,7 @@ class TransitionValueScorer:
         observation_input: Mapping[str, object],
         valid_action_mask: Mapping[str, bool] | Sequence[str],
         state: RolloutContextState,
+        min_observed_support_count: int = 1,
     ) -> dict[str, object]:
         valid_actions = _valid_actions_from_mask(valid_action_mask)
         if not valid_actions:
@@ -130,9 +131,11 @@ class TransitionValueScorer:
                 predicted_action=None,
                 scores={},
                 score_counts={},
+                score_imputed={},
                 source="no_valid_actions",
                 source_key=None,
                 valid_actions=(),
+                min_observed_support_count=min_observed_support_count,
             )
         keys = transition_value_feature_keys(
             observation_input=observation_input,
@@ -151,17 +154,21 @@ class TransitionValueScorer:
                     predicted_action=scored["predicted_action"],
                     scores=scored["scores"],
                     score_counts=scored["score_counts"],
+                    score_imputed=scored["score_imputed"],
                     source="feature_action_utility",
                     source_key=str(key),
                     valid_actions=valid_actions,
+                    min_observed_support_count=min_observed_support_count,
                 )
         return _score_result(
             predicted_action=None,
             scores={},
             score_counts={},
+            score_imputed={},
             source="missing_supported_scores_for_valid_actions",
             source_key=None,
             valid_actions=valid_actions,
+            min_observed_support_count=min_observed_support_count,
         )
 
     def predict(
@@ -564,15 +571,53 @@ def _score_result(
     predicted_action: str | None,
     scores: Mapping[str, float],
     score_counts: Mapping[str, int],
+    score_imputed: Mapping[str, bool],
     source: str,
     source_key: str | None,
     valid_actions: Sequence[str],
+    min_observed_support_count: int = 1,
 ) -> dict[str, object]:
+    valid_action_set = set(valid_actions)
+    observed_support_floor = max(1, int(min_observed_support_count))
     valid_scores = {
         action: _round(float(scores[action]))
         for action in ACTION_NAMES
-        if action in set(valid_actions) and action in scores
+        if action in valid_action_set and action in scores
     }
+    valid_support_counts = {
+        action: int(score_counts.get(action, 0))
+        for action in ACTION_NAMES
+        if action in valid_action_set
+    }
+    valid_imputed_scores = {
+        action: bool(score_imputed.get(action, False))
+        for action in ACTION_NAMES
+        if action in valid_action_set and action in scores
+    }
+    observed_support_counts = {
+        action: (
+            0
+            if valid_imputed_scores.get(action, False)
+            else int(score_counts.get(action, 0))
+        )
+        for action in ACTION_NAMES
+        if action in valid_action_set
+    }
+    observed_score_actions = {
+        action
+        for action in valid_action_set
+        if action in scores and not valid_imputed_scores.get(action, False)
+    }
+    low_observed_support_actions = [
+        action
+        for action in ACTION_NAMES
+        if action in observed_score_actions
+        and observed_support_counts.get(action, 0) < observed_support_floor
+    ]
+    observed_scores_for_all_valid_actions = observed_score_actions == valid_action_set
+    observed_support_floor_satisfied = (
+        observed_scores_for_all_valid_actions and not low_observed_support_actions
+    )
     ranked = sorted(
         valid_scores.items(),
         key=lambda item: (-float(item[1]), ACTION_NAMES.index(item[0])),
@@ -592,13 +637,26 @@ def _score_result(
         "source_key": source_key,
         "valid_actions": list(valid_actions),
         "valid_action_scores": valid_scores,
-        "valid_action_support_counts": {
-            action: int(score_counts.get(action, 0))
-            for action in ACTION_NAMES
-            if action in set(valid_actions)
-        },
+        "valid_action_support_counts": valid_support_counts,
+        "valid_action_observed_support_counts": observed_support_counts,
+        "valid_action_imputed_scores": valid_imputed_scores,
+        "imputed_valid_action_score_count": sum(
+            1 for imputed in valid_imputed_scores.values() if imputed
+        ),
+        "observed_valid_action_score_count": len(observed_score_actions),
+        "missing_valid_action_score_count": len(valid_action_set - set(valid_scores)),
+        "has_imputed_valid_action_score": any(valid_imputed_scores.values()),
+        "observed_scores_for_all_valid_actions": observed_scores_for_all_valid_actions,
+        "min_observed_support_count": observed_support_floor,
+        "valid_actions_below_observed_support_floor": low_observed_support_actions,
+        "low_observed_support_valid_action_score_count": len(
+            low_observed_support_actions
+        ),
+        "observed_support_floor_satisfied_for_all_valid_actions": (
+            observed_support_floor_satisfied
+        ),
         "supported_scores_for_all_valid_actions": (
-            set(valid_scores) == set(valid_actions)
+            set(valid_scores) == valid_action_set
         ),
         "clear_best_valid_action": clear_best,
         "utility_margin": margin,
@@ -619,14 +677,17 @@ def _scores_from_action_stats(
     mapping = _mapping(value)
     scores: dict[str, float] = {}
     counts: dict[str, int] = {}
+    imputed: dict[str, bool] = {}
     for action in valid_actions:
         action_stats = _mapping(mapping.get(action))
         count = _int(action_stats.get("count"))
         utility = _float(action_stats.get("utility_mean"))
         if count <= 0 or not math.isfinite(utility):
             return None
+        component_means = _mapping(action_stats.get("component_means"))
         scores[action] = utility
         counts[action] = count
+        imputed[action] = "imputed_unobserved_action" in component_means
     if not scores:
         return None
     predicted = max(
@@ -637,6 +698,7 @@ def _scores_from_action_stats(
         "predicted_action": predicted,
         "scores": scores,
         "score_counts": counts,
+        "score_imputed": imputed,
     }
 
 
@@ -730,6 +792,7 @@ def _score_example_from_keys(
                 predicted_action=scored["predicted_action"],
                 scores=scored["scores"],
                 score_counts=scored["score_counts"],
+                score_imputed=scored["score_imputed"],
                 source="feature_action_utility",
                 source_key=str(key),
                 valid_actions=example.valid_actions,
@@ -738,6 +801,7 @@ def _score_example_from_keys(
         predicted_action=None,
         scores={},
         score_counts={},
+        score_imputed={},
         source="missing_supported_scores_for_valid_actions",
         source_key=None,
         valid_actions=example.valid_actions,

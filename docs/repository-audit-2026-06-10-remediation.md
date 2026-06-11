@@ -58,8 +58,16 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
   with archive SHA256
   `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`.
-  After explicit direction, next work is v182 failure-response design, not
-  another pre-training audit and not a rerun of v180. CI/ML
+  v182 has now run as diagnostics-only failure-response design: it added
+  imputed-valid-action and observed-support-floor diagnostics, made opt-in
+  transition-value overrides abstain on imputed or below-floor currently valid
+  action scores, and routed to exact transition-support expansion before any
+  slice-2 training. The v182 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+  with archive SHA256
+  `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`.
+  Next work is exact transition-support expansion, not another pre-training
+  audit, not a rerun of v180, and not slice-2 training. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -221,9 +229,43 @@ archive SHA256
 `rclone check /Users/njm/evolution-sim-p0-backups
 gdrive:evolution-sim-backups/archives --include
 "20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst*" --one-way`
-reported `0` differences and `2` matching files. After explicit direction, the
-next useful lane is v182 failure-response design that fixes imputed utility
-abstention/support coverage before any new training slice.
+reported `0` differences and `2` matching files.
+
+The v182 failure-response design was diagnostics-only. It wrote
+`output/mind/mind-v3-v182-carrion-survivor-continuation-imputed-abstention-design.json`
+with exact digest
+`3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b` and
+classification
+`m3_carrion_survivor_continuation_v182_imputed_abstention_design_strict_support_routes_to_exact_transition_support_expansion_no_training`.
+It validated the pinned v181 report exact digest
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`, v180
+report exact digest
+`ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`, v180
+artifact digest
+`66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`, and v179
+dataset digest
+`df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+Lifecycle flags stayed closed: `training_ran=false`,
+`training_artifact_created=false`, `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, `promotion_authorized=false`, and
+`slice_2_training_consumed=false`. The design adds explicit imputed-valid-action
+and observed-support-floor diagnostics and makes opt-in transition-value
+overrides abstain when any currently valid action score is imputed or below
+observed support floor `2`. The shadow evaluation reduced broad overrides to
+`122`, but broad seed `19` still regressed alive/birth by `-1/-2`, and
+`carrion_only@120` still had `0` terminal survivors with observed support-floor
+coverage `0/2122`. v182 consumed no second training slice, so the campaign
+budget remains 1/10. The v182 report is durable after
+`/Users/njm/evolution-sim-p0-backups/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`,
+archive SHA256
+`d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260611T165440Z-v182-imputed-abstention-design.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The next useful lane is exact
+transition-support expansion before any slice-2 training.
 
 ### P1: Documentation And Agent Instructions
 
@@ -304,13 +346,13 @@ If source durability, the habitat water contract fix, shared-harness
 extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
 transition-row support, the v178 transition-row dataset audit, v179
 exact-branch transition-row support expansion, and the v180 report/artifact
-backup are already durable, v181 failure-response should also be checked before
-new work. If the v181 source/docs/report backup above are durable, do not rerun
-the first opt-in transition-row training slice or route the failure into another
-pre-training audit unless the user explicitly asks for regeneration after a
-durability check. After explicit direction, the next focused strategy slice is
-v182 failure-response design that fixes imputed utility abstention/support
-coverage before any new training slice. Keep CI slices compact and do not turn
+backup are already durable, v181 failure-response and v182 imputed-abstention
+design should also be checked before new work. If the v181/v182 source, docs,
+and report backups above are durable, do not rerun the first opt-in
+transition-row training slice, route the failure into another pre-training
+audit, or spend slice 2 unless the user explicitly asks for regeneration after
+a durability check. The next focused strategy slice is exact transition-support
+expansion before any new training slice. Keep CI slices compact and do not turn
 push CI into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,

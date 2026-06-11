@@ -189,6 +189,7 @@ class MindV3EvolutionPolicy:
         transition_value_scorer: TransitionValueScorer | None = None,
         transition_value_action_override: bool = False,
         transition_value_action_override_source_integrity_passed: bool = False,
+        transition_value_min_observed_support_count: int = 2,
     ) -> None:
         active_artifact_count = sum(
             artifact is not None
@@ -257,6 +258,10 @@ class MindV3EvolutionPolicy:
         self._transition_value_action_override = bool(transition_value_action_override)
         self._transition_value_action_override_source_integrity_passed = bool(
             transition_value_action_override_source_integrity_passed
+        )
+        self._transition_value_min_observed_support_count = max(
+            1,
+            int(transition_value_min_observed_support_count),
         )
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[
@@ -1072,16 +1077,28 @@ class MindV3EvolutionPolicy:
             observation_input=observation_input,
             valid_action_mask=action_mask,
             state=self._transition_value_state(agent_id),
+            min_observed_support_count=(
+                self._transition_value_min_observed_support_count
+            ),
         )
         predicted_action = score.get("predicted_action")
         supported_scores = (
             score.get("supported_scores_for_all_valid_actions") is True
+        )
+        has_imputed_valid_action_score = (
+            score.get("has_imputed_valid_action_score") is True
+        )
+        observed_support_floor_satisfied = (
+            score.get("observed_support_floor_satisfied_for_all_valid_actions")
+            is True
         )
         clear_best = score.get("clear_best_valid_action") is True
         override_rejected_reason = self._transition_value_override_rejected_reason(
             predicted_action=predicted_action,
             valid_actions=valid_actions,
             supported_scores=supported_scores,
+            has_imputed_valid_action_score=has_imputed_valid_action_score,
+            observed_support_floor_satisfied=observed_support_floor_satisfied,
             clear_best=clear_best,
         )
         override_applied = override_rejected_reason is None
@@ -1117,6 +1134,28 @@ class MindV3EvolutionPolicy:
             "override_applied": override_applied,
             "override_rejected_reason": override_rejected_reason,
             "supported_scores_for_all_valid_actions": supported_scores,
+            "observed_scores_for_all_valid_actions": score.get(
+                "observed_scores_for_all_valid_actions"
+            ),
+            "has_imputed_valid_action_score": has_imputed_valid_action_score,
+            "imputed_valid_action_score_count": score.get(
+                "imputed_valid_action_score_count"
+            ),
+            "observed_valid_action_score_count": score.get(
+                "observed_valid_action_score_count"
+            ),
+            "valid_action_observed_support_floor": (
+                self._transition_value_min_observed_support_count
+            ),
+            "valid_actions_below_observed_support_floor": score.get(
+                "valid_actions_below_observed_support_floor"
+            ),
+            "low_observed_support_valid_action_score_count": score.get(
+                "low_observed_support_valid_action_score_count"
+            ),
+            "observed_support_floor_satisfied_for_all_valid_actions": (
+                observed_support_floor_satisfied
+            ),
             "clear_best_valid_action": clear_best,
             "would_change_action": (
                 isinstance(predicted_action, str) and predicted_action != requested_action
@@ -1132,6 +1171,8 @@ class MindV3EvolutionPolicy:
         predicted_action: object,
         valid_actions: Sequence[str],
         supported_scores: bool,
+        has_imputed_valid_action_score: bool,
+        observed_support_floor_satisfied: bool,
         clear_best: bool,
     ) -> str | None:
         if not self._transition_value_action_override:
@@ -1140,6 +1181,10 @@ class MindV3EvolutionPolicy:
             return "source_integrity_failed"
         if supported_scores is not True:
             return "missing_supported_scores_for_valid_actions"
+        if has_imputed_valid_action_score:
+            return "imputed_valid_action_score"
+        if observed_support_floor_satisfied is not True:
+            return "low_observed_support_for_valid_actions"
         if clear_best is not True:
             return "no_clear_best_valid_action"
         if not isinstance(predicted_action, str) or not predicted_action:

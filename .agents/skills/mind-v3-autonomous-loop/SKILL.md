@@ -81,9 +81,17 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
   with archive SHA256
   `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
-- the next useful lane after explicit direction is v182 failure-response design
-  that fixes imputed utility abstention/support coverage before any new
-  training slice, not another pre-training audit and not a rerun of the first
+- v182 has already run as diagnostics-only failure-response design. It added
+  imputed-valid-action and observed-support-floor diagnostics, made opt-in
+  transition-value overrides abstain on imputed or below-floor currently valid
+  action scores, and consumed no second training slice. Its report exact digest
+  is `3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b` and is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
+  with archive SHA256
+  `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
+- the next useful lane is exact transition-support expansion before any
+  slice-2 training, not another pre-training audit and not a rerun of the first
   training slice;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
@@ -151,10 +159,11 @@ npm run sim:test
 ```
 
 Historical strict candidate slice. Do not treat this labeled-IQL command, the
-v179 audit route, a rerun of v180, or the already-completed v181 autopsy as the
-current next route; v180 already spent the first opt-in transition-row training
-slice and v181 consumed no second slice. Future work needs explicit direction
-for v182 failure-response design:
+v179 audit route, a rerun of v180, or the already-completed v181/v182
+diagnostics as the current next route; v180 already spent the first opt-in
+transition-row training slice and v181/v182 consumed no second slice. Future
+same-lane work should expand exact transition support before any slice-2
+training:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \
