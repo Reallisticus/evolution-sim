@@ -72,9 +72,19 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
   with archive SHA256
   `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`;
-- the next useful work after that durability checkpoint is v181
-  failure-response work, not another pre-training audit and not a rerun of the
-  first training slice;
+- v181 has already run as diagnostics-only failure-response work. It validated
+  the pinned v180 report, artifact, and dataset, diagnosed sparse imputed
+  transition-value support plus broad `eat` overrides and carrion no-coverage,
+  and consumed no second training slice. Its report exact digest is
+  `a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751` and is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+  with archive SHA256
+  `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
+- the next useful lane after explicit direction is v182 failure-response design
+  that fixes imputed utility abstention/support coverage before any new
+  training slice, not another pre-training audit and not a rerun of the first
+  training slice;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -141,9 +151,10 @@ npm run sim:test
 ```
 
 Historical strict candidate slice. Do not treat this labeled-IQL command, the
-v179 audit route, or a rerun of v180 as the current next route; v180 already
-spent the first opt-in transition-row training slice and the next lane work is
-v181 failure-response:
+v179 audit route, a rerun of v180, or the already-completed v181 autopsy as the
+current next route; v180 already spent the first opt-in transition-row training
+slice and v181 consumed no second slice. Future work needs explicit direction
+for v182 failure-response design:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

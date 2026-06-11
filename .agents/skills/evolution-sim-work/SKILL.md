@@ -76,8 +76,18 @@ the recorded backup
 `gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
 with archive SHA256
 `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
-The next useful same-lane work after that durability checkpoint is v181
-failure-response work, not another pre-training audit and not a rerun of the
+The v181 failure-response autopsy has now run as diagnostics-only work. It
+validated the pinned v180 report, artifact, and dataset, diagnosed the failure
+as sparse imputed transition-value support driving broad `eat` overrides while
+carrion fixture states had no complete valid-action support, and consumed no
+training slice. The v181 report exact digest is
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`; it is
+durable after
+`gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+with archive SHA256
+`a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`.
+Future same-lane work should be a directioned v182 failure-response design, not
+another pre-training audit, v179/v180 authorization reroute, or rerun of the
 first training slice. CLI `--min-*` support overrides are diagnostic only and
 must not authorize training routes.
 

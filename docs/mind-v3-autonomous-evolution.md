@@ -46,8 +46,13 @@ small for training-scale capacity work: `84` rows from `2` source seeds and
 above the default v178 support thresholds, and the durable default-threshold
 v178 audit authorized only the first same-lane opt-in transition-row training
 slice. v180 consumed that authorization and ran that first slice; it failed
-shadow acceptance, so the current route is v181 failure-response work, not
-another pre-training audit and not a rerun of the first training slice.
+shadow acceptance. v181 then ran as diagnostics-only failure-response work:
+it validated the pinned v180 report, artifact, and dataset, diagnosed sparse
+imputed transition-value support driving broad `eat` overrides while
+`carrion_only@120` had no complete valid-action support, and consumed no second
+training slice. The current route after explicit direction is v182
+failure-response design, not another pre-training audit, not a v179/v180
+authorization reroute, and not a rerun of the first training slice.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -71,8 +76,19 @@ The v180 report and policy artifact are durable only after the recorded backup
 with archive SHA256
 `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`;
 `rclone check` reported `0` differences and `2` matching files. After that
-durability checkpoint, the next useful work is v181 failure-response, not
-another pre-training authorization audit.
+durability checkpoint, v181 wrote
+`output/mind/mind-v3-v181-carrion-survivor-continuation-v180-failure-response-autopsy.json`
+with exact digest
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`.
+It trained nothing, created no policy artifact, changed no runtime action
+selection, authorized no promotion, and did not consume slice 2. The v181 report
+is durable after
+`gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+with archive SHA256
+`a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
+`rclone check` reported `0` differences and `2` matching files. After explicit
+direction, the next useful work is v182 failure-response design that fixes
+imputed utility abstention/support coverage before any new training slice.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -184,9 +200,10 @@ on the same seeds reached alive mean `49.5`, births mean `44.5`. This is a real
 autonomous baseline and a clear blocker. The population-search recommendation
 was superseded by the 2026-06-10 checkpoint and the v179 local expansion. The
 first opt-in transition-row training route was then consumed by v180 and failed
-shadow acceptance as slice 1/10. The current route is v181 failure-response
-work after the recorded v180 artifact backup, not another pre-training audit
-and not a rerun of the first training slice.
+shadow acceptance as slice 1/10. v181 failure-response has now run as
+diagnostics-only autopsy work and consumed no second training slice. After
+explicit direction, the current lane is v182 failure-response design, not
+another pre-training audit and not a rerun of the first training slice.
 
 ## Population Search Smoke
 
@@ -5662,8 +5679,46 @@ Major milestones from the current state:
   gdrive:evolution-sim-backups/archives --include
   "20260611T110135Z-v180-transition-row-policy-training.tar.zst*" --one-way`
   reported `0` differences and `2` matching files. After this durability
-  checkpoint, the next useful lane work is v181 failure-response, not a rerun of
+  checkpoint, v181 failure-response was the next lane work, not a rerun of
   v180.
+- v181: diagnostics-only v180 failure-response autopsy. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v181-v180-failure-response`.
+  The run validated the pinned v180 report exact digest
+  `ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`,
+  artifact digest
+  `66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`,
+  and v179 transition dataset digest
+  `df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+  It wrote
+  `output/mind/mind-v3-v181-carrion-survivor-continuation-v180-failure-response-autopsy.json`
+  with exact digest
+  `a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`.
+  Classification:
+  `m3_carrion_survivor_continuation_v181_v180_failure_response_autopsy_imputed_sparse_eat_override_and_carrion_no_coverage_no_training`.
+  Lifecycle flags: `training_ran=false`, `training_artifact_created=false`,
+  `diagnostic_trace_replay_ran=true`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+  v181 consumed no second training slice; the campaign budget remains 1/10.
+  The mechanism is concrete: the v180 artifact's action utility table was
+  `0.7` imputed action stats, broad regression seeds had `1337` runtime action
+  changes with predicted action counts `eat:1450`, `drink:15`, and
+  `move_south:17`, and the carrion fixture had `0` runtime action changes with
+  missing supported-score share `1.0`. The report labels the blockers as sparse
+  imputed transition-value support, broad `eat` override concentration,
+  low broad support coverage, and carrion no complete valid-action support.
+  The v181 report is durable after the recorded backup:
+  `/Users/njm/evolution-sim-p0-backups/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`,
+  archive SHA256
+  `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. Do not start v182
+  automatically; after explicit direction, the next useful lane is a
+  failure-response design that fixes imputed utility abstention/support
+  coverage before any new training slice.
 
 External checks that support this direction:
 

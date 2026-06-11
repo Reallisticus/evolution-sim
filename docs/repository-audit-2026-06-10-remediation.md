@@ -51,8 +51,15 @@ reproducibility, and experiment direction.
   with archive SHA256
   `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
   Caller-lowered `--min-*` thresholds remain diagnostic only and cannot
-  authorize training routes. Next work is v181 failure-response, not another
-  pre-training audit and not a rerun of v180. CI/ML
+  authorize training routes. v181 has now run as diagnostics-only
+  failure-response work, diagnosed sparse imputed transition-value support plus
+  broad `eat` overrides and carrion no-coverage, and consumed no second training
+  slice. Its report is durable after
+  `gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+  with archive SHA256
+  `a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`.
+  After explicit direction, next work is v182 failure-response design, not
+  another pre-training audit and not a rerun of v180. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -182,8 +189,41 @@ and artifact file SHA256
 gdrive:evolution-sim-backups/archives --include
 "20260611T110135Z-v180-transition-row-policy-training.tar.zst*" --one-way`
 reported `0` differences and `2` matching files. The next useful work after
-durability is v181 failure-response, not another pre-training audit and not a
+durability was v181 failure-response, not another pre-training audit and not a
 rerun of the first training slice.
+
+The v181 failure-response was diagnostics-only. It wrote
+`output/mind/mind-v3-v181-carrion-survivor-continuation-v180-failure-response-autopsy.json`
+with exact digest
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751` and
+classification
+`m3_carrion_survivor_continuation_v181_v180_failure_response_autopsy_imputed_sparse_eat_override_and_carrion_no_coverage_no_training`.
+It validated the pinned v180 report exact digest
+`ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`, v180
+artifact digest
+`66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`, and v179
+dataset digest
+`df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+Lifecycle flags stayed closed: `training_ran=false`,
+`training_artifact_created=false`, `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+The diagnostic trace replay found the v180 artifact was `0.7` imputed action
+stats; broad regression seeds had `1337` runtime action changes with predicted
+action counts `eat:1450`, `drink:15`, and `move_south:17`; and the carrion
+fixture had `0` runtime action changes with missing supported-score share
+`1.0`. v181 consumed no second training slice, so the campaign budget remains
+1/10. The v181 report is durable after
+`/Users/njm/evolution-sim-p0-backups/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst`,
+archive SHA256
+`a2b03e862ee095562c21482afcf0b1057a9ebb8f8b0b0d0f08e973dd884b1fd6`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260611T143628Z-v181-v180-failure-response-autopsy.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. After explicit direction, the
+next useful lane is v182 failure-response design that fixes imputed utility
+abstention/support coverage before any new training slice.
 
 ### P1: Documentation And Agent Instructions
 
@@ -264,11 +304,14 @@ If source durability, the habitat water contract fix, shared-harness
 extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
 transition-row support, the v178 transition-row dataset audit, v179
 exact-branch transition-row support expansion, and the v180 report/artifact
-backup are already durable, the next focused strategy slice is v181
-failure-response work. Do not rerun the first opt-in transition-row training
-slice or route the failure into another pre-training audit unless the user
-explicitly asks for regeneration after a durability check. Keep CI slices
-compact and do not turn push CI into promotion evidence.
+backup are already durable, v181 failure-response should also be checked before
+new work. If the v181 source/docs/report backup above are durable, do not rerun
+the first opt-in transition-row training slice or route the failure into another
+pre-training audit unless the user explicitly asks for regeneration after a
+durability check. After explicit direction, the next focused strategy slice is
+v182 failure-response design that fixes imputed utility abstention/support
+coverage before any new training slice. Keep CI slices compact and do not turn
+push CI into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.
