@@ -61,19 +61,22 @@ user-owned.
 Novel controller ideas are welcome, but they must pass through repo contracts.
 Current same-lane work is narrower:
 
-- v179 has locally expanded exact-branch transition rows above the v178 default
-  support thresholds (`180` rows, `6` seeds, `30` branches, `7` forced actions
-  in local validation) and now needs source/artifact durability before
-  training;
-- a durable v178 audit that passes exact default support thresholds, supplies
-  expected source-report and dataset digests, verifies any v179 source report
-  pinned its upstream v177 report/dataset digests, and passes all source,
-  schema, leakage, identity, action-mask, observation, and target contracts
-  authorizes the first opt-in transition-row training slice in the same lane;
+- v180 has already consumed the durable pinned v178 authorization and run the
+  first opt-in transition-row policy training slice;
+- v180 failed shadow acceptance with zero `carrion_only@120` terminal survivors
+  and broad per-seed alive/birth regressions, so it is not promotion evidence
+  and authorizes no runtime integration, runtime action-selection change, gate
+  relaxation, or promotion;
+- v180 counts as slice 1 of the 10-slice carrion campaign budget. Its report
+  and policy artifact are durable only after the recorded backup
+  `gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+  with archive SHA256
+  `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`;
+- the next useful work after that durability checkpoint is v181
+  failure-response work, not another pre-training audit and not a rerun of the
+  first training slice;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
-  training;
-- diagnostics should be reactions to concrete trained-artifact failures and stay
-  inside the 10-slice carrion campaign budget, not replace the training route.
+  training routes.
 
 Do not use:
 
@@ -137,9 +140,10 @@ Fast suite:
 npm run sim:test
 ```
 
-Historical strict candidate slice. Do not treat this labeled-IQL command as the
-current v179 next route; after durable pinned v178 authorization, use the
-explicit opt-in transition-row training slice for this lane:
+Historical strict candidate slice. Do not treat this labeled-IQL command, the
+v179 audit route, or a rerun of v180 as the current next route; v180 already
+spent the first opt-in transition-row training slice and the next lane work is
+v181 failure-response:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

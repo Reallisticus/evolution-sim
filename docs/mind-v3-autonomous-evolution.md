@@ -43,10 +43,11 @@ audit found that data source-valid, schema-valid, key/value leakage-free,
 nested trainable-feature contract-valid, and observation-decodable, but too
 small for training-scale capacity work: `84` rows from `2` source seeds and
 `16` branch points. v179 then locally expanded exact-branch transition rows
-above the default v178 support thresholds. The next useful slice is durability
-for v179 source/artifact provenance, then the explicit opt-in transition-row
-training slice only if the durable default v178 audit still passes all source,
-schema, leakage, identity, action-mask, observation, and target contracts.
+above the default v178 support thresholds, and the durable default-threshold
+v178 audit authorized only the first same-lane opt-in transition-row training
+slice. v180 consumed that authorization and ran that first slice; it failed
+shadow acceptance, so the current route is v181 failure-response work, not
+another pre-training audit and not a rerun of the first training slice.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -58,6 +59,20 @@ authorize that training route unless they exactly match the default v178
 thresholds. The campaign budget is capped at 10 slices before a forced retro.
 The first milestone is nonzero terminal survivors on `carrion_only@120`, no
 dominant requested-action share above `0.50`, and zero heuristic action sources.
+For the current v179/v180 branch, this first-slice charter has already been
+spent by v180; it is not the current route.
+v180 consumed the durable pinned v178 authorization and is slice 1 of that
+budget. It trained an opt-in transition-row policy artifact, but shadow
+evaluation failed the milestone with zero `carrion_only@120` terminal survivors
+and broad per-seed alive/birth regressions, so no runtime integration,
+promotion, gate relaxation, or next-slice pivot is authorized from this result.
+The v180 report and policy artifact are durable only after the recorded backup
+`gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+with archive SHA256
+`e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`;
+`rclone check` reported `0` differences and `2` matching files. After that
+durability checkpoint, the next useful work is v181 failure-response, not
+another pre-training authorization audit.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -168,9 +183,10 @@ collapsed: Mind v3 alive mean `0.0`, births mean `0.0`; the heuristic baseline
 on the same seeds reached alive mean `49.5`, births mean `44.5`. This is a real
 autonomous baseline and a clear blocker. The population-search recommendation
 was superseded by the 2026-06-10 checkpoint and the v179 local expansion. The
-current route is v179 durability first, then opt-in transition-row training only
-when the durable default v178 audit passes all digest-pin, source, schema,
-leakage, identity, action-mask, observation, and target contracts.
+first opt-in transition-row training route was then consumed by v180 and failed
+shadow acceptance as slice 1/10. The current route is v181 failure-response
+work after the recorded v180 artifact backup, not another pre-training audit
+and not a rerun of the first training slice.
 
 ## Population Search Smoke
 
@@ -5597,11 +5613,57 @@ Major milestones from the current state:
   `output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit-v179-expanded.json`,
   exact digest
   `8d10ee77315de87a15ed296d87482d2335008009e4bcce2d72f60399ede92923`.
-  These `output/mind/` artifacts are local gitignored evidence. Before any
-  training or trainer handoff, either commit/push the matching v179/v178 source
-  and back up these artifacts to the documented artifact store, or regenerate
-  them from committed source with the same expected source-report and dataset
-  digest pins.
+  This authorization route has already been consumed by v180. Do not route
+  future work back to another pre-training audit or a rerun of the first
+  transition-row training slice unless a later durability check proves the
+  recorded artifacts are unavailable and the user explicitly asks for
+  regeneration.
+- v180: first explicit opt-in transition-row policy training slice. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v180-transition-row-policy-training`.
+  The run consumed the pinned v178 authorization report
+  `output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit-v179-expanded.json`
+  with exact digest
+  `8d10ee77315de87a15ed296d87482d2335008009e4bcce2d72f60399ede92923`
+  and the pinned v179 transition dataset digest
+  `df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+  It trained
+  `output/mind/mind-v3-v180-carrion-survivor-continuation-transition-row-policy-artifact.json`
+  with artifact digest
+  `66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`
+  and wrote report
+  `output/mind/mind-v3-v180-carrion-survivor-continuation-transition-row-policy-training.json`
+  with exact digest
+  `ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`.
+  Classification:
+  `m3_carrion_survivor_continuation_v180_transition_row_policy_training_first_slice_shadow_acceptance_failed_no_promotion`.
+  Lifecycle flags: `training_ran=true`, `training_artifact_created=true`,
+  `shadow_eval_ran=true`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+  Controlled `carrion_only@120` shadow result: `0` terminal survivors,
+  dominant requested-action share `0.483`, and `0` heuristic action sources.
+  The other acceptance blocker was broad per-seed alive/birth regression versus
+  the linear Mind v3 baseline on seeds `5,13,19,29,37,41`, with deltas
+  `-2/-2`, `-14/-8`, `-4/-4`, `-6/-4`, `-3/-3`, and `-3/-3`
+  for alive/birth respectively. This counts as carrion campaign slice 1 of 10.
+  Stop for direction before another slice; do not relax thresholds, route this
+  failure into another pre-training audit, or promote/runtime-integrate the
+  artifact. The v180 report and artifact are durable only after the recorded
+  backup:
+  `/Users/njm/evolution-sim-p0-backups/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`,
+  archive SHA256
+  `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
+  Local copy verification matched the original v180 report file SHA256
+  `296e910de2dc40d8a16d42565280436bdc3e601792064fb0be43514156c4c055`
+  and artifact file SHA256
+  `3d9016f2b7ea5e6d1e9c1ef63afdbca5fb2fea96a3ccbadba91089a93a154432`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260611T110135Z-v180-transition-row-policy-training.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. After this durability
+  checkpoint, the next useful lane work is v181 failure-response, not a rerun of
+  v180.
 
 External checks that support this direction:
 
