@@ -38,20 +38,21 @@ reproducibility, and experiment direction.
   leakage scans live in `python/evolution_sim/mind/evaluation_harness.py`.
   The v141/v142 live A/B implementations now live under `mind/`; their CLI
   entrypoints are wrappers.
-- The strategy-reset data-support slices are in progress: v177 exact branch
-  replay expansion now emits compact transition rows with current/next public
-  observations and action masks plus previous same-agent public context, v178
-  audited those rows as source-valid but support-limited, and v179 now expands
-  exact-branch transition-row support in the working tree without training. A
-  local `/tmp` v179 validation cleared the v178 default support floors when
-  audited by v178, but its artifact is not durable evidence until it is rerun
-  into the normal artifact path or backed up. The same lane has an explicit
-  default-threshold exit charter: once a v178 dataset passes the default
-  support thresholds, has explicit source-report and dataset digest pins, and
-  all source, schema, leakage, identity, action-mask, observation, and target
-  contracts pass, the next same-lane route is the first opt-in transition-row
-  training slice. Caller-lowered `--min-*` thresholds are diagnostic only and
-  cannot authorize that route. CI/ML
+- The strategy-reset data-support slices have reached the first training slice:
+  v177 exact branch replay expansion emits compact transition rows with
+  current/next public observations and action masks plus previous same-agent
+  public context, v178 audited those rows as source-valid but support-limited,
+  v179 expanded exact-branch transition-row support above the default v178
+  support thresholds, and a durable default-threshold v178 audit authorized only
+  the first same-lane opt-in transition-row training slice. v180 consumed that
+  authorization and failed shadow acceptance as slice 1/10. The v180 report and
+  policy artifact are durable only after the recorded backup
+  `gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+  with archive SHA256
+  `e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
+  Caller-lowered `--min-*` thresholds remain diagnostic only and cannot
+  authorize training routes. Next work is v181 failure-response, not another
+  pre-training audit and not a rerun of v180. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -120,8 +121,9 @@ explicit user authorization.
 ### P1: Strategy Reset
 
 Status: v179 implemented and locally validated with pinned local `output/mind/`
-artifacts, but still pending source commit/push and artifact backup durability
-before training. The v176 recommendation,
+artifacts, and v180 has now consumed the durable pinned v178 authorization for
+the first explicit opt-in transition-row policy training slice. The v176
+recommendation,
 `v177_exact_branch_replay_expansion_no_training`, now materializes exact branch
 replay evidence and compact transition rows with `next_public_observation`,
 `next_public_action_mask`, and `previous_same_agent_public_context`. The v178
@@ -149,16 +151,39 @@ with exact digest
 train from non-durable source/artifacts or another undersupported
 nearest-neighbor scorer.
 
-After v179 source and artifact provenance are durable, the first same-lane
-scale/capacity step is the explicit opt-in transition-row training slice
-authorized by the durable default v178 audit with source-report and dataset
-digest pins. If commit/push or artifact backup has not been authorized, stop
-before training and either back up these `output/mind/` artifacts to the
-documented artifact store or regenerate them from committed source with the same
-expected source-report and dataset digest pins. Reserve more branch replay,
-archive expansion, or alternate policy-capacity diagnostics for concrete
-trained-artifact failures within the 10-slice campaign budget, not as another
-pre-training detour.
+The first same-lane scale/capacity step has run as v180. It wrote
+`output/mind/mind-v3-v180-carrion-survivor-continuation-transition-row-policy-training.json`
+with exact digest
+`ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`
+and trained
+`output/mind/mind-v3-v180-carrion-survivor-continuation-transition-row-policy-artifact.json`
+with artifact digest
+`66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`.
+Its classification is
+`m3_carrion_survivor_continuation_v180_transition_row_policy_training_first_slice_shadow_acceptance_failed_no_promotion`.
+The blocker is exact: `carrion_only@120` had `0` terminal survivors, and broad
+seeds `5,13,19,29,37,41` regressed alive/birth versus the linear Mind v3
+baseline. Dominant requested-action share stayed below the cap at `0.483`, and
+heuristic action sources stayed at `0`. This counts as slice 1 of the 10-slice
+carrion campaign budget. Stop for direction before another slice; do not relax
+thresholds, promote/runtime-integrate the artifact, or route this failure into
+another pre-training audit. The v180 report and artifact are durable only after
+the recorded backup:
+`/Users/njm/evolution-sim-p0-backups/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`,
+archive SHA256
+`e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
+Local copy verification matched the original v180 report file SHA256
+`296e910de2dc40d8a16d42565280436bdc3e601792064fb0be43514156c4c055`
+and artifact file SHA256
+`3d9016f2b7ea5e6d1e9c1ef63afdbca5fb2fea96a3ccbadba91089a93a154432`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260611T110135Z-v180-transition-row-policy-training.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The next useful work after
+durability is v181 failure-response, not another pre-training audit and not a
+rerun of the first training slice.
 
 ### P1: Documentation And Agent Instructions
 
@@ -225,11 +250,9 @@ the relevant contents into this prompt or point you to a committed repo summary.
 For this handoff, AGENTS.md and the 2026-06-10 checkpoint section of
 docs/mind-v3-autonomous-evolution.md are the durable summary of that direction.
 
-Do not start a new Mind v3 experiment or train anything unless it is the
-explicit opt-in transition-row training slice authorized by a v178 audit that
-uses the exact default support thresholds, supplies expected source-report and
-dataset digests, and passes all source, schema, leakage, identity, action-mask,
-observation, and target contracts. Caller-lowered
+Do not start a new Mind v3 experiment or train anything in a handoff that only
+asks for v180 durability. v180 has already run and failed as slice 1/10 after
+consuming the durable default-threshold v178 authorization. Caller-lowered
 `--min-*` thresholds are diagnostic only and must not authorize training. The
 v137-v176 durability backlog is already resolved; before any new experiment or
 trainer work, verify the current slice's source, package entrypoints, tests,
@@ -239,13 +262,13 @@ stop after producing the exact commit/artifact plan.
 
 If source durability, the habitat water contract fix, shared-harness
 extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
-transition-row support, the v178 transition-row dataset audit, and v179
-exact-branch transition-row support expansion are already durable, the next
-focused strategy slice is the explicit opt-in transition-row training slice
-authorized by a v178 default-threshold audit. If v179 is only locally validated,
-make the source, package entrypoint, tests, ledger, and any digest-referenced
-artifact durable first. Keep CI slices compact and do not turn push CI into
-promotion evidence.
+transition-row support, the v178 transition-row dataset audit, v179
+exact-branch transition-row support expansion, and the v180 report/artifact
+backup are already durable, the next focused strategy slice is v181
+failure-response work. Do not rerun the first opt-in transition-row training
+slice or route the failure into another pre-training audit unless the user
+explicitly asks for regeneration after a durability check. Keep CI slices
+compact and do not turn push CI into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

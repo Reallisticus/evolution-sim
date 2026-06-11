@@ -66,15 +66,20 @@ Preserve these boundaries:
 - every new policy state, artifact field, or data contract gets diagnostics and
   tests.
 
-v179 exact-branch transition-row expansion is locally implemented but must be
-made durable before any training. If a durable v178 transition-row audit passes
-the exact default support thresholds, supplies expected source-report and
-dataset digests, verifies that any v179 source report also pinned its upstream
-v177 report/dataset digests, and all source, schema, leakage, identity,
-action-mask, observation, and target contracts pass, the next same-lane route is
-the first opt-in transition-row training slice, not another design audit. CLI
-`--min-*` support overrides are diagnostic only and must not authorize that
-route.
+v180 has already consumed the durable pinned v178 authorization and run the
+first opt-in transition-row policy training slice. It failed shadow acceptance
+with zero `carrion_only@120` terminal survivors and broad per-seed alive/birth
+regressions, while dominant requested-action share stayed below `0.50` and
+heuristic action sources stayed at `0`. v180 counts as slice 1 of the 10-slice
+carrion campaign budget. Its report and policy artifact are durable only after
+the recorded backup
+`gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+with archive SHA256
+`e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`.
+The next useful same-lane work after that durability checkpoint is v181
+failure-response work, not another pre-training audit and not a rerun of the
+first training slice. CLI `--min-*` support overrides are diagnostic only and
+must not authorize training routes.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.

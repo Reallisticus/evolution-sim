@@ -16,10 +16,19 @@ survival blocker did not move and strict seeds were consumed as support
 provenance. v177 restored transition-row data support through exact branch
 replay, v178 audited that dataset as contract-valid but too small for
 training-scale capacity work, and v179 locally expanded exact-branch
-transition rows above the default v178 support thresholds. The next useful
-branch is durability for v179 source/artifact provenance, then the explicit
-opt-in transition-row training slice only if the durable default v178 audit
-still passes all contracts.
+transition rows above the default v178 support thresholds. v180 consumed the
+durable pinned v178 authorization and trained the first explicit opt-in
+transition-row policy artifact, but shadow evaluation failed with zero
+`carrion_only@120` terminal survivors and broad per-seed alive/birth
+regressions. Its report and policy artifact are durable only after the recorded
+backup
+`gdrive:evolution-sim-backups/archives/20260611T110135Z-v180-transition-row-policy-training.tar.zst`
+with archive SHA256
+`e9c95f424e0827a7ed25f7de523fc61e9fe38d6062861466a81f1149671aac59`
+and `rclone check` verification of `0` differences and `2` matching files. The
+next useful step after that durability checkpoint is v181 failure-response work,
+not gate relaxation, runtime integration, promotion, another pre-training design
+audit, or a rerun of the first transition-row training slice.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -32,7 +41,12 @@ authorize that training route unless they exactly match the default v178
 thresholds. The campaign budget is at most 10 slices before a forced retro. The
 first milestone is nonzero terminal survivors on `carrion_only@120`, no
 dominant requested action share above `0.50`, and zero heuristic action
-sources.
+sources. v180 counts as slice 1 of that budget; its dominant requested-action
+share was under the cap and heuristic action sources stayed zero, but the
+survivor and broad regression gates failed. The first opt-in transition-row
+training slice has already been spent; do not route future work back to
+pre-v180 authorization unless a later durability check proves the recorded
+artifacts are unavailable and the user explicitly asks for regeneration.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

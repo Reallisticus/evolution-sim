@@ -1223,6 +1223,121 @@ def transition_row_training_authorization(
     }
 
 
+def validate_v178_transition_row_training_authorization_report(
+    report: Mapping[str, object],
+    *,
+    expected_exact_digest: str,
+    expected_dataset_digest: str,
+    expected_classification: str,
+    expected_source_producer: str = V179_SOURCE_PRODUCER,
+) -> dict[str, object]:
+    exact_validation = exact_digest_validation_report(report)
+    authorization = _mapping(report.get("training_authorization"))
+    route = _mapping(report.get("route_recommendation"))
+    contract = _mapping(report.get("contract"))
+    dataset = _mapping(report.get("dataset"))
+    source = _mapping(report.get("source_validation"))
+    classification = _mapping(report.get("classification"))
+    failures: list[str] = []
+    checks = {
+        "exact_digest_valid": exact_validation.get("passed") is True,
+        "expected_exact_digest_matches": (
+            str(report.get("exact_digest") or "") == str(expected_exact_digest)
+        ),
+        "classification_matches": (
+            str(classification.get("primary") or "") == str(expected_classification)
+        ),
+        "dataset_digest_matches": (
+            str(dataset.get("dataset_digest") or "") == str(expected_dataset_digest)
+        ),
+        "source_producer_matches": (
+            str(source.get("source_producer") or "") == str(expected_source_producer)
+        ),
+        "training_authorization_field_true": (
+            authorization.get("next_same_lane_opt_in_training_slice_authorized")
+            is True
+        ),
+        "training_authorization_failures_empty": (
+            list(authorization.get("failures") or []) == []
+        ),
+        "route_training_authorized": (
+            route.get("transition_row_training_authorized") is True
+        ),
+        "contract_training_authorized": (
+            contract.get("next_same_lane_opt_in_training_slice_authorized") is True
+        ),
+        "support_thresholds_match_defaults": (
+            authorization.get("support_thresholds_match_defaults") is True
+        ),
+        "default_support_readiness_passed": (
+            authorization.get("default_support_readiness_passed") is True
+        ),
+        "source_validation_passed": (
+            authorization.get("source_validation_passed") is True
+        ),
+        "row_schema_validation_passed": (
+            authorization.get("row_schema_validation_passed") is True
+        ),
+        "key_leakage_scan_passed": (
+            authorization.get("key_leakage_scan_passed") is True
+        ),
+        "value_leakage_scan_passed": (
+            authorization.get("value_leakage_scan_passed") is True
+        ),
+        "feature_contract_audit_passed": (
+            authorization.get("feature_contract_audit_passed") is True
+        ),
+        "identity_audit_passed": authorization.get("identity_audit_passed")
+        is True,
+        "action_mask_audit_passed": (
+            authorization.get("action_mask_audit_passed") is True
+        ),
+        "observation_audit_passed": (
+            authorization.get("observation_audit_passed") is True
+        ),
+        "target_audit_passed": authorization.get("target_audit_passed") is True,
+        "expected_source_report_exact_digest_provided": (
+            authorization.get("expected_source_report_exact_digest_provided") is True
+        ),
+        "expected_dataset_digest_provided": (
+            authorization.get("expected_dataset_digest_provided") is True
+        ),
+        "v178_audit_training_did_not_run": report.get("training_ran") is False,
+        "v178_audit_runtime_artifact_not_created": (
+            report.get("runtime_artifact_created") is False
+        ),
+        "v178_audit_runtime_action_selection_unchanged": (
+            report.get("runtime_action_selection_changed") is False
+        ),
+        "v178_audit_promotion_not_authorized": (
+            report.get("promotion_authorized") is False
+        ),
+    }
+    failures.extend(name for name, passed in checks.items() if not passed)
+    return {
+        "policy": (
+            "m3_carrion_survivor_continuation_v178_transition_row_training_"
+            "authorization_report_validation_v1"
+        ),
+        **checks,
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures,
+        "expected_exact_digest": expected_exact_digest,
+        "observed_exact_digest": report.get("exact_digest"),
+        "exact_digest_validation": exact_validation,
+        "expected_classification": expected_classification,
+        "observed_classification": classification.get("primary"),
+        "expected_dataset_digest": expected_dataset_digest,
+        "observed_dataset_digest": dataset.get("dataset_digest"),
+        "expected_source_producer": expected_source_producer,
+        "observed_source_producer": source.get("source_producer"),
+        "training_authorization": dict(authorization),
+        "route_recommendation": dict(route),
+        "contract": dict(contract),
+    }
+
+
 def _classification(
     *,
     source_validation: Mapping[str, object],
