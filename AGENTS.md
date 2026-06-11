@@ -57,9 +57,30 @@ support-floor coverage stayed `0/2122`. Its report is durable after
 with archive SHA256
 `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`
 and `rclone check` verification of `0` differences and `2` matching files.
+v183 then ran diagnostics-only exact transition-support expansion against the
+v182 support holes. It validated the pinned v182/v181/v180/v179 evidence,
+materialized `24` exact branch points, and wrote
+`output/mind/mind-v3-v183-carrion-survivor-continuation-exact-transition-support-expansion.json`
+with exact digest
+`7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da` plus
+`output/mind/mind-v3-v183-carrion-survivor-continuation-expanded-compact-transition-rows.jsonl`
+with dataset digest
+`e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`.
+The expanded dataset has `144` rows, `24` branches, `6` seeds, `9` forced
+actions, and passes the default support summary. v183 moved carrion
+observed-support target coverage from `0` to `18` materialized states and broad
+seed `19` support-hole coverage to `6` materialized states. Lifecycle flags
+stayed closed: no training, no training artifact, no runtime artifact, no
+runtime action-selection change, no promotion, and no slice-2 consumption. The
+report, dataset, and source trajectories are durable after
+`gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
+with archive SHA256
+`b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`
+and `rclone check` verification of `0` differences and `2` matching files.
 Future work should not route back to v179/v180 authorization, rerun the first
-transition-row training slice, or spend slice 2; the next same-lane route is
-exact transition-support expansion before any new training slice.
+transition-row training slice, run more support expansion by default, or spend
+slice 2; the next same-lane route is a fresh v178-style audit of the v183
+expanded transition-row dataset before any new training slice.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -78,9 +99,10 @@ survivor and broad regression gates failed. The first opt-in transition-row
 training slice has already been spent; do not route future work back to
 pre-v180 authorization unless a later durability check proves the recorded
 artifacts are unavailable and the user explicitly asks for regeneration. v181
-and v182 were diagnostics-only and do not consume slice 2; the budget remains
-1/10 until a future explicitly authorized training slice runs after exact
-transition-support expansion.
+and v182 were diagnostics-only, and v183 created only diagnostic transition-row
+evidence; none consume slice 2. The budget remains 1/10 until a future
+explicitly authorized training slice runs after a fresh v178-style audit of the
+v183 expanded dataset.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
