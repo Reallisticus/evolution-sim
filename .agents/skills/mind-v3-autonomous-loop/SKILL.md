@@ -30,6 +30,11 @@ entrypoints, tests, ledger entries, or digest-referenced artifacts are still
 local-only. A docs-only remediation pass or explicit git/backlog triage is
 allowed.
 
+Strategic handoff constraint: thread-local ledgers and attachments are not
+durable context. A fresh coder should not be expected to know them unless the
+dispatch prompt includes the relevant content or points to a committed summary
+in `AGENTS.md` or `docs/mind-v3-autonomous-evolution.md`.
+
 ## Inspect First
 
 Read the smallest relevant set:
@@ -54,17 +59,21 @@ user-owned.
 ## Allowed Novelty
 
 Novel controller ideas are welcome, but they must pass through repo contracts.
-Good next directions include:
+Current same-lane work is narrower:
 
-- exact branch replay expansion from v176 into transition rows containing
-  `next_public_observation`, `next_public_action_mask`, and
-  `previous_same_agent_public_context`;
-- policy-owned rollout context or option memory derived from public trajectory
-  rows and finalized outcomes;
-- exact branch replay, Go-Explore-style archive replay, and robustification;
-- sequence, flow, or compact world-model branches with serialized artifacts;
-- diagnostics that falsify state aliasing, action collapse, or data-support gaps
-  before expensive training.
+- v179 has locally expanded exact-branch transition rows above the v178 default
+  support thresholds (`180` rows, `6` seeds, `30` branches, `7` forced actions
+  in local validation) and now needs source/artifact durability before
+  training;
+- a durable v178 audit that passes exact default support thresholds, supplies
+  expected source-report and dataset digests, verifies any v179 source report
+  pinned its upstream v177 report/dataset digests, and passes all source,
+  schema, leakage, identity, action-mask, observation, and target contracts
+  authorizes the first opt-in transition-row training slice in the same lane;
+- CLI `--min-*` support overrides are diagnostic only and must not authorize
+  training;
+- diagnostics should be reactions to concrete trained-artifact failures and stay
+  inside the 10-slice carrion campaign budget, not replace the training route.
 
 Do not use:
 
@@ -108,8 +117,8 @@ For promotion-style Mind v3 candidates, keep these hard:
 - dominant requested-action share `<= 0.50`;
 - zero heuristic action-source count;
 - no per-seed alive or birth regression versus the linear Mind v3 baseline;
-- carrion fixture movement: terminal alive greater than zero or blocker count
-  below the linear baseline.
+- carrion fixture milestone: terminal alive greater than zero on
+  `carrion_only@120`; blocker-count reduction is diagnostic only.
 
 Train-gate success alone is not promotion evidence.
 
@@ -128,7 +137,9 @@ Fast suite:
 npm run sim:test
 ```
 
-Strict candidate slice:
+Historical strict candidate slice. Do not treat this labeled-IQL command as the
+current v179 next route; after durable pinned v178 authorization, use the
+explicit opt-in transition-row training slice for this lane:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

@@ -47,6 +47,16 @@ EXPECTED_V177_CLASSIFICATION = (
     "m3_carrion_survivor_continuation_v177_exact_branch_replay_expansion_"
     "compact_transition_rows_ready_no_training"
 )
+EXPECTED_V179_SCHEMA_VERSION = (
+    "m3_carrion_survivor_continuation_v179_exact_branch_transition_row_expansion_report_v1"
+)
+EXPECTED_V179_POLICY = (
+    "diagnostics_only_m3_carrion_survivor_continuation_v179_exact_branch_transition_row_expansion_v1"
+)
+EXPECTED_V179_CLASSIFICATION = (
+    "m3_carrion_survivor_continuation_v179_exact_branch_transition_row_expansion_"
+    "compact_transition_rows_support_ready_for_v178_default_audit_no_training"
+)
 DEFAULT_OUTPUT_PATH = Path(
     "output/mind/"
     "mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit.json"
@@ -72,6 +82,8 @@ PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS = {
     "public_action",
     "moved",
 }
+V177_SOURCE_PRODUCER = "v177"
+V179_SOURCE_PRODUCER = "v179_exact_branch_transition_row_expansion"
 
 
 def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
@@ -107,6 +119,16 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
     observation_audit = transition_row_observation_audit(rows)
     coverage_audit = transition_row_coverage_audit(rows)
     target_audit = transition_row_target_audit(rows)
+    requested_support_minimums = _support_minimums(
+        min_row_count=int(min_row_count),
+        min_seed_count=int(min_seed_count),
+        min_branch_count=int(min_branch_count),
+        min_forced_action_count=int(min_forced_action_count),
+    )
+    default_support_minimums = _default_support_minimums()
+    support_thresholds_match_defaults = (
+        requested_support_minimums == default_support_minimums
+    )
     support_readiness = transition_row_support_readiness(
         rows=rows,
         coverage_audit=coverage_audit,
@@ -115,6 +137,30 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         min_seed_count=int(min_seed_count),
         min_branch_count=int(min_branch_count),
         min_forced_action_count=int(min_forced_action_count),
+    )
+    default_support_readiness = transition_row_support_readiness(
+        rows=rows,
+        coverage_audit=coverage_audit,
+        identity_audit=identity_audit,
+        min_row_count=DEFAULT_MIN_ROW_COUNT,
+        min_seed_count=DEFAULT_MIN_SEED_COUNT,
+        min_branch_count=DEFAULT_MIN_BRANCH_COUNT,
+        min_forced_action_count=DEFAULT_MIN_FORCED_ACTION_COUNT,
+    )
+    training_authorization = transition_row_training_authorization(
+        source_validation=source_validation,
+        row_schema_validation=row_schema_validation,
+        leakage_scan=leakage_scan,
+        value_leakage_scan=value_leakage_scan,
+        feature_contract_audit=feature_contract_audit,
+        identity_audit=identity_audit,
+        action_mask_audit=action_mask_audit,
+        observation_audit=observation_audit,
+        target_audit=target_audit,
+        default_support_readiness=default_support_readiness,
+        requested_support_minimums=requested_support_minimums,
+        default_support_minimums=default_support_minimums,
+        support_thresholds_match_defaults=support_thresholds_match_defaults,
     )
     classification = _classification(
         source_validation=source_validation,
@@ -125,7 +171,19 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         identity_audit=identity_audit,
         action_mask_audit=action_mask_audit,
         observation_audit=observation_audit,
+        target_audit=target_audit,
+        default_support_readiness=default_support_readiness,
+        support_thresholds_match_defaults=support_thresholds_match_defaults,
+        training_authorization=training_authorization,
+    )
+    route_recommendation = _route_recommendation(
+        classification=classification,
         support_readiness=support_readiness,
+        default_support_readiness=default_support_readiness,
+        training_authorization=training_authorization,
+    )
+    training_authorized = bool(
+        route_recommendation.get("transition_row_training_authorized")
     )
     dataset_digest = stable_payload_digest(rows)
     report = {
@@ -133,16 +191,25 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
             M3_CARRION_SURVIVOR_CONTINUATION_V178_TRANSITION_ROW_DATASET_AUDIT_SCHEMA_VERSION
         ),
         "policy": M3_CARRION_SURVIVOR_CONTINUATION_V178_TRANSITION_ROW_DATASET_AUDIT_POLICY,
-        "contract": _diagnostics_only_contract(),
+        "contract": _diagnostics_only_contract(
+            transition_row_training_authorized=training_authorized
+        ),
         "inputs": {
+            "source_report": str(v177_report_path),
             "v177_report": str(v177_report_path),
             "transition_dataset": str(transition_dataset_path),
+            "expected_source_report_exact_digest": (
+                expected_v177_report_exact_digest
+            ),
             "expected_v177_report_exact_digest": expected_v177_report_exact_digest,
             "expected_dataset_digest": expected_dataset_digest,
             "min_row_count": int(min_row_count),
             "min_seed_count": int(min_seed_count),
             "min_branch_count": int(min_branch_count),
             "min_forced_action_count": int(min_forced_action_count),
+            "requested_support_minimums": requested_support_minimums,
+            "default_support_minimums": default_support_minimums,
+            "support_thresholds_match_defaults": support_thresholds_match_defaults,
         },
         "source_validation": source_validation,
         "row_schema_validation": row_schema_validation,
@@ -155,6 +222,8 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         "coverage_audit": coverage_audit,
         "target_audit": target_audit,
         "support_readiness": support_readiness,
+        "default_support_readiness": default_support_readiness,
+        "training_authorization": training_authorization,
         "dataset": {
             "path": str(transition_dataset_path),
             "row_count": len(rows),
@@ -167,10 +236,7 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
             ),
         },
         "classification": {"primary": classification, "labels": [classification]},
-        "route_recommendation": _route_recommendation(
-            classification=classification,
-            support_readiness=support_readiness,
-        ),
+        "route_recommendation": route_recommendation,
         **_lifecycle_flags(),
     }
     report["exact_digest"] = _json_round_trip_digest(report)
@@ -289,61 +355,105 @@ def validate_v178_sources(
     expected_dataset_digest: str | None,
 ) -> dict[str, object]:
     failures: list[str] = []
-    if (
-        v177_report.get("schema_version")
-        != M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_SCHEMA_VERSION
-    ):
+    schema_version = str(v177_report.get("schema_version") or "")
+    producer = V177_SOURCE_PRODUCER
+    failure_prefix = "v177"
+    is_v179_source = False
+    expected_schema_version = (
+        M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_SCHEMA_VERSION
+    )
+    expected_policy = (
+        M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_POLICY
+    )
+    expected_classification = EXPECTED_V177_CLASSIFICATION
+    if schema_version == EXPECTED_V179_SCHEMA_VERSION:
+        producer = V179_SOURCE_PRODUCER
+        failure_prefix = "v179"
+        is_v179_source = True
+        expected_schema_version = EXPECTED_V179_SCHEMA_VERSION
+        expected_policy = EXPECTED_V179_POLICY
+        expected_classification = EXPECTED_V179_CLASSIFICATION
+    elif schema_version != expected_schema_version:
         failures.append("v177_schema_version_mismatch")
-    if (
-        v177_report.get("policy")
-        != M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_POLICY
-    ):
-        failures.append("v177_policy_mismatch")
+    if v177_report.get("policy") != expected_policy:
+        failures.append(f"{failure_prefix}_policy_mismatch")
     observed_classification = str(
         _mapping(v177_report.get("classification")).get("primary") or ""
     )
-    if observed_classification != EXPECTED_V177_CLASSIFICATION:
-        failures.append("v177_unexpected_classification")
+    if observed_classification != expected_classification:
+        failures.append(f"{failure_prefix}_unexpected_classification")
     exact = exact_digest_validation_report(v177_report)
     observed_exact = str(v177_report.get("exact_digest") or "")
     if exact.get("passed") is not True:
-        failures.append("v177_exact_digest_mismatch")
+        failures.append(f"{failure_prefix}_exact_digest_mismatch")
     if (
         expected_v177_report_exact_digest
         and observed_exact != expected_v177_report_exact_digest
     ):
-        failures.append("v177_unexpected_exact_digest")
+        failures.append(f"{failure_prefix}_unexpected_exact_digest")
     observed_dataset_digest = stable_payload_digest([dict(row) for row in rows])
     if expected_dataset_digest and observed_dataset_digest != expected_dataset_digest:
-        failures.append("v177_dataset_digest_mismatch")
+        failures.append(f"{failure_prefix}_dataset_digest_mismatch")
     dataset = _mapping(v177_report.get("dataset"))
     reported_digest = dataset.get("dataset_digest")
     reported_row_count = dataset.get("row_count")
     if reported_digest not in (None, observed_dataset_digest):
-        failures.append("v177_reported_dataset_digest_mismatch")
+        failures.append(f"{failure_prefix}_reported_dataset_digest_mismatch")
     if (
         reported_row_count is not None
         and _int(reported_row_count, default=-1) != len(rows)
     ):
-        failures.append("v177_reported_dataset_row_count_mismatch")
-    lifecycle = _v177_lifecycle_validation(v177_report)
+        failures.append(f"{failure_prefix}_reported_dataset_row_count_mismatch")
+    lifecycle = _source_lifecycle_validation(
+        v177_report,
+        producer=producer,
+        is_v179_source=is_v179_source,
+    )
     if lifecycle.get("passed") is not True:
-        failures.append("v177_lifecycle_not_diagnostics_only")
+        failures.append(f"{failure_prefix}_lifecycle_not_diagnostics_only")
+    v179_replay_validation = _empty_v179_replay_validation()
+    if is_v179_source:
+        v179_replay_validation = _v179_replay_validation(v177_report)
+        if v179_replay_validation.get("passed") is not True:
+            failures.append("v179_replay_verification_not_proven")
+        if v179_replay_validation.get("v177_source_digests_pinned") is not True:
+            failures.append("v179_v177_source_digests_not_pinned")
     return {
         "policy": "m3_carrion_survivor_continuation_v178_source_validation_v1",
         "passed": bool(rows) and not failures,
         "failures": sorted(set(failures)),
-        "expected_v177_classification": EXPECTED_V177_CLASSIFICATION,
-        "observed_v177_classification": observed_classification,
+        "source_producer": producer,
+        "source_report_schema_version": schema_version,
+        "expected_source_report_schema_version": expected_schema_version,
+        "expected_source_policy": expected_policy,
+        "expected_source_classification": expected_classification,
+        "observed_source_classification": observed_classification,
+        "expected_v177_classification": (
+            EXPECTED_V177_CLASSIFICATION if not is_v179_source else None
+        ),
+        "observed_v177_classification": (
+            observed_classification if not is_v179_source else None
+        ),
         "expected_v177_report_exact_digest": expected_v177_report_exact_digest,
         "observed_v177_report_exact_digest": observed_exact,
         "v177_exact_digest_validation": exact,
+        "expected_source_report_exact_digest": expected_v177_report_exact_digest,
+        "observed_source_report_exact_digest": observed_exact,
+        "source_report_exact_digest_validation": exact,
+        "expected_source_report_exact_digest_provided": bool(
+            expected_v177_report_exact_digest
+        ),
         "expected_dataset_digest": expected_dataset_digest,
         "observed_dataset_digest": observed_dataset_digest,
+        "expected_dataset_digest_provided": bool(expected_dataset_digest),
+        "reported_source_dataset_digest": reported_digest,
+        "reported_source_dataset_row_count": reported_row_count,
         "v177_reported_dataset_digest": reported_digest,
         "v177_reported_dataset_row_count": reported_row_count,
         "observed_dataset_row_count": len(rows),
         "v177_lifecycle_validation": lifecycle,
+        "source_lifecycle_validation": lifecycle,
+        "v179_replay_validation": v179_replay_validation,
     }
 
 
@@ -354,6 +464,15 @@ def transition_row_identity_audit(
     feature_digest_counts: Counter[str] = Counter()
     current_state_digest_counts: Counter[str] = Counter()
     branch_digest_counts: Counter[str] = Counter()
+    source_identities_by_branch: dict[str, set[tuple[object, ...]]] = defaultdict(set)
+    source_record_digests_by_branch: dict[str, set[str]] = defaultdict(set)
+    materialized_record_digests_by_branch: dict[str, set[str]] = defaultdict(set)
+    branch_state_digests_by_branch: dict[str, set[str]] = defaultdict(set)
+    current_state_digests_by_branch: dict[str, set[str]] = defaultdict(set)
+    source_identity_branch_ids: dict[tuple[object, ...], set[str]] = defaultdict(set)
+    source_record_digest_branch_ids: dict[str, set[str]] = defaultdict(set)
+    materialized_record_digest_branch_ids: dict[str, set[str]] = defaultdict(set)
+    current_state_digest_branch_ids: dict[str, set[str]] = defaultdict(set)
     failures: list[dict[str, object]] = []
     for row_index, row in enumerate(rows):
         metadata = _mapping(row.get("metadata"))
@@ -363,31 +482,71 @@ def transition_row_identity_audit(
         feature_digest_counts.update(
             [stable_payload_digest(_mapping(row.get("trainable_public_features")))]
         )
-        current_state_digest_counts.update(
-            [
-                stable_payload_digest(
-                    {
-                        "current_public_observation": row.get(
-                            "current_public_observation"
-                        ),
-                        "current_public_action_mask": row.get(
-                            "current_public_action_mask"
-                        ),
-                        "previous_same_agent_public_context": row.get(
-                            "previous_same_agent_public_context"
-                        ),
-                    }
-                )
-            ]
+        current_state_digest = stable_payload_digest(
+            {
+                "current_public_observation": row.get("current_public_observation"),
+                "current_public_action_mask": row.get("current_public_action_mask"),
+                "previous_same_agent_public_context": row.get(
+                    "previous_same_agent_public_context"
+                ),
+            }
         )
+        current_state_digest_counts.update([current_state_digest])
+        if branch_id:
+            current_state_digest_branch_ids[current_state_digest].add(branch_id)
         branch_state_digest = str(metadata.get("branch_state_digest") or "")
         if branch_state_digest:
             branch_digest_counts.update([branch_state_digest])
+        source_record_digest = str(metadata.get("source_record_digest") or "")
+        materialized_record_digest = str(
+            metadata.get("materialized_record_digest") or ""
+        )
+        source_identity = (
+            _int(metadata.get("seed"), default=-1),
+            str(metadata.get("source_path") or ""),
+            _int(metadata.get("line_number"), default=-1),
+            _int(metadata.get("branch_tick"), default=-1),
+            _int(metadata.get("agent_id"), default=-1),
+        )
+        if branch_id:
+            if (
+                source_identity[0] >= 0
+                and source_identity[1]
+                and source_identity[2] >= 0
+                and source_identity[3] >= 0
+                and source_identity[4] >= 0
+            ):
+                source_identity_branch_ids[source_identity].add(branch_id)
+                source_identities_by_branch[branch_id].add(source_identity)
+            if source_record_digest:
+                source_record_digest_branch_ids[source_record_digest].add(branch_id)
+                source_record_digests_by_branch[branch_id].add(source_record_digest)
+            if materialized_record_digest:
+                materialized_record_digest_branch_ids[
+                    materialized_record_digest
+                ].add(branch_id)
+                materialized_record_digests_by_branch[branch_id].add(
+                    materialized_record_digest
+                )
+            if branch_state_digest:
+                branch_state_digests_by_branch[branch_id].add(branch_state_digest)
+            current_state_digests_by_branch[branch_id].add(current_state_digest)
         if not branch_id:
             failures.append({"row_index": row_index, "reason": "missing_branch_id"})
         if action not in ACTION_NAMES:
             failures.append(
                 {"row_index": row_index, "reason": "invalid_forced_action"}
+            )
+        if not source_record_digest:
+            failures.append(
+                {"row_index": row_index, "reason": "missing_source_record_digest"}
+            )
+        if not materialized_record_digest:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "missing_materialized_record_digest",
+                }
             )
     duplicate_branch_actions = [
         {"branch_id": branch_id, "forced_action": action, "count": int(count)}
@@ -403,6 +562,60 @@ def transition_row_identity_audit(
                 "count": duplicate["count"],
             }
         )
+    failures.extend(
+        _multi_branch_identity_failures(
+            reason="source_materialization_identity_reused_across_branches",
+            branch_ids_by_identity=source_identity_branch_ids,
+        )
+    )
+    failures.extend(
+        _multi_branch_identity_failures(
+            reason="source_record_digest_reused_across_branches",
+            branch_ids_by_identity=source_record_digest_branch_ids,
+        )
+    )
+    failures.extend(
+        _multi_branch_identity_failures(
+            reason="materialized_record_digest_reused_across_branches",
+            branch_ids_by_identity=materialized_record_digest_branch_ids,
+        )
+    )
+    failures.extend(
+        _multi_branch_identity_failures(
+            reason="current_state_payload_reused_across_branches",
+            branch_ids_by_identity=current_state_digest_branch_ids,
+        )
+    )
+    failures.extend(
+        _multi_identity_branch_failures(
+            reason="branch_id_mixes_source_materialization_identity",
+            identities_by_branch=source_identities_by_branch,
+        )
+    )
+    failures.extend(
+        _multi_identity_branch_failures(
+            reason="branch_id_mixes_source_record_digest",
+            identities_by_branch=source_record_digests_by_branch,
+        )
+    )
+    failures.extend(
+        _multi_identity_branch_failures(
+            reason="branch_id_mixes_materialized_record_digest",
+            identities_by_branch=materialized_record_digests_by_branch,
+        )
+    )
+    failures.extend(
+        _multi_identity_branch_failures(
+            reason="branch_id_mixes_branch_state_digest",
+            identities_by_branch=branch_state_digests_by_branch,
+        )
+    )
+    failures.extend(
+        _multi_identity_branch_failures(
+            reason="branch_id_mixes_current_state_payload",
+            identities_by_branch=current_state_digests_by_branch,
+        )
+    )
     return {
         "policy": "m3_carrion_survivor_continuation_v178_identity_audit_v1",
         "passed": not failures,
@@ -425,6 +638,46 @@ def transition_row_identity_audit(
             branch_digest_counts
         ),
     }
+
+
+def _multi_branch_identity_failures(
+    *,
+    reason: str,
+    branch_ids_by_identity: Mapping[object, set[str]],
+) -> list[dict[str, object]]:
+    failures = []
+    for identity, branch_ids in branch_ids_by_identity.items():
+        if len(branch_ids) > 1:
+            failures.append(
+                {
+                    "reason": reason,
+                    "identity": repr(identity),
+                    "branch_count": len(branch_ids),
+                    "branch_ids": sorted(branch_ids)[:16],
+                }
+            )
+    return failures[:32]
+
+
+def _multi_identity_branch_failures(
+    *,
+    reason: str,
+    identities_by_branch: Mapping[str, set[object]],
+) -> list[dict[str, object]]:
+    failures = []
+    for branch_id, identities in sorted(identities_by_branch.items()):
+        if len(identities) > 1:
+            failures.append(
+                {
+                    "reason": reason,
+                    "branch_id": branch_id,
+                    "identity_count": len(identities),
+                    "identities": sorted(repr(identity) for identity in identities)[
+                        :16
+                    ],
+                }
+            )
+    return failures[:32]
 
 
 def transition_row_action_mask_audit(
@@ -676,6 +929,7 @@ def transition_row_coverage_audit(
 def transition_row_target_audit(
     rows: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
+    failures: list[dict[str, object]] = []
     requested_actions: Counter[str] = Counter()
     resolved_actions: Counter[str] = Counter()
     action_valid_counts: Counter[str] = Counter()
@@ -688,9 +942,105 @@ def transition_row_target_audit(
     alive_values: list[int] = []
     birth_values: list[int] = []
     death_values: list[int] = []
-    for row in rows:
+    for row_index, row in enumerate(rows):
         action = str(row.get("forced_action") or "")
         summary = _mapping(row.get("short_horizon_public_outcome_summary"))
+        if not isinstance(row.get("short_horizon_public_outcome_summary"), Mapping):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "short_horizon_public_outcome_summary_missing",
+                }
+            )
+            continue
+        if summary.get("forced_action_used") is not True:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "forced_action_not_used",
+                    "observed": summary.get("forced_action_used"),
+                }
+            )
+        if summary.get("current_requested_action") != action:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "current_requested_action_mismatch",
+                    "expected": action,
+                    "observed": summary.get("current_requested_action"),
+                }
+            )
+        if summary.get("current_resolved_action") not in ACTION_NAMES:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "current_resolved_action_invalid",
+                    "observed": summary.get("current_resolved_action"),
+                }
+            )
+        elif summary.get("current_resolved_action") != action:
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "current_resolved_action_mismatch",
+                    "expected": action,
+                    "observed": summary.get("current_resolved_action"),
+                }
+            )
+        for field in (
+            "current_action_valid",
+            "current_resolution_action_valid",
+            "current_moved",
+        ):
+            if not isinstance(summary.get(field), bool):
+                failures.append(
+                    {
+                        "row_index": row_index,
+                        "reason": f"{field}_not_bool",
+                        "observed": summary.get(field),
+                    }
+                )
+        for field in ("current_action_valid", "current_resolution_action_valid"):
+            if isinstance(summary.get(field), bool) and summary.get(field) is not True:
+                failures.append(
+                    {
+                        "row_index": row_index,
+                        "reason": f"{field}_not_true",
+                        "observed": summary.get(field),
+                    }
+                )
+        for field in ("current_reward_total", "current_resource_gain"):
+            value = _float(summary.get(field))
+            if value is None:
+                failures.append(
+                    {
+                        "row_index": row_index,
+                        "reason": f"{field}_not_finite_number",
+                        "observed": summary.get(field),
+                    }
+                )
+        for field in ("alive_agents", "births", "deaths"):
+            value = _int(summary.get(field), default=-1)
+            if value < 0:
+                failures.append(
+                    {
+                        "row_index": row_index,
+                        "reason": f"{field}_negative_or_missing",
+                        "observed": summary.get(field),
+                    }
+                )
+        target_terminal = summary.get("target_terminal")
+        if (
+            not isinstance(target_terminal, Mapping)
+            or not isinstance(target_terminal.get("alive"), bool)
+        ):
+            failures.append(
+                {
+                    "row_index": row_index,
+                    "reason": "target_terminal_contract_invalid",
+                    "observed": target_terminal,
+                }
+            )
         requested_actions.update([str(summary.get("current_requested_action") or "")])
         resolved_actions.update([str(summary.get("current_resolved_action") or "")])
         action_valid_counts.update([str(summary.get("current_action_valid"))])
@@ -698,7 +1048,11 @@ def transition_row_target_audit(
             [str(summary.get("current_resolution_action_valid"))]
         )
         moved_counts.update([str(summary.get("current_moved"))])
-        if summary.get("target_terminal") is True:
+        target_terminal_for_count = summary.get("target_terminal")
+        if (
+            isinstance(target_terminal_for_count, Mapping)
+            and target_terminal_for_count.get("alive") is True
+        ):
             target_terminal_count += 1
         if summary.get("forced_action_used") is True:
             forced_used_count += 1
@@ -713,6 +1067,9 @@ def transition_row_target_audit(
         death_values.append(_int(summary.get("deaths"), default=0))
     return {
         "policy": "m3_carrion_survivor_continuation_v178_target_audit_v1",
+        "passed": bool(rows) and not failures,
+        "failure_count": len(failures),
+        "failures": failures[:96],
         "row_count": len(rows),
         "forced_action_used_count": forced_used_count,
         "all_forced_actions_used": len(rows) > 0 and forced_used_count == len(rows),
@@ -782,9 +1139,10 @@ def transition_row_support_readiness(
                 "minimum": 0,
             }
         )
+    support_gate_passed = not failures
     return {
         "policy": "m3_carrion_survivor_continuation_v178_support_readiness_v1",
-        "passed": not failures,
+        "passed": support_gate_passed,
         "failure_count": len(failures),
         "failures": failures,
         "minimums": {
@@ -799,9 +1157,69 @@ def transition_row_support_readiness(
             "branch_count": _int(coverage_audit.get("branch_count")),
             "forced_action_count": _int(coverage_audit.get("forced_action_count")),
         },
-        "training_scale_capacity_work_unblocked": False,
+        "diagnostic_support_minimums_met": support_gate_passed,
+        "authorization_scope": "diagnostic_support_thresholds_only",
         "training_authorized": False,
         "promotion_authorized": False,
+    }
+
+
+def transition_row_training_authorization(
+    *,
+    source_validation: Mapping[str, object],
+    row_schema_validation: Mapping[str, object],
+    leakage_scan: Mapping[str, object],
+    value_leakage_scan: Mapping[str, object],
+    feature_contract_audit: Mapping[str, object],
+    identity_audit: Mapping[str, object],
+    action_mask_audit: Mapping[str, object],
+    observation_audit: Mapping[str, object],
+    target_audit: Mapping[str, object],
+    default_support_readiness: Mapping[str, object],
+    requested_support_minimums: Mapping[str, object],
+    default_support_minimums: Mapping[str, object],
+    support_thresholds_match_defaults: bool,
+) -> dict[str, object]:
+    checks = {
+        "source_validation_passed": source_validation.get("passed") is True,
+        "row_schema_validation_passed": row_schema_validation.get("passed") is True,
+        "key_leakage_scan_passed": leakage_scan.get("passed") is True,
+        "value_leakage_scan_passed": value_leakage_scan.get("passed") is True,
+        "feature_contract_audit_passed": feature_contract_audit.get("passed")
+        is True,
+        "identity_audit_passed": identity_audit.get("passed") is True,
+        "action_mask_audit_passed": action_mask_audit.get("passed") is True,
+        "observation_audit_passed": observation_audit.get("passed") is True,
+        "target_audit_passed": target_audit.get("passed") is True,
+        "default_support_readiness_passed": default_support_readiness.get("passed")
+        is True,
+        "support_thresholds_match_defaults": bool(support_thresholds_match_defaults),
+        "expected_source_report_exact_digest_provided": source_validation.get(
+            "expected_source_report_exact_digest_provided"
+        )
+        is True,
+        "expected_dataset_digest_provided": source_validation.get(
+            "expected_dataset_digest_provided"
+        )
+        is True,
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    authorized = not failures
+    return {
+        "policy": (
+            "m3_carrion_survivor_continuation_v178_transition_row_training_"
+            "authorization_v1"
+        ),
+        **checks,
+        "authorized": authorized,
+        "training_authorized": authorized,
+        "transition_row_training_authorized": authorized,
+        "next_same_lane_opt_in_training_slice_authorized": authorized,
+        "support_threshold_overrides_authorize_training": False,
+        "requested_support_minimums": dict(requested_support_minimums),
+        "default_support_minimums": dict(default_support_minimums),
+        "failure_count": len(failures),
+        "failures": failures,
     }
 
 
@@ -815,7 +1233,10 @@ def _classification(
     identity_audit: Mapping[str, object],
     action_mask_audit: Mapping[str, object],
     observation_audit: Mapping[str, object],
-    support_readiness: Mapping[str, object],
+    target_audit: Mapping[str, object],
+    default_support_readiness: Mapping[str, object],
+    support_thresholds_match_defaults: bool,
+    training_authorization: Mapping[str, object],
 ) -> str:
     prefix = "m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_"
     if source_validation.get("passed") is not True:
@@ -828,44 +1249,94 @@ def _classification(
         or identity_audit.get("passed") is not True
         or action_mask_audit.get("passed") is not True
         or observation_audit.get("passed") is not True
+        or target_audit.get("passed") is not True
     ):
         return prefix + "dataset_contract_invalid_closed_no_training"
-    if support_readiness.get("passed") is not True:
+    if default_support_readiness.get("passed") is not True:
         return prefix + "valid_support_limited_expand_before_training"
-    return prefix + "valid_route_decision_ready_no_training"
+    if not support_thresholds_match_defaults:
+        return prefix + "valid_support_ready_default_threshold_recheck_required_no_training"
+    if training_authorization.get("authorized") is not True:
+        return prefix + "valid_support_ready_digest_pins_required_no_training"
+    return prefix + "valid_support_ready_transition_row_training_authorized"
 
 
 def _route_recommendation(
     *,
     classification: str,
     support_readiness: Mapping[str, object],
+    default_support_readiness: Mapping[str, object],
+    training_authorization: Mapping[str, object],
 ) -> dict[str, object]:
-    contract_valid = classification.endswith(
-        "valid_route_decision_ready_no_training"
-    ) or classification.endswith("valid_support_limited_expand_before_training")
-    support_ready = support_readiness.get("passed") is True
+    support_ready_classification = classification.endswith(
+        "valid_support_ready_transition_row_training_authorized"
+    )
+    default_support_ready = default_support_readiness.get("passed") is True
+    diagnostic_support_ready = support_readiness.get("passed") is True
+    training_authorized = (
+        support_ready_classification
+        and training_authorization.get("authorized") is True
+    )
+    contract_valid = support_ready_classification or classification.endswith(
+        "valid_support_limited_expand_before_training"
+    ) or classification.endswith(
+        "valid_support_ready_default_threshold_recheck_required_no_training"
+    ) or classification.endswith(
+        "valid_support_ready_digest_pins_required_no_training"
+    )
     if not contract_valid:
         route = "repair_v177_transition_rows_before_capacity_work"
-    elif not support_ready:
+    elif not default_support_ready:
         route = "v179_expand_exact_branch_transition_rows_no_training"
+    elif not training_authorized:
+        failures = set(training_authorization.get("failures") or ())
+        if {
+            "expected_source_report_exact_digest_provided",
+            "expected_dataset_digest_provided",
+        } & failures:
+            route = (
+                "rerun_v178_with_expected_source_and_dataset_digests_before_"
+                "training_authorization"
+            )
+        else:
+            route = "rerun_v178_with_default_support_thresholds_before_training_authorization"
     else:
-        route = "v179_transition_row_model_design_audit_no_training"
+        route = "v179_transition_row_policy_training_slice_opt_in"
     return {
         "policy": "m3_carrion_survivor_continuation_v178_route_recommendation_v1",
         "recommended_next_route": route,
         "dataset_contract_valid": contract_valid,
-        "support_minimums_met": support_ready,
-        "transition_row_training_authorized": False,
+        "support_minimums_met": default_support_ready,
+        "default_support_minimums_met": default_support_ready,
+        "diagnostic_support_minimums_met": diagnostic_support_ready,
+        "support_thresholds_match_defaults": (
+            training_authorization.get("support_thresholds_match_defaults") is True
+        ),
+        "transition_row_training_authorized": training_authorized,
+        "training_authorized": training_authorized,
+        "first_opt_in_training_slice_authorized": training_authorized,
+        "training_authorization_scope": (
+            "next_same_lane_opt_in_training_slice"
+            if training_authorized
+            else "closed"
+        ),
         "runtime_integration_authorized": False,
         "shadow_or_live_eval_authorized": False,
         "promotion_authorized": False,
     }
 
 
-def _diagnostics_only_contract() -> dict[str, object]:
+def _diagnostics_only_contract(
+    *,
+    transition_row_training_authorized: bool,
+) -> dict[str, object]:
     return {
         "diagnostics_only": True,
         "training_allowed": False,
+        "training_authorized_for_this_command": False,
+        "next_same_lane_opt_in_training_slice_authorized": bool(
+            transition_row_training_authorized
+        ),
         "fit_allowed": False,
         "runtime_artifact_allowed": False,
         "runtime_action_change_allowed": False,
@@ -873,8 +1344,13 @@ def _diagnostics_only_contract() -> dict[str, object]:
         "promotion_allowed": False,
         "gate_relaxation_allowed": False,
         "replay_viewer_schema_change_allowed": False,
+        "input_rows_are_public_transition_rows": True,
+        "input_rows_use_v177_compact_transition_row_schema": True,
+        "source_report_can_be_v177_or_v179_transition_row_expansion": True,
         "input_rows_are_v177_public_transition_rows": True,
         "short_horizon_outcomes_remain_diagnostic_targets_only": True,
+        "default_support_thresholds_required_for_training_authorization": True,
+        "support_threshold_overrides_authorize_training": False,
     }
 
 
@@ -900,27 +1376,308 @@ def _lifecycle_flags() -> dict[str, object]:
     }
 
 
-def _v177_lifecycle_validation(report: Mapping[str, object]) -> dict[str, object]:
+def _support_minimums(
+    *,
+    min_row_count: int,
+    min_seed_count: int,
+    min_branch_count: int,
+    min_forced_action_count: int,
+) -> dict[str, int]:
+    return {
+        "row_count": int(min_row_count),
+        "seed_count": int(min_seed_count),
+        "branch_count": int(min_branch_count),
+        "forced_action_count": int(min_forced_action_count),
+    }
+
+
+def _default_support_minimums() -> dict[str, int]:
+    return _support_minimums(
+        min_row_count=DEFAULT_MIN_ROW_COUNT,
+        min_seed_count=DEFAULT_MIN_SEED_COUNT,
+        min_branch_count=DEFAULT_MIN_BRANCH_COUNT,
+        min_forced_action_count=DEFAULT_MIN_FORCED_ACTION_COUNT,
+    )
+
+
+def _source_lifecycle_validation(
+    report: Mapping[str, object],
+    *,
+    producer: str,
+    is_v179_source: bool = False,
+) -> dict[str, object]:
     failures = []
+    required_true_fields = (
+        "diagnostics_only",
+        "non_promoted",
+    )
     for field in (
         "training_ran",
+        "training_authorized",
         "fit_ran",
+        "scorer_retraining_ran",
+        "scorer_retraining_authorized",
         "runtime_artifact_created",
         "runtime_action_selection_changed",
         "runtime_observation_schema_changed",
         "runtime_policy_changed",
         "shadow_eval_ran",
         "live_ab_ran",
+        "live_ab_allowed",
         "promotion_authorized",
+        "gate_relaxation_ran",
         "replay_viewer_schema_changed",
     ):
-        if field in report and report.get(field) is not False:
-            failures.append({"field": field, "observed": report.get(field)})
+        if report.get(field) is not False:
+            failures.append(
+                {
+                    "field": field,
+                    "expected": False,
+                    "observed": report.get(field),
+                }
+            )
+    for field in required_true_fields:
+        if report.get(field) is not True:
+            failures.append(
+                {
+                    "field": field,
+                    "expected": True,
+                    "observed": report.get(field),
+                }
+            )
+    contract = _mapping(report.get("contract"))
+    if not contract:
+        failures.append(
+            {"field": "contract", "expected": "mapping", "observed": report.get("contract")}
+        )
+    required_true_contract_fields = [
+        "diagnostics_only",
+        "source_identity_metadata_only",
+        "short_horizon_outcomes_are_diagnostic_targets_only",
+    ]
+    if is_v179_source:
+        required_true_contract_fields.extend(
+            [
+                "v172_selector_evidence_is_not_trainable_transition_rows",
+                "current_and_next_public_fields_are_materialized_by_exact_replay",
+            ]
+        )
+    else:
+        required_true_contract_fields.append(
+            "current_and_next_public_fields_are_dataset_inputs"
+        )
+    for field in required_true_contract_fields:
+        if contract.get(field) is not True:
+            failures.append(
+                {
+                    "field": f"contract.{field}",
+                    "expected": True,
+                    "observed": contract.get(field),
+                }
+            )
+    for field in (
+        "training_allowed",
+        "fit_allowed",
+        "runtime_artifact_allowed",
+        "runtime_action_change_allowed",
+        "shadow_or_live_eval_allowed",
+        "promotion_allowed",
+        "gate_relaxation_allowed",
+        "replay_viewer_schema_change_allowed",
+    ):
+        if contract.get(field) is not False:
+            failures.append(
+                {
+                    "field": f"contract.{field}",
+                    "expected": False,
+                    "observed": contract.get(field),
+                }
+            )
     return {
-        "policy": "m3_carrion_survivor_continuation_v178_v177_lifecycle_validation_v1",
+        "policy": (
+            "m3_carrion_survivor_continuation_v178_source_lifecycle_"
+            "validation_v1"
+        ),
+        "source_producer": producer,
         "passed": not failures,
         "failure_count": len(failures),
         "failures": failures[:64],
+    }
+
+
+def _empty_v179_replay_validation() -> dict[str, object]:
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_v179_replay_validation_v1",
+        "source_producer": V177_SOURCE_PRODUCER,
+        "passed": True,
+        "failure_count": 0,
+        "failures": [],
+        "not_applicable": True,
+    }
+
+
+def _v179_replay_validation(report: Mapping[str, object]) -> dict[str, object]:
+    failures = []
+    inputs = _mapping(report.get("inputs"))
+    metrics = _mapping(report.get("metrics"))
+    materialization = _mapping(report.get("branch_materialization"))
+    source_validation = _mapping(report.get("source_validation"))
+    if not source_validation:
+        failures.append(
+            {
+                "field": "source_validation",
+                "expected": "mapping",
+                "observed": report.get("source_validation"),
+            }
+        )
+    if source_validation.get("passed") is not True:
+        failures.append(
+            {
+                "field": "source_validation.passed",
+                "expected": True,
+                "observed": source_validation.get("passed"),
+            }
+        )
+    if source_validation.get("v177_source_digests_pinned") is not True:
+        failures.append(
+            {
+                "field": "source_validation.v177_source_digests_pinned",
+                "expected": True,
+                "observed": source_validation.get("v177_source_digests_pinned"),
+            }
+        )
+    for field in (
+        "expected_v177_report_exact_digest_provided",
+        "expected_v177_dataset_digest_provided",
+    ):
+        if source_validation.get(field) is not True:
+            failures.append(
+                {
+                    "field": f"source_validation.{field}",
+                    "expected": True,
+                    "observed": source_validation.get(field),
+                }
+            )
+    for field in (
+        "expected_v177_report_exact_digest",
+        "observed_v177_report_exact_digest",
+        "expected_v177_dataset_digest",
+        "observed_v177_dataset_digest",
+    ):
+        if not str(source_validation.get(field) or ""):
+            failures.append(
+                {
+                    "field": f"source_validation.{field}",
+                    "expected": "nonempty digest",
+                    "observed": source_validation.get(field),
+                }
+            )
+    if (
+        source_validation.get("expected_v177_report_exact_digest")
+        != source_validation.get("observed_v177_report_exact_digest")
+    ):
+        failures.append(
+            {
+                "field": "source_validation.expected_v177_report_exact_digest",
+                "expected": source_validation.get(
+                    "observed_v177_report_exact_digest"
+                ),
+                "observed": source_validation.get(
+                    "expected_v177_report_exact_digest"
+                ),
+            }
+        )
+    if (
+        source_validation.get("expected_v177_dataset_digest")
+        != source_validation.get("observed_v177_dataset_digest")
+    ):
+        failures.append(
+            {
+                "field": "source_validation.expected_v177_dataset_digest",
+                "expected": source_validation.get("observed_v177_dataset_digest"),
+                "observed": source_validation.get("expected_v177_dataset_digest"),
+            }
+        )
+    v177_exact = _mapping(source_validation.get("v177_exact_digest_validation"))
+    if v177_exact.get("passed") is not True:
+        failures.append(
+            {
+                "field": "source_validation.v177_exact_digest_validation.passed",
+                "expected": True,
+                "observed": v177_exact.get("passed"),
+            }
+        )
+    if inputs.get("verify_replay") is not True:
+        failures.append(
+            {
+                "field": "inputs.verify_replay",
+                "expected": True,
+                "observed": inputs.get("verify_replay"),
+            }
+        )
+    if metrics.get("replay_verification_enabled") is not True:
+        failures.append(
+            {
+                "field": "metrics.replay_verification_enabled",
+                "expected": True,
+                "observed": metrics.get("replay_verification_enabled"),
+            }
+        )
+    if metrics.get("all_replays_verified") is not True:
+        failures.append(
+            {
+                "field": "metrics.all_replays_verified",
+                "expected": True,
+                "observed": metrics.get("all_replays_verified"),
+            }
+        )
+    if _int(metrics.get("replay_verified_row_count"), default=0) <= 0:
+        failures.append(
+            {
+                "field": "metrics.replay_verified_row_count",
+                "expected": ">0",
+                "observed": metrics.get("replay_verified_row_count"),
+            }
+        )
+    if materialization.get("passed") is not True:
+        failures.append(
+            {
+                "field": "branch_materialization.passed",
+                "expected": True,
+                "observed": materialization.get("passed"),
+            }
+        )
+    if materialization.get("exact_materialization_proven") is not True:
+        failures.append(
+            {
+                "field": "branch_materialization.exact_materialization_proven",
+                "expected": True,
+                "observed": materialization.get("exact_materialization_proven"),
+            }
+        )
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_v179_replay_validation_v1",
+        "source_producer": V179_SOURCE_PRODUCER,
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures[:64],
+        "source_validation_passed": source_validation.get("passed"),
+        "v177_source_digests_pinned": source_validation.get(
+            "v177_source_digests_pinned"
+        ),
+        "expected_v177_report_exact_digest_provided": source_validation.get(
+            "expected_v177_report_exact_digest_provided"
+        ),
+        "expected_v177_dataset_digest_provided": source_validation.get(
+            "expected_v177_dataset_digest_provided"
+        ),
+        "inputs_verify_replay": inputs.get("verify_replay"),
+        "replay_verification_enabled": metrics.get("replay_verification_enabled"),
+        "all_replays_verified": metrics.get("all_replays_verified"),
+        "replay_verified_row_count": metrics.get("replay_verified_row_count"),
+        "exact_materialization_proven": materialization.get(
+            "exact_materialization_proven"
+        ),
     }
 
 

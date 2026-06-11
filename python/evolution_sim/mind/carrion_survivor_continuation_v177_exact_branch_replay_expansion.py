@@ -955,6 +955,19 @@ def _source_record_plan_mismatches(
         mismatches.append({"field": "observation_input", "reason": "missing"})
     if not isinstance(record.get("action_mask"), Mapping):
         mismatches.append({"field": "action_mask", "reason": "missing"})
+    expected_source_record_digest = str(row.get("source_record_digest") or "")
+    if expected_source_record_digest:
+        observed_source_record_digest = stable_payload_digest(
+            _record_materialization_payload(record)
+        )
+        if observed_source_record_digest != expected_source_record_digest:
+            mismatches.append(
+                {
+                    "field": "source_record_digest",
+                    "expected": expected_source_record_digest,
+                    "observed": observed_source_record_digest,
+                }
+            )
     return mismatches
 
 

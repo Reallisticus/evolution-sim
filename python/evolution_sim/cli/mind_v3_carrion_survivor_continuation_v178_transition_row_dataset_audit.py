@@ -21,12 +21,14 @@ from evolution_sim.mind.carrion_survivor_continuation_v178_transition_row_datase
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit the diagnostics-only v177 compact transition-row dataset. "
+            "Audit a diagnostics-only v177 or v179 compact transition-row dataset. "
             "This validates source integrity, row contracts, leakage, action-mask "
             "support, observation decodability, branch/action coverage, and "
             "support readiness. It does not train, fit, create runtime artifacts, "
             "change runtime action selection, run shadow/live evaluation, or "
-            "authorize promotion."
+            "authorize promotion. A support-ready, contract-valid report may "
+            "authorize the next same-lane opt-in training slice only when the "
+            "source report and dataset exact digests are explicitly pinned."
         )
     )
     parser.add_argument(
@@ -34,9 +36,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_TRANSITION_DATASET_OUTPUT_PATH,
     )
-    parser.add_argument("--v177-report", type=Path, default=DEFAULT_V177_REPORT_PATH)
+    parser.add_argument(
+        "--v177-report",
+        "--source-report",
+        dest="v177_report",
+        type=Path,
+        default=DEFAULT_V177_REPORT_PATH,
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument("--expected-v177-report-exact-digest", default=None)
+    parser.add_argument(
+        "--expected-v177-report-exact-digest",
+        "--expected-source-report-exact-digest",
+        dest="expected_v177_report_exact_digest",
+        default=None,
+    )
     parser.add_argument("--expected-dataset-digest", default=None)
     parser.add_argument("--min-row-count", type=int, default=DEFAULT_MIN_ROW_COUNT)
     parser.add_argument("--min-seed-count", type=int, default=DEFAULT_MIN_SEED_COUNT)
@@ -85,10 +98,14 @@ def _print_summary(report: Mapping[str, object], output: Path) -> None:
     coverage = _payload(report.get("coverage_audit"))
     observation = _payload(report.get("observation_audit"))
     support = _payload(report.get("support_readiness"))
+    default_support = _payload(report.get("default_support_readiness"))
+    authorization = _payload(report.get("training_authorization"))
     route = _payload(report.get("route_recommendation"))
+    contract = _payload(report.get("contract"))
     dataset = _payload(report.get("dataset"))
     print(f"carrion_survivor_continuation_v178_transition_row_dataset_audit={output}")
     print(f"classification={classification.get('primary')}")
+    print(f"source_producer={source.get('source_producer')}")
     print(f"source_validation_passed={source.get('passed')}")
     print(f"row_schema_validation_passed={schema.get('passed')}")
     print(f"leakage_scan_passed={leakage.get('passed')}")
@@ -107,7 +124,22 @@ def _print_summary(report: Mapping[str, object], output: Path) -> None:
         f"{observation.get('next_observation_decoded_count')}"
     )
     print(f"support_minimums_met={support.get('passed')}")
+    print(f"default_support_minimums_met={default_support.get('passed')}")
     print(f"recommended_next_route={route.get('recommended_next_route')}")
+    print(f"training_authorized={report.get('training_authorized')}")
+    print(
+        "training_authorization.next_same_lane_opt_in_training_slice_authorized="
+        f"{authorization.get('next_same_lane_opt_in_training_slice_authorized')}"
+    )
+    print(f"training_authorization.failures={authorization.get('failures')}")
+    print(
+        "route_recommendation.transition_row_training_authorized="
+        f"{route.get('transition_row_training_authorized')}"
+    )
+    print(
+        "contract.next_same_lane_opt_in_training_slice_authorized="
+        f"{contract.get('next_same_lane_opt_in_training_slice_authorized')}"
+    )
     print(f"dataset_digest={dataset.get('dataset_digest')}")
     print(f"training_ran={report.get('training_ran')}")
     print(f"runtime_artifact_created={report.get('runtime_artifact_created')}")

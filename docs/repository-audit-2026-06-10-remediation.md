@@ -40,11 +40,18 @@ reproducibility, and experiment direction.
   entrypoints are wrappers.
 - The strategy-reset data-support slices are in progress: v177 exact branch
   replay expansion now emits compact transition rows with current/next public
-  observations and action masks plus previous same-agent public context, and
-  v178 audited those rows as source-valid, key/value leakage-free, nested
-  trainable-feature contract-valid, schema-valid, and decodable but
-  support-limited. The next route is v179 exact-branch
-  transition-row expansion before training-scale capacity work. CI/ML
+  observations and action masks plus previous same-agent public context, v178
+  audited those rows as source-valid but support-limited, and v179 now expands
+  exact-branch transition-row support in the working tree without training. A
+  local `/tmp` v179 validation cleared the v178 default support floors when
+  audited by v178, but its artifact is not durable evidence until it is rerun
+  into the normal artifact path or backed up. The same lane has an explicit
+  default-threshold exit charter: once a v178 dataset passes the default
+  support thresholds, has explicit source-report and dataset digest pins, and
+  all source, schema, leakage, identity, action-mask, observation, and target
+  contracts pass, the next same-lane route is the first opt-in transition-row
+  training slice. Caller-lowered `--min-*` thresholds are diagnostic only and
+  cannot authorize that route. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -112,22 +119,46 @@ explicit user authorization.
 
 ### P1: Strategy Reset
 
-Status: v178 complete. The v176 recommendation,
+Status: v179 implemented and locally validated with pinned local `output/mind/`
+artifacts, but still pending source commit/push and artifact backup durability
+before training. The v176 recommendation,
 `v177_exact_branch_replay_expansion_no_training`, now materializes exact branch
 replay evidence and compact transition rows with `next_public_observation`,
 `next_public_action_mask`, and `previous_same_agent_public_context`. The v178
 transition-row dataset audit found the v177 dataset source-valid,
 schema-valid, key/value leakage-free, nested trainable-feature contract-valid,
 and observation-decodable, but it has only `84` rows, `2` source seeds, and
-`16` branch points under the default support minimums. The next Mind v3 slice
-should expand exact branch transition-row support as v179 before any
-transition/world-model, rollout-context, or neural capacity work. Do not train
-another undersupported nearest-neighbor scorer.
+`16` branch points under the default support minimums. The v179 implementation
+expands exact branch transition-row support without training, and local
+validation materialized `180` rows across `6` seeds, `30` branches, and `7`
+forced actions. The pinned v179 local report is
+`output/mind/mind-v3-v179-carrion-survivor-continuation-exact-branch-transition-row-expansion.json`
+with exact digest
+`1e18703d7f0f3b5666968051f8e3865a05ce7d781046aff7e5d5a07732907171`; the
+dataset is
+`output/mind/mind-v3-v179-carrion-survivor-continuation-compact-transition-rows.jsonl`
+with digest
+`df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`. A pinned
+v178 default-threshold audit of that local v179 output passed all contracts,
+including the embedded v179 proof that upstream v177 source report and dataset
+digests were pinned, and authorized only the first opt-in same-lane
+transition-row training slice. Its report is
+`output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit-v179-expanded.json`
+with exact digest
+`8d10ee77315de87a15ed296d87482d2335008009e4bcce2d72f60399ede92923`. Do not
+train from non-durable source/artifacts or another undersupported
+nearest-neighbor scorer.
 
-After source durability is restored, move scale/capacity work through the
-remote trainer: vectorized branch replay, quality-diversity archive expansion,
-or a neural/recurrent learner with source validation and strict held-out gates.
-Make lane-level stop rules explicit before running long jobs.
+After v179 source and artifact provenance are durable, the first same-lane
+scale/capacity step is the explicit opt-in transition-row training slice
+authorized by the durable default v178 audit with source-report and dataset
+digest pins. If commit/push or artifact backup has not been authorized, stop
+before training and either back up these `output/mind/` artifacts to the
+documented artifact store or regenerate them from committed source with the same
+expected source-report and dataset digest pins. Reserve more branch replay,
+archive expansion, or alternate policy-capacity diagnostics for concrete
+trained-artifact failures within the 10-slice campaign budget, not as another
+pre-training detour.
 
 ### P1: Documentation And Agent Instructions
 
@@ -188,17 +219,32 @@ docs/repository-audit-2026-06-10-remediation.md, and the latest section of
 docs/mind-v3-autonomous-evolution.md. Check git status before edits and treat
 all existing dirty-tree changes as user-owned.
 
-Do not start a new Mind v3 experiment or train anything. First restore source
-and evidence durability if the user has authorized git actions: inventory the
-v137-v176 dirty tree, prepare reviewable commit slices, and make sure any
-digest-referenced output/mind artifacts have a documented durable backup path.
-If git actions are not authorized, stop after producing the exact commit plan.
+Do not assume access to any prior chat, pasted strategic ledger, or thread
+attachment. If the dispatcher says a ledger is source of truth, they must paste
+the relevant contents into this prompt or point you to a committed repo summary.
+For this handoff, AGENTS.md and the 2026-06-10 checkpoint section of
+docs/mind-v3-autonomous-evolution.md are the durable summary of that direction.
+
+Do not start a new Mind v3 experiment or train anything unless it is the
+explicit opt-in transition-row training slice authorized by a v178 audit that
+uses the exact default support thresholds, supplies expected source-report and
+dataset digests, and passes all source, schema, leakage, identity, action-mask,
+observation, and target contracts. Caller-lowered
+`--min-*` thresholds are diagnostic only and must not authorize training. The
+v137-v176 durability backlog is already resolved; before any new experiment or
+trainer work, verify the current slice's source, package entrypoints, tests,
+ledger entries, and any digest-referenced `output/mind/` artifacts are durable.
+If durability depends on git or artifact-backup actions that are not authorized,
+stop after producing the exact commit/artifact plan.
 
 If source durability, the habitat water contract fix, shared-harness
 extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
-transition-row support, and the v178 transition-row dataset audit are already
-handled, take the next focused strategy slice: v179 exact-branch transition-row
-support expansion. Keep CI slices compact and do not turn push CI into
+transition-row support, the v178 transition-row dataset audit, and v179
+exact-branch transition-row support expansion are already durable, the next
+focused strategy slice is the explicit opt-in transition-row training slice
+authorized by a v178 default-threshold audit. If v179 is only locally validated,
+make the source, package entrypoint, tests, ledger, and any digest-referenced
+artifact durable first. Keep CI slices compact and do not turn push CI into
 promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,

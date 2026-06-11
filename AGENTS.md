@@ -14,10 +14,31 @@ The v137-v176 audit trail then closed the tiny support-archive /
 nearest-neighbor scorer loop as strategically saturated: the central carrion
 survival blocker did not move and strict seeds were consumed as support
 provenance. v177 restored transition-row data support through exact branch
-replay, and v178 audited that dataset as contract-valid but too small for
-training-scale capacity work. The next useful branch is v179 exact-branch
-transition-row expansion before rollout-context policy capacity,
-world-model/transition-value capacity, or a distinct controller/data path.
+replay, v178 audited that dataset as contract-valid but too small for
+training-scale capacity work, and v179 locally expanded exact-branch
+transition rows above the default v178 support thresholds. The next useful
+branch is durability for v179 source/artifact provenance, then the explicit
+opt-in transition-row training slice only if the durable default v178 audit
+still passes all contracts.
+
+Carrion lane campaign charter: once a transition-row dataset passes the v178
+default support thresholds, has explicit source-report and dataset digest pins,
+and all source, schema, leakage, identity, action-mask, observation, and target
+contracts are valid, the next same-lane route is the first opt-in transition-row
+training slice, not another design audit. For v179-sourced datasets, v178 must
+also verify that v179 itself pinned the upstream v177 source report and dataset
+digests. The CLI `--min-*` support overrides are diagnostic only and must not
+authorize that training route unless they exactly match the default v178
+thresholds. The campaign budget is at most 10 slices before a forced retro. The
+first milestone is nonzero terminal survivors on `carrion_only@120`, no
+dominant requested action share above `0.50`, and zero heuristic action
+sources.
+
+Handoff constraint: pasted strategic ledgers and thread attachments are not
+durable repo context, and a fresh coder or remote trainer may not have access to
+them. Any direction that must guide future work needs to be copied into the
+dispatch prompt or summarized in committed docs before it is treated as source
+of truth.
 
 2026-06-10 repository-audit checkpoint: the v137-v176 source backlog was
 preserved, committed, pushed, and paired with a documented `output/mind/`
@@ -26,6 +47,8 @@ experiment while its source, package entrypoints, tests, ledger entries, or
 digest-referenced artifacts are local-only unless the user explicitly asks for a
 docs-only or negative-control slice. See
 `docs/repository-audit-2026-06-10-remediation.md`.
+
+PRs must not be merged until CI is green.
 
 ## Environment
 

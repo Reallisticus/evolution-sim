@@ -66,13 +66,27 @@ Preserve these boundaries:
 - every new policy state, artifact field, or data contract gets diagnostics and
   tests.
 
-The likely next useful branch is rollout-context policy capacity derived from
-public trajectory/action outcomes, or a genuinely distinct sequence, flow,
-world-model, or archive-replay path.
+v179 exact-branch transition-row expansion is locally implemented but must be
+made durable before any training. If a durable v178 transition-row audit passes
+the exact default support thresholds, supplies expected source-report and
+dataset digests, verifies that any v179 source report also pinned its upstream
+v177 report/dataset digests, and all source, schema, leakage, identity,
+action-mask, observation, and target contracts pass, the next same-lane route is
+the first opt-in transition-row training slice, not another design audit. CLI
+`--min-*` support overrides are diagnostic only and must not authorize that
+route.
 
-Current durability constraint: source and evidence for v137-v176 must be made
-durable before remote-trainer scale work can run. The trainer pulls committed
-source from GitHub; it cannot execute local-only dirty-tree experiments.
+Handoffs must not rely on pasted strategic ledgers or thread attachments unless
+the relevant content is included in the new prompt or committed to repo docs.
+Fresh coders and remote trainers should be assumed to have only repository
+state, explicit prompt text, and named artifacts.
+
+Current durability constraint: the v137-v176 source/evidence backlog is already
+preserved, committed, pushed, and backed up. Keep that standard for the current
+slice: source, package entrypoints, tests, ledger entries, and any
+digest-referenced artifacts must be durable before remote-trainer scale work.
+The trainer pulls committed source from GitHub; it cannot execute local-only
+dirty-tree experiments.
 
 ## Remote Trainer
 

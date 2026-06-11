@@ -42,10 +42,28 @@ replay rows with current public observation/action mask, forced action,
 audit found that data source-valid, schema-valid, key/value leakage-free,
 nested trainable-feature contract-valid, and observation-decodable, but too
 small for training-scale capacity work: `84` rows from `2` source seeds and
-`16` branch points. The next useful slice is v179 exact-branch transition-row
-expansion, not scalar IQL coefficients, actor-bias calibration,
-residual-threshold tuning, or another tiny nearest-neighbor micro-archive
-scorer on the same public representation.
+`16` branch points. v179 then locally expanded exact-branch transition rows
+above the default v178 support thresholds. The next useful slice is durability
+for v179 source/artifact provenance, then the explicit opt-in transition-row
+training slice only if the durable default v178 audit still passes all source,
+schema, leakage, identity, action-mask, observation, and target contracts.
+
+Carrion transition-row campaign charter: after support expansion, if a v178
+transition-row dataset passes the default support thresholds, has explicit
+source-report and dataset digest pins, and all source, schema, leakage,
+identity, action-mask, observation, and target contracts are valid, the next
+same-lane route is the first opt-in transition-row training slice, not another
+design audit. CLI `--min-*` support overrides are diagnostic only and must not
+authorize that training route unless they exactly match the default v178
+thresholds. The campaign budget is capped at 10 slices before a forced retro.
+The first milestone is nonzero terminal survivors on `carrion_only@120`, no
+dominant requested-action share above `0.50`, and zero heuristic action sources.
+
+Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
+should be assumed to see only the repository, the explicit dispatch prompt, and
+any artifacts they are told to load. If a pasted ledger is the source of truth,
+the dispatch must include its relevant contents or point to a committed summary
+in this document or `AGENTS.md`.
 
 Seeds `5,13,19,29,37,41` have been used as support/provenance for recent lanes.
 They remain useful diagnostics, but they are not clean promotion-heldout
@@ -54,6 +72,11 @@ promotion-heldout broad matrix before promotion-style Mind v3 claims.
 
 See `docs/repository-audit-2026-06-10-remediation.md` for the remediation
 order, git durability plan, and next-coder prompt.
+
+The chronological ledger below is historical evidence, not current routing
+guidance. Older `support_ready_no_training` and audit-only classifications are
+superseded for the carrion transition-row lane by the v178 default-threshold
+exit charter above.
 
 ## Foundation Handoff Inputs
 
@@ -93,7 +116,7 @@ updated only after the current record finalizes. It must not contain seed,
 fixture identity, private world state, heuristic recommendations, current
 outcome data, or future rows.
 
-## Current First Slice
+## Historical First Slice (Superseded)
 
 - `MindV3EvolutionPolicy` is a pure autonomous policy implementing the existing
   `Policy` protocol.
@@ -143,9 +166,11 @@ autonomous measurement:
 The first two-seed 120-tick smoke reached zero heuristic action sources, but it
 collapsed: Mind v3 alive mean `0.0`, births mean `0.0`; the heuristic baseline
 on the same seeds reached alive mean `49.5`, births mean `44.5`. This is a real
-autonomous baseline and a clear blocker. The next v3 work should add a stronger
-population-search loop over inherited controller state rather than weakening
-the no-heuristic boundary.
+autonomous baseline and a clear blocker. The population-search recommendation
+was superseded by the 2026-06-10 checkpoint and the v179 local expansion. The
+current route is v179 durability first, then opt-in transition-row training only
+when the durable default v178 audit passes all digest-pin, source, schema,
+leakage, identity, action-mask, observation, and target contracts.
 
 ## Population Search Smoke
 
@@ -5514,9 +5539,69 @@ Major milestones from the current state:
   recommended next route is
   `v179_expand_exact_branch_transition_rows_no_training`. Report:
   `output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit.json`.
+  The route contract now has an explicit campaign exit: if the same audit sees
+  a contract-valid dataset that passes the default support thresholds and is run
+  with explicit expected source-report and dataset digests, its support-ready
+  classification is
+  `m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_valid_support_ready_transition_row_training_authorized`,
+  `transition_row_training_authorized=true`, and the recommended next route is
+  `v179_transition_row_policy_training_slice_opt_in`. This authorization is
+  allowed only when the audit uses the exact default support thresholds and
+  digest pins; lowered diagnostic `--min-*` values can make `support_readiness`
+  pass, but they cannot authorize training. Support-limited, unpinned, and
+  contract-invalid paths remain closed before training.
   The generated report is local gitignored evidence; do not hardcode its exact
   digest in source/docs or use it as cross-machine evidence until a durable
   backup path is recorded.
+
+- v179: diagnostics-only exact-branch transition-row support expansion.
+  Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v179-exact-branch-transition-row-expansion`.
+  The slice consumes the v172 replay-target rows as branch provenance and the
+  v177 transition-row report/dataset as the previous same-lane source contract,
+  then materializes current/forced/next public transition rows through exact
+  replay. Selector evidence remains provenance only; trainable rows are emitted
+  only after v179 materializes current, forced-action, and next public fields.
+  The implementation is diagnostics-only: no training, fit, evaluation,
+  runtime artifact, runtime action change, gate relaxation, or promotion is
+  allowed. The default expansion selects `30` branch points (`5` per support
+  seed) and at most `6` forced actions per branch.
+  Local validation on 2026-06-11 materialized `180` rows across `6` seeds,
+  `30` branches, and `7` forced actions; all `180` forced actions were used and
+  all replay checks verified. The pinned local `output/mind/` run used v177
+  source pins `148f0e6fece5299562e3710556b623192668734247ddca19ae48fe9477057cde`
+  for the v177 report and
+  `6ccb07eb050bfd692084d640357d64363c72d67cb37186937c2cf60e544d34b7` for the
+  v177 compact transition-row dataset. Classification was
+  `m3_carrion_survivor_continuation_v179_exact_branch_transition_row_expansion_compact_transition_rows_support_ready_for_v178_default_audit_no_training`;
+  recommended next route was
+  `v178_transition_row_dataset_audit_default_thresholds_no_training`. Report:
+  `output/mind/mind-v3-v179-carrion-survivor-continuation-exact-branch-transition-row-expansion.json`,
+  exact digest
+  `1e18703d7f0f3b5666968051f8e3865a05ce7d781046aff7e5d5a07732907171`;
+  dataset:
+  `output/mind/mind-v3-v179-carrion-survivor-continuation-compact-transition-rows.jsonl`,
+  dataset digest
+  `df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+  A pinned v178 default-threshold audit of that v179 dataset passed source,
+  schema, key/value leakage, nested feature contract, identity, action-mask,
+  observation, target, and default support gates, including v179's embedded
+  proof that the upstream v177 report and dataset digests were pinned. It
+  classified the dataset as
+  `m3_carrion_survivor_continuation_v178_transition_row_dataset_audit_valid_support_ready_transition_row_training_authorized`,
+  set
+  `training_authorization.next_same_lane_opt_in_training_slice_authorized=true`,
+  and recommended `v179_transition_row_policy_training_slice_opt_in`; the audit
+  itself still reported `training_ran=false`, `runtime_artifact_created=false`,
+  and `promotion_authorized=false`. Report:
+  `output/mind/mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit-v179-expanded.json`,
+  exact digest
+  `8d10ee77315de87a15ed296d87482d2335008009e4bcce2d72f60399ede92923`.
+  These `output/mind/` artifacts are local gitignored evidence. Before any
+  training or trainer handoff, either commit/push the matching v179/v178 source
+  and back up these artifacts to the documented artifact store, or regenerate
+  them from committed source with the same expected source-report and dataset
+  digest pins.
 
 External checks that support this direction:
 
