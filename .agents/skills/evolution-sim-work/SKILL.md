@@ -140,10 +140,29 @@ after
 `gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
 with archive SHA256
 `c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`.
-Future same-lane work should only run the v186 slice-2 route if explicitly
-requested, not run another support expansion by default, not reroute to
-v179/v180 authorization, and not rerun the first training slice. CLI `--min-*`
-support overrides are diagnostic only and must not authorize training routes.
+Future same-lane work should not run another support expansion by default,
+reroute to v179/v180 authorization, or rerun the first training slice. CLI
+`--min-*` support overrides are diagnostic only and must not authorize training
+routes. v186 has now consumed the explicit slice-2 route from the repaired v185
+dataset. It validated the repaired audit exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+producer `v185_v183_target_resolution_repair`, and route
+`v186_transition_row_policy_training_slice_2_opt_in`. It wrote report digest
+`f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+artifact digest
+`729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+dominant requested-action share `0.4179`, heuristic action-source count `0`,
+and no broad per-seed alive/birth regressions. The v186 report and artifact are
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+with archive SHA256
+`9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a` and
+`rclone check` verification of `0` differences and `2` matching files. The
+campaign budget is now 2/10. Do not start v187, relax gates, integrate runtime
+behavior, or promote from v186 without a separate explicit task.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.
