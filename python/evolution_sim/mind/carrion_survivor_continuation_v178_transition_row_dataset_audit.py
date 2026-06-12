@@ -57,6 +57,22 @@ EXPECTED_V179_CLASSIFICATION = (
     "m3_carrion_survivor_continuation_v179_exact_branch_transition_row_expansion_"
     "compact_transition_rows_support_ready_for_v178_default_audit_no_training"
 )
+EXPECTED_V183_SCHEMA_VERSION = (
+    "m3_carrion_survivor_continuation_v183_exact_transition_support_expansion_report_v1"
+)
+EXPECTED_V183_POLICY = (
+    "diagnostics_only_m3_carrion_survivor_continuation_v183_exact_transition_support_expansion_v1"
+)
+EXPECTED_V183_CLASSIFICATION = (
+    "m3_carrion_survivor_continuation_v183_exact_transition_support_expansion_"
+    "targeted_exact_support_ready_for_fresh_v178_audit_no_training"
+)
+EXPECTED_V183_REPORT_EXACT_DIGEST = (
+    "7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da"
+)
+EXPECTED_V183_DATASET_DIGEST = (
+    "e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef"
+)
 DEFAULT_OUTPUT_PATH = Path(
     "output/mind/"
     "mind-v3-v178-carrion-survivor-continuation-transition-row-dataset-audit.json"
@@ -84,6 +100,8 @@ PREVIOUS_SAME_AGENT_PUBLIC_CONTEXT_KEYS = {
 }
 V177_SOURCE_PRODUCER = "v177"
 V179_SOURCE_PRODUCER = "v179_exact_branch_transition_row_expansion"
+V183_SOURCE_PRODUCER = "v183_exact_transition_support_expansion"
+V185_SLICE_2_TRAINING_ROUTE = "v185_transition_row_policy_training_slice_2_opt_in"
 
 
 def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
@@ -181,6 +199,7 @@ def run_carrion_survivor_continuation_v178_transition_row_dataset_audit(
         support_readiness=support_readiness,
         default_support_readiness=default_support_readiness,
         training_authorization=training_authorization,
+        source_validation=source_validation,
     )
     training_authorized = bool(
         route_recommendation.get("transition_row_training_authorized")
@@ -359,6 +378,7 @@ def validate_v178_sources(
     producer = V177_SOURCE_PRODUCER
     failure_prefix = "v177"
     is_v179_source = False
+    is_v183_source = False
     expected_schema_version = (
         M3_CARRION_SURVIVOR_CONTINUATION_V177_EXACT_BRANCH_REPLAY_EXPANSION_SCHEMA_VERSION
     )
@@ -373,6 +393,13 @@ def validate_v178_sources(
         expected_schema_version = EXPECTED_V179_SCHEMA_VERSION
         expected_policy = EXPECTED_V179_POLICY
         expected_classification = EXPECTED_V179_CLASSIFICATION
+    elif schema_version == EXPECTED_V183_SCHEMA_VERSION:
+        producer = V183_SOURCE_PRODUCER
+        failure_prefix = "v183"
+        is_v183_source = True
+        expected_schema_version = EXPECTED_V183_SCHEMA_VERSION
+        expected_policy = EXPECTED_V183_POLICY
+        expected_classification = EXPECTED_V183_CLASSIFICATION
     elif schema_version != expected_schema_version:
         failures.append("v177_schema_version_mismatch")
     if v177_report.get("policy") != expected_policy:
@@ -386,12 +413,16 @@ def validate_v178_sources(
     observed_exact = str(v177_report.get("exact_digest") or "")
     if exact.get("passed") is not True:
         failures.append(f"{failure_prefix}_exact_digest_mismatch")
+    if is_v183_source and observed_exact != EXPECTED_V183_REPORT_EXACT_DIGEST:
+        failures.append("v183_canonical_exact_digest_mismatch")
     if (
         expected_v177_report_exact_digest
         and observed_exact != expected_v177_report_exact_digest
     ):
         failures.append(f"{failure_prefix}_unexpected_exact_digest")
     observed_dataset_digest = stable_payload_digest([dict(row) for row in rows])
+    if is_v183_source and observed_dataset_digest != EXPECTED_V183_DATASET_DIGEST:
+        failures.append("v183_canonical_dataset_digest_mismatch")
     if expected_dataset_digest and observed_dataset_digest != expected_dataset_digest:
         failures.append(f"{failure_prefix}_dataset_digest_mismatch")
     dataset = _mapping(v177_report.get("dataset"))
@@ -408,6 +439,7 @@ def validate_v178_sources(
         v177_report,
         producer=producer,
         is_v179_source=is_v179_source,
+        is_v183_source=is_v183_source,
     )
     if lifecycle.get("passed") is not True:
         failures.append(f"{failure_prefix}_lifecycle_not_diagnostics_only")
@@ -418,21 +450,33 @@ def validate_v178_sources(
             failures.append("v179_replay_verification_not_proven")
         if v179_replay_validation.get("v177_source_digests_pinned") is not True:
             failures.append("v179_v177_source_digests_not_pinned")
+    v183_expansion_validation = _empty_v183_expansion_validation()
+    if is_v183_source:
+        v183_expansion_validation = _v183_expansion_validation(
+            v177_report,
+            observed_dataset_digest=observed_dataset_digest,
+        )
+        failures.extend(str(item) for item in v183_expansion_validation.get("failures") or [])
     return {
         "policy": "m3_carrion_survivor_continuation_v178_source_validation_v1",
         "passed": bool(rows) and not failures,
         "failures": sorted(set(failures)),
         "source_producer": producer,
+        "is_v183_source": is_v183_source,
         "source_report_schema_version": schema_version,
         "expected_source_report_schema_version": expected_schema_version,
         "expected_source_policy": expected_policy,
         "expected_source_classification": expected_classification,
         "observed_source_classification": observed_classification,
         "expected_v177_classification": (
-            EXPECTED_V177_CLASSIFICATION if not is_v179_source else None
+            EXPECTED_V177_CLASSIFICATION
+            if not is_v179_source and not is_v183_source
+            else None
         ),
         "observed_v177_classification": (
-            observed_classification if not is_v179_source else None
+            observed_classification
+            if not is_v179_source and not is_v183_source
+            else None
         ),
         "expected_v177_report_exact_digest": expected_v177_report_exact_digest,
         "observed_v177_report_exact_digest": observed_exact,
@@ -454,6 +498,28 @@ def validate_v178_sources(
         "v177_lifecycle_validation": lifecycle,
         "source_lifecycle_validation": lifecycle,
         "v179_replay_validation": v179_replay_validation,
+        "expected_v183_report_exact_digest": (
+            EXPECTED_V183_REPORT_EXACT_DIGEST if is_v183_source else None
+        ),
+        "expected_v183_dataset_digest": (
+            EXPECTED_V183_DATASET_DIGEST if is_v183_source else None
+        ),
+        "v183_report_exact_digest_matches_canonical": (
+            observed_exact == EXPECTED_V183_REPORT_EXACT_DIGEST
+            if is_v183_source
+            else None
+        ),
+        "v183_dataset_digest_matches_canonical": (
+            observed_dataset_digest == EXPECTED_V183_DATASET_DIGEST
+            if is_v183_source
+            else None
+        ),
+        "v183_expansion_validation": v183_expansion_validation,
+        "v183_source_digests_pinned": (
+            v183_expansion_validation.get("upstream_evidence_pinned") is True
+            if is_v183_source
+            else None
+        ),
     }
 
 
@@ -1382,6 +1448,7 @@ def _route_recommendation(
     support_readiness: Mapping[str, object],
     default_support_readiness: Mapping[str, object],
     training_authorization: Mapping[str, object],
+    source_validation: Mapping[str, object],
 ) -> dict[str, object]:
     support_ready_classification = classification.endswith(
         "valid_support_ready_transition_row_training_authorized"
@@ -1392,6 +1459,8 @@ def _route_recommendation(
         support_ready_classification
         and training_authorization.get("authorized") is True
     )
+    source_producer = str(source_validation.get("source_producer") or "")
+    slice_2_route = source_producer == V183_SOURCE_PRODUCER
     contract_valid = support_ready_classification or classification.endswith(
         "valid_support_limited_expand_before_training"
     ) or classification.endswith(
@@ -1400,9 +1469,17 @@ def _route_recommendation(
         "valid_support_ready_digest_pins_required_no_training"
     )
     if not contract_valid:
-        route = "repair_v177_transition_rows_before_capacity_work"
+        route = (
+            "repair_v183_transition_rows_before_slice_2_training"
+            if slice_2_route
+            else "repair_v177_transition_rows_before_capacity_work"
+        )
     elif not default_support_ready:
-        route = "v179_expand_exact_branch_transition_rows_no_training"
+        route = (
+            "repair_or_expand_v183_transition_rows_before_slice_2_training"
+            if slice_2_route
+            else "v179_expand_exact_branch_transition_rows_no_training"
+        )
     elif not training_authorized:
         failures = set(training_authorization.get("failures") or ())
         if {
@@ -1410,16 +1487,30 @@ def _route_recommendation(
             "expected_dataset_digest_provided",
         } & failures:
             route = (
-                "rerun_v178_with_expected_source_and_dataset_digests_before_"
+                "rerun_v178_style_audit_with_expected_v183_source_and_dataset_"
+                "digests_before_slice_2_training"
+                if slice_2_route
+                else "rerun_v178_with_expected_source_and_dataset_digests_before_"
                 "training_authorization"
             )
         else:
-            route = "rerun_v178_with_default_support_thresholds_before_training_authorization"
+            route = (
+                "rerun_v178_style_audit_with_default_support_thresholds_before_"
+                "slice_2_training"
+                if slice_2_route
+                else "rerun_v178_with_default_support_thresholds_before_"
+                "training_authorization"
+            )
     else:
-        route = "v179_transition_row_policy_training_slice_opt_in"
+        route = (
+            V185_SLICE_2_TRAINING_ROUTE
+            if slice_2_route
+            else "v179_transition_row_policy_training_slice_opt_in"
+        )
     return {
         "policy": "m3_carrion_survivor_continuation_v178_route_recommendation_v1",
         "recommended_next_route": route,
+        "source_producer": source_producer,
         "dataset_contract_valid": contract_valid,
         "support_minimums_met": default_support_ready,
         "default_support_minimums_met": default_support_ready,
@@ -1429,9 +1520,17 @@ def _route_recommendation(
         ),
         "transition_row_training_authorized": training_authorized,
         "training_authorized": training_authorized,
-        "first_opt_in_training_slice_authorized": training_authorized,
+        "first_opt_in_training_slice_authorized": (
+            training_authorized and not slice_2_route
+        ),
+        "slice_2_opt_in_training_route_authorized": (
+            training_authorized and slice_2_route
+        ),
+        "slice_2_training_authorized": training_authorized and slice_2_route,
         "training_authorization_scope": (
-            "next_same_lane_opt_in_training_slice"
+            "next_same_lane_opt_in_slice_2_training"
+            if training_authorized and slice_2_route
+            else "next_same_lane_opt_in_training_slice"
             if training_authorized
             else "closed"
         ),
@@ -1462,10 +1561,12 @@ def _diagnostics_only_contract(
         "input_rows_are_public_transition_rows": True,
         "input_rows_use_v177_compact_transition_row_schema": True,
         "source_report_can_be_v177_or_v179_transition_row_expansion": True,
+        "source_report_can_be_v177_v179_or_v183_transition_support_expansion": True,
         "input_rows_are_v177_public_transition_rows": True,
         "short_horizon_outcomes_remain_diagnostic_targets_only": True,
         "default_support_thresholds_required_for_training_authorization": True,
         "support_threshold_overrides_authorize_training": False,
+        "audit_command_spends_training_slice": False,
     }
 
 
@@ -1520,15 +1621,15 @@ def _source_lifecycle_validation(
     *,
     producer: str,
     is_v179_source: bool = False,
+    is_v183_source: bool = False,
 ) -> dict[str, object]:
     failures = []
     required_true_fields = (
         "diagnostics_only",
         "non_promoted",
     )
-    for field in (
+    required_false_fields = [
         "training_ran",
-        "training_authorized",
         "fit_ran",
         "scorer_retraining_ran",
         "scorer_retraining_authorized",
@@ -1542,7 +1643,17 @@ def _source_lifecycle_validation(
         "promotion_authorized",
         "gate_relaxation_ran",
         "replay_viewer_schema_changed",
-    ):
+    ]
+    if is_v183_source:
+        required_false_fields.extend(
+            [
+                "training_artifact_created",
+                "slice_2_training_consumed",
+            ]
+        )
+    else:
+        required_false_fields.append("training_authorized")
+    for field in required_false_fields:
         if report.get(field) is not False:
             failures.append(
                 {
@@ -1565,11 +1676,24 @@ def _source_lifecycle_validation(
         failures.append(
             {"field": "contract", "expected": "mapping", "observed": report.get("contract")}
         )
-    required_true_contract_fields = [
-        "diagnostics_only",
-        "source_identity_metadata_only",
-        "short_horizon_outcomes_are_diagnostic_targets_only",
-    ]
+    required_true_contract_fields = ["diagnostics_only"]
+    if is_v183_source:
+        required_true_contract_fields.extend(
+            [
+                "targets_v182_carrion_observed_support_zero",
+                "targets_v182_broad_seed_19_regression_states",
+                "uses_v182_observed_imputed_support_fields",
+                "legacy_supported_prediction_is_not_strict_observed_support",
+                "fresh_v178_style_audit_required_before_slice_2_training",
+            ]
+        )
+    else:
+        required_true_contract_fields.extend(
+            [
+                "source_identity_metadata_only",
+                "short_horizon_outcomes_are_diagnostic_targets_only",
+            ]
+        )
     if is_v179_source:
         required_true_contract_fields.extend(
             [
@@ -1577,7 +1701,7 @@ def _source_lifecycle_validation(
                 "current_and_next_public_fields_are_materialized_by_exact_replay",
             ]
         )
-    else:
+    elif not is_v183_source:
         required_true_contract_fields.append(
             "current_and_next_public_fields_are_dataset_inputs"
         )
@@ -1590,16 +1714,33 @@ def _source_lifecycle_validation(
                     "observed": contract.get(field),
                 }
             )
-    for field in (
+    required_false_contract_fields = [
         "training_allowed",
-        "fit_allowed",
         "runtime_artifact_allowed",
-        "runtime_action_change_allowed",
-        "shadow_or_live_eval_allowed",
-        "promotion_allowed",
+        "promotion_authorized" if is_v183_source else "promotion_allowed",
         "gate_relaxation_allowed",
-        "replay_viewer_schema_change_allowed",
-    ):
+    ]
+    if is_v183_source:
+        required_false_contract_fields.extend(
+            [
+                "training_artifact_created",
+                "slice_2_training_consumed",
+                "runtime_artifact_created",
+                "runtime_integration_allowed",
+                "runtime_action_selection_changed",
+                "default_runtime_behavior_changed",
+            ]
+        )
+    else:
+        required_false_contract_fields.extend(
+            [
+                "fit_allowed",
+                "runtime_action_change_allowed",
+                "shadow_or_live_eval_allowed",
+                "replay_viewer_schema_change_allowed",
+            ]
+        )
+    for field in required_false_contract_fields:
         if contract.get(field) is not False:
             failures.append(
                 {
@@ -1608,6 +1749,14 @@ def _source_lifecycle_validation(
                     "observed": contract.get(field),
                 }
             )
+    if is_v183_source and report.get("diagnostic_dataset_created") is not True:
+        failures.append(
+            {
+                "field": "diagnostic_dataset_created",
+                "expected": True,
+                "observed": report.get("diagnostic_dataset_created"),
+            }
+        )
     return {
         "policy": (
             "m3_carrion_survivor_continuation_v178_source_lifecycle_"
@@ -1623,6 +1772,17 @@ def _source_lifecycle_validation(
 def _empty_v179_replay_validation() -> dict[str, object]:
     return {
         "policy": "m3_carrion_survivor_continuation_v178_v179_replay_validation_v1",
+        "source_producer": V177_SOURCE_PRODUCER,
+        "passed": True,
+        "failure_count": 0,
+        "failures": [],
+        "not_applicable": True,
+    }
+
+
+def _empty_v183_expansion_validation() -> dict[str, object]:
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_v183_expansion_validation_v1",
         "source_producer": V177_SOURCE_PRODUCER,
         "passed": True,
         "failure_count": 0,
@@ -1793,6 +1953,144 @@ def _v179_replay_validation(report: Mapping[str, object]) -> dict[str, object]:
         "exact_materialization_proven": materialization.get(
             "exact_materialization_proven"
         ),
+    }
+
+
+def _v183_expansion_validation(
+    report: Mapping[str, object],
+    *,
+    observed_dataset_digest: str,
+) -> dict[str, object]:
+    failures: list[str] = []
+    source_validation = _mapping(report.get("source_validation"))
+    support = _mapping(report.get("support_summary"))
+    metrics = _mapping(report.get("metrics"))
+    materialization = _mapping(report.get("branch_materialization"))
+    route = _mapping(report.get("route_recommendation"))
+    dataset = _mapping(report.get("dataset"))
+    upstream_true_fields = (
+        "v182_schema_version_matches",
+        "v182_policy_matches",
+        "v182_exact_digest_valid",
+        "v182_exact_digest_matches_expected",
+        "v182_classification_matches_expected",
+        "v182_source_validation_passed",
+        "v182_routes_to_exact_support_expansion",
+        "v182_training_not_run",
+        "v182_slice_2_training_not_consumed",
+        "v182_runtime_action_selection_unchanged",
+        "v181_exact_digest_valid",
+        "v181_exact_digest_matches_expected",
+        "v181_classification_matches_expected",
+        "v181_training_not_run",
+        "v180_exact_digest_valid",
+        "v180_exact_digest_matches_expected",
+        "v180_classification_matches_expected",
+        "v180_training_slice_1_ran",
+        "v180_runtime_action_selection_unchanged",
+        "v180_promotion_not_authorized",
+        "v180_artifact_digest_matches_expected",
+        "v180_artifact_digest_matches_report",
+        "v179_exact_digest_valid",
+        "v179_exact_digest_matches_expected",
+        "v179_classification_matches_expected",
+        "v179_source_validation_passed",
+        "v179_support_summary_passed",
+        "v179_dataset_digest_matches_expected",
+        "v179_dataset_digest_matches_report",
+        "v179_dataset_digest_matches_v180_report",
+    )
+    if source_validation.get("passed") is not True:
+        failures.append("v183_upstream_source_validation_not_passed")
+    missing_upstream_flags = [
+        field for field in upstream_true_fields if source_validation.get(field) is not True
+    ]
+    if missing_upstream_flags:
+        failures.append("v183_upstream_evidence_not_pinned")
+    digest_pairs = (
+        ("expected_v182_report_exact_digest", "observed_v182_report_exact_digest"),
+        ("expected_v181_report_exact_digest", "observed_v181_report_exact_digest"),
+        ("expected_v180_report_exact_digest", "observed_v180_report_exact_digest"),
+        ("expected_v180_artifact_digest", "observed_v180_artifact_digest"),
+        ("expected_v179_report_exact_digest", "observed_v179_report_exact_digest"),
+        ("expected_v179_dataset_digest", "observed_v179_dataset_digest"),
+    )
+    mismatched_digest_pairs = []
+    for expected_field, observed_field in digest_pairs:
+        expected = str(source_validation.get(expected_field) or "")
+        observed = str(source_validation.get(observed_field) or "")
+        if not expected or not observed or expected != observed:
+            mismatched_digest_pairs.append(
+                {
+                    "expected_field": expected_field,
+                    "observed_field": observed_field,
+                    "expected": expected,
+                    "observed": observed,
+                }
+            )
+    if mismatched_digest_pairs:
+        failures.append("v183_upstream_digest_pin_mismatch")
+    if support.get("passed") is not True:
+        failures.append("v183_support_summary_not_passed")
+    if support.get("v178_default_support_thresholds_met") is not True:
+        failures.append("v183_default_support_thresholds_not_met")
+    if metrics.get("replay_verification_enabled") is not True:
+        failures.append("v183_replay_verification_not_enabled")
+    if metrics.get("all_replays_verified") is not True:
+        failures.append("v183_replay_verification_not_proven")
+    if _int(metrics.get("replay_verified_row_count"), default=0) <= 0:
+        failures.append("v183_replay_verified_row_count_missing")
+    if metrics.get("all_forced_actions_used") is not True:
+        failures.append("v183_forced_actions_not_used")
+    if materialization.get("passed") is not True:
+        failures.append("v183_materialization_not_passed")
+    if materialization.get("exact_materialization_proven") is not True:
+        failures.append("v183_exact_materialization_not_proven")
+    if route.get("recommended_next_route") != (
+        "fresh_v178_style_transition_row_dataset_audit_before_any_slice_2_training"
+    ):
+        failures.append("v183_route_not_fresh_v178_audit")
+    if route.get("v178_style_audit_recommended") is not True:
+        failures.append("v183_v178_style_audit_not_recommended")
+    if route.get("slice_2_training_authorized") is not False:
+        failures.append("v183_source_authorized_slice_2_training")
+    if route.get("transition_row_training_authorized") is not False:
+        failures.append("v183_source_authorized_transition_training")
+    if str(dataset.get("dataset_digest") or "") != observed_dataset_digest:
+        failures.append("v183_reported_dataset_digest_mismatch")
+    if str(dataset.get("dataset_digest") or "") != EXPECTED_V183_DATASET_DIGEST:
+        failures.append("v183_reported_dataset_digest_not_canonical")
+    if _int(dataset.get("row_count"), default=-1) <= 0:
+        failures.append("v183_reported_dataset_row_count_missing")
+    return {
+        "policy": "m3_carrion_survivor_continuation_v178_v183_expansion_validation_v1",
+        "source_producer": V183_SOURCE_PRODUCER,
+        "passed": not failures,
+        "failure_count": len(sorted(set(failures))),
+        "failures": sorted(set(failures)),
+        "upstream_evidence_pinned": (
+            source_validation.get("passed") is True
+            and not missing_upstream_flags
+            and not mismatched_digest_pairs
+        ),
+        "missing_upstream_flags": missing_upstream_flags,
+        "mismatched_digest_pairs": mismatched_digest_pairs,
+        "support_summary_passed": support.get("passed"),
+        "v178_default_support_thresholds_met": support.get(
+            "v178_default_support_thresholds_met"
+        ),
+        "replay_verification_enabled": metrics.get("replay_verification_enabled"),
+        "all_replays_verified": metrics.get("all_replays_verified"),
+        "replay_verified_row_count": metrics.get("replay_verified_row_count"),
+        "all_forced_actions_used": metrics.get("all_forced_actions_used"),
+        "branch_materialization_passed": materialization.get("passed"),
+        "exact_materialization_proven": materialization.get(
+            "exact_materialization_proven"
+        ),
+        "reported_dataset_digest": dataset.get("dataset_digest"),
+        "observed_dataset_digest": observed_dataset_digest,
+        "expected_v183_dataset_digest": EXPECTED_V183_DATASET_DIGEST,
+        "recommended_next_route": route.get("recommended_next_route"),
     }
 
 

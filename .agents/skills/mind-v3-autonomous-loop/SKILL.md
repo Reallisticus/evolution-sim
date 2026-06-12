@@ -102,9 +102,22 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
   with archive SHA256
   `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`;
-- the next useful lane is a fresh v178-style audit of the v183 expanded dataset
-  before any slice-2 training, not another support expansion by default and not
-  a rerun of the first training slice;
+- v184 has already run as a diagnostics-only fresh v178-style audit of the
+  canonical v183 expanded dataset. It validated the v183 source report digest
+  `7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da`, the
+  v183 dataset digest
+  `e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, and the
+  pinned v182/v181/v180/v179 evidence, but target audit failed with `14`
+  failures across `7` attack-forced rows resolving to `stay` with
+  `current_resolution_action_valid=false`. Its report exact digest is
+  `ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa`; it is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+  with archive SHA256
+  `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`;
+- the next useful lane is `repair_v183_transition_rows_before_slice_2_training`,
+  not another support expansion by default and not a rerun of the first
+  training slice;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -171,11 +184,11 @@ npm run sim:test
 ```
 
 Historical strict candidate slice. Do not treat this labeled-IQL command, the
-v179 audit route, a rerun of v180, or the already-completed v181/v182/v183
+v179 audit route, a rerun of v180, or the already-completed v181/v182/v183/v184
 diagnostics as the current next route; v180 already spent the first opt-in
-transition-row training slice and v181/v182/v183 consumed no second slice.
-Future same-lane work should run a fresh v178-style audit of the v183 expanded
-dataset before any slice-2 training:
+transition-row training slice and v181/v182/v183/v184 consumed no second slice.
+Future same-lane work should repair the v183 target-resolution blocker before
+any slice-2 training:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

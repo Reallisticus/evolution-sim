@@ -77,10 +77,29 @@ report, dataset, and source trajectories are durable after
 with archive SHA256
 `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`
 and `rclone check` verification of `0` differences and `2` matching files.
+v184 then ran the fresh v178-style audit of the canonical v183 expanded dataset.
+It validated the canonical v183 source report digest
+`7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da`, the v183
+dataset digest
+`e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, and the
+v183 pinned v182/v181/v180/v179 source evidence, but it closed without slice-2
+authorization because the target audit found `14` failures across `7`
+attack-forced rows that resolved to `stay` with
+`current_resolution_action_valid=false`. v184 wrote
+`output/mind/mind-v3-v184-carrion-survivor-continuation-v183-transition-row-dataset-audit.json`
+with exact digest
+`ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa`.
+Lifecycle flags stayed closed: no training, no training artifact, no runtime
+artifact, no runtime action-selection change, no promotion, and no slice-2
+consumption. Its report is durable after
+`gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+with archive SHA256
+`057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`
+and `rclone check` verification of `0` differences and `2` matching files.
 Future work should not route back to v179/v180 authorization, rerun the first
 transition-row training slice, run more support expansion by default, or spend
-slice 2; the next same-lane route is a fresh v178-style audit of the v183
-expanded transition-row dataset before any new training slice.
+slice 2; the next same-lane route is
+`repair_v183_transition_rows_before_slice_2_training`.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -99,10 +118,10 @@ survivor and broad regression gates failed. The first opt-in transition-row
 training slice has already been spent; do not route future work back to
 pre-v180 authorization unless a later durability check proves the recorded
 artifacts are unavailable and the user explicitly asks for regeneration. v181
-and v182 were diagnostics-only, and v183 created only diagnostic transition-row
-evidence; none consume slice 2. The budget remains 1/10 until a future
-explicitly authorized training slice runs after a fresh v178-style audit of the
-v183 expanded dataset.
+and v182 were diagnostics-only, v183 created only diagnostic transition-row
+evidence, and v184 was an audit-only closed report; none consume slice 2. The
+budget remains 1/10 until a future explicitly authorized training slice runs
+after the v183 target-resolution blocker is repaired and re-audited.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

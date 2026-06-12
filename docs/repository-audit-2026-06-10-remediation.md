@@ -77,7 +77,18 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
   with archive SHA256
   `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`.
-  Next work is a fresh v178-style audit of the v183 expanded dataset, not
+  v184 then ran a fresh v178-style audit of that canonical v183 expanded
+  dataset. It passed source validation, schema, leakage, identity, action-mask,
+  observation, default support, and digest-pin checks, but failed the target
+  audit with `14` failures across `7` attack-forced rows that resolved to
+  `stay` with `current_resolution_action_valid=false`. The v184 report exact
+  digest is
+  `ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa`; it is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+  with archive SHA256
+  `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`.
+  Next work is `repair_v183_transition_rows_before_slice_2_training`, not
   another support expansion by default, not a rerun of v180, and not slice-2
   training. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
@@ -319,6 +330,31 @@ gdrive:evolution-sim-backups/archives --include
 reported `0` differences and `2` matching files. The next useful lane is a
 fresh v178-style audit of the v183 expanded dataset before any slice-2
 training.
+
+The v184 fresh audit has now run as diagnostics-only work. It wrote
+`output/mind/mind-v3-v184-carrion-survivor-continuation-v183-transition-row-dataset-audit.json`
+with exact digest
+`ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa` and
+classification
+`m3_carrion_survivor_continuation_v184_v183_transition_row_dataset_audit_dataset_contract_invalid_closed_no_training`.
+The canonical v183 source report and dataset digests matched, source
+validation passed, and the v183 pinned v182/v181/v180/v179 evidence was valid.
+The blocker is the target audit: `14` failures across `7` attack-forced rows
+resolved to `stay` with `current_resolution_action_valid=false`. Lifecycle
+flags stayed closed: `training_ran=false`, `training_artifact_created=false`,
+`runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+`promotion_authorized=false`, and `slice_2_training_consumed=false`. The v184
+report is durable after
+`/Users/njm/evolution-sim-p0-backups/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`,
+archive SHA256
+`057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The next useful lane is
+`repair_v183_transition_rows_before_slice_2_training`, not training.
 
 ### P1: Documentation And Agent Instructions
 

@@ -108,11 +108,25 @@ and source trajectories are durable after
 `gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
 with archive SHA256
 `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`.
-Future same-lane work should be a fresh v178-style audit of the v183 expanded
-dataset before any slice-2 training, not another support expansion by default,
-not v179/v180 authorization reroute, and not a rerun of the first training
-slice. CLI `--min-*` support overrides are diagnostic only and must not
-authorize training routes.
+The v184 fresh v178-style audit of the canonical v183 dataset then ran as
+diagnostics-only work. It validated the v183 source report digest
+`7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da`, the v183
+dataset digest
+`e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, and
+v183's pinned v182/v181/v180/v179 evidence, but it did not authorize slice 2:
+the target audit found `14` failures across `7` attack-forced rows that
+resolved to `stay` with `current_resolution_action_valid=false`. The v184
+report exact digest is
+`ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa`; it is
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+with archive SHA256
+`057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`.
+Future same-lane work should repair the v183 target-resolution blocker before
+any slice-2 training, not run another support expansion by default, not reroute
+to v179/v180 authorization, and not rerun the first training slice. CLI
+`--min-*` support overrides are diagnostic only and must not authorize training
+routes.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.

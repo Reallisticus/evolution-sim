@@ -21,7 +21,8 @@ from evolution_sim.mind.carrion_survivor_continuation_v178_transition_row_datase
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit a diagnostics-only v177 or v179 compact transition-row dataset. "
+            "Audit a diagnostics-only v177, v179, or canonical v183 compact "
+            "transition-row dataset. "
             "This validates source integrity, row contracts, leakage, action-mask "
             "support, observation decodability, branch/action coverage, and "
             "support readiness. It does not train, fit, create runtime artifacts, "
