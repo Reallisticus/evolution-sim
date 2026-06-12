@@ -168,6 +168,34 @@ The v187 report is durable after
 `gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
 with archive SHA256
 `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f` and
+`rclone check` verification of `0` differences and `2` matching files. v188
+then ran diagnostics/support evidence only after validating the pinned v187
+exact digest and required route. It searched `carrion_only@120` seeds
+`13,19,29,37,41,43` with `6` branch points and `30` bounded policy-visible
+script continuations. Aggregate attempted continuations had terminal survivors
+by seed `{13: 3, 19: 3, 29: 4, 37: 3, 41: 5, 43: 4}` but also `285`
+unsupported resolved actions, so aggregate attempts are not support evidence.
+The selected positive support evidence is one legal replay-verified branch
+continuation for seed `13`, branch
+`carrion-only-seed-13-branch-0-tick-0-agent-9`, continuation script
+`conserve_after_carrion`, terminal alive `1`, births `5`, unsupported requested
+actions `0`, and unsupported resolved actions `0`. It wrote
+`output/mind/mind-v3-v188-carrion-survivor-continuation-terminal-survival-support.json`
+with exact digest
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0` and
+trajectory evidence under
+`output/mind/v188-terminal-carrion-survival-support-trajectories/`.
+Classification:
+`m3_carrion_survivor_continuation_v188_terminal_carrion_survival_support_positive_legal_branch_support_found_no_training`.
+It recommended exactly
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, and no gate relaxation. The v188 report and trajectory evidence are
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`
+with archive SHA256
+`67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
 `rclone check` verification of `0` differences and `2` matching files.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
@@ -194,8 +222,10 @@ diagnostic transition-row evidence; none consume slice 2. v186 consumed slice
 controlled carrion survivor milestone. The campaign budget is now 2/10; v186
 is not promotion evidence and authorizes no runtime integration. v187 consumed
 no slice and authorizes no training/runtime/promotion work; the next same-lane
-route is the explicit no-training v188 terminal carrion survival support
-generation or feasibility proof before any slice-3 training.
+route it authorized has now completed as v188 diagnostics/support evidence.
+v188 found one selected legal terminal-survival support trajectory and
+authorizes only the fresh v189 terminal-survival support dataset audit route
+before any slice-3 training. The campaign budget remains 2/10.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
