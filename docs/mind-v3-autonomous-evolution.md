@@ -62,9 +62,14 @@ transition-support expansion as diagnostics-only work. It validated the pinned
 v182/v181/v180/v179 evidence, wrote a `144`-row expanded dataset, moved carrion
 target coverage from `0` to `18` materialized states, moved broad seed `19`
 support-hole coverage to `6` materialized states, and kept
-training/runtime/promotion/slice-2 lifecycle flags closed. The current route is
-a fresh v178-style audit of the v183 expanded dataset before any slice-2
-training, not another support expansion by default and not training.
+training/runtime/promotion/slice-2 lifecycle flags closed. v184 then ran the
+fresh v178-style audit of the canonical v183 expanded dataset. Source integrity,
+schema, leakage, identity, action-mask, observation, default support, and digest
+pins passed, but the target audit failed with `14` failures across `7`
+attack-forced rows that resolved to `stay` with
+`current_resolution_action_valid=false`. The current route is
+`repair_v183_transition_rows_before_slice_2_training`, not another support
+expansion by default, not a v179/v180 authorization reroute, and not training.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -77,7 +82,8 @@ thresholds. The campaign budget is capped at 10 slices before a forced retro.
 The first milestone is nonzero terminal survivors on `carrion_only@120`, no
 dominant requested-action share above `0.50`, and zero heuristic action sources.
 For the current v179/v180 branch, this first-slice charter has already been
-spent by v180; it is not the current route.
+spent by v180; v184 did not authorize slice 2 because the v183 target contract
+failed.
 v180 consumed the durable pinned v178 authorization and is slice 1 of that
 budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
@@ -117,9 +123,9 @@ durable after
 with archive SHA256
 `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
 `rclone check` reported `0` differences and `2` matching files. The next useful
-work was v183 exact transition-support expansion; after that, the next useful
-work is a fresh v178-style audit of the v183 expanded dataset before any
-slice-2 training.
+work was v183 exact transition-support expansion. v184 has now performed the
+fresh audit and found a target-resolution blocker, so the next useful work is
+repairing the v183 transition rows before any slice-2 training.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -5827,6 +5833,41 @@ Major milestones from the current state:
   `rclone check /Users/njm/evolution-sim-p0-backups
   gdrive:evolution-sim-backups/archives --include
   "20260611T192709Z-v183-exact-transition-support-expansion.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files.
+- v184: diagnostics-only v178-style audit of the canonical v183 expanded
+  transition-row dataset. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v184-v183-transition-row-dataset-audit`.
+  The audit extended the v178 contract to accept v183 as a source producer,
+  validated the canonical v183 report exact digest
+  `7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da`, the
+  canonical v183 dataset digest
+  `e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, and
+  v183's pinned v182/v181/v180/v179 source evidence. Source validation,
+  schema, key/value leakage, feature contract, identity, action-mask,
+  observation, and default support checks passed. The target audit failed with
+  `14` failures across `7` attack-forced rows where requested `attack_east` or
+  `attack_west` resolved to `stay` and
+  `current_resolution_action_valid=false`. Classification:
+  `m3_carrion_survivor_continuation_v184_v183_transition_row_dataset_audit_dataset_contract_invalid_closed_no_training`.
+  Recommended route:
+  `repair_v183_transition_rows_before_slice_2_training`. The audit authorized
+  no training route, did not call this first-slice authorization, and kept
+  lifecycle flags closed: `training_ran=false`,
+  `training_artifact_created=false`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, `promotion_authorized=false`, and
+  `slice_2_training_consumed=false`. Report:
+  `output/mind/mind-v3-v184-carrion-survivor-continuation-v183-transition-row-dataset-audit.json`,
+  exact digest
+  `ad9a43a670c4fce5c4ceb7a3ce54abfbc153f3d0545a3762d78c65d55d3302aa`. The
+  report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`,
+  archive SHA256
+  `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst*" --one-way`
   reported `0` differences and `2` matching files.
 
 External checks that support this direction:
