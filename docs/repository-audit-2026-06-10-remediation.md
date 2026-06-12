@@ -121,8 +121,19 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
   with archive SHA256
   `9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a`. The
-  campaign budget is now 2/10; do not start v187, relax gates, integrate
-  runtime behavior, or promote from v186 without a separate explicit task.
+  campaign budget is now 2/10. v187 then ran as a diagnostics-only v186-delta
+  blocker review, wrote exact digest
+  `4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`, and
+  recommended exactly
+  `v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+  It consumed no slice 3, trained nothing, changed no runtime behavior,
+  authorized no promotion, relaxed no gates, ran no support expansion, and
+  reran neither v180 nor v186. The v187 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
+  with archive SHA256
+  `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f`. Do not
+  consume slice 3, relax gates, integrate runtime behavior, or promote from
+  v187 without a separate explicit task.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
@@ -453,8 +464,45 @@ archive SHA256
 gdrive:evolution-sim-backups/archives --include
 "20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst*" --one-way`
 reported `0` differences and `2` matching files. The campaign budget is now
-2/10. Do not start v187, relax acceptance gates, integrate runtime behavior, or
-promote from v186 without a separate explicit task.
+2/10. Do not consume slice 3, relax acceptance gates, integrate runtime
+behavior, or promote from v186 without a separate explicit task.
+
+The v187 diagnostics-only v186-delta blocker review has now run. Command:
+`npm run sim:mind:v3:carrion-survivor-continuation-v187-v186-delta-blocker-review`.
+It validated the v186 report exact digest
+`f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and v186
+artifact digest
+`729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`. It
+explicitly marked v31, v36, v90/v91, and v181/v182 conclusions as inherited
+prior findings, not rediscovered by v187. The new v186 delta was: broad
+alive/birth regressions empty, dominant requested-action share `0.4179`,
+heuristic action-source count `0`, `carrion_only@120` terminal survivors still
+`0`, and carrion fixture births mean `2.8333`. It wrote
+`output/mind/mind-v3-v187-carrion-survivor-continuation-v186-delta-blocker-review.json`
+with exact digest
+`4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`.
+Classification:
+`m3_carrion_survivor_continuation_v187_v186_delta_blocker_review_terminal_survival_support_generation_before_slice_3_no_training`.
+Recommended next route:
+`v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+Lifecycle flags stayed closed: `training_ran=false`,
+`training_artifact_created=false`, `slice_3_training_consumed=false`,
+`runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+`promotion_authorized=false`, `gate_relaxation_allowed=false`,
+`support_expansion_ran=false`, `v180_rerun=false`, and `v186_rerun=false`.
+The v187 report is durable after
+`/Users/njm/evolution-sim-p0-backups/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`,
+archive SHA256
+`c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260612T161155Z-v187-v186-delta-blocker-review.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The campaign budget remains
+2/10. v187 is not promotion evidence and authorizes no runtime integration,
+gate relaxation, support expansion, or slice-3 training without a separate
+explicit task.
 
 ### P1: Documentation And Agent Instructions
 
@@ -537,11 +585,11 @@ transition-row support, the v178 transition-row dataset audit, v179
 exact-branch transition-row support expansion, and the v180 report/artifact
 backup are already durable, v181 failure-response and v182 imputed-abstention
 design plus v183 exact transition-support expansion should also be checked
-before new work. v184, v185, and v186 have now run after that prompt. Do not
-rerun the first opt-in transition-row training slice, route the failure into
-another support expansion by default, rerun v186, or start v187 unless the user
-explicitly asks for a new task after a durability check. Keep CI slices compact
-and do not turn push CI into promotion evidence.
+before new work. v184, v185, v186, and v187 have now run after that prompt. Do
+not rerun the first opt-in transition-row training slice, route the failure into
+another support expansion by default, rerun v186, rerun v187, or consume slice 3
+unless the user explicitly asks for a new task after a durability check. Keep CI
+slices compact and do not turn push CI into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

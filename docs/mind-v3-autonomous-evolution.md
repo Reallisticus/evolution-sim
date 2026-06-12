@@ -88,8 +88,30 @@ Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
 dominant requested-action share `0.4179`, heuristic action-source count `0`,
 and no broad per-seed alive/birth regressions. Runtime integration,
 runtime action selection, and promotion stayed closed. The campaign budget is
-now 2/10; do not start v187, relax gates, integrate runtime behavior, or
-promote from v186 without a separate explicit task.
+now 2/10. v187 then ran as a diagnostics-only v186-delta blocker review. It
+validated the pinned v186 report and artifact digests, marked the v31/v36/
+v90-v91/v181-v182 findings as inherited rather than rediscovered, and extracted
+only the new v186 delta: broad alive/birth regressions empty, dominant
+requested-action share `0.4179`, heuristic action-source count `0`,
+`carrion_only@120` terminal survivors still `0`, and carrion fixture births
+mean `2.8333`. It wrote
+`output/mind/mind-v3-v187-carrion-survivor-continuation-v186-delta-blocker-review.json`
+with exact digest
+`4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`, classified
+as
+`m3_carrion_survivor_continuation_v187_v186_delta_blocker_review_terminal_survival_support_generation_before_slice_3_no_training`,
+and recommended exactly
+`v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, no gate relaxation, no support expansion, and no v180/v186 rerun.
+The v187 report is durable after
+`gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
+with archive SHA256
+`c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f` and
+`rclone check` verification of `0` differences and `2` matching files. Do not
+consume slice 3, relax gates, integrate runtime behavior, or promote from v187
+without a separate explicit task.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -106,7 +128,9 @@ spent by v180; v184 did not authorize slice 2 because the v183 target contract
 failed, and v185 repaired/re-audited the dataset without consuming slice 2.
 v186 consumed the explicit repaired-dataset slice 2 route and failed shadow
 acceptance with zero `carrion_only@120` terminal survivors. The budget is now
-2/10. v180 consumed the durable pinned v178 authorization and is slice 1 of
+2/10. v187 consumed no training slice and recommended no-training terminal
+carrion survival support generation or feasibility proof before slice 3. v180
+consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
 and broad per-seed alive/birth regressions, so no runtime integration,
@@ -5975,7 +5999,47 @@ Major milestones from the current state:
   "20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst*" --one-way`
   reported `0` differences and `2` matching files. The campaign budget is now
   2/10. v186 is not promotion evidence and authorizes no runtime integration,
-  gate relaxation, or v187 follow-on without a separate explicit task.
+  gate relaxation, or slice-3 follow-on without a separate explicit task.
+- v187: diagnostics-only v186-delta blocker review. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v187-v186-delta-blocker-review`.
+  The command validated the v186 report exact digest
+  `f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+  artifact digest
+  `729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+  It did not rerun v180 or v186, did not run a generic carrion autopsy, and did
+  not run support expansion. It marked v31 post-carrion low-gain eat /
+  movement-to-energy-death loops, v36 missing positive `carrion_only@120`
+  terminal survival support, v90/v91 objective mismatch at frontier states,
+  and v181/v182 sparse/imputed support findings as inherited rather than
+  rediscovered. New v186 delta: broad alive/birth regressions were empty,
+  dominant requested-action share was `0.4179`, heuristic action-source count
+  was `0`, `carrion_only@120` terminal survivors stayed `0`, and carrion
+  fixture births mean was `2.8333`. Report:
+  `output/mind/mind-v3-v187-carrion-survivor-continuation-v186-delta-blocker-review.json`,
+  exact digest
+  `4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`.
+  Classification:
+  `m3_carrion_survivor_continuation_v187_v186_delta_blocker_review_terminal_survival_support_generation_before_slice_3_no_training`.
+  Recommended next route:
+  `v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, `gate_relaxation_allowed=false`,
+  `support_expansion_ran=false`, `v180_rerun=false`, and `v186_rerun=false`.
+  The v187 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`,
+  archive SHA256
+  `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260612T161155Z-v187-v186-delta-blocker-review.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget remains
+  2/10. v187 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, support expansion, or slice-3 training without a separate
+  explicit task.
 
 External checks that support this direction:
 

@@ -146,8 +146,29 @@ The v186 report and artifact are durable after
 with archive SHA256
 `9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a` and
 `rclone check` verification of `0` differences and `2` matching files. Do not
-start v187, relax gates, integrate runtime behavior, or promote from v186
-without a separate explicit task.
+consume slice 3, relax gates, integrate runtime behavior, or promote from v186
+without a separate explicit task. A separate explicit v187 diagnostics-only
+delta blocker review then validated the pinned v186 report and artifact
+digests, marked the v31/v36/v90-v91/v181-v182 findings as inherited rather
+than rediscovered, and extracted only the new v186 delta: broad alive/birth
+regressions were empty, dominant requested-action share was `0.4179`,
+heuristic action-source count was `0`, `carrion_only@120` terminal survivors
+stayed `0`, and carrion fixture births mean was `2.8333`. It wrote
+`output/mind/mind-v3-v187-carrion-survivor-continuation-v186-delta-blocker-review.json`
+with exact digest
+`4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`.
+Classification:
+`m3_carrion_survivor_continuation_v187_v186_delta_blocker_review_terminal_survival_support_generation_before_slice_3_no_training`.
+It recommended exactly
+`v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, no gate relaxation, no support expansion, and no v180/v186 rerun.
+The v187 report is durable after
+`gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
+with archive SHA256
+`c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -171,7 +192,10 @@ evidence, v184 was an audit-only closed report, and v185 repaired/re-audited
 diagnostic transition-row evidence; none consume slice 2. v186 consumed slice
 2/10 from the repaired v185 dataset and failed shadow acceptance only on the
 controlled carrion survivor milestone. The campaign budget is now 2/10; v186
-is not promotion evidence and authorizes no runtime integration.
+is not promotion evidence and authorizes no runtime integration. v187 consumed
+no slice and authorizes no training/runtime/promotion work; the next same-lane
+route is the explicit no-training v188 terminal carrion survival support
+generation or feasibility proof before any slice-3 training.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
