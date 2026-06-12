@@ -103,9 +103,27 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
   with archive SHA256
   `c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`.
-  Next work is the explicit v186 slice-2 training route if requested, not
-  another support expansion by default, not a rerun of v180, and not automatic
-  training. CI/ML
+  v186 then consumed the explicit slice-2 route from the repaired v185 dataset
+  after validating the pinned repaired audit exact digest
+  `abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+  dataset digest
+  `532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+  producer `v185_v183_target_resolution_repair`, and route
+  `v186_transition_row_policy_training_slice_2_opt_in`. It wrote report digest
+  `f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+  artifact digest
+  `729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+  Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+  dominant requested-action share `0.4179`, heuristic action-source count `0`,
+  and no broad per-seed alive/birth regressions. Runtime integration,
+  runtime action selection, and promotion stayed closed. The v186 report and
+  artifact are durable after
+  `gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+  with archive SHA256
+  `9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a`. The
+  campaign budget is now 2/10; do not start v187, relax gates, integrate
+  runtime behavior, or promote from v186 without a separate explicit task.
+  CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -293,7 +311,8 @@ observed support floor `2`. The shadow evaluation reduced broad overrides to
 `122`, but broad seed `19` still regressed alive/birth by `-1/-2`, and
 `carrion_only@120` still had `0` terminal survivors with observed support-floor
 coverage `0/2122`. v182 consumed no second training slice, so the campaign
-budget remains 1/10. The v182 report is durable after
+budget remained 1/10 at that point; v186 later consumed slice 2/10. The v182
+report is durable after
 `/Users/njm/evolution-sim-p0-backups/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
 and
 `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`,
@@ -342,9 +361,9 @@ archive SHA256
 `rclone check /Users/njm/evolution-sim-p0-backups
 gdrive:evolution-sim-backups/archives --include
 "20260611T192709Z-v183-exact-transition-support-expansion.tar.zst*" --one-way`
-reported `0` differences and `2` matching files. The next useful lane is a
-fresh v178-style audit of the v183 expanded dataset before any slice-2
-training.
+reported `0` differences and `2` matching files. At that point the next useful
+lane was a fresh v178-style audit of the v183 expanded dataset before any
+slice-2 training; v184, v185, and v186 have since run.
 
 The v184 fresh audit has now run as diagnostics-only work. It wrote
 `output/mind/mind-v3-v184-carrion-survivor-continuation-v183-transition-row-dataset-audit.json`
@@ -401,6 +420,41 @@ archive SHA256
 gdrive:evolution-sim-backups/archives --include
 "20260612T131407Z-v185-v183-target-resolution-repair.tar.zst*" --one-way`
 reported `0` differences and `2` matching files.
+
+The v186 explicit opt-in transition-row policy training slice 2 has now run
+from the repaired v185 dataset. Command:
+`npm run sim:mind:v3:carrion-survivor-continuation-v186-transition-row-policy-training`.
+It validated the repaired audit exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+producer `v185_v183_target_resolution_repair`, and route
+`v186_transition_row_policy_training_slice_2_opt_in`. It wrote
+`output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-training.json`
+with exact digest
+`f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+`output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-artifact.json`
+with artifact digest
+`729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+It consumed slice 2 (`training_ran=true`, `training_artifact_created=true`,
+`slice_2_training_consumed=true`) and failed shadow acceptance:
+`carrion_only@120` terminal survivors stayed `0`. Dominant requested-action
+share stayed under the cap at `0.4179`, heuristic action-source count stayed
+`0`, and there were no broad per-seed alive/birth regressions. Runtime and
+promotion flags stayed closed: `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+The v186 report and artifact are durable after
+`/Users/njm/evolution-sim-p0-backups/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`,
+archive SHA256
+`9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The campaign budget is now
+2/10. Do not start v187, relax acceptance gates, integrate runtime behavior, or
+promote from v186 without a separate explicit task.
 
 ### P1: Documentation And Agent Instructions
 
@@ -483,13 +537,11 @@ transition-row support, the v178 transition-row dataset audit, v179
 exact-branch transition-row support expansion, and the v180 report/artifact
 backup are already durable, v181 failure-response and v182 imputed-abstention
 design plus v183 exact transition-support expansion should also be checked
-before new work. If the v181/v182/v183 source, docs, and report backups above
-are durable, do not rerun the first opt-in transition-row training slice, route
-the failure into another support expansion by default, or spend slice 2 unless
-the user explicitly asks for regeneration after a durability check. The next
-focused strategy slice is a fresh v178-style audit of the v183 expanded dataset
-before any new training slice. Keep CI slices compact and do not turn push CI
-into promotion evidence.
+before new work. v184, v185, and v186 have now run after that prompt. Do not
+rerun the first opt-in transition-row training slice, route the failure into
+another support expansion by default, rerun v186, or start v187 unless the user
+explicitly asks for a new task after a durability check. Keep CI slices compact
+and do not turn push CI into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

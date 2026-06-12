@@ -73,9 +73,23 @@ backfill, leaving `137` rows, `24` branches, `6` seeds, and `9` forced actions.
 The paired repaired-dataset audit passed source, schema, leakage, identity,
 action-mask, observation, target, and default-support checks with explicit
 digest pins and authorized only the future explicit route
-`v186_transition_row_policy_training_slice_2_opt_in`. The current route is that
-future opt-in slice-2 training route, not another support expansion by default,
-not a v179/v180 authorization reroute, and not automatic training.
+`v186_transition_row_policy_training_slice_2_opt_in`. v186 then consumed that
+explicit slice-2 route from the repaired v185 dataset after validating the
+pinned repaired audit exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+producer `v185_v183_target_resolution_repair`, and route
+`v186_transition_row_policy_training_slice_2_opt_in`. It wrote report digest
+`f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+artifact digest
+`729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+dominant requested-action share `0.4179`, heuristic action-source count `0`,
+and no broad per-seed alive/birth regressions. Runtime integration,
+runtime action selection, and promotion stayed closed. The campaign budget is
+now 2/10; do not start v187, relax gates, integrate runtime behavior, or
+promote from v186 without a separate explicit task.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -90,8 +104,10 @@ dominant requested-action share above `0.50`, and zero heuristic action sources.
 For the current v179/v180 branch, this first-slice charter has already been
 spent by v180; v184 did not authorize slice 2 because the v183 target contract
 failed, and v185 repaired/re-audited the dataset without consuming slice 2.
-v180 consumed the durable pinned v178 authorization and is slice 1 of that
-budget. It trained an opt-in transition-row policy artifact, but shadow
+v186 consumed the explicit repaired-dataset slice 2 route and failed shadow
+acceptance with zero `carrion_only@120` terminal survivors. The budget is now
+2/10. v180 consumed the durable pinned v178 authorization and is slice 1 of
+that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
 and broad per-seed alive/birth regressions, so no runtime integration,
 promotion, gate relaxation, or next-slice pivot is authorized from this result.
@@ -131,8 +147,9 @@ with archive SHA256
 `rclone check` reported `0` differences and `2` matching files. The next useful
 work was v183 exact transition-support expansion. v184 performed the fresh
 audit and found a target-resolution blocker; v185 repaired and re-audited that
-blocker, so the next useful work is an explicitly requested v186 slice-2
-training run.
+blocker; v186 then consumed the explicit slice-2 training route and failed
+shadow acceptance. No runtime integration, promotion, gate relaxation, or v187
+follow-on is authorized from v186.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -248,10 +265,11 @@ shadow acceptance as slice 1/10. v181 failure-response has now run as
 diagnostics-only autopsy work and consumed no second training slice. v182
 failure-response design has also run as diagnostics-only work and consumed no
 second training slice. v183 exact transition-support expansion has also run as
-diagnostics-only work and consumed no second training slice. The current lane is
-a fresh v178-style audit of the v183 expanded dataset before any slice-2
-training, not another support expansion by default and not a rerun of the first
-training slice.
+diagnostics-only work and consumed no second training slice. v184 audited the
+v183 dataset, v185 repaired and re-audited it, and v186 consumed slice 2/10
+from the repaired dataset but failed shadow acceptance with zero
+`carrion_only@120` terminal survivors. No runtime integration or promotion is
+authorized.
 
 ## Population Search Smoke
 
@@ -5746,7 +5764,8 @@ Major milestones from the current state:
   Lifecycle flags: `training_ran=false`, `training_artifact_created=false`,
   `diagnostic_trace_replay_ran=true`, `runtime_artifact_created=false`,
   `runtime_action_selection_changed=false`, and `promotion_authorized=false`.
-  v181 consumed no second training slice; the campaign budget remains 1/10.
+  v181 consumed no second training slice; the campaign budget remained 1/10 at
+  that point and is now 2/10 after v186.
   The mechanism is concrete: the v180 artifact's action utility table was
   `0.7` imputed action stats, broad regression seeds had `1337` runtime action
   changes with predicted action counts `eat:1450`, `drink:15`, and
@@ -5919,6 +5938,44 @@ Major milestones from the current state:
   gdrive:evolution-sim-backups/archives --include
   "20260612T131407Z-v185-v183-target-resolution-repair.tar.zst*" --one-way`
   reported `0` differences and `2` matching files.
+- v186: explicit opt-in transition-row policy training slice 2 from the
+  repaired v185 dataset. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v186-transition-row-policy-training`.
+  The command failed closed unless the repaired audit exact digest
+  `abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+  dataset digest
+  `532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+  producer `v185_v183_target_resolution_repair`, repaired audit classification,
+  and route `v186_transition_row_policy_training_slice_2_opt_in` all validated.
+  It trained the second opt-in transition-row policy artifact and ran
+  offline/shadow evaluation only. Report:
+  `output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-training.json`,
+  exact digest
+  `f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075`.
+  Artifact:
+  `output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-artifact.json`,
+  artifact digest
+  `729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+  Classification:
+  `m3_carrion_survivor_continuation_v186_transition_row_policy_training_slice_2_shadow_acceptance_failed_no_promotion`.
+  Acceptance failed because `carrion_only@120` terminal survivors stayed `0`.
+  Dominant requested-action share was `0.4179`, heuristic action-source count
+  was `0`, and broad per-seed alive/birth regressions were empty. Lifecycle:
+  `training_ran=true`, `training_artifact_created=true`,
+  `slice_2_training_consumed=true`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+  The v186 report and artifact are durable after
+  `/Users/njm/evolution-sim-p0-backups/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`,
+  archive SHA256
+  `9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget is now
+  2/10. v186 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, or v187 follow-on without a separate explicit task.
 
 External checks that support this direction:
 

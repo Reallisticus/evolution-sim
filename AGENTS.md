@@ -122,9 +122,32 @@ with archive SHA256
 `c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`
 and `rclone check` verification of `0` differences and `2` matching files.
 Future work should not route back to v179/v180 authorization, rerun the first
-transition-row training slice, run more support expansion by default, or spend
-slice 2 without explicit approval; the next same-lane route is
-`v186_transition_row_policy_training_slice_2_opt_in`.
+transition-row training slice, or run more support expansion by default. After
+explicit approval, v186 consumed the slice-2 route from the repaired v185 dataset
+after validating the pinned repaired audit exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`, repaired
+dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+producer `v185_v183_target_resolution_repair`, and route
+`v186_transition_row_policy_training_slice_2_opt_in`. It wrote
+`output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-training.json`
+with exact digest
+`f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+`output/mind/mind-v3-v186-carrion-survivor-continuation-transition-row-policy-artifact.json`
+with artifact digest
+`729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+dominant requested-action share `0.4179`, heuristic action-source count `0`,
+and no broad per-seed alive/birth regressions. Lifecycle flags stayed closed
+for runtime and promotion: `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, and `promotion_authorized=false`.
+The v186 report and artifact are durable after
+`gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+with archive SHA256
+`9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a` and
+`rclone check` verification of `0` differences and `2` matching files. Do not
+start v187, relax gates, integrate runtime behavior, or promote from v186
+without a separate explicit task.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -145,9 +168,10 @@ pre-v180 authorization unless a later durability check proves the recorded
 artifacts are unavailable and the user explicitly asks for regeneration. v181
 and v182 were diagnostics-only, v183 created only diagnostic transition-row
 evidence, v184 was an audit-only closed report, and v185 repaired/re-audited
-diagnostic transition-row evidence; none consume slice 2. The budget remains
-1/10 until a future explicitly authorized training slice runs from the repaired
-v185 dataset.
+diagnostic transition-row evidence; none consume slice 2. v186 consumed slice
+2/10 from the repaired v185 dataset and failed shadow acceptance only on the
+controlled carrion survivor milestone. The campaign budget is now 2/10; v186
+is not promotion evidence and authorizes no runtime integration.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

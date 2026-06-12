@@ -133,9 +133,26 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
   with archive SHA256
   `c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`;
-- the next useful lane is `v186_transition_row_policy_training_slice_2_opt_in`
-  only if explicitly requested, not another support expansion by default and
-  not a rerun of the first training slice;
+- v186 has already consumed the explicit
+  `v186_transition_row_policy_training_slice_2_opt_in` route from the repaired
+  v185 dataset. It validated the repaired audit exact digest
+  `abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`,
+  repaired dataset digest
+  `532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`, source
+  producer `v185_v183_target_resolution_repair`, and route
+  `v186_transition_row_policy_training_slice_2_opt_in`. It wrote report digest
+  `f4f404b88093f00bc8e7d655ff6f1937c4e4786acdca6118275decb463193075` and
+  artifact digest
+  `729997cd3a3672dd3ceabf08ccb4a9b5a7ce67f0621ecdb73ff4216dd921b6ce`.
+  Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+  dominant requested-action share `0.4179`, heuristic action-source count `0`,
+  and no broad per-seed alive/birth regressions. Runtime and promotion flags
+  stayed closed. The v186 report and artifact are durable after
+  `gdrive:evolution-sim-backups/archives/20260612T151102Z-v186-transition-row-policy-training-slice-2.tar.zst`
+  with archive SHA256
+  `9fba7700ec13b23f70f31b0269022c19b74bb7ed2967d2d70a9add05919eb31a`;
+- the campaign budget is now 2/10. Do not start v187, relax gates, integrate
+  runtime behavior, or promote from v186 without a separate explicit task;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -204,9 +221,10 @@ npm run sim:test
 Historical strict candidate slice. Do not treat this labeled-IQL command, the
 v179 audit route, a rerun of v180, or the already-completed v181/v182/v183/v184
 diagnostics as the current next route; v180 already spent the first opt-in
-transition-row training slice and v181/v182/v183/v184/v185 consumed no second
-slice. Future same-lane work should use the v185 repaired dataset only through
-an explicitly requested v186 slice-2 training command:
+transition-row training slice, v181/v182/v183/v184/v185 consumed no second
+slice, and v186 has now spent slice 2/10 and failed shadow acceptance. Future
+same-lane work requires a separate explicit task and must not treat this command
+as a route back to v179/v180 authorization:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \
