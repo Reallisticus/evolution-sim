@@ -197,6 +197,37 @@ durable after
 with archive SHA256
 `67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
 `rclone check` verification of `0` differences and `2` matching files.
+v189 then ran a diagnostics-only terminal-survival support dataset audit before
+slice-3 training. It validated the pinned v188 exact digest
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, the
+required v188 route
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`, and the
+inherited v187 digest pin. It audited the selected v188 support trajectory as
+path-backed, replay-valid by report, action-mask legal, terminal-fact matched
+(`alive=1`, `births=5`), and trainable-leakage clean. It also explicitly
+deduped prior v32/v51 feasibility, v53-v63 IQL/coefficient/prior/action
+distribution, v154-v176 tiny scorer/archive, v181-v182 sparse/imputed support,
+and v183-v186 transition-row/repair/training work so those lanes should not be
+rediscovered. Aggregate attempted v188 continuations remain diagnostic-only
+because they had `285` unsupported resolved actions. Slice 3 stayed blocked:
+clean legal support coverage is only `1/6` target seeds and the selected
+trajectory dominant requested action is `stay` at share `0.539244`, above the
+`0.50` cap. v189 wrote
+`output/mind/mind-v3-v189-carrion-survivor-continuation-terminal-survival-support-dataset-audit.json`
+with exact digest
+`2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`.
+Classification:
+`m3_carrion_survivor_continuation_v189_terminal_survival_support_dataset_audit_support_insufficient_routes_to_targeted_legal_expansion_no_training`.
+It recommended exactly
+`v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, no gate relaxation, and no support expansion. The v189 report is
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst`
+with archive SHA256
+`c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -225,7 +256,11 @@ no slice and authorizes no training/runtime/promotion work; the next same-lane
 route it authorized has now completed as v188 diagnostics/support evidence.
 v188 found one selected legal terminal-survival support trajectory and
 authorizes only the fresh v189 terminal-survival support dataset audit route
-before any slice-3 training. The campaign budget remains 2/10.
+before any slice-3 training. That v189 audit has now completed and did not
+authorize slice 3; the next same-lane route is targeted legal terminal-survival
+support expansion before slice-3 training, not another old feasibility,
+counterfactual, IQL, scorer, or v180/v186 rerun. The campaign budget remains
+2/10.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

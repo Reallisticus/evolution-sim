@@ -205,7 +205,25 @@ with archive SHA256
 `rclone check` verification of `0` differences and `2` matching files. v188
 kept training, slice-3 consumption, runtime artifacts, runtime action
 selection, promotion, and gate relaxation closed, and recommended exactly
-`v189_terminal_survival_support_dataset_audit_before_slice_3_training`. The
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`. v189 has
+now run as the requested diagnostics-only terminal-survival support dataset
+audit. It validated v188 exact digest
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, audited
+the selected support trajectory as path-backed, replay-valid by report,
+action-mask legal, terminal-fact matched, and trainable-leakage clean, and
+recorded historical dedupe so v32/v51, v53-v63, v154-v176, v181-v182, and
+v183-v186 are not rerun as missing facts. It blocked slice 3 because clean
+legal support coverage is only `1/6` target seeds, the selected dominant
+requested action share is `0.539244` above `0.50`, and aggregate v188 attempts
+had `285` unsupported resolved actions. The v189 report digest is
+`2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`; it is
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst`
+with archive SHA256
+`c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
+`rclone check` verification of `0` differences and `2` matching files. It
+recommended exactly
+`v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`. The
 campaign budget remains 2/10.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless

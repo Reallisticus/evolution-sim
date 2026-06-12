@@ -137,6 +137,37 @@ durable after
 with archive SHA256
 `67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
 `rclone check` verification of `0` differences and `2` matching files.
+v189 then ran the requested diagnostics-only terminal-survival support dataset
+audit before slice-3 training. It validated the pinned v188 exact digest
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, the
+required v188 route
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`, and the
+inherited v187 digest pin. The selected v188 support trajectory is path-backed,
+replay-valid by report, action-mask legal, terminal-fact matched (`alive=1`,
+`births=5`), and trainable-leakage clean. The audit also records historical
+dedupe findings so v32/v51 feasibility, v53-v63 IQL/coefficient/prior/action
+distribution, v154-v176 tiny scorer/archive, v181-v182 sparse/imputed support,
+and v183-v186 transition-row/repair/training work are not rerun as missing
+facts. Aggregate attempted v188 continuations remain diagnostic-only because
+they had `285` unsupported resolved actions. Slice 3 stayed blocked: clean legal
+support coverage is only `1/6` target seeds and the selected trajectory
+dominant requested action is `stay` at share `0.539244`, above the `0.50` cap.
+v189 wrote
+`output/mind/mind-v3-v189-carrion-survivor-continuation-terminal-survival-support-dataset-audit.json`
+with exact digest
+`2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`,
+classified as
+`m3_carrion_survivor_continuation_v189_terminal_survival_support_dataset_audit_support_insufficient_routes_to_targeted_legal_expansion_no_training`,
+and recommended exactly
+`v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, no gate relaxation, and no support expansion. The v189 report is
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst`
+with archive SHA256
+`c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -157,7 +188,10 @@ acceptance with zero `carrion_only@120` terminal survivors. The budget is now
 carrion survival support generation or feasibility proof before slice 3. v188
 consumed no training slice, found one selected legal support trajectory, and
 recommended a fresh v189 terminal-survival support dataset audit before any
-slice-3 training. v180
+slice-3 training. v189 consumed no slice, blocked slice-3 authorization on
+`1/6` clean legal seed coverage plus dominant requested-action share above
+`0.50`, and recommended targeted legal terminal-survival support expansion
+before any slice-3 training. v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
@@ -6110,6 +6144,50 @@ Major milestones from the current state:
   2/10. v188 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, or slice-3 training without a separate explicit v189 audit
   task.
+- v189: diagnostics-only terminal-survival support dataset audit before slice-3
+  training. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v189-terminal-survival-support-dataset-audit`.
+  The command validated the pinned v188 report exact digest
+  `9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, required
+  route `v189_terminal_survival_support_dataset_audit_before_slice_3_training`,
+  and inherited v187 digest pin
+  `4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6`. The
+  selected v188 support trajectory is path-backed, replay-valid by report,
+  action-mask legal, terminal-fact matched (`alive=1`, `births=5`), and
+  trainable-leakage clean. Historical dedupe is explicit: v32/v51 feasibility,
+  v53-v63 IQL/coefficient/prior/action-distribution, v154-v176 tiny
+  scorer/archive, v181-v182 sparse/imputed support, and v183-v186
+  transition-row/repair/training work are inherited facts, not work to rerun.
+  Aggregate attempted v188 continuations are rejected as support evidence
+  because they had `285` unsupported resolved actions. Slice 3 remains blocked:
+  clean legal support coverage is `1/6` target seeds and the selected trajectory
+  dominant requested action is `stay` at share `0.539244`, above the `0.50`
+  cap. Report:
+  `output/mind/mind-v3-v189-carrion-survivor-continuation-terminal-survival-support-dataset-audit.json`;
+  exact digest:
+  `2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`.
+  Classification:
+  `m3_carrion_survivor_continuation_v189_terminal_survival_support_dataset_audit_support_insufficient_routes_to_targeted_legal_expansion_no_training`.
+  Recommended next route:
+  `v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, `gate_relaxation_allowed=false`, and
+  `support_expansion_ran=false`. The v189 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst`,
+  archive SHA256
+  `c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260612T175835Z-v189-terminal-survival-support-dataset-audit.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget remains
+  2/10. v189 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, support expansion, or slice-3 training; the next route is
+  targeted legal terminal-survival support expansion, not a rerun of old
+  feasibility/counterfactual/IQL/scorer loops.
 
 External checks that support this direction:
 
