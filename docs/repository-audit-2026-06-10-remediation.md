@@ -88,8 +88,23 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
   with archive SHA256
   `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`.
-  Next work is `repair_v183_transition_rows_before_slice_2_training`, not
-  another support expansion by default, not a rerun of v180, and not slice-2
+  v185 then repaired the target-resolution blocker as diagnostics-only work by
+  strict-filtering those `7` rows without backfill. The repaired dataset has
+  `137` rows, `24` branches, `6` seeds, and `9` forced actions with digest
+  `532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`. The
+  v185 repair report exact digest is
+  `327586651948e13670cf15285472a934c8cd0a8fc9784d2dcdb092d102c46486`; the
+  paired repaired-dataset audit exact digest is
+  `abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`. That
+  audit passed source, schema, leakage, identity, action-mask, observation,
+  target, and default-support checks and authorized only the future explicit
+  route `v186_transition_row_policy_training_slice_2_opt_in`. v185 kept
+  training/runtime/promotion/slice-2 lifecycle flags closed and is durable after
+  `gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
+  with archive SHA256
+  `c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`.
+  Next work is the explicit v186 slice-2 training route if requested, not
+  another support expansion by default, not a rerun of v180, and not automatic
   training. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
@@ -354,7 +369,38 @@ archive SHA256
 gdrive:evolution-sim-backups/archives --include
 "20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst*" --one-way`
 reported `0` differences and `2` matching files. The next useful lane is
-`repair_v183_transition_rows_before_slice_2_training`, not training.
+`v186_transition_row_policy_training_slice_2_opt_in` if explicitly requested,
+not automatic training.
+
+The v185 target-resolution repair has now run as diagnostics-only work. It
+wrote
+`output/mind/mind-v3-v185-carrion-survivor-continuation-v183-target-resolution-repair.json`
+with exact digest
+`327586651948e13670cf15285472a934c8cd0a8fc9784d2dcdb092d102c46486` and wrote
+`output/mind/mind-v3-v185-carrion-survivor-continuation-v183-target-resolution-repaired-compact-transition-rows.jsonl`
+with dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`.
+It removed the `7` invalid target-resolution rows, leaving `137` rows while
+preserving the v178 default support counts (`24` branches, `6` seeds, `9`
+forced actions). The paired repaired-dataset audit wrote
+`output/mind/mind-v3-v185-carrion-survivor-continuation-repaired-transition-row-dataset-audit.json`
+with exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`. The audit
+passed target validation with `0` failures and route
+`v186_transition_row_policy_training_slice_2_opt_in`, while lifecycle flags
+stayed closed: `training_ran=false`, `training_artifact_created=false`,
+`runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+`promotion_authorized=false`, and `slice_2_training_consumed=false`. The v185
+artifacts are durable after
+`/Users/njm/evolution-sim-p0-backups/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`,
+archive SHA256
+`c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260612T131407Z-v185-v183-target-resolution-repair.tar.zst*" --one-way`
+reported `0` differences and `2` matching files.
 
 ### P1: Documentation And Agent Instructions
 

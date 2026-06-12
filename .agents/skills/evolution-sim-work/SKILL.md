@@ -122,11 +122,28 @@ durable after
 `gdrive:evolution-sim-backups/archives/20260612T091934Z-v184-v183-transition-row-dataset-audit.tar.zst`
 with archive SHA256
 `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`.
-Future same-lane work should repair the v183 target-resolution blocker before
-any slice-2 training, not run another support expansion by default, not reroute
-to v179/v180 authorization, and not rerun the first training slice. CLI
-`--min-*` support overrides are diagnostic only and must not authorize training
-routes.
+v185 then repaired the v183 target-resolution blocker as diagnostics-only work.
+It strict-filtered the `7` invalid rows without backfill, leaving `137` rows,
+`24` branches, `6` seeds, and `9` forced actions. The v185 repair report exact
+digest is
+`327586651948e13670cf15285472a934c8cd0a8fc9784d2dcdb092d102c46486`; the
+repaired dataset digest is
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`; the
+paired repaired-dataset audit exact digest is
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50`. The
+repaired audit passed source, schema, leakage, identity, action-mask,
+observation, target, and default-support checks and authorized only the future
+explicit route `v186_transition_row_policy_training_slice_2_opt_in`. v185
+trained nothing, spent no slice 2, created no runtime artifact, changed no
+runtime action selection, and authorized no promotion. Its artifacts are durable
+after
+`gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
+with archive SHA256
+`c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`.
+Future same-lane work should only run the v186 slice-2 route if explicitly
+requested, not run another support expansion by default, not reroute to
+v179/v180 authorization, and not rerun the first training slice. CLI `--min-*`
+support overrides are diagnostic only and must not authorize training routes.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.

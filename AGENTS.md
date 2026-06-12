@@ -96,10 +96,35 @@ consumption. Its report is durable after
 with archive SHA256
 `057d34c88f8a5da0c4ad98d87e4451caa043b7ee53c2af1037aa231dc5bcf382`
 and `rclone check` verification of `0` differences and `2` matching files.
+v185 then ran a diagnostics-only repair for the v183 target-resolution blocker.
+It strict-filtered the `7` invalid attack-resolution rows from the canonical
+v183 expanded dataset without backfill, leaving `137` rows, `24` branches, `6`
+seeds, and `9` forced actions. It wrote
+`output/mind/mind-v3-v185-carrion-survivor-continuation-v183-target-resolution-repair.json`
+with exact digest
+`327586651948e13670cf15285472a934c8cd0a8fc9784d2dcdb092d102c46486` plus
+`output/mind/mind-v3-v185-carrion-survivor-continuation-v183-target-resolution-repaired-compact-transition-rows.jsonl`
+with dataset digest
+`532817eb68cebf34cfb27f8abbbd86631cb142e03127661286d88d5154320f51`.
+The paired v185 repaired-dataset audit then passed source, schema, leakage,
+identity, action-mask, observation, target, and default-support checks with
+explicit report and dataset digest pins. It wrote
+`output/mind/mind-v3-v185-carrion-survivor-continuation-repaired-transition-row-dataset-audit.json`
+with exact digest
+`abd8c06733373b441c337187191cb04d3755968335b97f2fbcb350f550db8a50` and
+authorized only the future explicit route
+`v186_transition_row_policy_training_slice_2_opt_in`. Lifecycle flags stayed
+closed throughout v185: no training, no training artifact, no runtime artifact,
+no runtime action-selection change, no promotion, and no slice-2 consumption.
+The v185 report, repaired dataset, and repaired audit report are durable after
+`gdrive:evolution-sim-backups/archives/20260612T131407Z-v185-v183-target-resolution-repair.tar.zst`
+with archive SHA256
+`c64aa17964462a4bbbc71fc83b98779213c50e26b714aedffe8cb7b42b9b5d2a`
+and `rclone check` verification of `0` differences and `2` matching files.
 Future work should not route back to v179/v180 authorization, rerun the first
 transition-row training slice, run more support expansion by default, or spend
-slice 2; the next same-lane route is
-`repair_v183_transition_rows_before_slice_2_training`.
+slice 2 without explicit approval; the next same-lane route is
+`v186_transition_row_policy_training_slice_2_opt_in`.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -119,9 +144,10 @@ training slice has already been spent; do not route future work back to
 pre-v180 authorization unless a later durability check proves the recorded
 artifacts are unavailable and the user explicitly asks for regeneration. v181
 and v182 were diagnostics-only, v183 created only diagnostic transition-row
-evidence, and v184 was an audit-only closed report; none consume slice 2. The
-budget remains 1/10 until a future explicitly authorized training slice runs
-after the v183 target-resolution blocker is repaired and re-audited.
+evidence, v184 was an audit-only closed report, and v185 repaired/re-audited
+diagnostic transition-row evidence; none consume slice 2. The budget remains
+1/10 until a future explicitly authorized training slice runs from the repaired
+v185 dataset.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
