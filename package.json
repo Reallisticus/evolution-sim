@@ -129,6 +129,7 @@
         "sim:mind:v3:carrion-survivor-continuation-v185-repaired-transition-row-dataset-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v185_repaired_transition_row_dataset_audit",
         "sim:mind:v3:carrion-survivor-continuation-v186-transition-row-policy-training": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v186_transition_row_policy_training",
         "sim:mind:v3:carrion-survivor-continuation-v187-v186-delta-blocker-review": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v187_v186_delta_blocker_review",
+        "sim:mind:v3:carrion-survivor-continuation-v188-terminal-carrion-survival-support": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v188_terminal_carrion_survival_support",
         "sim:mind:v3:first-recovery-inspector-bundle": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_inspector_bundle",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
     "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",

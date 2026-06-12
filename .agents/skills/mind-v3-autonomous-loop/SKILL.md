@@ -170,9 +170,28 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260612T161155Z-v187-v186-delta-blocker-review.tar.zst`
   with archive SHA256
   `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f`;
+- v188 has already run as diagnostics/support evidence only. It validated the
+  pinned v187 exact digest
+  `4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6` and route
+  `v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`.
+  It searched `carrion_only@120` seeds `13,19,29,37,41,43` with `6` branch
+  points and `30` bounded policy-visible continuations. Aggregate attempts had
+  terminal survivors for all six seeds but included `285` unsupported resolved
+  actions, so only the selected legal support trajectory counts as evidence:
+  seed `13`, branch `carrion-only-seed-13-branch-0-tick-0-agent-9`,
+  continuation `conserve_after_carrion`, terminal alive `1`, births `5`,
+  replay verified, unsupported requested actions `0`, and unsupported resolved
+  actions `0`. The v188 report digest is
+  `9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, and its
+  report plus trajectory evidence are durable after
+  `gdrive:evolution-sim-backups/archives/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`
+  with archive SHA256
+  `67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
+  `rclone check` verification of `0` differences and `2` matching files;
 - the campaign budget is now 2/10. Do not consume slice 3, relax gates,
-  integrate runtime behavior, or promote from v187 without a separate explicit
-  task;
+  integrate runtime behavior, or promote from v188. The only same-lane next
+  route authorized by v188 is
+  `v189_terminal_survival_support_dataset_audit_before_slice_3_training`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -242,11 +261,11 @@ Historical strict candidate slice. Do not treat this labeled-IQL command, the
 v179 audit route, a rerun of v180, or the already-completed v181/v182/v183/v184
 diagnostics as the current next route; v180 already spent the first opt-in
 transition-row training slice, v181/v182/v183/v184/v185 consumed no second
-slice, v186 has now spent slice 2/10 and failed shadow acceptance, and v187 has
-now recommended the no-training v188 terminal carrion survival support
-generation or feasibility proof route before slice 3. Future same-lane work
-requires a separate explicit task and must not treat this command as a route
-back to v179/v180 authorization:
+slice, v186 has now spent slice 2/10 and failed shadow acceptance, v187
+recommended the no-training v188 terminal carrion survival support route, and
+v188 found one selected legal support trajectory without training. Future
+same-lane work requires a separate explicit v189 audit task and must not treat
+this command as a route back to v179/v180 authorization:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

@@ -111,7 +111,32 @@ with archive SHA256
 `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f` and
 `rclone check` verification of `0` differences and `2` matching files. Do not
 consume slice 3, relax gates, integrate runtime behavior, or promote from v187
-without a separate explicit task.
+without a separate explicit task. v188 then ran diagnostics/support evidence
+only after validating the pinned v187 exact digest and required route. It
+searched `carrion_only@120` seeds `13,19,29,37,41,43` with `6` branch points
+and `30` bounded policy-visible script continuations. Aggregate attempted
+continuations had terminal survivors by seed
+`{13: 3, 19: 3, 29: 4, 37: 3, 41: 5, 43: 4}` but also `285` unsupported
+resolved actions, so aggregate attempts are not support evidence. The selected
+positive support evidence is one legal replay-verified branch continuation for
+seed `13`, branch `carrion-only-seed-13-branch-0-tick-0-agent-9`, continuation
+script `conserve_after_carrion`, terminal alive `1`, births `5`, unsupported
+requested actions `0`, and unsupported resolved actions `0`. It wrote
+`output/mind/mind-v3-v188-carrion-survivor-continuation-terminal-survival-support.json`
+with exact digest
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0` and
+trajectory evidence under
+`output/mind/v188-terminal-carrion-survival-support-trajectories/`. It
+recommended exactly
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, and no gate relaxation. The v188 report and trajectory evidence are
+durable after
+`gdrive:evolution-sim-backups/archives/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`
+with archive SHA256
+`67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -129,7 +154,10 @@ failed, and v185 repaired/re-audited the dataset without consuming slice 2.
 v186 consumed the explicit repaired-dataset slice 2 route and failed shadow
 acceptance with zero `carrion_only@120` terminal survivors. The budget is now
 2/10. v187 consumed no training slice and recommended no-training terminal
-carrion survival support generation or feasibility proof before slice 3. v180
+carrion survival support generation or feasibility proof before slice 3. v188
+consumed no training slice, found one selected legal support trajectory, and
+recommended a fresh v189 terminal-survival support dataset audit before any
+slice-3 training. v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
@@ -6040,6 +6068,48 @@ Major milestones from the current state:
   2/10. v187 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, support expansion, or slice-3 training without a separate
   explicit task.
+- v188: diagnostics/support evidence only for terminal carrion survival.
+  Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v188-terminal-carrion-survival-support`.
+  The command validated the v187 report exact digest
+  `4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6` and route
+  `v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`
+  before searching `carrion_only@120` seeds `13,19,29,37,41,43`. Search budget:
+  `6` branch points, `30` bounded policy-visible script continuations, horizon
+  `120`, with replay verification. Aggregate attempted continuations had
+  terminal survivors by seed `{13: 3, 19: 3, 29: 4, 37: 3, 41: 5, 43: 4}` but
+  included `285` unsupported resolved actions, so those aggregate attempts are
+  not support evidence. The selected support evidence is one legal deterministic
+  replay-verified trajectory: seed `13`, branch
+  `carrion-only-seed-13-branch-0-tick-0-agent-9`, continuation
+  `conserve_after_carrion`, terminal alive `1`, births `5`, unsupported
+  requested actions `0`, and unsupported resolved actions `0`. Report:
+  `output/mind/mind-v3-v188-carrion-survivor-continuation-terminal-survival-support.json`,
+  exact digest
+  `9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`.
+  Trajectory evidence:
+  `output/mind/v188-terminal-carrion-survival-support-trajectories/`.
+  Classification:
+  `m3_carrion_survivor_continuation_v188_terminal_carrion_survival_support_positive_legal_branch_support_found_no_training`.
+  Recommended next route:
+  `v189_terminal_survival_support_dataset_audit_before_slice_3_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `gate_relaxation_allowed=false`. The v188
+  report and trajectory evidence are durable after
+  `/Users/njm/evolution-sim-p0-backups/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`,
+  archive SHA256
+  `67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget remains
+  2/10. v188 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, or slice-3 training without a separate explicit v189 audit
+  task.
 
 External checks that support this direction:
 

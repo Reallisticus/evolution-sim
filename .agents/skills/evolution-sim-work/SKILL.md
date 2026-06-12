@@ -185,7 +185,28 @@ with archive SHA256
 `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f` and
 `rclone check` verification of `0` differences and `2` matching files. Do not
 consume slice 3, relax gates, integrate runtime behavior, or promote from v187
-without a separate explicit task.
+without a separate explicit task. v188 has now run as diagnostics/support
+evidence only. It validated the pinned v187 exact digest
+`4366edf8b1b53e9974d6548e5fe9876e305693711a1b5d66192ef42f9b6228c6` and route
+`v188_terminal_carrion_survival_support_generation_or_feasibility_proof_no_training`,
+then searched `carrion_only@120` seeds `13,19,29,37,41,43` with `6` branch
+points and `30` bounded policy-visible continuations. Aggregate attempted
+continuations had positive terminal survivors for all six seeds but included
+`285` unsupported resolved actions, so only the selected legal evidence counts:
+seed `13`, branch `carrion-only-seed-13-branch-0-tick-0-agent-9`, continuation
+`conserve_after_carrion`, terminal alive `1`, births `5`, replay verified,
+unsupported requested actions `0`, and unsupported resolved actions `0`. The
+v188 report digest is
+`9a5a28685fd7adea175b1c8370f7042cdfbd1624b2c9ed3d0e42235b0bd4e5c0`, and its
+report plus trajectory evidence are durable after
+`gdrive:evolution-sim-backups/archives/20260612T171041Z-v188-terminal-carrion-survival-support.tar.zst`
+with archive SHA256
+`67856f7b67c9156ad64c7da66ce5f118b03c1132d30c83b00c097ea0dedf7747` and
+`rclone check` verification of `0` differences and `2` matching files. v188
+kept training, slice-3 consumption, runtime artifacts, runtime action
+selection, promotion, and gate relaxation closed, and recommended exactly
+`v189_terminal_survival_support_dataset_audit_before_slice_3_training`. The
+campaign budget remains 2/10.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.
