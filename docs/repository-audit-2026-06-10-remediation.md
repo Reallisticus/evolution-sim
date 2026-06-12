@@ -66,8 +66,20 @@ reproducibility, and experiment direction.
   `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
   with archive SHA256
   `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`.
-  Next work is exact transition-support expansion, not another pre-training
-  audit, not a rerun of v180, and not slice-2 training. CI/ML
+  v183 has now run as diagnostics-only exact transition-support expansion: it
+  validated the pinned v182/v181/v180/v179 evidence, wrote a `144`-row expanded
+  transition dataset with digest
+  `e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, moved
+  carrion target coverage from `0` to `18` materialized states, moved broad
+  seed `19` support-hole coverage to `6` materialized states, and consumed no
+  second training slice. The v183 report, dataset, and source trajectories are
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
+  with archive SHA256
+  `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`.
+  Next work is a fresh v178-style audit of the v183 expanded dataset, not
+  another support expansion by default, not a rerun of v180, and not slice-2
+  training. CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
 
@@ -264,8 +276,49 @@ archive SHA256
 `rclone check /Users/njm/evolution-sim-p0-backups
 gdrive:evolution-sim-backups/archives --include
 "20260611T165440Z-v182-imputed-abstention-design.tar.zst*" --one-way`
-reported `0` differences and `2` matching files. The next useful lane is exact
-transition-support expansion before any slice-2 training.
+reported `0` differences and `2` matching files.
+
+The v183 exact transition-support expansion was diagnostics-only. It wrote
+`output/mind/mind-v3-v183-carrion-survivor-continuation-exact-transition-support-expansion.json`
+with exact digest
+`7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da` and
+`output/mind/mind-v3-v183-carrion-survivor-continuation-expanded-compact-transition-rows.jsonl`
+with dataset digest
+`e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`. Its
+classification is
+`m3_carrion_survivor_continuation_v183_exact_transition_support_expansion_targeted_exact_support_ready_for_fresh_v178_audit_no_training`.
+It validated the pinned v182 report exact digest
+`3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b`, v181
+report exact digest
+`a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`, v180
+report exact digest
+`ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`, v180
+artifact digest
+`66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`, v179
+report exact digest
+`1e18703d7f0f3b5666968051f8e3865a05ce7d781046aff7e5d5a07732907171`, and v179
+dataset digest
+`df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+Lifecycle flags stayed closed: `training_ran=false`,
+`training_artifact_created=false`, `runtime_artifact_created=false`,
+`runtime_action_selection_changed=false`, `promotion_authorized=false`, and
+`slice_2_training_consumed=false`. The expanded dataset has `144` rows, `24`
+branches, `6` seeds, `9` forced actions, and passes the default support
+summary. It moved carrion observed-support target coverage from `0` to `18`
+materialized states and broad seed `19` support-hole coverage to `6`
+materialized states. The v183 report, dataset, and source trajectories are
+durable after
+`/Users/njm/evolution-sim-p0-backups/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`,
+archive SHA256
+`b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`;
+`rclone check /Users/njm/evolution-sim-p0-backups
+gdrive:evolution-sim-backups/archives --include
+"20260611T192709Z-v183-exact-transition-support-expansion.tar.zst*" --one-way`
+reported `0` differences and `2` matching files. The next useful lane is a
+fresh v178-style audit of the v183 expanded dataset before any slice-2
+training.
 
 ### P1: Documentation And Agent Instructions
 
@@ -347,13 +400,14 @@ extraction, CI/ML reproducibility hardening, v177 exact-branch-replay
 transition-row support, the v178 transition-row dataset audit, v179
 exact-branch transition-row support expansion, and the v180 report/artifact
 backup are already durable, v181 failure-response and v182 imputed-abstention
-design should also be checked before new work. If the v181/v182 source, docs,
-and report backups above are durable, do not rerun the first opt-in
-transition-row training slice, route the failure into another pre-training
-audit, or spend slice 2 unless the user explicitly asks for regeneration after
-a durability check. The next focused strategy slice is exact transition-support
-expansion before any new training slice. Keep CI slices compact and do not turn
-push CI into promotion evidence.
+design plus v183 exact transition-support expansion should also be checked
+before new work. If the v181/v182/v183 source, docs, and report backups above
+are durable, do not rerun the first opt-in transition-row training slice, route
+the failure into another support expansion by default, or spend slice 2 unless
+the user explicitly asks for regeneration after a durability check. The next
+focused strategy slice is a fresh v178-style audit of the v183 expanded dataset
+before any new training slice. Keep CI slices compact and do not turn push CI
+into promotion evidence.
 
 Keep strict Mind v3 gates hard. Do not create another scalar-tuning,
 actor-bias, residual-threshold, or tiny nearest-neighbor micro-archive probe.

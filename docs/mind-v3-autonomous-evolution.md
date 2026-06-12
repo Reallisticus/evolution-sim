@@ -55,9 +55,16 @@ added explicit imputed-valid-action and observed-support-floor diagnostics,
 made opt-in transition-value overrides abstain on imputed or below-floor
 currently valid action scores, and evaluated the pinned v180 artifact offline
 with observed support floor `2`. It consumed no second training slice. The
-current route is exact transition-support expansion before any slice-2
+result routed to exact transition-support expansion before any slice-2
 training, not another pre-training audit, not a v179/v180 authorization reroute,
-and not a rerun of the first training slice.
+and not a rerun of the first training slice. v183 then ran that exact
+transition-support expansion as diagnostics-only work. It validated the pinned
+v182/v181/v180/v179 evidence, wrote a `144`-row expanded dataset, moved carrion
+target coverage from `0` to `18` materialized states, moved broad seed `19`
+support-hole coverage to `6` materialized states, and kept
+training/runtime/promotion/slice-2 lifecycle flags closed. The current route is
+a fresh v178-style audit of the v183 expanded dataset before any slice-2
+training, not another support expansion by default and not training.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -110,7 +117,9 @@ durable after
 with archive SHA256
 `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`;
 `rclone check` reported `0` differences and `2` matching files. The next useful
-work is exact transition-support expansion before any slice-2 training.
+work was v183 exact transition-support expansion; after that, the next useful
+work is a fresh v178-style audit of the v183 expanded dataset before any
+slice-2 training.
 
 Thread-local strategic ledgers are not durable handoff inputs. A fresh coder
 should be assumed to see only the repository, the explicit dispatch prompt, and
@@ -225,9 +234,11 @@ first opt-in transition-row training route was then consumed by v180 and failed
 shadow acceptance as slice 1/10. v181 failure-response has now run as
 diagnostics-only autopsy work and consumed no second training slice. v182
 failure-response design has also run as diagnostics-only work and consumed no
-second training slice. The current lane is exact transition-support expansion
-before any slice-2 training, not another pre-training audit and not a rerun of
-the first training slice.
+second training slice. v183 exact transition-support expansion has also run as
+diagnostics-only work and consumed no second training slice. The current lane is
+a fresh v178-style audit of the v183 expanded dataset before any slice-2
+training, not another support expansion by default and not a rerun of the first
+training slice.
 
 ## Population Search Smoke
 
@@ -5774,6 +5785,48 @@ Major milestones from the current state:
   `rclone check /Users/njm/evolution-sim-p0-backups
   gdrive:evolution-sim-backups/archives --include
   "20260611T165440Z-v182-imputed-abstention-design.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files.
+- v183: diagnostics-only exact transition-support expansion. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v183-exact-transition-support-expansion`.
+  The run validated the pinned v182 report exact digest
+  `3ceb89524fbcddf2e9553fa06d932c1812d1c6a1f7d7f9f19c9237c34d22f51b`, v181
+  report exact digest
+  `a89745e71daf8c6cc1651ad960a3098776509bca6e7cda84ca259fdbc57f5751`, v180
+  report exact digest
+  `ab894238d9f6ed5041b4587fe69ceeddeb36fb6af1aeaffde6339d73a6f8146f`, v180
+  artifact digest
+  `66f4fd956111bbda031c122643de12ce556b7cdeb35b70f2d0031cc89fac82b0`, v179
+  report exact digest
+  `1e18703d7f0f3b5666968051f8e3865a05ce7d781046aff7e5d5a07732907171`, and
+  v179 transition dataset digest
+  `df9043666639dc9d606e118c5c3733efc0ae9ac1c76a7126cb8d009b1591e9bf`.
+  It wrote
+  `output/mind/mind-v3-v183-carrion-survivor-continuation-exact-transition-support-expansion.json`
+  with exact digest
+  `7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da` and
+  `output/mind/mind-v3-v183-carrion-survivor-continuation-expanded-compact-transition-rows.jsonl`
+  with dataset digest
+  `e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`.
+  Classification:
+  `m3_carrion_survivor_continuation_v183_exact_transition_support_expansion_targeted_exact_support_ready_for_fresh_v178_audit_no_training`.
+  Lifecycle flags: `training_ran=false`, `training_artifact_created=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `slice_2_training_consumed=false`.
+  The expanded dataset has `144` rows, `24` branches, `6` seeds, `9` forced
+  actions, and passes the default support summary. It moved carrion
+  observed-support target coverage from `0` to `18` materialized states and
+  broad seed `19` support-hole coverage to `6` materialized states. The next
+  same-lane route is a fresh v178-style audit of this v183 expanded dataset
+  before any slice-2 training. The v183 report, dataset, and source
+  trajectories are durable after the recorded backup:
+  `/Users/njm/evolution-sim-p0-backups/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`,
+  archive SHA256
+  `b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260611T192709Z-v183-exact-transition-support-expansion.tar.zst*" --one-way`
   reported `0` differences and `2` matching files.
 
 External checks that support this direction:

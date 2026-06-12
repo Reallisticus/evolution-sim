@@ -95,10 +95,24 @@ durable after
 `gdrive:evolution-sim-backups/archives/20260611T165440Z-v182-imputed-abstention-design.tar.zst`
 with archive SHA256
 `d53401e5096d4c616a26691faa555ba53ffbdf84b4767061ff09d820340faf54`.
-Future same-lane work should be exact transition-support expansion before any
-slice-2 training, not another pre-training audit, v179/v180 authorization
-reroute, or rerun of the first training slice. CLI `--min-*` support overrides
-are diagnostic only and must not authorize training routes.
+The v183 exact transition-support expansion then ran as diagnostics-only work.
+It validated the pinned v182/v181/v180/v179 evidence, wrote report digest
+`7281380512c4a3ce9eb0951ce8f6a1b132a74b78f7fcaafe6af3adf2bb5d16da`, wrote a
+`144`-row expanded transition dataset with digest
+`e83424b8bb6e00a03e2afbbabd4d62c71dedfa0dec3beb482bdc73c2de1a81ef`, and
+created no training artifact, runtime artifact, runtime action-selection
+change, promotion, or slice-2 consumption. Carrion observed-support target
+coverage moved from `0` to `18` materialized states and broad seed `19`
+support-hole coverage moved to `6` materialized states. The report, dataset,
+and source trajectories are durable after
+`gdrive:evolution-sim-backups/archives/20260611T192709Z-v183-exact-transition-support-expansion.tar.zst`
+with archive SHA256
+`b4e57537142303e622656c8eb51fde114a9452e20641a85cfdb4d742b425eb5c`.
+Future same-lane work should be a fresh v178-style audit of the v183 expanded
+dataset before any slice-2 training, not another support expansion by default,
+not v179/v180 authorization reroute, and not a rerun of the first training
+slice. CLI `--min-*` support overrides are diagnostic only and must not
+authorize training routes.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.
