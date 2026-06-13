@@ -354,6 +354,42 @@ and trajectory evidence are durable after
 with archive SHA256
 `ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964` and
 `rclone check` verification of `0` differences and `1` matching file.
+v194 then ran diagnostics-only repaired-contract terminal-survival support
+dataset audit before any slice-3 training. It validated the pinned v193 exact
+digest `006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`,
+required route
+`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`,
+inherited v192/v191/v190 digests
+`17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae` /
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5` /
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, and
+validated the v193 backup metadata. It audited the six selected support
+trajectories as path-backed, readable, replay-verified, terminal-fact matched,
+leakage-clean, action-mask legal under the repaired contract, and target-valid.
+Aggregate selected support kept dominant requested action `stay` at share
+`0.207558`, unsupported requested actions `0`, expected same-tick occupancy
+drift counted separately at aggregate `860` and selected `77`, and unexpected
+resolution-invalid events `0`. v194 wrote
+`output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-dataset-audit.json`
+with exact digest
+`ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e` and a
+gitignored compact support dataset
+`output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-compact-dataset.jsonl`
+with dataset digest
+`dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+Classification:
+`m3_carrion_survivor_continuation_v194_repaired_contract_terminal_survival_support_dataset_audit_support_dataset_ready_for_future_explicit_slice_3_training`.
+It recommended exactly
+`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`.
+Lifecycle flags stayed closed for training/runtime/promotion: no training, no
+training artifact, no slice-3 consumption, no runtime artifact, no runtime
+action-selection change, no promotion, no gate relaxation, no support
+generation, and no support expansion. The v194 report and compact dataset are
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
+with archive SHA256
+`461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -390,12 +426,16 @@ movement-occupancy race and generated no support. v192 repaired the
 support-evidence contract for that blocker without changing runtime/replay
 semantics or generating support. v193 reran targeted support expansion under
 that repaired contract and found `6/6` repaired-contract support under the
-action-share cap, but still did not authorize slice 3 directly. The next
+action-share cap, but still did not authorize slice 3 directly. v194 audited
+that repaired-contract support into a compact gitignored dataset with digest
+`dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc` and
+recommended the future explicit opt-in slice-3 training route. The next
 same-lane route is
-`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`,
-not slice-3 training, not runtime integration, and not another old feasibility,
-counterfactual, IQL, scorer, blind support expansion, or v180/v186 rerun. The
-campaign budget remains 2/10.
+`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`, not
+runtime integration, not promotion, not gate relaxation, and not another old
+feasibility, counterfactual, IQL, scorer, blind support expansion, or
+v180/v186 rerun. The campaign budget remains 2/10 until a v195 training command
+explicitly consumes slice 3.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to
