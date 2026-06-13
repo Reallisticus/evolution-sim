@@ -217,8 +217,9 @@ Current same-lane work is narrower:
   with archive SHA256
   `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
   `rclone check` verification of `0` differences and `2` matching files;
-- the campaign budget is now 2/10. Do not consume slice 3, relax gates,
-  integrate runtime behavior, promote from v190, or rerun v180/v186;
+- at v190 close, the campaign budget was still 2/10. That historical result
+  did not authorize slice 3, gate relaxation, runtime behavior, promotion from
+  v190, or v180/v186 reruns;
 - v191 has now run as diagnostics-only targeted legal-support repair /
   architecture review. It validated the pinned v190 digest
   `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, read the
@@ -294,8 +295,30 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
   with archive SHA256
   `461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e`;
-  The current same-lane next route is
-  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`;
+  v195 has now consumed the explicit opt-in repaired-contract terminal-survival
+  support training slice 3. It validated the v194 report digest
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`,
+  compact dataset digest
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`, route
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`,
+  v194 backup metadata, v193/v192 digest pins, closed v194 lifecycle flags,
+  `3599` rows, leakage-free trainable payloads, unsupported requested actions
+  `0`, selected same-tick occupancy drift `77`, and unexpected
+  resolution-invalid events `0`. It wrote report digest
+  `0d69540a3817b7b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde` and
+  artifact digest
+  `9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`.
+  Shadow acceptance failed with `0` `carrion_only@120` terminal survivors,
+  dominant requested-action share `0.9422`, heuristic action-source count `0`,
+  and broad alive/birth regressions. Runtime integration, runtime action
+  selection, promotion, and gate relaxation stayed closed. The v195 report and
+  artifact are durable after
+  `gdrive:evolution-sim-backups/archives/20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst`
+  with archive SHA256
+  `f4d3785619e3937949654cd586d1896fdc20d89fa3d9f3f14d191748ca776049` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  campaign budget is now 3/10. The current same-lane next route is exactly
+  `v196_repaired_contract_slice_3_failure_response_no_training`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -374,9 +397,9 @@ unsupported resolved-action blocker as same-tick action-mask timing /
 movement-occupancy races. v192 repaired the support-evidence contract without
 runtime/replay behavior changes. v193 found `6/6` repaired-contract support
 without training or slice-3 consumption. v194 audited that support into a
-compact dataset without training or slice-3 consumption. Future same-lane work
-routes to
-`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`
+compact dataset without training or slice-3 consumption. v195 consumed slice
+3/10 and failed shadow acceptance. Future same-lane work routes to
+`v196_repaired_contract_slice_3_failure_response_no_training`
 and must not treat this command as a route back to v179/v180 authorization:
 
 ```bash
