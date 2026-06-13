@@ -235,6 +235,31 @@ reproducibility, and experiment direction.
   campaign budget is now 3/10, and the next same-lane route is
   `v196_repaired_contract_slice_3_failure_response_no_training`, not runtime
   integration, promotion, gate relaxation, or slice-4 training.
+  v196 then ran diagnostics-only failure response for that slice-3 failure. It
+  validated the pinned v195 report digest
+  `0d69540a3817b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde`, artifact
+  digest `9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`,
+  v194 report and dataset digests, the required v195 failure-response route,
+  v195 backup metadata, slice `3/10` consumption, and exact failure facts. The
+  action-collapse mechanism is
+  `artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`:
+  training labels were not dominated (`stay` share `0.207558`), but the frozen
+  artifact's diagnostic replay applied overrides on share `0.782944` of
+  decisions, the applied override action was `eat` at share `0.939312`,
+  mask-only feature-hit share was `0.778513`, exact feature-hit share was
+  `0.0`, and misses abstained rather than defaulting to `stay`. v186 had the
+  same zero carrion-survivor outcome but not the v195 action collapse or broad
+  regression profile. v196 wrote report digest
+  `7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`, trained
+  nothing, consumed no slice 4, changed no runtime behavior, relaxed no gates,
+  and authorized no promotion. The v196 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst`
+  with archive SHA256
+  `363b4ddb144b8966095c9a1e66f259c418b2a9f4f0c474449fa60d5f06baa45b` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next same-lane route is
+  `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`; the
+  campaign budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
