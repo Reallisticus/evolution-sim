@@ -251,6 +251,41 @@ v192 report is durable after
 with archive SHA256
 `e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
 `rclone check` verification of `0` differences and `1` matching file.
+v193 then ran diagnostics-only fresh targeted legal terminal-survival support
+expansion under the v192 repaired support-evidence contract. It validated the
+pinned v192 exact digest
+`17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`, required
+route
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`,
+and inherited v191/v190 digests
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5` /
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`.
+It ran `18` branch points and `90` replay-verified continuations for seeds
+`13,19,29,37,41,43`. Under the repaired contract, observation-valid same-tick
+occupancy drift is counted separately, not as an unsupported requested action
+or successful move. v193 found repaired-contract support for all `6/6` target
+seeds, with unsupported requested actions `0`, expected same-tick occupancy
+drift `860`, unexpected resolution-invalid events `0`, and selected-support
+dominant requested-action share `0.207558` (`stay`). Per-seed selected support:
+`13 alive=4 births=12 drift=9`, `19 alive=2 births=10 drift=14`,
+`29 alive=3 births=12 drift=23`, `37 alive=3 births=10 drift=7`,
+`41 alive=2 births=13 drift=10`, `43 alive=5 births=12 drift=14`.
+v193 wrote
+`output/mind/mind-v3-v193-carrion-survivor-continuation-fresh-targeted-legal-support-expansion-after-contract-repair.json`
+with exact digest
+`006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`.
+Classification:
+`m3_carrion_survivor_continuation_v193_fresh_targeted_legal_support_expansion_after_contract_repair_all_target_seed_support_routes_to_fresh_dataset_audit_no_training`.
+It recommended exactly
+`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`.
+Lifecycle flags stayed closed for training/runtime/promotion: no training, no
+training artifact, no slice-3 consumption, no runtime artifact, no runtime
+action-selection change, no promotion, and no gate relaxation. The v193 report
+and trajectory evidence are durable after
+`gdrive:evolution-sim-backups/archives/20260613T165955Z-v193-fresh-targeted-legal-support-expansion-after-contract-repair.tar.zst`
+with archive SHA256
+`ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -279,6 +314,12 @@ gaps, found `0/6` clean legal support under the cap, and recommended v191.
 v191 consumed no slice, generated no support, diagnosed the unsupported
 resolved-action blocker as same-tick action-mask timing / movement-occupancy
 races, and recommended `v192_action_resolution_contract_repair_no_training`.
+v192 consumed no slice, repaired that support-evidence contract without
+runtime/replay behavior changes, and recommended v193. v193 consumed no slice,
+found `6/6` repaired-contract support under the action-share cap, and
+recommended
+`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`
+before any slice-3 training.
 v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
@@ -6409,6 +6450,55 @@ Major milestones from the current state:
   gate relaxation, support generation, or slice-3 training; it authorizes only
   the fresh v193 targeted legal support expansion after the repaired
   action-resolution support contract.
+- v193: diagnostics-only fresh targeted legal terminal-survival support
+  expansion after action-resolution contract repair. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v193-fresh-targeted-legal-support-expansion-after-contract-repair`.
+  The command validated the pinned v192 report exact digest
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`,
+  required route
+  `v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`,
+  and inherited v191/v190 digests
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5` /
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`.
+  v193 ran `18` branch points and `90` replay-verified continuations over
+  seeds `13,19,29,37,41,43` using the existing policy-visible script set.
+  Under the repaired support-evidence contract, observation-valid movement that
+  becomes resolution-invalid solely because of deterministic same-tick
+  occupancy drift is counted separately, not as an unsupported requested action
+  and not as a successful move. v193 found repaired-contract support for all
+  `6/6` target seeds. Aggregate unsupported requested actions were `0`;
+  expected same-tick occupancy drift was `860`; unexpected resolution-invalid
+  events were `0`; selected-support dominant requested-action share was
+  `0.207558` (`stay`). Per-seed selected support:
+  `13 alive=4 births=12 drift=9`, `19 alive=2 births=10 drift=14`,
+  `29 alive=3 births=12 drift=23`, `37 alive=3 births=10 drift=7`,
+  `41 alive=2 births=13 drift=10`, `43 alive=5 births=12 drift=14`.
+  Report:
+  `output/mind/mind-v3-v193-carrion-survivor-continuation-fresh-targeted-legal-support-expansion-after-contract-repair.json`;
+  exact digest:
+  `006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`.
+  Classification:
+  `m3_carrion_survivor_continuation_v193_fresh_targeted_legal_support_expansion_after_contract_repair_all_target_seed_support_routes_to_fresh_dataset_audit_no_training`.
+  Recommended next route:
+  `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`.
+  Lifecycle flags stayed closed for training/runtime/promotion:
+  `training_ran=false`, `training_artifact_created=false`,
+  `slice_3_training_consumed=false`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, `promotion_authorized=false`, and
+  `gate_relaxation_allowed=false`; diagnostic support expansion did run. The
+  v193 report and trajectory evidence are durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T165955Z-v193-fresh-targeted-legal-support-expansion-after-contract-repair.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T165955Z-v193-fresh-targeted-legal-support-expansion-after-contract-repair.tar.zst`,
+  archive SHA256
+  `ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T165955Z-v193-fresh-targeted-legal-support-expansion-after-contract-repair.tar.zst*" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  2/10. v193 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, or slice-3 training; it authorizes only the fresh v194
+  repaired-contract dataset audit before any slice-3 training.
 
 External checks that support this direction:
 
