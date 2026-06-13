@@ -168,6 +168,34 @@ durable after
 with archive SHA256
 `c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
 `rclone check` verification of `0` differences and `2` matching files.
+v190 then ran the requested diagnostics-only targeted legal terminal-survival
+support expansion before slice-3 training. It validated the pinned v189 exact
+digest `2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`,
+the required v189 route
+`v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`,
+the v189 backup metadata, the exact v189 blockers, historical dedupe, and closed
+v189 lifecycle flags. v190 targeted only seeds `13,19,29,37,41,43`: seeds
+`19,29,37,41,43` lacked clean legal support and seed `13` needed
+action-diversity repair. It ran `18` exact branch points and `90`
+replay-verified continuations using the existing policy-visible script set.
+Aggregate attempted continuations still had terminal survivors but `860`
+unsupported resolved actions, and no trajectory satisfied the v190 support
+contract; clean legal support coverage was `0/6`. v190 wrote
+`output/mind/mind-v3-v190-carrion-survivor-continuation-targeted-legal-terminal-survival-support-expansion.json`
+with exact digest
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, classified
+as
+`m3_carrion_survivor_continuation_v190_targeted_legal_terminal_survival_support_expansion_partial_or_empty_support_routes_to_repair_no_training`,
+and recommended exactly
+`v191_targeted_legal_support_repair_or_architecture_review_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, and no gate relaxation. The v190 report and trajectory evidence are
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+with archive SHA256
+`e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -191,7 +219,9 @@ recommended a fresh v189 terminal-survival support dataset audit before any
 slice-3 training. v189 consumed no slice, blocked slice-3 authorization on
 `1/6` clean legal seed coverage plus dominant requested-action share above
 `0.50`, and recommended targeted legal terminal-survival support expansion
-before any slice-3 training. v180
+before any slice-3 training. v190 consumed no slice, targeted those support
+gaps, found `0/6` clean legal support under the cap, and recommended
+`v191_targeted_legal_support_repair_or_architecture_review_no_training`. v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
@@ -6188,6 +6218,47 @@ Major milestones from the current state:
   gate relaxation, support expansion, or slice-3 training; the next route is
   targeted legal terminal-survival support expansion, not a rerun of old
   feasibility/counterfactual/IQL/scorer loops.
+- v190: diagnostics-only targeted legal terminal-survival support expansion
+  before slice-3 training. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v190-targeted-legal-terminal-survival-support-expansion`.
+  The command validated the pinned v189 report exact digest
+  `2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`,
+  required route
+  `v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`,
+  v189 backup metadata, exact v189 blockers, historical dedupe, and closed
+  v189 lifecycle flags. The target manifest was deliberately narrow:
+  missing clean legal support seeds `19,29,37,41,43` plus seed `13`
+  action-diversity repair. v190 ran `18` exact branch points and `90`
+  replay-verified continuations using the existing policy-visible script set.
+  Aggregate attempted continuations had terminal survivors but `860`
+  unsupported resolved actions, so they remain diagnostic leads only. Clean
+  legal support coverage was `0/6` target seeds; every seed still lacked a
+  countable support trajectory under unsupported-action and dominant-action
+  caps. Report:
+  `output/mind/mind-v3-v190-carrion-survivor-continuation-targeted-legal-terminal-survival-support-expansion.json`;
+  exact digest:
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`.
+  Classification:
+  `m3_carrion_survivor_continuation_v190_targeted_legal_terminal_survival_support_expansion_partial_or_empty_support_routes_to_repair_no_training`.
+  Recommended next route:
+  `v191_targeted_legal_support_repair_or_architecture_review_no_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `gate_relaxation_allowed=false`. The v190
+  report and trajectory evidence are durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`,
+  archive SHA256
+  `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget remains
+  2/10. v190 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, or slice-3 training; the next route is a narrower
+  legal-support repair or architecture review.
 
 External checks that support this direction:
 

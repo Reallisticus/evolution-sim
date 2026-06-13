@@ -133,7 +133,22 @@ reproducibility, and experiment direction.
   with archive SHA256
   `c4705d5a53a5f6e5b47dd2125f4cd92d54fc5afb0cf5911044b05fc3f9dab01f`. Do not
   consume slice 3, relax gates, integrate runtime behavior, or promote from
-  v187 without a separate explicit task.
+  v187 without a separate explicit task. v188 then found one selected legal
+  terminal-survival support trajectory for seed `13` but rejected aggregate
+  attempted continuations as support because they had `285` unsupported resolved
+  actions. v189 audited that support and blocked slice 3 on `1/6` clean legal
+  seed coverage plus dominant requested-action share `0.539244` above the
+  `0.50` cap. v190 then ran targeted legal support expansion over seeds
+  `13,19,29,37,41,43`, `18` branch points, and `90` replay-verified
+  continuations; it found `0/6` clean legal support under the cap, wrote report
+  digest `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`,
+  and recommended
+  `v191_targeted_legal_support_repair_or_architecture_review_no_training`. The
+  v190 report and trajectory evidence are durable after
+  `gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+  with archive SHA256
+  `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
+  `rclone check` verification of `0` differences and `2` matching files.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
