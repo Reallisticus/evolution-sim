@@ -176,6 +176,23 @@ reproducibility, and experiment direction.
   with archive SHA256
   `e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
   `rclone check` verification of `0` differences and `1` matching file.
+  v193 then reran targeted legal terminal-survival support expansion under that
+  repaired contract. It validated v192 digest
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`, ran `18`
+  branch points and `90` replay-verified continuations for seeds
+  `13,19,29,37,41,43`, and found `6/6` repaired-contract support under the
+  action-share cap. Unsupported requested actions stayed `0`; expected
+  same-tick occupancy drift was `860`; unexpected resolution-invalid events
+  were `0`; selected-support dominant requested-action share was `0.207558`.
+  v193 wrote report digest
+  `006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`, kept
+  training/runtime/promotion/slice-3 flags closed, and routed to
+  `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`.
+  The v193 report and trajectory evidence are durable after
+  `gdrive:evolution-sim-backups/archives/20260613T165955Z-v193-fresh-targeted-legal-support-expansion-after-contract-repair.tar.zst`
+  with archive SHA256
+  `ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964` and
+  `rclone check` verification of `0` differences and `1` matching file.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

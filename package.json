@@ -134,6 +134,7 @@
         "sim:mind:v3:carrion-survivor-continuation-v190-targeted-legal-terminal-survival-support-expansion": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v190_targeted_legal_terminal_survival_support_expansion",
         "sim:mind:v3:carrion-survivor-continuation-v191-legal-support-repair-architecture-review": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v191_legal_support_repair_architecture_review",
         "sim:mind:v3:carrion-survivor-continuation-v192-action-resolution-contract-repair": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v192_action_resolution_contract_repair",
+        "sim:mind:v3:carrion-survivor-continuation-v193-fresh-targeted-legal-support-expansion-after-contract-repair": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v193_fresh_targeted_legal_support_expansion_after_contract_repair",
         "sim:mind:v3:first-recovery-inspector-bundle": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_inspector_bundle",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
     "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",
