@@ -222,6 +222,35 @@ is durable after
 with archive SHA256
 `bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
 `rclone check` verification of `0` differences and `2` matching files.
+v192 then ran diagnostics-only action-resolution contract repair. It validated
+the pinned v191 exact digest
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`, required
+route `v192_action_resolution_contract_repair_no_training`, the inherited v190
+digest pin, v191 unsupported requested/resolved counts, and closed lifecycle
+flags. It selected exactly `support_evidence_contract_repair`: no runtime
+action-resolution semantics changed, no replay semantics changed, and no
+trajectory schema changed. The v192 audit re-read canonical v190 trajectories
+and serialized derived movement target/blocker fields for all `860`
+unsupported resolved actions. All `860` were observation-valid movement
+requests that became resolution-invalid under the live mask, had in-bounds
+target coordinates, resolved to `stay`, and classified as
+`resolution_invalid_same_tick_occupancy_race`; bounds, water, hazard,
+depleted-resource, and stale/illegal-script blockers were absent. v192 wrote
+`output/mind/mind-v3-v192-carrion-survivor-continuation-action-resolution-contract-repair.json`
+with exact digest
+`17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`.
+Classification:
+`m3_carrion_survivor_continuation_v192_action_resolution_contract_repair_support_evidence_contract_repaired_routes_to_fresh_support_no_training`.
+It recommended exactly
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no support generation, no support expansion, no runtime artifact,
+no runtime action-selection change, no promotion, and no gate relaxation. The
+v192 report is durable after
+`gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+with archive SHA256
+`e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -6337,6 +6366,49 @@ Major milestones from the current state:
   reported `0` differences and `2` matching files. The campaign budget remains
   2/10. v191 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, support generation, or slice-3 training.
+- v192: diagnostics-only action-resolution contract repair. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v192-action-resolution-contract-repair`.
+  The command validated the pinned v191 report exact digest
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`,
+  required route `v192_action_resolution_contract_repair_no_training`, the
+  inherited canonical v190 digest
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, v191
+  unsupported-action counts, and closed lifecycle flags. v192 chose exactly
+  `support_evidence_contract_repair`; it did not change runtime
+  action-resolution semantics, replay semantics, runtime action selection, or
+  the trajectory schema. It re-read the canonical v190 trajectories and
+  serialized derived movement target/blocker details for all `860` unsupported
+  resolved actions. Every event was an observation-valid movement request that
+  became invalid under the live resolution mask, had an in-bounds target,
+  resolved to `stay`, and classified as
+  `resolution_invalid_same_tick_occupancy_race`; bounds, water, hazard,
+  depleted-resource, and stale/illegal-script causes were absent. Report:
+  `output/mind/mind-v3-v192-carrion-survivor-continuation-action-resolution-contract-repair.json`;
+  exact digest:
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`.
+  Classification:
+  `m3_carrion_survivor_continuation_v192_action_resolution_contract_repair_support_evidence_contract_repaired_routes_to_fresh_support_no_training`.
+  Recommended next route:
+  `v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `support_generation_ran=false`, `support_expansion_ran=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `gate_relaxation_allowed=false`. The v192
+  report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`,
+  archive SHA256
+  `e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T151045Z-v192-action-resolution-contract-repair.tar.zst*" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  2/10. v192 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, support generation, or slice-3 training; it authorizes only
+  the fresh v193 targeted legal support expansion after the repaired
+  action-resolution support contract.
 
 External checks that support this direction:
 

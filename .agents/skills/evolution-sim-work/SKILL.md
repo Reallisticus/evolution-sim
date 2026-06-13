@@ -256,7 +256,24 @@ with archive SHA256
 generated no support, trained nothing, consumed no slice 3, changed no runtime
 behavior, and recommended exactly
 `v192_action_resolution_contract_repair_no_training`. The campaign budget
-remains 2/10.
+remains 2/10. v192 has now run as diagnostics-only action-resolution contract
+repair. It validated v191 digest
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`, selected
+exactly `support_evidence_contract_repair`, and changed no runtime/replay
+semantics or trajectory schema. It serialized movement target/blocker audit
+fields for all `860` unsupported resolved actions and classified all as
+`resolution_invalid_same_tick_occupancy_race`, with no bounds, water, hazard,
+depleted-resource, or stale/illegal-script blockers. It wrote report digest
+`17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`; the report
+is durable after
+`gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+with archive SHA256
+`e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
+`rclone check` verification of `0` differences and `1` matching file. v192
+generated no support, trained nothing, consumed no slice 3, changed no runtime
+behavior, and recommended exactly
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+The campaign budget remains 2/10.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.
