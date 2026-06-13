@@ -224,6 +224,21 @@ with archive SHA256
 `rclone check` verification of `0` differences and `2` matching files. It
 recommended exactly
 `v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`. The
+campaign budget remains 2/10. v190 has now run as diagnostics-only targeted
+legal terminal-survival support expansion. It validated v189 digest
+`2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`, targeted
+seeds `13,19,29,37,41,43`, ran `18` exact branch points and `90`
+replay-verified continuations, but found `0/6` clean legal support under the
+action-share cap; aggregate attempted continuations had `860` unsupported
+resolved actions. The v190 report digest is
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`; it is
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+with archive SHA256
+`e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
+`rclone check` verification of `0` differences and `2` matching files. It
+recommended exactly
+`v191_targeted_legal_support_repair_or_architecture_review_no_training`. The
 campaign budget remains 2/10.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless

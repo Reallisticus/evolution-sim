@@ -204,10 +204,23 @@ Current same-lane work is narrower:
   with archive SHA256
   `c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
   `rclone check` verification of `0` differences and `2` matching files;
+- v190 has already run as diagnostics-only targeted legal terminal-survival
+  support expansion. It validated v189 digest
+  `2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`, targeted
+  seeds `13,19,29,37,41,43`, ran `18` exact branch points and `90`
+  replay-verified continuations, but found `0/6` clean legal support under the
+  action-share cap; aggregate attempted continuations had `860` unsupported
+  resolved actions. The v190 report digest is
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`; it is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+  with archive SHA256
+  `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
+  `rclone check` verification of `0` differences and `2` matching files;
 - the campaign budget is now 2/10. Do not consume slice 3, relax gates,
-  integrate runtime behavior, promote from v189, or rerun v180/v186. The
+  integrate runtime behavior, promote from v190, or rerun v180/v186. The
   current same-lane next route is
-  `v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`;
+  `v191_targeted_legal_support_repair_or_architecture_review_no_training`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -279,10 +292,11 @@ diagnostics as the current next route; v180 already spent the first opt-in
 transition-row training slice, v181/v182/v183/v184/v185 consumed no second
 slice, v186 has now spent slice 2/10 and failed shadow acceptance, v187
 recommended the no-training v188 terminal carrion survival support route, and
-v188 found one selected legal support trajectory without training. v189 has now
-audited that support and blocked slice 3; future same-lane work routes to
-targeted legal terminal-survival support expansion and must not treat this
-command as a route back to v179/v180 authorization:
+v188 found one selected legal support trajectory without training, v189 audited
+that support and blocked slice 3, and v190 targeted the support gaps but found
+`0/6` clean legal support under the action-share cap. Future same-lane work
+routes to `v191_targeted_legal_support_repair_or_architecture_review_no_training`
+and must not treat this command as a route back to v179/v180 authorization:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

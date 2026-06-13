@@ -228,6 +228,36 @@ durable after
 with archive SHA256
 `c9a347d1504e2222473f3db2d49f2f0c5afe21c61ff877730c1fefe12045ff92` and
 `rclone check` verification of `0` differences and `2` matching files.
+v190 then ran the requested diagnostics-only targeted legal terminal-survival
+support expansion before slice-3 training. It validated the pinned v189 exact
+digest `2505049a4a81f17ca5fb79f004c9d4ea7f43b1169f9e461e6a722df04e7d369e`,
+the required v189 route
+`v190_targeted_legal_terminal_survival_support_expansion_before_slice_3_training_no_training`,
+the v189 backup metadata, the exact v189 blockers, historical dedupe, and closed
+v189 lifecycle flags. v190 targeted only seeds `13,19,29,37,41,43`: seeds
+`19,29,37,41,43` lacked clean legal support and seed `13` needed
+action-diversity repair. It ran `18` exact branch points and `90`
+replay-verified continuations using the existing policy-visible script set.
+Aggregate attempted continuations still had terminal survivors but `860`
+unsupported resolved actions, and no trajectory satisfied the v190 support
+contract; clean legal support coverage was `0/6`. v190 wrote
+`output/mind/mind-v3-v190-carrion-survivor-continuation-targeted-legal-terminal-survival-support-expansion.json`
+with exact digest
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5` and
+trajectory evidence under
+`output/mind/v190-targeted-legal-terminal-survival-support-trajectories/`.
+Classification:
+`m3_carrion_survivor_continuation_v190_targeted_legal_terminal_survival_support_expansion_partial_or_empty_support_routes_to_repair_no_training`.
+It recommended exactly
+`v191_targeted_legal_support_repair_or_architecture_review_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no runtime artifact, no runtime action-selection change, no
+promotion, and no gate relaxation. The v190 report and trajectory evidence are
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T100008Z-v190-targeted-legal-terminal-survival-support-expansion.tar.zst`
+with archive SHA256
+`e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -257,8 +287,10 @@ route it authorized has now completed as v188 diagnostics/support evidence.
 v188 found one selected legal terminal-survival support trajectory and
 authorizes only the fresh v189 terminal-survival support dataset audit route
 before any slice-3 training. That v189 audit has now completed and did not
-authorize slice 3; the next same-lane route is targeted legal terminal-survival
-support expansion before slice-3 training, not another old feasibility,
+authorize slice 3. v190 targeted those exact support gaps and also failed to
+produce clean legal support under the action-share cap. The next same-lane route
+is `v191_targeted_legal_support_repair_or_architecture_review_no_training`, not
+slice-3 training, not runtime integration, and not another old feasibility,
 counterfactual, IQL, scorer, or v180/v186 rerun. The campaign budget remains
 2/10.
 
