@@ -290,6 +290,34 @@ is durable after
 with archive SHA256
 `bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
 `rclone check` verification of `0` differences and `2` matching files.
+v192 then ran diagnostics-only action-resolution contract repair after
+validating the pinned v191 exact digest
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`,
+required route `v192_action_resolution_contract_repair_no_training`, v190
+digest pin, all v191 unsupported-action counts, and closed lifecycle flags.
+It chose exactly `support_evidence_contract_repair`, not a runtime/replay
+semantics change and not a trajectory schema change. It re-read the canonical
+v190 trajectories and serialized derived movement target/blocker audit fields
+for all `860` unsupported resolved actions: all were observation-valid movement
+requests, resolution-invalid under the live mask, in-bounds by target
+coordinates, resolved to `stay`, and classified as
+`resolution_invalid_same_tick_occupancy_race`; bounds, water, hazard,
+depleted-resource, and stale/illegal script causes were not present. v192 wrote
+`output/mind/mind-v3-v192-carrion-survivor-continuation-action-resolution-contract-repair.json`
+with exact digest
+`17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`.
+Classification:
+`m3_carrion_survivor_continuation_v192_action_resolution_contract_repair_support_evidence_contract_repaired_routes_to_fresh_support_no_training`.
+It recommended exactly
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no support generation, no support expansion, no runtime artifact,
+no runtime action-selection change, no promotion, and no gate relaxation. The
+v192 report is durable after
+`gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+with archive SHA256
+`e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -322,11 +350,13 @@ before any slice-3 training. That v189 audit has now completed and did not
 authorize slice 3. v190 targeted those exact support gaps and also failed to
 produce clean legal support under the action-share cap. v191 diagnosed the v190
 unsupported resolved-action blocker as a same-tick action-mask timing /
-movement-occupancy race and generated no support. The next same-lane route is
-`v192_action_resolution_contract_repair_no_training`, not slice-3 training, not
-runtime integration, and not another old feasibility, counterfactual, IQL,
-scorer, blind support expansion, or v180/v186 rerun. The campaign budget remains
-2/10.
+movement-occupancy race and generated no support. v192 repaired the
+support-evidence contract for that blocker without changing runtime/replay
+semantics or generating support. The next same-lane route is
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`,
+not slice-3 training, not runtime integration, and not another old feasibility,
+counterfactual, IQL, scorer, blind support expansion, or v180/v186 rerun. The
+campaign budget remains 2/10.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

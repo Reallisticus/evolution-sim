@@ -236,8 +236,28 @@ Current same-lane work is narrower:
   `rclone check` verification of `0` differences and `2` matching files. v191
   generated no support, trained nothing, consumed no slice 3, changed no runtime
   behavior, and recommended exactly
-  `v192_action_resolution_contract_repair_no_training`. The current same-lane
-  next route is `v192_action_resolution_contract_repair_no_training`;
+  `v192_action_resolution_contract_repair_no_training`;
+- v192 has already run as diagnostics-only action-resolution contract repair.
+  It validated the pinned v191 digest
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5` and route
+  `v192_action_resolution_contract_repair_no_training`, selected exactly
+  `support_evidence_contract_repair`, and changed no runtime/replay semantics,
+  runtime action selection, or trajectory schema. It serialized movement
+  target/blocker audit fields for all `860` unsupported resolved actions and
+  classified all as `resolution_invalid_same_tick_occupancy_race`, with no
+  bounds, water, hazard, depleted-resource, or stale/illegal-script blockers.
+  The v192 report digest is
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`; it is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+  with archive SHA256
+  `e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
+  `rclone check` verification of `0` differences and `1` matching file. v192
+  generated no support, trained nothing, consumed no slice 3, changed no runtime
+  behavior, and recommended exactly
+  `v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+  The current same-lane next route is
+  `v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -313,9 +333,10 @@ v188 found one selected legal support trajectory without training, v189 audited
 that support and blocked slice 3, v190 targeted the support gaps but found
 `0/6` clean legal support under the action-share cap, and v191 diagnosed the
 unsupported resolved-action blocker as same-tick action-mask timing /
-movement-occupancy races. Future same-lane work routes to
-`v192_action_resolution_contract_repair_no_training` and must not treat this
-command as a route back to v179/v180 authorization:
+movement-occupancy races. v192 repaired the support-evidence contract without
+runtime/replay behavior changes. Future same-lane work routes to
+`v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`
+and must not treat this command as a route back to v179/v180 authorization:
 
 ```bash
 npm run sim:mind:v3:labeled-iql-slice -- \

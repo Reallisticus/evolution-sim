@@ -162,6 +162,20 @@ reproducibility, and experiment direction.
   with archive SHA256
   `bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
   `rclone check` verification of `0` differences and `2` matching files.
+  v192 then validated that v191 route and selected exactly a
+  support-evidence contract repair, not a runtime/replay behavior change. It
+  serialized movement target/blocker audit fields for all `860` unsupported
+  resolved actions and classified every one as
+  `resolution_invalid_same_tick_occupancy_race`, with no bounds, water, hazard,
+  depleted-resource, or stale/illegal-script blockers. v192 wrote report digest
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae`, kept
+  training/runtime/promotion/support-generation flags closed, and routed to
+  `v193_fresh_targeted_legal_support_expansion_after_action_resolution_contract_repair_no_training`.
+  The v192 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260613T151045Z-v192-action-resolution-contract-repair.tar.zst`
+  with archive SHA256
+  `e5210b816dddfb6e54ad48fadad417f057fa7de93af6981acbec46991f265fac` and
+  `rclone check` verification of `0` differences and `1` matching file.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
