@@ -320,6 +320,37 @@ durable after
 with archive SHA256
 `461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e` and
 `rclone check` verification of `0` differences and `1` matching file.
+v195 then ran the explicit opt-in repaired-contract terminal-survival support
+training slice 3. It validated v194 report digest
+`ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`, v194
+compact dataset digest
+`dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`, required
+route `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`,
+v194 backup metadata, v193/v192 digest pins, closed v194 lifecycle flags,
+`3599` rows, no fixture/private leakage, unsupported requested actions `0`,
+selected expected same-tick occupancy drift `77`, and unexpected
+resolution-invalid events `0`. It wrote
+`output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-training.json`
+with exact digest
+`0d69540a3817b7b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde` and
+`output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-policy-artifact.json`
+with artifact digest
+`9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`.
+Training ran, the artifact was created, and slice 3/10 was consumed. Shadow
+acceptance failed with `0` `carrion_only@120` terminal survivors, dominant
+requested-action share `0.9422`, heuristic action-source count `0`, and broad
+alive/birth regressions on all broad seeds: `5:-6/-5`, `13:-6/-3`,
+`19:-10/-10`, `29:-9/-5`, `37:-10/-8`, `41:-7/-6`. Classification:
+`m3_carrion_survivor_continuation_v195_repaired_contract_terminal_survival_support_training_slice_3_shadow_acceptance_failed_routes_to_failure_response`.
+It recommended exactly
+`v196_repaired_contract_slice_3_failure_response_no_training`. Runtime and
+promotion flags stayed closed: no runtime artifact, no runtime action-selection
+change, no promotion, and no gate relaxation. The v195 report and artifact are
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst`
+with archive SHA256
+`f4d3785619e3937949654cd586d1896fdc20d89fa3d9f3f14d191748ca776049` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -358,7 +389,13 @@ a compact dataset with digest
 `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`, and
 recommended the explicit opt-in
 `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`
-route. The budget remains 2/10 until v195 explicitly consumes slice 3.
+route. v195 consumed slice 3/10 and failed shadow acceptance on zero
+`carrion_only@120` terminal survivors, dominant requested-action share
+`0.9422`, and broad alive/birth regressions. The next route is
+`v196_repaired_contract_slice_3_failure_response_no_training`; no runtime
+integration, promotion, gate relaxation, slice-4 training, old feasibility,
+counterfactual, IQL, scorer, blind support expansion, or v180/v186 rerun is
+authorized. The budget is now 3/10.
 v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
@@ -6591,10 +6628,54 @@ Major milestones from the current state:
   `rclone check /Users/njm/evolution-sim-p0-backups
   gdrive:evolution-sim-backups/archives --include
   "20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst" --one-way`
-  reported `0` differences and `1` matching file. The campaign budget remains
-  2/10 until v195 explicitly consumes slice 3. v194 is not promotion evidence
-  and authorizes no runtime integration, gate relaxation, or runtime
+  reported `0` differences and `1` matching file. At v194 close, the campaign
+  budget remained 2/10 until the explicit v195 command consumed slice 3; see
+  the v195 entry below for the current 3/10 budget. v194 is not promotion
+  evidence and authorizes no runtime integration, gate relaxation, or runtime
   action-selection change.
+- v195: explicit opt-in repaired-contract terminal-survival support training
+  slice 3. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v195-repaired-contract-terminal-survival-support-training`.
+  The command validated v194 report digest
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`, v194
+  compact dataset digest
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`, route
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`,
+  v194 backup metadata, v193/v192 digest pins, closed v194 lifecycle flags,
+  `3599` rows, no fixture/private leakage, unsupported requested actions `0`,
+  selected expected same-tick occupancy drift `77`, unexpected
+  resolution-invalid events `0`, and expected drift not counted as successful
+  movement. It wrote report
+  `output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-training.json`;
+  exact digest:
+  `0d69540a3817b7b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde`.
+  It wrote artifact
+  `output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-policy-artifact.json`;
+  artifact digest:
+  `9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`.
+  Training ran, the artifact was created, and slice 3/10 was consumed.
+  Shadow acceptance failed: `carrion_only@120` terminal survivors `0`,
+  dominant requested-action share `0.9422`, heuristic action-source count `0`,
+  and broad per-seed alive/birth regressions on all broad seeds:
+  `5:-6/-5`, `13:-6/-3`, `19:-10/-10`, `29:-9/-5`, `37:-10/-8`,
+  `41:-7/-6`. Classification:
+  `m3_carrion_survivor_continuation_v195_repaired_contract_terminal_survival_support_training_slice_3_shadow_acceptance_failed_routes_to_failure_response`.
+  Recommended next route:
+  `v196_repaired_contract_slice_3_failure_response_no_training`.
+  Lifecycle flags stayed closed for runtime/promotion: no runtime artifact, no
+  runtime action-selection change, no promotion, and no gate relaxation. The
+  v195 report and artifact are durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst`,
+  archive SHA256
+  `f4d3785619e3937949654cd586d1896fdc20d89fa3d9f3f14d191748ca776049`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget is now
+  3/10. v195 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, runtime action-selection change, or slice-4 training.
 
 External checks that support this direction:
 
