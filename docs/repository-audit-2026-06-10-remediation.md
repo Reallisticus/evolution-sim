@@ -193,6 +193,23 @@ reproducibility, and experiment direction.
   with archive SHA256
   `ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964` and
   `rclone check` verification of `0` differences and `1` matching file.
+  v194 then audited that repaired-contract support as diagnostics-only work
+  before any slice-3 training. It validated the v193 digest pin, route, backup
+  metadata, `6/6` repaired-contract support, selected trajectory files,
+  leakage/action-mask/repaired-resolution/observation/target checks, and wrote
+  report digest
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`.
+  It also wrote a gitignored compact support dataset with `3599` rows and
+  digest
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+  v194 kept training/runtime/promotion/support-generation flags closed and
+  recommended exactly
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`.
+  The v194 report and dataset are durable after
+  `gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
+  with archive SHA256
+  `461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e` and
+  `rclone check` verification of `0` differences and `1` matching file.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

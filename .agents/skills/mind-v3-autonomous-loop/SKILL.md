@@ -275,8 +275,27 @@ Current same-lane work is narrower:
   trained nothing, consumed no slice 3, changed no runtime behavior, and
   recommended exactly
   `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`;
+  v194 has now run as diagnostics-only repaired-contract terminal-survival
+  support dataset audit before slice-3 training. It validated v193 digest
+  `006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`, route
+  `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`,
+  v193 backup metadata, inherited v192/v191/v190 digests, and `6/6`
+  repaired-contract support. It wrote report digest
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e` and a
+  compact support dataset digest
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+  Unsupported requested actions stayed `0`; expected same-tick occupancy drift
+  was counted separately at aggregate `860` and selected `77`; unexpected
+  resolution-invalid events were `0`; selected dominant requested-action share
+  was `0.207558`. v194 trained nothing, consumed no slice 3, generated no new
+  support, changed no runtime behavior, and recommended exactly
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`.
+  The v194 report and dataset are durable after
+  `gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
+  with archive SHA256
+  `461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e`;
   The current same-lane next route is
-  `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`;
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -354,8 +373,10 @@ that support and blocked slice 3, v190 targeted the support gaps but found
 unsupported resolved-action blocker as same-tick action-mask timing /
 movement-occupancy races. v192 repaired the support-evidence contract without
 runtime/replay behavior changes. v193 found `6/6` repaired-contract support
-without training or slice-3 consumption. Future same-lane work routes to
-`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`
+without training or slice-3 consumption. v194 audited that support into a
+compact dataset without training or slice-3 consumption. Future same-lane work
+routes to
+`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`
 and must not treat this command as a route back to v179/v180 authorization:
 
 ```bash

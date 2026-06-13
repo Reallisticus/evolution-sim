@@ -286,6 +286,40 @@ and trajectory evidence are durable after
 with archive SHA256
 `ceaeb7c2027551393adb1d1374d7f5fd5621aadc3374275992a28b002da0b964` and
 `rclone check` verification of `0` differences and `1` matching file.
+v194 then ran diagnostics-only repaired-contract terminal-survival support
+dataset audit before any slice-3 training. It validated v193 exact digest
+`006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`, required
+route
+`v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`,
+the inherited v192/v191/v190 digest pins, v193 backup metadata, closed v193
+training/runtime/promotion lifecycle flags, and `6/6` repaired-contract
+support. It audited all selected support trajectories as path-backed, readable,
+replay-verified, terminal-fact matched, leakage-clean, action-mask legal under
+the repaired contract, observation-valid, and target-valid. Aggregate selected
+support kept dominant requested action `stay` at share `0.207558`, unsupported
+requested actions `0`, expected same-tick occupancy drift counted separately at
+aggregate `860` and selected `77`, and unexpected resolution-invalid events
+`0`. v194 wrote
+`output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-dataset-audit.json`
+with exact digest
+`ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e` and compact
+support dataset
+`output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-compact-dataset.jsonl`
+with dataset digest
+`dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+Classification:
+`m3_carrion_survivor_continuation_v194_repaired_contract_terminal_survival_support_dataset_audit_support_dataset_ready_for_future_explicit_slice_3_training`.
+It recommended exactly
+`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`.
+Lifecycle flags stayed closed for training/runtime/promotion: no training, no
+training artifact, no slice-3 consumption, no runtime artifact, no runtime
+action-selection change, no promotion, no gate relaxation, no support
+generation, and no support expansion. The v194 report and compact dataset are
+durable after
+`gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
+with archive SHA256
+`461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -319,7 +353,12 @@ runtime/replay behavior changes, and recommended v193. v193 consumed no slice,
 found `6/6` repaired-contract support under the action-share cap, and
 recommended
 `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`
-before any slice-3 training.
+before any slice-3 training. v194 consumed no slice, audited that support into
+a compact dataset with digest
+`dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`, and
+recommended the explicit opt-in
+`v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`
+route. The budget remains 2/10 until v195 explicitly consumes slice 3.
 v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
@@ -6499,6 +6538,63 @@ Major milestones from the current state:
   2/10. v193 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, or slice-3 training; it authorizes only the fresh v194
   repaired-contract dataset audit before any slice-3 training.
+- v194: diagnostics-only repaired-contract terminal-survival support dataset
+  audit before slice-3 training. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v194-repaired-contract-terminal-survival-support-dataset-audit`.
+  The command validated the pinned v193 report exact digest
+  `006a1bf33a4c092a9ae584603cddb434b868f21493cde8f710c9d816c66c1a21`,
+  required route
+  `v194_repaired_contract_terminal_survival_support_dataset_audit_before_slice_3_training_no_training`,
+  inherited v192/v191/v190 digests
+  `17c49629d1268ff2f15d248465241775b9205b212222cc56a3132a7b9b8dfdae` /
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5` /
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, and
+  the v193 backup metadata. It audited the six selected support trajectories
+  as path-backed, readable, replay-verified, terminal-fact matched,
+  leakage-clean, action-mask legal under the repaired contract,
+  observation-valid, and target-valid. The compact dataset has `3599` rows and
+  digest `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+  Aggregate support facts: unsupported requested actions `0`, expected
+  same-tick occupancy drift `860`, selected drift `77`, unexpected
+  resolution-invalid events `0`, dominant requested action `stay`, share
+  `0.207558`. Per-seed selected support remained:
+  `13 alive=4 births=12 dominant=eat share=0.2078 drift=9`,
+  `19 alive=2 births=10 dominant=move_north share=0.2430 drift=14`,
+  `29 alive=3 births=12 dominant=stay share=0.2400 drift=23`,
+  `37 alive=3 births=10 dominant=stay share=0.2655 drift=7`,
+  `41 alive=2 births=13 dominant=stay share=0.2123 drift=10`, and
+  `43 alive=5 births=12 dominant=stay share=0.2047 drift=14`.
+  Report:
+  `output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-dataset-audit.json`;
+  exact digest:
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`.
+  Dataset:
+  `output/mind/mind-v3-v194-carrion-survivor-continuation-repaired-contract-terminal-survival-support-compact-dataset.jsonl`;
+  digest:
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`.
+  Classification:
+  `m3_carrion_survivor_continuation_v194_repaired_contract_terminal_survival_support_dataset_audit_support_dataset_ready_for_future_explicit_slice_3_training`.
+  Recommended next route:
+  `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`.
+  Lifecycle flags stayed closed:
+  `training_ran=false`, `training_artifact_created=false`,
+  `slice_3_training_consumed=false`, `runtime_artifact_created=false`,
+  `runtime_action_selection_changed=false`, `promotion_authorized=false`,
+  `gate_relaxation_allowed=false`, `support_generation_ran=false`, and
+  `support_expansion_ran=false`. The v194 report and compact dataset are
+  durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst`,
+  archive SHA256
+  `461295919b0ed81c4d7dc2a4a7ffcb4ceab82c5e4779256205419180129d748e`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T175848Z-v194-repaired-contract-terminal-survival-support-dataset-audit.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  2/10 until v195 explicitly consumes slice 3. v194 is not promotion evidence
+  and authorizes no runtime integration, gate relaxation, or runtime
+  action-selection change.
 
 External checks that support this direction:
 
