@@ -149,6 +149,19 @@ reproducibility, and experiment direction.
   with archive SHA256
   `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
   `rclone check` verification of `0` differences and `2` matching files.
+  v191 has now diagnosed that blocker without rerunning support expansion or
+  training: all `860` v190 unsupported resolved actions were observation-valid
+  movement requests that became invalid under the live resolution mask and
+  resolved to `stay`, classifying the root cause as same-tick action-mask timing
+  / movement-occupancy races. v191 wrote report digest
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`, kept
+  training/runtime/promotion/support-generation flags closed, and routed to
+  `v192_action_resolution_contract_repair_no_training`. The v191 report is
+  durable after
+  `gdrive:evolution-sim-backups/archives/20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst`
+  with archive SHA256
+  `bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
+  `rclone check` verification of `0` differences and `2` matching files.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

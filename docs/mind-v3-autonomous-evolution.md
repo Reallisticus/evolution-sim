@@ -196,6 +196,32 @@ durable after
 with archive SHA256
 `e2c1392b066342a43c78274646bfce6589adacc5a61ec3e296f574fed1e7d333` and
 `rclone check` verification of `0` differences and `2` matching files.
+v191 then ran diagnostics-only targeted legal-support repair / architecture
+review. It validated the pinned v190 exact digest
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, required
+route `v191_targeted_legal_support_repair_or_architecture_review_no_training`,
+v190 backup metadata, `18` branch points, `90` replay-verified continuations,
+`0/6` clean support, `0` unsupported requested actions, `860` unsupported
+resolved actions, and closed training/runtime/promotion lifecycle flags. It did
+not rerun branch exploration or generate support. All `860` unsupported
+resolved records were observation-valid movement requests that became invalid
+under the live resolution mask and resolved to `stay`, with legality reason
+`not_in_resolution_action_mask`. Root cause:
+`action_mask_timing_mismatch_same_tick_movement_occupancy_race`. v191 wrote
+`output/mind/mind-v3-v191-carrion-survivor-continuation-legal-support-repair-architecture-review.json`
+with exact digest
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`, classified
+as
+`m3_carrion_survivor_continuation_v191_legal_support_repair_architecture_review_action_resolution_contract_repair_route_no_training`,
+and recommended exactly `v192_action_resolution_contract_repair_no_training`.
+Lifecycle flags stayed closed: no training, no training artifact, no slice-3
+consumption, no support generation, no runtime artifact, no runtime
+action-selection change, no promotion, and no gate relaxation. The v191 report
+is durable after
+`gdrive:evolution-sim-backups/archives/20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst`
+with archive SHA256
+`bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
+`rclone check` verification of `0` differences and `2` matching files.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -220,8 +246,11 @@ slice-3 training. v189 consumed no slice, blocked slice-3 authorization on
 `1/6` clean legal seed coverage plus dominant requested-action share above
 `0.50`, and recommended targeted legal terminal-survival support expansion
 before any slice-3 training. v190 consumed no slice, targeted those support
-gaps, found `0/6` clean legal support under the cap, and recommended
-`v191_targeted_legal_support_repair_or_architecture_review_no_training`. v180
+gaps, found `0/6` clean legal support under the cap, and recommended v191.
+v191 consumed no slice, generated no support, diagnosed the unsupported
+resolved-action blocker as same-tick action-mask timing / movement-occupancy
+races, and recommended `v192_action_resolution_contract_repair_no_training`.
+v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
 evaluation failed the milestone with zero `carrion_only@120` terminal survivors
@@ -6259,6 +6288,55 @@ Major milestones from the current state:
   2/10. v190 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, or slice-3 training; the next route is a narrower
   legal-support repair or architecture review.
+- v191: diagnostics-only targeted legal-support repair / architecture review.
+  Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v191-legal-support-repair-architecture-review`.
+  The command validated the pinned v190 report exact digest
+  `b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`,
+  required route
+  `v191_targeted_legal_support_repair_or_architecture_review_no_training`,
+  v190 backup metadata, `18` branch points, `90` replay-verified
+  continuations, `0/6` clean support, `0` unsupported requested actions,
+  `860` unsupported resolved actions, and closed training/runtime/promotion
+  lifecycle flags. It did not rerun branch exploration or generate support; it
+  parsed the canonical v190 report plus trajectory files. All `860`
+  unsupported resolved records were movement requests that were valid in the
+  tick-start public observation mask, invalid in the live resolution mask,
+  resolved to `stay`, and carried legality reason
+  `not_in_resolution_action_mask`. v191 classifies the root cause as
+  `action_mask_timing_mismatch_same_tick_movement_occupancy_race`: a
+  counterfactual script/action-resolution contract mismatch caused by
+  deterministic same-tick action ordering, not a v190 digest/count reporting
+  bug, illegal requested action, water/hazard issue, or runtime policy change.
+  Unsupported resolved counts by seed were `{13: 127, 19: 149, 29: 194,
+  37: 117, 41: 133, 43: 140}`. Near-clean seed `29` needs action-diversity cap
+  repair only (`stay` share `0.5154`, unsupported requested/resolved `0/0`);
+  near-clean seed `41` needs action-resolution contract repair plus a small
+  cap repair (`stay` share `0.5014`, unsupported resolved `4`). Report:
+  `output/mind/mind-v3-v191-carrion-survivor-continuation-legal-support-repair-architecture-review.json`;
+  exact digest:
+  `eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`.
+  Classification:
+  `m3_carrion_survivor_continuation_v191_legal_support_repair_architecture_review_action_resolution_contract_repair_route_no_training`.
+  Recommended next route:
+  `v192_action_resolution_contract_repair_no_training`.
+  Lifecycle flags stayed closed: `training_ran=false`,
+  `training_artifact_created=false`, `slice_3_training_consumed=false`,
+  `support_generation_ran=false`, `support_expansion_ran=false`,
+  `runtime_artifact_created=false`, `runtime_action_selection_changed=false`,
+  `promotion_authorized=false`, and `gate_relaxation_allowed=false`. The v191
+  report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst`,
+  archive SHA256
+  `bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst*" --one-way`
+  reported `0` differences and `2` matching files. The campaign budget remains
+  2/10. v191 is not promotion evidence and authorizes no runtime integration,
+  gate relaxation, support generation, or slice-3 training.
 
 External checks that support this direction:
 
