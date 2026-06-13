@@ -239,7 +239,24 @@ with archive SHA256
 `rclone check` verification of `0` differences and `2` matching files. It
 recommended exactly
 `v191_targeted_legal_support_repair_or_architecture_review_no_training`. The
-campaign budget remains 2/10.
+campaign budget remains 2/10. v191 has now run as diagnostics-only
+legal-support repair / architecture review. It validated v190 digest
+`b53de9d19f67f681e334520c030978f97f6f7486e44a9f9808be11de269234b5`, read the
+canonical v190 trajectories, and classified all `860` unsupported resolved
+actions as observation-valid movement requests that became invalid under the
+live resolution mask and resolved to `stay`. Root cause:
+`action_mask_timing_mismatch_same_tick_movement_occupancy_race`. It wrote
+report digest
+`eef890ac70140028f9d407d0b24fca40827947e75153ba5e9563b027a4233ce5`; the
+report is durable after
+`gdrive:evolution-sim-backups/archives/20260613T122723Z-v191-legal-support-repair-architecture-review.tar.zst`
+with archive SHA256
+`bf0184dc2caa6be860723a4b0d6daa35b43264560117dc0794b45c8ce45fdff3` and
+`rclone check` verification of `0` differences and `2` matching files. v191
+generated no support, trained nothing, consumed no slice 3, changed no runtime
+behavior, and recommended exactly
+`v192_action_resolution_contract_repair_no_training`. The campaign budget
+remains 2/10.
 
 Handoffs must not rely on pasted strategic ledgers or thread attachments unless
 the relevant content is included in the new prompt or committed to repo docs.
