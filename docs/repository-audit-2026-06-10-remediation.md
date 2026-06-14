@@ -376,6 +376,28 @@ reproducibility, and experiment direction.
   next route is
   `v201_high_specificity_action_complete_source_contract_audit_no_training`;
   the campaign budget remains 3/10.
+  v201 then completed that no-training source-contract audit. It directly
+  validated the durable v200/v199/v198 exact digests and validated v197 through
+  v198's source-pin validation. It audited v199 candidate-key rows against the
+  frozen v195 artifact utility table without replay, support generation, dataset
+  mutation, or training. The audit confirmed `2714` missing current-valid action
+  demands across present high-specific keys, same high-specific action support
+  count `0`, same high-specific support-floor failures `0`, and
+  lower-specificity-only support for `2362` demands (`0.870302` share). Missing
+  actions absent at both the same high-specific key and known lower-specificity
+  keys accounted for `352` demands. Lower-specificity grafting/imputation
+  remains unsafe and non-authorizing. v201 wrote report digest
+  `ed401b7a4e5ef5ae572040d6a9973e23b51951f2bd273e48797c094132af94d2`,
+  trained nothing, consumed no slice 4, changed no runtime behavior, relaxed no
+  gates, generated or expanded no support, mutated no dataset, and authorized no
+  promotion. The v201 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T205238Z-v201-high-specificity-action-complete-source-contract-audit.tar.zst`
+  with archive SHA256
+  `8502ba0adb72b8052498fb1ce630dc73a0baa06c02c415af0443a1c7e97d1162` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v202_public_masked_model_capacity_harness_contract_no_training`; the campaign
+  budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

@@ -601,6 +601,34 @@ expansion, and no promotion. The v200 report is durable after
 with archive SHA256
 `62cb570dd26ffc9e3c8f5062531b0de6ac955cf27eb3d01a3334e84ade60f1cd` and
 `rclone check` verification of `0` differences and `1` matching file.
+v201 then completed the no-training high-specificity action-complete source
+contract audit. It directly validated the durable v200/v199/v198 exact digests
+and validated v197 through v198's source-pin validation. v201 audited the v199
+candidate-key rows against the frozen v195 artifact utility table without
+replay, support generation, dataset mutation, or training. The audit confirmed
+`2714` missing current-valid action demands across present high-specific keys,
+same high-specific action support count `0`, same high-specific support-floor
+failures `0`, and lower-specificity-only support for `2362` demands
+(`0.870302` share). Missing actions absent at both the same high-specific key
+and known lower-specificity keys accounted for `352` demands. Because
+lower-specificity-only evidence dominates and grafting/imputation remains
+unsafe and non-authorizing, v201 selected
+`v202_public_masked_model_capacity_harness_contract_no_training` rather than any
+slice-4 training route. v201 wrote
+`output/mind/mind-v3-v201-carrion-survivor-continuation-high-specificity-action-complete-source-contract-audit.json`
+with exact digest
+`ed401b7a4e5ef5ae572040d6a9973e23b51951f2bd273e48797c094132af94d2`.
+Classification:
+`m3_carrion_survivor_continuation_v201_lower_specificity_only_evidence_dominates_routes_to_public_masked_model_capacity_harness_contract_no_training`.
+Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+start or consumption, no runtime artifact, no runtime integration, no runtime
+policy or action-selection change, no gate relaxation, no support generation or
+expansion, no dataset mutation, and no promotion. The v201 report is durable
+after
+`gdrive:evolution-sim-backups/archives/20260614T205238Z-v201-high-specificity-action-complete-source-contract-audit.tar.zst`
+with archive SHA256
+`8502ba0adb72b8052498fb1ce630dc73a0baa06c02c415af0443a1c7e97d1162` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
