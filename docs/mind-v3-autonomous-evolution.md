@@ -473,6 +473,47 @@ expansion, and no promotion. The v199 report is durable after
 with archive SHA256
 `38704355bb89da1a9a12c73284baeaa3f6a9f4984ea7d101bf8d249b92e58bdb` and
 `rclone check` verification of `0` differences and `1` matching file.
+v200 then completed the no-training high-specificity action-complete contract
+repair design. It directly validated the pinned v199 exact digest
+`d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`,
+classification
+`m3_carrion_survivor_continuation_v199_high_specificity_action_complete_gap_confirmed_routes_to_repair_design_no_training`,
+and route
+`v200_high_specificity_action_complete_contract_repair_design_no_training`; it
+also directly validated the v198 exact digest
+`91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8` and
+validated v197 through v198's source-pin validation, including the v197 report
+digest `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`
+and required route
+`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`.
+v200 did not rerun replay; it audited v199 report facts and frozen v195 artifact
+metadata. The v199 facts were consistent: `54536` high-specificity candidates
+evaluated, `53842` absent, `694` present, all `694` present occurrences
+present-but-action-incomplete, and present-complete support-floor failures `0`.
+v200 selected
+`source_contract_audit_for_missing_current_valid_actions`, rejected
+existing-artifact selection/probe-only repair, and marked lower-specificity
+imputation, default-stay fallback, mock provenance, blind support expansion, and
+gate relaxation unsafe/non-authorizing. A future dataset/harness must prove
+public observation/mask identity, high-specific key, current-valid actions,
+observed support count per action, no private/fixture/seed leakage, real replay
+provenance, and exact digest pins before any future specificity-gated slice-4
+route can even be considered. v200 wrote
+`output/mind/mind-v3-v200-carrion-survivor-continuation-high-specificity-action-complete-contract-repair-design.json`
+with exact digest
+`71d8959ac4bdb73a45c888e159ea032ac3a5064352c890eee9914356bbb3184c`.
+Classification:
+`m3_carrion_survivor_continuation_v200_existing_artifact_action_incomplete_routes_to_source_contract_audit_no_training`.
+It recommended exactly
+`v201_high_specificity_action_complete_source_contract_audit_no_training`.
+Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+start or consumption, no runtime artifact, no runtime integration, no runtime
+policy or action-selection change, no gate relaxation, no support generation or
+expansion, and no promotion. The v200 report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T202942Z-v200-high-specificity-action-complete-contract-repair-design-qa-repair.tar.zst`
+with archive SHA256
+`62cb570dd26ffc9e3c8f5062531b0de6ac955cf27eb3d01a3334e84ade60f1cd` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -6983,6 +7024,54 @@ Major milestones from the current state:
   "20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst" --one-way`
   reported `0` differences and `1` matching file. The campaign budget remains
   3/10. Do not route directly to slice-4 training from v199.
+- `2026-06-14` v200 high-specificity action-complete contract repair design:
+  no-training command
+  `npm run sim:mind:v3:carrion-survivor-continuation-v200-high-specificity-action-complete-contract-repair-design`.
+  v200 directly validated the pinned v199 report digest
+  `d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`,
+  classification
+  `m3_carrion_survivor_continuation_v199_high_specificity_action_complete_gap_confirmed_routes_to_repair_design_no_training`,
+  and required route
+  `v200_high_specificity_action_complete_contract_repair_design_no_training`;
+  it also directly validated the v198 exact digest
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8` and
+  validated v197 through v198's source-pin validation, including the v197 report
+  digest `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`
+  and required route
+  `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`.
+  It did not rerun replay. It audited the v199 report and frozen v195 artifact
+  metadata, found the v199 facts consistent (`54536` evaluated, `53842` absent,
+  `694` present, all `694` present occurrences action-incomplete,
+  support-floor-only failures `0`), and selected repair class
+  `source_contract_audit_for_missing_current_valid_actions`. v200 forbids
+  lower-specificity imputation, default-stay fallback, mock provenance, blind
+  support expansion, and gate relaxation as unsafe/non-authorizing. A future
+  dataset/harness must prove public observation/mask identity, high-specific
+  key, current-valid actions, observed support count per action, no
+  private/fixture/seed leakage, real replay provenance, and exact digest pins
+  before any future specificity-gated slice-4 route can even be considered.
+  v200 wrote
+  `output/mind/mind-v3-v200-carrion-survivor-continuation-high-specificity-action-complete-contract-repair-design.json`;
+  exact digest:
+  `71d8959ac4bdb73a45c888e159ea032ac3a5064352c890eee9914356bbb3184c`.
+  Classification:
+  `m3_carrion_survivor_continuation_v200_existing_artifact_action_incomplete_routes_to_source_contract_audit_no_training`.
+  Recommended next route:
+  `v201_high_specificity_action_complete_source_contract_audit_no_training`.
+  Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+  start or consumption, no runtime artifact, no runtime integration, no runtime
+  policy or action-selection change, no gate relaxation, no support generation
+  or expansion, and no promotion. The v200 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260614T202942Z-v200-high-specificity-action-complete-contract-repair-design-qa-repair.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260614T202942Z-v200-high-specificity-action-complete-contract-repair-design-qa-repair.tar.zst`,
+  archive SHA256
+  `62cb570dd26ffc9e3c8f5062531b0de6ac955cf27eb3d01a3334e84ade60f1cd`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260614T202942Z-v200-high-specificity-action-complete-contract-repair-design-qa-repair.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  3/10. Do not route directly to slice-4 training from v200.
 
 External checks that support this direction:
 

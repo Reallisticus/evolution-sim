@@ -343,6 +343,39 @@ reproducibility, and experiment direction.
   next route is
   `v200_high_specificity_action_complete_contract_repair_design_no_training`;
   the campaign budget remains 3/10.
+  v200 then completed the no-training high-specificity action-complete contract
+  repair design. It directly validated the pinned v199 digest
+  `d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`,
+  classification
+  `m3_carrion_survivor_continuation_v199_high_specificity_action_complete_gap_confirmed_routes_to_repair_design_no_training`,
+  and route
+  `v200_high_specificity_action_complete_contract_repair_design_no_training`;
+  it also directly validated the v198 exact digest
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8` and
+  validated v197 through v198's source-pin validation, including the v197 report
+  digest `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`
+  and required route
+  `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`.
+  v200 did not rerun replay; it audited v199 report facts and frozen v195
+  artifact metadata. Facts were consistent: `54536` high-specificity candidates
+  evaluated, `53842` absent, `694` present, all `694` present occurrences
+  present-but-action-incomplete, and present-complete support-floor failures `0`.
+  It selected repair class
+  `source_contract_audit_for_missing_current_valid_actions`, rejected
+  existing-artifact selection/probe-only repair, and marked lower-specificity
+  imputation, default-stay fallback, mock provenance, blind support expansion,
+  and gate relaxation as unsafe/non-authorizing. v200 wrote report digest
+  `71d8959ac4bdb73a45c888e159ea032ac3a5064352c890eee9914356bbb3184c`,
+  trained nothing, consumed no slice 4, changed no runtime behavior, relaxed no
+  gates, generated or expanded no support, and authorized no promotion. The
+  v200 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T202942Z-v200-high-specificity-action-complete-contract-repair-design-qa-repair.tar.zst`
+  with archive SHA256
+  `62cb570dd26ffc9e3c8f5062531b0de6ac955cf27eb3d01a3334e84ade60f1cd` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v201_high_specificity_action_complete_source_contract_audit_no_training`;
+  the campaign budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.
