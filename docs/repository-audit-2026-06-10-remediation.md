@@ -314,6 +314,35 @@ reproducibility, and experiment direction.
   next route is
   `v199_high_specificity_action_complete_contract_audit_no_training`; the
   campaign budget remains 3/10.
+  v199 then completed the no-training high-specificity action-complete contract
+  audit. It validated the pinned v198 digest
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`,
+  classification
+  `m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`,
+  route `v199_high_specificity_action_complete_contract_audit_no_training`,
+  primary blocker `high_specificity_action_incomplete`, archive pin, and closed
+  lifecycle flags. It reran only the required candidate-key diagnostics with
+  transition-value action override disabled. The audit evaluated `54536`
+  high-specificity candidate key/category occurrences: `53842` absent, `694`
+  present, and all `694` present occurrences were present-but-action-incomplete.
+  Present-complete observed-support-floor failures were `0`; missing
+  current-valid action counts across present high-specificity keys were
+  `eat=628`, `move_west=475`, `move_south=469`, `move_east=339`, `stay=333`,
+  `move_north=245`, `attack_west=80`, `attack_east=76`, `drink=65`, and
+  `attack_north=4`. Heuristic action-source count was `0`, runtime
+  action-selection changes were `0`, and support generation/expansion stayed
+  closed. v199 wrote report digest
+  `d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`,
+  trained nothing, consumed no slice 4, changed no runtime behavior, relaxed no
+  gates, generated or expanded no support, and authorized no promotion. The
+  v199 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst`
+  with archive SHA256
+  `38704355bb89da1a9a12c73284baeaa3f6a9f4984ea7d101bf8d249b92e58bdb` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v200_high_specificity_action_complete_contract_repair_design_no_training`;
+  the campaign budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

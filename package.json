@@ -140,6 +140,7 @@
         "sim:mind:v3:carrion-survivor-continuation-v196-repaired-contract-slice-3-failure-response": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v196_repaired_contract_slice_3_failure_response",
         "sim:mind:v3:carrion-survivor-continuation-v197-coverage-abstention-repair-design": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v197_coverage_abstention_repair_design",
         "sim:mind:v3:carrion-survivor-continuation-v198-high-specificity-coverage-or-model-capacity-repair": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v198_high_specificity_coverage_or_model_capacity_repair",
+        "sim:mind:v3:carrion-survivor-continuation-v199-high-specificity-action-complete-contract-audit": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_carrion_survivor_continuation_v199_high_specificity_action_complete_contract_audit",
         "sim:mind:v3:first-recovery-inspector-bundle": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_first_recovery_inspector_bundle",
     "sim:mind:v3:support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_support_gated_residual_runtime",
     "sim:mind:v3:action-conditioned-support-gated-residual-runtime": "PYTHONHASHSEED=0 PYTHONPATH=python python3 -m evolution_sim.cli.mind_v3_action_conditioned_support_gated_residual_runtime",

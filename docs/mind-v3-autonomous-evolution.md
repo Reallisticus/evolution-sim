@@ -439,6 +439,40 @@ expansion, and no promotion. The v198 report is durable after
 with archive SHA256
 `6d9627c305e56d9083861123e4114635c30c1ae2d939d499026fa73d8f63dbcf` and
 `rclone check` verification of `0` differences and `1` matching file.
+v199 then ran the no-training high-specificity action-complete contract audit.
+It validated the pinned v198 exact digest
+`91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`,
+classification
+`m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`,
+route `v199_high_specificity_action_complete_contract_audit_no_training`,
+primary blocker `high_specificity_action_incomplete`, archive pin, and closed
+v198 lifecycle flags. Because v198 kept only aggregate candidate coverage, v199
+reran the same diagnostic replay with transition-value action override disabled
+to collect per-key/per-action evidence. The audit evaluated `54536`
+high-specificity candidate key/category occurrences: `53842` absent, `694`
+present, and all `694` present occurrences were present-but-action-incomplete;
+present-complete observed-support-floor failures were `0`. Missing
+current-valid action counts across present high-specificity keys were `eat=628`,
+`move_west=475`, `move_south=469`, `move_east=339`, `stay=333`,
+`move_north=245`, `attack_west=80`, `attack_east=76`, `drink=65`, and
+`attack_north=4`. Heuristic action-source count was `0`, runtime
+action-selection changes were `0`, and support generation/expansion stayed
+closed. v199 wrote
+`output/mind/mind-v3-v199-carrion-survivor-continuation-high-specificity-action-complete-contract-audit.json`
+with exact digest
+`d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`.
+Classification:
+`m3_carrion_survivor_continuation_v199_high_specificity_action_complete_gap_confirmed_routes_to_repair_design_no_training`.
+It recommended exactly
+`v200_high_specificity_action_complete_contract_repair_design_no_training`.
+Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+start or consumption, no runtime artifact, no runtime integration, no runtime
+policy or action-selection change, no gate relaxation, no support generation or
+expansion, and no promotion. The v199 report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst`
+with archive SHA256
+`38704355bb89da1a9a12c73284baeaa3f6a9f4984ea7d101bf8d249b92e58bdb` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -6909,6 +6943,46 @@ Major milestones from the current state:
   "20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst" --one-way`
   reported `0` differences and `1` matching file. The campaign budget remains
   3/10. Do not route directly to slice-4 training from v198.
+- `2026-06-14` v199 high-specificity action-complete contract audit:
+  no-training command
+  `npm run sim:mind:v3:carrion-survivor-continuation-v199-high-specificity-action-complete-contract-audit`.
+  v199 validated the pinned v198 report digest
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`,
+  classification
+  `m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`,
+  required route `v199_high_specificity_action_complete_contract_audit_no_training`,
+  primary blocker `high_specificity_action_incomplete`, archive pin, and closed
+  lifecycle flags. It reran only the needed real candidate-key diagnostics with
+  transition-value action override disabled. The audit found `54536`
+  high-specificity candidate occurrences: `53842` absent, `694` present, and
+  all `694` present occurrences present-but-action-incomplete. Present-complete
+  observed-support-floor failures were `0`; heuristic action-source count was
+  `0`; runtime action-selection changes were `0`; support generation and
+  expansion stayed closed. Missing current-valid action counts across present
+  high-specificity keys were `eat=628`, `move_west=475`, `move_south=469`,
+  `move_east=339`, `stay=333`, `move_north=245`, `attack_west=80`,
+  `attack_east=76`, `drink=65`, and `attack_north=4`. v199 wrote
+  `output/mind/mind-v3-v199-carrion-survivor-continuation-high-specificity-action-complete-contract-audit.json`;
+  exact digest:
+  `d1111534a01d8cd36d6a8f309b6b05eb28f829c382e2cba6da1f58e011b4d04c`.
+  Classification:
+  `m3_carrion_survivor_continuation_v199_high_specificity_action_complete_gap_confirmed_routes_to_repair_design_no_training`.
+  Recommended next route:
+  `v200_high_specificity_action_complete_contract_repair_design_no_training`.
+  Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+  start or consumption, no runtime artifact, no runtime integration, no runtime
+  policy or action-selection change, no gate relaxation, no support generation
+  or expansion, and no promotion. The v199 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst`,
+  archive SHA256
+  `38704355bb89da1a9a12c73284baeaa3f6a9f4984ea7d101bf8d249b92e58bdb`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260614T195931Z-v199-high-specificity-action-complete-contract-audit.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  3/10. Do not route directly to slice-4 training from v199.
 
 External checks that support this direction:
 
