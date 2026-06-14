@@ -407,6 +407,38 @@ report is durable after
 with archive SHA256
 `f11dd5c9cd3eea3f30c2854320a435035277b74b4792f008cd687235ad2b2b40` and
 `rclone check` verification of `0` differences and `1` matching file.
+v198 then ran the no-training high-specificity coverage/model-capacity repair
+contract before slice 4. It validated the pinned v197 exact digest
+`8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`, required
+route
+`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`,
+inherited v196/v195 pins, real replay provenance, and closed lifecycle flags.
+The real probe used the frozen v195 artifact with transition-value action
+override disabled. The artifact has `7457` high-specificity keys, but live replay
+had high-specificity key presence in only `430/13634` decisions, no
+high-specificity candidate complete for current valid actions, no high-specificity
+observed-support-floor pass, and no selected high-specificity source. The
+candidate breakdown found `694` present high-specificity key/category
+occurrences, all present-but-action-incomplete. Low-specificity collapse stayed
+blocked (`7681` low-specificity would-be rejections), heuristic action-source
+count stayed `0`, broad/carrion alive-birth regressions were empty, dominant
+requested action was `eat` at share `0.403403`, and `carrion_only@120` terminal
+survivors stayed `0`. v198 wrote
+`output/mind/mind-v3-v198-carrion-survivor-continuation-high-specificity-coverage-or-model-capacity-repair.json`
+with exact digest
+`91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`.
+Classification:
+`m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`.
+It recommended exactly
+`v199_high_specificity_action_complete_contract_audit_no_training`.
+Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+start or consumption, no runtime artifact, no runtime integration, no runtime
+policy or action-selection change, no gate relaxation, no support generation or
+expansion, and no promotion. The v198 report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst`
+with archive SHA256
+`6d9627c305e56d9083861123e4114635c30c1ae2d939d499026fa73d8f63dbcf` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -451,9 +483,10 @@ route. v195 consumed slice 3/10 and failed shadow acceptance on zero
 diagnosed the mechanism as low-specificity artifact coverage collapse to `eat`
 with miss abstention, not label imbalance alone and not a default `stay`
 fallback on misses. v197 consumed no slice, blocked that known low-specificity
-override collapse, and showed exact/high-specificity coverage is still `0.0`,
-so the next route is
-`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`;
+override collapse, and showed exact/high-specificity coverage was still `0.0`.
+v198 consumed no slice and showed live high-specificity keys exist but are
+incomplete for current valid actions, so the next route is
+`v199_high_specificity_action_complete_contract_audit_no_training`;
 no runtime integration, promotion, gate relaxation, slice-4 training, old
 feasibility, counterfactual, IQL, scorer, blind support expansion, or
 v180/v186 rerun is authorized. The budget remains 3/10.
@@ -6832,6 +6865,50 @@ Major milestones from the current state:
   "20260614T180236Z-v197-coverage-abstention-repair-design.tar.zst" --one-way`
   reported `0` differences and `1` matching file. The campaign budget remains
   3/10. Do not route directly to slice-4 training from v197.
+
+- `2026-06-14` v198 high-specificity coverage/model-capacity repair: no-training
+  real replay probe before slice 4. Command:
+  `npm run sim:mind:v3:carrion-survivor-continuation-v198-high-specificity-coverage-or-model-capacity-repair`.
+  v198 validated the pinned v197 report
+  `output/mind/mind-v3-v197-carrion-survivor-continuation-coverage-abstention-repair-design.json`;
+  v197 exact digest:
+  `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`;
+  required route
+  `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`;
+  inherited v196/v195 pins; and closed lifecycle flags. The probe loaded the
+  frozen v195 artifact and ran real broad plus `carrion_only@120` replay with
+  transition-value action override disabled. The artifact table has `7457`
+  high-specificity keys, but live replay found high-specificity key presence in
+  only `430/13634` decisions (`0.031539` share), high-specificity
+  complete-for-current-valid-actions share `0.0`, observed-support-floor share
+  `0.0`, and selected high-specificity source share `0.0`. Across ordered high
+  categories, `694` present high-specificity key/category occurrences were all
+  present-but-action-incomplete. Low-specificity collapse stayed blocked with
+  `7681` low-specificity would-be rejections, heuristic action-source count
+  stayed `0`, broad and carrion alive/birth regressions were empty, dominant
+  requested action was `eat` at share `0.403403`, and `carrion_only@120`
+  terminal survivors stayed `0`. v198 wrote
+  `output/mind/mind-v3-v198-carrion-survivor-continuation-high-specificity-coverage-or-model-capacity-repair.json`;
+  exact digest:
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`.
+  Classification:
+  `m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`.
+  Recommended next route:
+  `v199_high_specificity_action_complete_contract_audit_no_training`.
+  Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+  start or consumption, no runtime artifact, no runtime integration, no runtime
+  policy or action-selection change, no gate relaxation, no support generation
+  or expansion, and no promotion. The v198 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst`,
+  archive SHA256
+  `6d9627c305e56d9083861123e4114635c30c1ae2d939d499026fa73d8f63dbcf`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  3/10. Do not route directly to slice-4 training from v198.
 
 External checks that support this direction:
 

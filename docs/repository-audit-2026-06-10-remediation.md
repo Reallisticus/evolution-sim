@@ -286,6 +286,34 @@ reproducibility, and experiment direction.
   next route is
   `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`;
   the campaign budget remains 3/10.
+  v198 then completed that no-training high-specificity coverage/model-capacity
+  repair. It validated the pinned v197 digest
+  `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`,
+  required route
+  `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`,
+  inherited v196/v195 pins, real replay provenance, and closed lifecycle flags.
+  The frozen v195 artifact has `7457` high-specificity keys, but real broad plus
+  `carrion_only@120` replay with transition-value action override disabled found
+  high-specificity key presence in only `430/13634` decisions, complete
+  high-specificity current-valid-action coverage `0.0`, observed-support-floor
+  pass share `0.0`, and selected high-specificity source share `0.0`. All `694`
+  present high-specificity key/category occurrences were
+  present-but-action-incomplete. Low-specificity collapse remained blocked with
+  `7681` low-specificity would-be rejections, heuristic action-source count
+  `0`, no broad/carrion alive-birth regressions, dominant requested action `eat`
+  at share `0.403403`, and `carrion_only@120` terminal survivors still `0`.
+  v198 wrote report digest
+  `91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`,
+  trained nothing, consumed no slice 4, changed no runtime behavior, relaxed no
+  gates, generated or expanded no support, and authorized no promotion. The
+  v198 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst`
+  with archive SHA256
+  `6d9627c305e56d9083861123e4114635c30c1ae2d939d499026fa73d8f63dbcf` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v199_high_specificity_action_complete_contract_audit_no_training`; the
+  campaign budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

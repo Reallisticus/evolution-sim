@@ -490,6 +490,43 @@ report is durable after
 with archive SHA256
 `f11dd5c9cd3eea3f30c2854320a435035277b74b4792f008cd687235ad2b2b40` and
 `rclone check` verification of `0` differences and `1` matching file.
+v198 then completed the no-training high-specificity coverage gap /
+model-capacity repair contract before any slice-4 training. It validated the
+pinned v197 report digest
+`8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`,
+required route
+`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`,
+inherited v196/v195 pins, v197 real replay provenance, and closed lifecycle
+flags. The v198 probe loaded the frozen v195 artifact and ran real replay over
+the same broad and `carrion_only@120` diagnostic surfaces with transition-value
+action override disabled, so default runtime action selection stayed unchanged.
+The artifact contains `7457` high-specificity feature keys, but live replay had
+high-specificity key presence in only `430/13634` decisions
+(`0.031539` share), high-specificity complete-for-current-valid-action share
+`0.0`, observed-support-floor share `0.0`, and selected high-specificity source
+share `0.0`. The high-specificity candidate breakdown found `694` present
+high-specificity key/category occurrences and all `694` were
+present-but-action-incomplete; imputed, support-floor-only, and unclear-best
+high-specificity blockers were `0`. Low-specificity collapse remained blocked
+with `7681` low-specificity would-be rejections, heuristic action-source count
+`0`, no broad or carrion alive/birth regressions, dominant requested action
+`eat` at share `0.403403`, and `carrion_only@120` terminal survivors still `0`.
+v198 wrote
+`output/mind/mind-v3-v198-carrion-survivor-continuation-high-specificity-coverage-or-model-capacity-repair.json`
+with exact digest
+`91d4132c07ea18b0603626d4c080bdfed01f39677594737cda3ca0233fd95af8`.
+Classification:
+`m3_carrion_survivor_continuation_v198_high_specificity_action_complete_or_support_floor_gap_routes_to_contract_audit_no_training`.
+It recommended exactly
+`v199_high_specificity_action_complete_contract_audit_no_training`.
+Lifecycle stayed closed: no training, no fit, no training artifact, no slice-4
+start or consumption, no runtime artifact, no runtime integration, no runtime
+policy or action-selection change, no gate relaxation, no support generation or
+expansion, and no promotion. The v198 report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T191500Z-v198-high-specificity-coverage-or-model-capacity-repair.tar.zst`
+with archive SHA256
+`6d9627c305e56d9083861123e4114635c30c1ae2d939d499026fa73d8f63dbcf` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -535,9 +572,11 @@ dominant requested-action share `0.9422`, and broad alive/birth regressions.
 v196 diagnosed the new blocker as low-specificity artifact coverage collapse to
 `eat` with miss abstention, not label imbalance alone and not a default `stay`
 fallback on misses. v197 blocked that known low-specificity override collapse
-but proved exact/high-specificity coverage is still too low for blind slice-4
-training. The next same-lane route is
-`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`,
+but proved exact/high-specificity coverage was still too low for blind slice-4
+training. v198 then showed the remaining high-specificity blocker is not another
+low-specificity collapse: high-specificity live keys exist but are incomplete for
+current valid actions. The next same-lane route is
+`v199_high_specificity_action_complete_contract_audit_no_training`,
 not runtime integration, not promotion, not gate relaxation, not slice-4
 training, and not another old feasibility, counterfactual, IQL, scorer, blind
 support expansion, or v180/v186 rerun. The campaign budget remains 3/10.

@@ -218,6 +218,39 @@ class TransitionValueScorer:
             min_observed_support_count=min_observed_support_count,
         )
 
+    def candidate_key_coverage(
+        self,
+        *,
+        observation_input: Mapping[str, object],
+        valid_action_mask: Mapping[str, bool] | Sequence[str],
+        state: RolloutContextState,
+        min_observed_support_count: int = 1,
+    ) -> list[dict[str, object]]:
+        valid_actions = _valid_actions_from_mask(valid_action_mask)
+        if not valid_actions:
+            return []
+        keys = transition_value_feature_keys(
+            observation_input=observation_input,
+            valid_action_mask=valid_action_mask,
+            state=state,
+        )
+        tables = _mapping(self.artifact.get("utility_tables"))
+        feature_table = _mapping(tables.get("feature_action_utility"))
+        coverage: list[dict[str, object]] = []
+        for index, key in enumerate(keys):
+            key_text = str(key)
+            coverage.append(
+                _candidate_key_coverage_result(
+                    rank=index,
+                    source_key=key_text,
+                    key_present=key_text in feature_table,
+                    value=feature_table.get(key_text),
+                    valid_actions=valid_actions,
+                    min_observed_support_count=min_observed_support_count,
+                )
+            )
+        return coverage
+
     def predict(
         self,
         *,
@@ -715,6 +748,104 @@ def _score_result(
             and clear_best
             and set(valid_scores) == set(valid_actions)
         ),
+    }
+
+
+def _candidate_key_coverage_result(
+    *,
+    rank: int,
+    source_key: str,
+    key_present: bool,
+    value: object,
+    valid_actions: Sequence[str],
+    min_observed_support_count: int,
+) -> dict[str, object]:
+    scored = _partial_scores_from_action_stats(value, valid_actions=valid_actions)
+    score = _score_result(
+        predicted_action=scored["predicted_action"],
+        scores=scored["scores"],
+        score_counts=scored["score_counts"],
+        score_imputed=scored["score_imputed"],
+        source="feature_action_utility",
+        source_key=source_key,
+        valid_actions=valid_actions,
+        min_observed_support_count=min_observed_support_count,
+    )
+    return {
+        "rank": int(rank),
+        "source_key": source_key,
+        "source_key_category": score["source_key_category"],
+        "key_present": bool(key_present),
+        "valid_actions": list(valid_actions),
+        "complete_for_current_valid_actions": score[
+            "supported_scores_for_all_valid_actions"
+        ],
+        "observed_scores_for_all_valid_actions": score[
+            "observed_scores_for_all_valid_actions"
+        ],
+        "observed_support_floor_satisfied_for_all_valid_actions": score[
+            "observed_support_floor_satisfied_for_all_valid_actions"
+        ],
+        "has_imputed_valid_action_score": score["has_imputed_valid_action_score"],
+        "imputed_valid_action_score_count": score[
+            "imputed_valid_action_score_count"
+        ],
+        "observed_valid_action_score_count": score[
+            "observed_valid_action_score_count"
+        ],
+        "missing_valid_action_score_count": score[
+            "missing_valid_action_score_count"
+        ],
+        "valid_action_support_counts": score["valid_action_support_counts"],
+        "valid_action_observed_support_counts": score[
+            "valid_action_observed_support_counts"
+        ],
+        "valid_actions_below_observed_support_floor": score[
+            "valid_actions_below_observed_support_floor"
+        ],
+        "low_observed_support_valid_action_score_count": score[
+            "low_observed_support_valid_action_score_count"
+        ],
+        "clear_best_valid_action": score["clear_best_valid_action"],
+        "predicted_action": score["predicted_action"],
+        "raw_predicted_action": score["raw_predicted_action"],
+        "utility_margin": score["utility_margin"],
+        "selected_utility": score["selected_utility"],
+    }
+
+
+def _partial_scores_from_action_stats(
+    value: object,
+    *,
+    valid_actions: Sequence[str],
+) -> dict[str, object]:
+    mapping = _mapping(value)
+    scores: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    imputed: dict[str, bool] = {}
+    for action in valid_actions:
+        action_stats = _mapping(mapping.get(action))
+        count = _int(action_stats.get("count"))
+        counts[action] = max(0, count)
+        try:
+            utility = float(action_stats.get("utility_mean"))
+        except (TypeError, ValueError):
+            continue
+        if count <= 0 or not math.isfinite(utility):
+            continue
+        component_means = _mapping(action_stats.get("component_means"))
+        scores[action] = utility
+        imputed[action] = "imputed_unobserved_action" in component_means
+    predicted = (
+        max(scores, key=lambda action: (scores[action], -ACTION_NAMES.index(action)))
+        if scores
+        else None
+    )
+    return {
+        "predicted_action": predicted,
+        "scores": scores,
+        "score_counts": counts,
+        "score_imputed": imputed,
     }
 
 

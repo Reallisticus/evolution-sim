@@ -192,6 +192,7 @@ class MindV3EvolutionPolicy:
         transition_value_min_observed_support_count: int = 2,
         transition_value_source_key_specificity_gate_enabled: bool = False,
         transition_value_allowed_source_key_categories: Sequence[str] | None = None,
+        transition_value_candidate_key_coverage_diagnostics_enabled: bool = False,
     ) -> None:
         active_artifact_count = sum(
             artifact is not None
@@ -267,6 +268,9 @@ class MindV3EvolutionPolicy:
         )
         self._transition_value_source_key_specificity_gate_enabled = bool(
             transition_value_source_key_specificity_gate_enabled
+        )
+        self._transition_value_candidate_key_coverage_diagnostics_enabled = bool(
+            transition_value_candidate_key_coverage_diagnostics_enabled
         )
         from evolution_sim.mind.transition_value_scorer import (
             TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES,
@@ -1099,13 +1103,26 @@ class MindV3EvolutionPolicy:
         valid_actions = tuple(
             action for action in ACTION_NAMES if bool(action_mask.get(action))
         )
+        state = self._transition_value_state(agent_id)
         score = scorer.score(
             observation_input=observation_input,
             valid_action_mask=action_mask,
-            state=self._transition_value_state(agent_id),
+            state=state,
             min_observed_support_count=(
                 self._transition_value_min_observed_support_count
             ),
+        )
+        candidate_key_coverage = (
+            scorer.candidate_key_coverage(
+                observation_input=observation_input,
+                valid_action_mask=action_mask,
+                state=state,
+                min_observed_support_count=(
+                    self._transition_value_min_observed_support_count
+                ),
+            )
+            if self._transition_value_candidate_key_coverage_diagnostics_enabled
+            else None
         )
         predicted_action = score.get("predicted_action")
         supported_scores = (
@@ -1152,7 +1169,7 @@ class MindV3EvolutionPolicy:
             and isinstance(predicted_action, str)
             and predicted_action != requested_action
         )
-        return {
+        diagnostics: dict[str, object] = {
             "runtime_policy": (
                 MIND_V3_TRANSITION_VALUE_ACTION_OVERRIDE_RUNTIME_POLICY
                 if self._transition_value_action_override
@@ -1219,6 +1236,9 @@ class MindV3EvolutionPolicy:
             ),
             "score": score,
         }
+        if candidate_key_coverage is not None:
+            diagnostics["candidate_key_coverage"] = candidate_key_coverage
+        return diagnostics
 
     def _transition_value_override_rejected_reason(
         self,

@@ -126,6 +126,7 @@ def _mind_v3_policy(
     transition_value_min_observed_support_count: int = 2,
     transition_value_source_key_specificity_gate_enabled: bool = False,
     transition_value_allowed_source_key_categories: list[str] | None = None,
+    transition_value_candidate_key_coverage_diagnostics_enabled: bool = False,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
@@ -150,6 +151,9 @@ def _mind_v3_policy(
         ),
         transition_value_allowed_source_key_categories=(
             transition_value_allowed_source_key_categories
+        ),
+        transition_value_candidate_key_coverage_diagnostics_enabled=(
+            transition_value_candidate_key_coverage_diagnostics_enabled
         ),
     )
 
