@@ -398,6 +398,30 @@ reproducibility, and experiment direction.
   next route is
   `v202_public_masked_model_capacity_harness_contract_no_training`; the campaign
   budget remains 3/10.
+  v202 then completed that no-training public masked model-capacity harness
+  contract. It directly validated the durable v201/v200/v199/v198 exact digests
+  and validated v197 through v198's source-pin validation. It preserved the v201
+  lower-specificity-only blocker facts (`2714` missing current-valid action
+  demands, same high-specific action support `0`, same high-specific
+  below-floor support `0`, lower-specificity-only demands `2362` / `0.870302`,
+  absent same/lower known support `352`, candidate key action coverage count
+  `215`, and artifact feature key count `8575`). The contract defines
+  public-only runtime inputs, forbids fixture/seed/private/provenance/support
+  oracle and split-identity features at inference, requires current-action-mask
+  constrained argmax/sampling with fail-closed abstention, and keeps
+  lower-specificity grafting non-authorizing as a runtime substitute. v202 wrote
+  report digest
+  `5776fd258e7a6ae5c2b650c88f868c74cbfa0fc13c76a0f29fc23e6ab96a1a8a`,
+  trained nothing, consumed no slice 4, changed no runtime/default policy
+  behavior, generated or expanded no support, mutated no dataset, relaxed no
+  gates, and authorized no promotion. The v202 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst`
+  with archive SHA256
+  `285f2f2c68547dc46c5c3cc095282591686fbdf82f4d3ff2d2b6f87a9b25befc` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v203_public_masked_model_capacity_harness_scaffold_no_training`; the campaign
+  budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

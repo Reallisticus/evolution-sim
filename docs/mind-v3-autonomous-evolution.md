@@ -542,6 +542,37 @@ after
 with archive SHA256
 `8502ba0adb72b8052498fb1ce630dc73a0baa06c02c415af0443a1c7e97d1162` and
 `rclone check` verification of `0` differences and `1` matching file.
+v202 then completed the no-training public masked model-capacity harness
+contract. It directly validated v201/v200/v199/v198 exact digests and validated
+v197 through v198's source-pin validation. It preserved the v201
+lower-specificity-only blocker facts (`2714` missing current-valid action
+demands, same high-specific action support `0`, same high-specific below-floor
+support `0`, lower-specificity-only demands `2362` / `0.870302`, absent
+same/lower known support `352`, candidate key action coverage `215`, and
+artifact feature key count `8575`). The v202 contract defines public-only
+runtime inputs, forbids seed/fixture identity, private state, future
+labels/outcomes, provenance/source paths, support-count oracles, and split
+identity at inference, and requires current-action-mask constrained
+argmax/sampling with fail-closed abstention for invalid actions. It also pins
+deterministic replay/split requirements, future artifact metadata, per-seed
+evaluation gates, leakage checks, and rejection of lower-specificity grafting as
+a runtime substitute. v202 wrote
+`output/mind/mind-v3-v202-carrion-survivor-continuation-public-masked-model-capacity-harness-contract.json`
+with exact digest
+`5776fd258e7a6ae5c2b650c88f868c74cbfa0fc13c76a0f29fc23e6ab96a1a8a`.
+Classification:
+`m3_carrion_survivor_continuation_v202_public_masked_model_capacity_harness_contract_ready_for_scaffold_no_training`.
+Recommended next route:
+`v203_public_masked_model_capacity_harness_scaffold_no_training`. Lifecycle
+stayed closed: no training start, no slice-4 consumption, no training artifact,
+no runtime artifact or integration, no runtime/default policy or
+action-selection change, no support generation or expansion, no dataset
+mutation, no gate relaxation, and no promotion. The v202 report is durable
+after
+`gdrive:evolution-sim-backups/archives/20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst`
+with archive SHA256
+`285f2f2c68547dc46c5c3cc095282591686fbdf82f4d3ff2d2b6f87a9b25befc` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -7136,6 +7167,44 @@ Major milestones from the current state:
   "20260614T205238Z-v201-high-specificity-action-complete-source-contract-audit.tar.zst" --one-way`
   reported `0` differences and `1` matching file. The campaign budget remains
   3/10. Do not route directly to slice-4 training from v201.
+- `2026-06-14` v202 public masked model-capacity harness contract: no-training
+  command
+  `npm run sim:mind:v3:carrion-survivor-continuation-v202-public-masked-model-capacity-harness-contract`.
+  v202 directly validated the durable v201/v200/v199/v198 exact digests and
+  validated v197 through v198's source-pin validation. It preserved the v201
+  blocker facts: `2714` missing current-valid action demands, same
+  high-specific action support `0`, same high-specific below-floor support `0`,
+  lower-specificity-only demands `2362` (`0.870302` share), absent same/lower
+  known support `352`, candidate key action coverage count `215`, and artifact
+  feature key count `8575`. The contract defines public observation/current
+  action-mask/history inputs, forbids seed/fixture identity, private state,
+  future outcomes, held-out labels, provenance/source paths, support-count
+  oracles, and split identity at inference, and requires current-action-mask
+  constrained argmax/sampling with fail-closed abstention for invalid actions.
+  Lower-specificity grafting remains non-authorizing as a runtime substitute.
+  v202 wrote
+  `output/mind/mind-v3-v202-carrion-survivor-continuation-public-masked-model-capacity-harness-contract.json`;
+  exact digest:
+  `5776fd258e7a6ae5c2b650c88f868c74cbfa0fc13c76a0f29fc23e6ab96a1a8a`.
+  Classification:
+  `m3_carrion_survivor_continuation_v202_public_masked_model_capacity_harness_contract_ready_for_scaffold_no_training`.
+  Recommended next route:
+  `v203_public_masked_model_capacity_harness_scaffold_no_training`.
+  Lifecycle stayed closed: no training start, no slice-4 consumption, no
+  training artifact, no runtime artifact or integration, no runtime/default
+  policy or action-selection change, no support generation or expansion, no
+  dataset mutation, no gate relaxation, and no promotion. The v202 report is
+  durable after
+  `/Users/njm/evolution-sim-p0-backups/20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst`,
+  archive SHA256
+  `285f2f2c68547dc46c5c3cc095282591686fbdf82f4d3ff2d2b6f87a9b25befc`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  3/10. Do not route directly to slice-4 training from v202.
 
 External checks that support this direction:
 

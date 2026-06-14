@@ -629,6 +629,40 @@ after
 with archive SHA256
 `8502ba0adb72b8052498fb1ce630dc73a0baa06c02c415af0443a1c7e97d1162` and
 `rclone check` verification of `0` differences and `1` matching file.
+v202 then completed the no-training public masked model-capacity harness
+contract. It directly validated the durable v201/v200/v199/v198 exact digests
+and validated v197 through v198's source-pin validation. It preserved the v201
+blocker facts: `2714` missing current-valid action demands, same high-specific
+action support `0`, same high-specific below-floor support `0`,
+lower-specificity-only demands `2362` (`0.870302` share), absent same/lower
+known support `352`, candidate key action coverage count `215`, and artifact
+feature key count `8575`. The contract defines only public runtime inputs
+(`observation_input`, current `action_mask`, and deterministic public
+history/context already available at runtime), forbids seed/fixture identity,
+private world state, future outcomes, held-out labels, provenance/source paths,
+support-count oracles, and train/test split identity at inference, and requires
+current-action-mask-constrained argmax/sampling with fail-closed abstention for
+invalid predictions. It also records deterministic replay/split requirements,
+future artifact metadata, per-seed broad and carrion gates, leakage checks, and
+explicit rejection of lower-specificity grafting as a runtime substitute for
+high-specific current-valid support. v202 wrote
+`output/mind/mind-v3-v202-carrion-survivor-continuation-public-masked-model-capacity-harness-contract.json`
+with exact digest
+`5776fd258e7a6ae5c2b650c88f868c74cbfa0fc13c76a0f29fc23e6ab96a1a8a`.
+Classification:
+`m3_carrion_survivor_continuation_v202_public_masked_model_capacity_harness_contract_ready_for_scaffold_no_training`.
+It recommended exactly
+`v203_public_masked_model_capacity_harness_scaffold_no_training`, not training
+or support expansion. Lifecycle stayed closed: no training start, no slice-4
+consumption, no training artifact, no runtime artifact or integration, no
+runtime/default policy or action-selection change, no support generation or
+expansion, no dataset mutation, no gate relaxation, and no promotion. The v202
+report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T211415Z-v202-public-masked-model-capacity-harness-contract.tar.zst`
+with archive SHA256
+`285f2f2c68547dc46c5c3cc095282591686fbdf82f4d3ff2d2b6f87a9b25befc` and
+`rclone check` verification of `0` differences and `1` matching file. The
+campaign budget remains 3/10.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
