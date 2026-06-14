@@ -316,9 +316,30 @@ Current same-lane work is narrower:
   `gdrive:evolution-sim-backups/archives/20260613T185630Z-v195-repaired-contract-terminal-survival-support-training-slice-3.tar.zst`
   with archive SHA256
   `f4d3785619e3937949654cd586d1896fdc20d89fa3d9f3f14d191748ca776049` and
+  `rclone check` verification of `0` differences and `1` matching file. v196
+  has now run as diagnostics-only slice-3 failure response. It validated the
+  v195 report digest
+  `0d69540a3817b7b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde`, v195
+  artifact digest
+  `9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`,
+  v194 report/dataset digests, required route
+  `v196_repaired_contract_slice_3_failure_response_no_training`, v195 backup
+  metadata, slice-3 consumption, and exact failure facts. It wrote report digest
+  `7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`.
+  The confirmed mechanism was
+  `artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`:
+  exact feature-hit share `0.0`, mask-only feature-hit share `0.778513`,
+  override-applied share `0.782944`, applied override `eat` share `0.939312`,
+  and misses did not default to `stay`, despite training support dominant action
+  share `0.207558`. v196 trained nothing, created no training or runtime
+  artifact, consumed no slice 4, changed no runtime behavior, authorized no
+  promotion, and relaxed no gate. The v196 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst`
+  with archive SHA256
+  `363b4ddb144b8966095c9a1e66f259c418b2a9f4f0c474449fa60d5f06baa45b` and
   `rclone check` verification of `0` differences and `1` matching file. The
-  campaign budget is now 3/10. The current same-lane next route is exactly
-  `v196_repaired_contract_slice_3_failure_response_no_training`;
+  campaign budget remains 3/10. The current same-lane next route is exactly
+  `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`;
 - CLI `--min-*` support overrides are diagnostic only and must not authorize
   training routes.
 
@@ -398,8 +419,10 @@ movement-occupancy races. v192 repaired the support-evidence contract without
 runtime/replay behavior changes. v193 found `6/6` repaired-contract support
 without training or slice-3 consumption. v194 audited that support into a
 compact dataset without training or slice-3 consumption. v195 consumed slice
-3/10 and failed shadow acceptance. Future same-lane work routes to
-`v196_repaired_contract_slice_3_failure_response_no_training`
+3/10 and failed shadow acceptance. v196 diagnosed the failure as
+low-specificity artifact coverage collapse to `eat` without training or
+slice-4 consumption. Future same-lane work routes to
+`v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`
 and must not treat this command as a route back to v179/v180 authorization:
 
 ```bash

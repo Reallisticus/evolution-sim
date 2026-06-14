@@ -351,6 +351,30 @@ durable after
 with archive SHA256
 `f4d3785619e3937949654cd586d1896fdc20d89fa3d9f3f14d191748ca776049` and
 `rclone check` verification of `0` differences and `1` matching file.
+v196 then ran diagnostics-only failure response for the v195 slice-3 failure.
+It validated the pinned v195 report and artifact digests, the v194 report and
+dataset digests, the required v195 failure-response route, v195 backup
+metadata, slice `3/10` consumption, and exact v195 failure facts. Training
+labels were not action-collapsed (`stay` dominant share `0.207558`), but the
+frozen artifact's diagnostic replay showed low-specificity feature coverage
+collapse: combined override-applied share `0.782944`, dominant applied override
+action `eat` at share `0.939312`, mask-only feature-hit share `0.778513`, exact
+feature-hit share `0.0`, and misses abstained rather than defaulting to `stay`.
+The primary mechanism is
+`artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`.
+v186 comparison confirmed that v186 also had zero carrion terminal survivors
+but did not have this v195 `0.9422` action collapse or broad regression
+profile. v196 wrote
+`output/mind/mind-v3-v196-carrion-survivor-continuation-repaired-contract-slice-3-failure-response.json`
+with exact digest
+`7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`.
+Lifecycle stayed closed: no training, no slice-4 consumption, no runtime
+artifact, no runtime action-selection change, no gate relaxation, and no
+promotion. The v196 report is durable after
+`gdrive:evolution-sim-backups/archives/20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst`
+with archive SHA256
+`363b4ddb144b8966095c9a1e66f259c418b2a9f4f0c474449fa60d5f06baa45b` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
@@ -391,11 +415,14 @@ recommended the explicit opt-in
 `v195_repaired_contract_terminal_survival_support_training_slice_3_opt_in`
 route. v195 consumed slice 3/10 and failed shadow acceptance on zero
 `carrion_only@120` terminal survivors, dominant requested-action share
-`0.9422`, and broad alive/birth regressions. The next route is
-`v196_repaired_contract_slice_3_failure_response_no_training`; no runtime
-integration, promotion, gate relaxation, slice-4 training, old feasibility,
-counterfactual, IQL, scorer, blind support expansion, or v180/v186 rerun is
-authorized. The budget is now 3/10.
+`0.9422`, and broad alive/birth regressions. v196 consumed no slice and
+diagnosed the mechanism as low-specificity artifact coverage collapse to `eat`
+with miss abstention, not label imbalance alone and not a default `stay`
+fallback on misses. The next route is
+`v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`; no
+runtime integration, promotion, gate relaxation, slice-4 training, old
+feasibility, counterfactual, IQL, scorer, blind support expansion, or
+v180/v186 rerun is authorized. The budget remains 3/10.
 v180
 consumed the durable pinned v178 authorization and is slice 1 of
 that budget. It trained an opt-in transition-row policy artifact, but shadow
@@ -6676,6 +6703,53 @@ Major milestones from the current state:
   reported `0` differences and `1` matching file. The campaign budget is now
   3/10. v195 is not promotion evidence and authorizes no runtime integration,
   gate relaxation, runtime action-selection change, or slice-4 training.
+
+- `2026-06-14` v196 repaired-contract slice-3 failure response:
+  diagnostics-only. It validated v195 report
+  `output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-training.json`;
+  v195 report exact digest:
+  `0d69540a3817b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde`.
+  It validated v195 artifact
+  `output/mind/mind-v3-v195-carrion-survivor-continuation-repaired-contract-terminal-survival-support-policy-artifact.json`;
+  artifact digest:
+  `9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`.
+  It also validated the inherited v194 report digest
+  `ccd02e7bc4862f8d8797fa21efb3d29fc2034196d2a54a6d42032062e2caaf2e`,
+  v194 compact dataset digest
+  `dd0061fae106fbe9c101c426357b3f78c9b5c4ed5989011baaf9a3cc514c2ffc`,
+  required route `v196_repaired_contract_slice_3_failure_response_no_training`,
+  v195 backup metadata, slice `3/10` consumption, and exact v195 failure
+  facts. v196 inspected the artifact and reran only diagnostics/evaluation
+  against the frozen artifact. Training labels were not the direct collapse
+  source: dominant training action was `stay` at share `0.207558`, while shadow
+  `carrion_only@120` requested actions were dominated by `eat` at share
+  `0.9422`. Lookup diagnostics found combined override-applied share
+  `0.782944`, dominant applied override action `eat` at share `0.939312`,
+  mask-only feature-hit share `0.778513`, exact feature-hit share `0.0`, and
+  missing states did not default to `stay`. The primary mechanism is
+  `artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`:
+  high-specificity feature keys missed, runtime backed off to low-specificity
+  supported keys, and those supported keys produced clear-best `eat` overrides.
+  v186 comparison confirmed that v186 also had zero carrion terminal survivors
+  but not the v195 action collapse or broad regression profile. v196 wrote
+  `output/mind/mind-v3-v196-carrion-survivor-continuation-repaired-contract-slice-3-failure-response.json`;
+  exact digest:
+  `7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`.
+  Lifecycle stayed closed: no training, no training artifact, no slice-4
+  consumption, no runtime artifact, no runtime action-selection change, no
+  gate relaxation, and no promotion. Recommended next route:
+  `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`.
+  The v196 report is durable after
+  `/Users/njm/evolution-sim-p0-backups/20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst`
+  and
+  `gdrive:evolution-sim-backups/archives/20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst`,
+  archive SHA256
+  `363b4ddb144b8966095c9a1e66f259c418b2a9f4f0c474449fa60d5f06baa45b`;
+  `rclone check /Users/njm/evolution-sim-p0-backups
+  gdrive:evolution-sim-backups/archives --include
+  "20260613T213246Z-v196-repaired-contract-slice-3-failure-response.tar.zst" --one-way`
+  reported `0` differences and `1` matching file. The campaign budget remains
+  3/10. Do not route directly to slice-4 training from v196.
 
 External checks that support this direction:
 
