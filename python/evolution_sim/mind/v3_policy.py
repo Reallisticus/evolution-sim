@@ -190,6 +190,8 @@ class MindV3EvolutionPolicy:
         transition_value_action_override: bool = False,
         transition_value_action_override_source_integrity_passed: bool = False,
         transition_value_min_observed_support_count: int = 2,
+        transition_value_source_key_specificity_gate_enabled: bool = False,
+        transition_value_allowed_source_key_categories: Sequence[str] | None = None,
     ) -> None:
         active_artifact_count = sum(
             artifact is not None
@@ -263,6 +265,30 @@ class MindV3EvolutionPolicy:
             1,
             int(transition_value_min_observed_support_count),
         )
+        self._transition_value_source_key_specificity_gate_enabled = bool(
+            transition_value_source_key_specificity_gate_enabled
+        )
+        from evolution_sim.mind.transition_value_scorer import (
+            TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES,
+        )
+
+        allowed_source_key_categories = (
+            transition_value_allowed_source_key_categories
+            if transition_value_allowed_source_key_categories is not None
+            else tuple(sorted(TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES))
+        )
+        self._transition_value_allowed_source_key_categories = frozenset(
+            str(category)
+            for category in allowed_source_key_categories
+            if str(category)
+        )
+        if (
+            self._transition_value_source_key_specificity_gate_enabled
+            and not self._transition_value_allowed_source_key_categories
+        ):
+            raise ValueError(
+                "transition_value_allowed_source_key_categories must not be empty"
+            )
         self._agent_metadata: dict[int, dict[str, object]] = {}
         self._eligibility_traces: dict[
             int,
@@ -1093,6 +1119,19 @@ class MindV3EvolutionPolicy:
             is True
         )
         clear_best = score.get("clear_best_valid_action") is True
+        source_key_category = score.get("source_key_category")
+        if not isinstance(source_key_category, str) or not source_key_category:
+            from evolution_sim.mind.transition_value_scorer import (
+                transition_value_source_key_category,
+            )
+
+            source_key_category = transition_value_source_key_category(
+                str(score.get("score_source") or ""),
+                score.get("source_key"),
+            )
+        source_key_specificity_gate_passed = (
+            source_key_category in self._transition_value_allowed_source_key_categories
+        )
         override_rejected_reason = self._transition_value_override_rejected_reason(
             predicted_action=predicted_action,
             valid_actions=valid_actions,
@@ -1100,6 +1139,12 @@ class MindV3EvolutionPolicy:
             has_imputed_valid_action_score=has_imputed_valid_action_score,
             observed_support_floor_satisfied=observed_support_floor_satisfied,
             clear_best=clear_best,
+            source_key_specificity_gate_enabled=(
+                self._transition_value_source_key_specificity_gate_enabled
+            ),
+            source_key_specificity_gate_passed=(
+                source_key_specificity_gate_passed
+            ),
         )
         override_applied = override_rejected_reason is None
         runtime_action_selection_changed = (
@@ -1162,6 +1207,16 @@ class MindV3EvolutionPolicy:
             ),
             "valid_action_count": len(valid_actions),
             "source_key": score.get("source_key"),
+            "source_key_category": source_key_category,
+            "source_key_specificity_gate_enabled": (
+                self._transition_value_source_key_specificity_gate_enabled
+            ),
+            "source_key_specificity_gate_passed": (
+                source_key_specificity_gate_passed
+            ),
+            "source_key_specificity_allowed_categories": sorted(
+                self._transition_value_allowed_source_key_categories
+            ),
             "score": score,
         }
 
@@ -1174,6 +1229,8 @@ class MindV3EvolutionPolicy:
         has_imputed_valid_action_score: bool,
         observed_support_floor_satisfied: bool,
         clear_best: bool,
+        source_key_specificity_gate_enabled: bool,
+        source_key_specificity_gate_passed: bool,
     ) -> str | None:
         if not self._transition_value_action_override:
             return "override_disabled"
@@ -1191,6 +1248,11 @@ class MindV3EvolutionPolicy:
             return "no_prediction"
         if predicted_action not in set(valid_actions):
             return "invalid_prediction"
+        if (
+            source_key_specificity_gate_enabled
+            and source_key_specificity_gate_passed is not True
+        ):
+            return "low_specificity_feature_key"
         return None
 
     def _update_sequence_history_shadow_state(

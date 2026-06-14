@@ -260,6 +260,32 @@ reproducibility, and experiment direction.
   next same-lane route is
   `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`; the
   campaign budget remains 3/10.
+  v197 then completed that no-training coverage/abstention repair. It
+  validated the pinned v196 digest
+  `7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`, route
+  `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`,
+  mechanism
+  `artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`,
+  and the v195 report/artifact failure pins. The new opt-in source-key
+  specificity gate left default runtime action selection unchanged. With the
+  gate enabled for diagnostic replay, override-applied share fell from
+  `0.782944` to `0.0`, `7681` low-specificity decisions were rejected,
+  heuristic action-source count stayed `0`, broad alive/birth regressions were
+  empty, and dominant requested action `eat` stayed under the cap at share
+  `0.403329`; exact/high-specificity hit share remained `0.0` and
+  `carrion_only@120` terminal survivors remained `0`. Future slice-4 routing
+  from v197 requires real replay provenance; mock or override diagnostics fail
+  closed to coverage or model-capacity repair. v197 wrote report digest
+  `8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`,
+  trained nothing, consumed no slice 4, changed no runtime behavior, relaxed no
+  gates, and authorized no promotion. The v197 report is durable after
+  `gdrive:evolution-sim-backups/archives/20260614T180236Z-v197-coverage-abstention-repair-design.tar.zst`
+  with archive SHA256
+  `f11dd5c9cd3eea3f30c2854320a435035277b74b4792f008cd687235ad2b2b40` and
+  `rclone check` verification of `0` differences and `1` matching file. The
+  next route is
+  `v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`;
+  the campaign budget remains 3/10.
   CI/ML
   reproducibility now has compact push coverage plus an explicit NVIDIA-trainer
   validation path for the optional torch stack.

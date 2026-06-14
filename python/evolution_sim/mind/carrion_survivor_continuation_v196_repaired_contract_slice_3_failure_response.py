@@ -27,6 +27,7 @@ from evolution_sim.mind.evaluation_harness import (
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.transition_value_scorer import (
     load_transition_value_scorer_artifact,
+    transition_value_source_key_category,
 )
 
 M3_CARRION_SURVIVOR_CONTINUATION_V196_REPAIRED_CONTRACT_SLICE_3_FAILURE_RESPONSE_SCHEMA_VERSION = (
@@ -1429,28 +1430,7 @@ def _mechanism_summary(primary: str) -> str:
 
 
 def _source_key_category(score_source: str, source_key: object) -> str:
-    if score_source != "feature_action_utility":
-        return "miss"
-    key = str(source_key or "")
-    if "|ctx=" in key:
-        return "exact_context_feature_hit"
-    if "|coarse=" in key and "|self=" in key and "|nav=" in key:
-        return "self_nav_coarse_feature_hit"
-    if "|self=" in key and "|nav=" in key:
-        return "self_nav_feature_hit"
-    if "|self=" in key and "|coarse=" in key:
-        return "self_coarse_feature_hit"
-    if "|self=" in key:
-        return "self_feature_hit"
-    if "|nav=" in key:
-        return "nav_feature_hit"
-    if "|coarse=" in key:
-        return "coarse_feature_hit"
-    if key == "global":
-        return "global_hit"
-    if key:
-        return "mask_only_hit"
-    return "missing_source_key"
+    return transition_value_source_key_category(score_source, source_key)
 
 
 def _best_action_for_stats(action_stats: Mapping[str, object]) -> str | None:

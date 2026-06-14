@@ -82,6 +82,53 @@ REQUIRED_RECORD_FIELDS = (
     "outcome",
     "reward",
 )
+TRANSITION_VALUE_LOW_SPECIFICITY_SOURCE_KEY_CATEGORIES = frozenset(
+    {
+        "mask_only_hit",
+        "coarse_feature_hit",
+        "self_feature_hit",
+        "self_coarse_feature_hit",
+    }
+)
+TRANSITION_VALUE_HIGH_SPECIFICITY_SOURCE_KEY_CATEGORIES = frozenset(
+    {
+        "exact_context_feature_hit",
+        "self_nav_coarse_feature_hit",
+        "self_nav_feature_hit",
+        "nav_feature_hit",
+    }
+)
+TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES = (
+    TRANSITION_VALUE_HIGH_SPECIFICITY_SOURCE_KEY_CATEGORIES
+)
+
+
+def transition_value_source_key_category(
+    score_source: str,
+    source_key: object,
+) -> str:
+    if score_source != "feature_action_utility":
+        return "miss"
+    key = str(source_key or "")
+    if "|ctx=" in key:
+        return "exact_context_feature_hit"
+    if "|coarse=" in key and "|self=" in key and "|nav=" in key:
+        return "self_nav_coarse_feature_hit"
+    if "|self=" in key and "|nav=" in key:
+        return "self_nav_feature_hit"
+    if "|self=" in key and "|coarse=" in key:
+        return "self_coarse_feature_hit"
+    if "|self=" in key:
+        return "self_feature_hit"
+    if "|nav=" in key:
+        return "nav_feature_hit"
+    if "|coarse=" in key:
+        return "coarse_feature_hit"
+    if key == "global":
+        return "global_hit"
+    if key:
+        return "mask_only_hit"
+    return "missing_source_key"
 
 
 class TransitionValueScorerError(ValueError):
@@ -579,6 +626,7 @@ def _score_result(
 ) -> dict[str, object]:
     valid_action_set = set(valid_actions)
     observed_support_floor = max(1, int(min_observed_support_count))
+    source_key_category = transition_value_source_key_category(source, source_key)
     valid_scores = {
         action: _round(float(scores[action]))
         for action in ACTION_NAMES
@@ -635,6 +683,7 @@ def _score_result(
         "raw_predicted_action": predicted_action,
         "score_source": source,
         "source_key": source_key,
+        "source_key_category": source_key_category,
         "valid_actions": list(valid_actions),
         "valid_action_scores": valid_scores,
         "valid_action_support_counts": valid_support_counts,

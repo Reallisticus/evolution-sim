@@ -455,6 +455,41 @@ promotion. The v196 report is durable after
 with archive SHA256
 `363b4ddb144b8966095c9a1e66f259c418b2a9f4f0c474449fa60d5f06baa45b` and
 `rclone check` verification of `0` differences and `1` matching file.
+v197 then completed the no-training, contract-first coverage/abstention repair
+for the v195/v196 failure. It added an opt-in transition-value source-key
+specificity gate that rejects low-specificity supported hits without changing
+default runtime action selection. v197 validated the pinned v196 report digest
+`7b3707b60575a14aee806b3989615582369f021f1ceced80e664e4fdd1794d90`, required
+route `v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`,
+v196 mechanism
+`artifact_low_specificity_feature_coverage_collapse_to_eat_with_miss_abstention`,
+v195 report digest
+`0d69540a3817b7c10f19b440bc63d9651b26a5c9d4d199f55b48253e2edcde`, and v195
+artifact digest
+`9cc3df4b5d87af5dd4dfb0e79f7282debbcc9f98ba7393f42a45d360e46c4470`. With the
+v197 gate enabled, diagnostic replay reduced override-applied share from
+`0.782944` to `0.0`, rejected `7681` low-specificity decisions, kept heuristic
+action-source count at `0`, had no broad alive/birth regressions, and kept
+dominant requested action `eat` under the cap at share `0.403329`; however,
+exact/high-specificity hit share stayed `0.0` and `carrion_only@120` terminal
+survivors stayed `0`. v197 route logic requires real replay provenance for any
+future slice-4 route; mock or override diagnostics fail closed to coverage or
+model-capacity repair. v197 wrote
+`output/mind/mind-v3-v197-carrion-survivor-continuation-coverage-abstention-repair-design.json`
+with exact digest
+`8523d9cfcfbee2185ff638e463808818f29459d6ec4a51590072b15a3e341c0a`.
+Classification:
+`m3_carrion_survivor_continuation_v197_coverage_abstention_repair_low_specificity_collapse_blocked_routes_to_coverage_or_model_capacity_no_training`.
+It recommended exactly
+`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`.
+Lifecycle stayed closed: no training, no training artifact, no slice-4
+consumption, no runtime artifact, no runtime action-selection change, no gate
+relaxation, no support generation or expansion, and no promotion. The v197
+report is durable after
+`gdrive:evolution-sim-backups/archives/20260614T180236Z-v197-coverage-abstention-repair-design.tar.zst`
+with archive SHA256
+`f11dd5c9cd3eea3f30c2854320a435035277b74b4792f008cd687235ad2b2b40` and
+`rclone check` verification of `0` differences and `1` matching file.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
@@ -499,11 +534,13 @@ slice 3/10 and failed shadow acceptance on zero carrion terminal survivors,
 dominant requested-action share `0.9422`, and broad alive/birth regressions.
 v196 diagnosed the new blocker as low-specificity artifact coverage collapse to
 `eat` with miss abstention, not label imbalance alone and not a default `stay`
-fallback on misses. The next same-lane route is
-`v197_slice_4_design_requires_coverage_or_abstention_repair_no_training`, not
-runtime integration, not promotion, not gate relaxation, not slice-4 training,
-and not another old feasibility, counterfactual, IQL, scorer, blind support
-expansion, or v180/v186 rerun. The campaign budget remains 3/10.
+fallback on misses. v197 blocked that known low-specificity override collapse
+but proved exact/high-specificity coverage is still too low for blind slice-4
+training. The next same-lane route is
+`v198_high_specificity_coverage_or_model_capacity_repair_before_slice_4_training_no_training`,
+not runtime integration, not promotion, not gate relaxation, not slice-4
+training, and not another old feasibility, counterfactual, IQL, scorer, blind
+support expansion, or v180/v186 rerun. The campaign budget remains 3/10.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

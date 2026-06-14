@@ -23,9 +23,11 @@ from evolution_sim.mind import transition_value_live_ab
 from evolution_sim.mind.transition_value_scorer import (
     MIND_V3_TRANSITION_VALUE_MODEL_ID,
     MIND_V3_TRANSITION_VALUE_SCORER_SCHEMA_VERSION,
+    TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES,
     build_transition_value_scorer_report,
     load_transition_value_scorer_artifact,
     transition_value_feature_keys,
+    transition_value_source_key_category,
 )
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
@@ -252,6 +254,342 @@ class MindV3TransitionValueScorerTests(unittest.TestCase):
             1,
         )
 
+    def test_policy_override_abstains_on_mask_only_hit_when_specificity_gate_enabled(
+        self,
+    ) -> None:
+        keys = transition_value_feature_keys(
+            observation_input={"values": _observation_values()},
+            valid_action_mask=_action_mask("stay", "eat", "drink"),
+            state=RolloutContextState(),
+        )
+        mask_only_key = keys[7]
+        self.assertEqual(
+            transition_value_source_key_category(
+                "feature_action_utility",
+                mask_only_key,
+            ),
+            "mask_only_hit",
+        )
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                },
+                source_key=mask_only_key,
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
+            transition_value_source_key_specificity_gate_enabled=True,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "eat")
+        self.assertEqual(diagnostics["predicted_action"], "drink")
+        self.assertFalse(diagnostics["override_applied"])
+        self.assertEqual(
+            diagnostics["override_rejected_reason"],
+            "low_specificity_feature_key",
+        )
+        self.assertEqual(diagnostics["source_key_category"], "mask_only_hit")
+        self.assertTrue(diagnostics["source_key_specificity_gate_enabled"])
+        self.assertFalse(diagnostics["source_key_specificity_gate_passed"])
+        self.assertEqual(
+            diagnostics["source_key_specificity_allowed_categories"],
+            sorted(TRANSITION_VALUE_DEFAULT_ALLOWED_SOURCE_KEY_CATEGORIES),
+        )
+
+    def test_policy_override_allows_high_specificity_hit_when_gate_enabled(
+        self,
+    ) -> None:
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                }
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
+            transition_value_source_key_specificity_gate_enabled=True,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "drink")
+        self.assertTrue(diagnostics["override_applied"])
+        self.assertIsNone(diagnostics["override_rejected_reason"])
+        self.assertEqual(
+            diagnostics["source_key_category"],
+            "exact_context_feature_hit",
+        )
+        self.assertTrue(diagnostics["source_key_specificity_gate_passed"])
+
+    def test_policy_override_default_behavior_unchanged_when_gate_disabled(
+        self,
+    ) -> None:
+        mask_only_key = transition_value_feature_keys(
+            observation_input={"values": _observation_values()},
+            valid_action_mask=_action_mask("stay", "eat", "drink"),
+            state=RolloutContextState(),
+        )[7]
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                },
+                source_key=mask_only_key,
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "drink")
+        self.assertTrue(diagnostics["override_applied"])
+        self.assertIsNone(diagnostics["override_rejected_reason"])
+        self.assertFalse(diagnostics["source_key_specificity_gate_enabled"])
+        self.assertFalse(diagnostics["source_key_specificity_gate_passed"])
+
+    def test_specificity_gate_reason_order_preserves_existing_fail_closed_checks(
+        self,
+    ) -> None:
+        mask_only_key = transition_value_feature_keys(
+            observation_input={"values": _observation_values()},
+            valid_action_mask=_action_mask("stay", "eat", "drink"),
+            state=RolloutContextState(),
+        )[7]
+        cases = [
+            (
+                "missing_supported_scores",
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                },
+                1,
+                "missing_supported_scores_for_valid_actions",
+                "miss",
+            ),
+            (
+                "imputed_valid_action_score",
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0, imputed=True),
+                },
+                1,
+                "imputed_valid_action_score",
+                "mask_only_hit",
+            ),
+            (
+                "low_observed_support",
+                {
+                    "eat": _action_stat(count=1, utility=0.25),
+                    "drink": _action_stat(count=1, utility=1.25),
+                    "stay": _action_stat(count=1, utility=0.0),
+                },
+                2,
+                "low_observed_support_for_valid_actions",
+                "mask_only_hit",
+            ),
+        ]
+        for (
+            label,
+            action_stats,
+            support_floor,
+            expected_reason,
+            expected_category,
+        ) in cases:
+            with self.subTest(label=label):
+                scorer = load_transition_value_scorer_artifact(
+                    _manual_artifact(action_stats, source_key=mask_only_key)
+                )
+                policy = MindV3EvolutionPolicy(
+                    seed=7,
+                    transition_value_scorer=scorer,
+                    transition_value_action_override=True,
+                    transition_value_action_override_source_integrity_passed=True,
+                    transition_value_min_observed_support_count=support_floor,
+                    transition_value_source_key_specificity_gate_enabled=True,
+                )
+                metadata = _metadata()
+                metadata["action_head_bias"]["eat"] = 1.0
+                policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+                decision = policy.decide(
+                    _observation(agent_id=3),
+                    _action_mask("stay", "eat", "drink"),
+                )
+                diagnostics = decision.diagnostics["transition_value_scorer"]
+
+                self.assertFalse(diagnostics["override_applied"])
+                self.assertEqual(
+                    diagnostics["source_key_category"],
+                    expected_category,
+                )
+                self.assertFalse(diagnostics["source_key_specificity_gate_passed"])
+                self.assertEqual(
+                    diagnostics["override_rejected_reason"],
+                    expected_reason,
+                )
+
+    def test_disabled_specificity_gate_allows_empty_allowed_categories(self) -> None:
+        mask_only_key = transition_value_feature_keys(
+            observation_input={"values": _observation_values()},
+            valid_action_mask=_action_mask("stay", "eat", "drink"),
+            state=RolloutContextState(),
+        )[7]
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                },
+                source_key=mask_only_key,
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
+            transition_value_source_key_specificity_gate_enabled=False,
+            transition_value_allowed_source_key_categories=[],
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        diagnostics = decision.diagnostics["transition_value_scorer"]
+
+        self.assertEqual(decision.requested_action, "drink")
+        self.assertTrue(diagnostics["override_applied"])
+        self.assertFalse(diagnostics["source_key_specificity_gate_enabled"])
+        self.assertEqual(diagnostics["source_key_specificity_allowed_categories"], [])
+
+    def test_enabled_specificity_gate_rejects_empty_allowed_categories(self) -> None:
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                }
+            )
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "transition_value_allowed_source_key_categories must not be empty",
+        ):
+            MindV3EvolutionPolicy(
+                seed=7,
+                transition_value_scorer=scorer,
+                transition_value_action_override=True,
+                transition_value_action_override_source_integrity_passed=True,
+                transition_value_source_key_specificity_gate_enabled=True,
+                transition_value_allowed_source_key_categories=[],
+            )
+
+    def test_specificity_gate_diagnostics_flatten_scalar_safe(self) -> None:
+        mask_only_key = transition_value_feature_keys(
+            observation_input={"values": _observation_values()},
+            valid_action_mask=_action_mask("stay", "eat", "drink"),
+            state=RolloutContextState(),
+        )[7]
+        scorer = load_transition_value_scorer_artifact(
+            _manual_artifact(
+                {
+                    "eat": _action_stat(count=3, utility=0.25),
+                    "drink": _action_stat(count=3, utility=1.25),
+                    "stay": _action_stat(count=3, utility=0.0),
+                },
+                source_key=mask_only_key,
+            )
+        )
+        policy = MindV3EvolutionPolicy(
+            seed=7,
+            transition_value_scorer=scorer,
+            transition_value_action_override=True,
+            transition_value_action_override_source_integrity_passed=True,
+            transition_value_min_observed_support_count=1,
+            transition_value_source_key_specificity_gate_enabled=True,
+        )
+        metadata = _metadata()
+        metadata["action_head_bias"]["eat"] = 1.0
+        policy.register_agent_mind(agent_id=3, metadata=metadata)
+
+        decision = policy.decide(
+            _observation(agent_id=3),
+            _action_mask("stay", "eat", "drink"),
+        )
+        flattened = evaluate_harness._trajectory_safe_policy_decision_diagnostics(
+            decision.diagnostics
+        )
+
+        self.assertEqual(
+            flattened["transition_value_source_key_category"],
+            "mask_only_hit",
+        )
+        self.assertTrue(
+            flattened["transition_value_source_key_specificity_gate_enabled"]
+        )
+        self.assertFalse(
+            flattened["transition_value_source_key_specificity_gate_passed"]
+        )
+        self.assertTrue(all(_scalar_safe(value) for value in flattened.values()))
+        self.assertNotIn(
+            "transition_value_source_key_specificity_allowed_categories",
+            flattened,
+        )
+
     def test_evaluator_rejects_non_ready_transition_value_report(self) -> None:
         integrity = evaluate_harness._transition_value_scorer_source_integrity(
             {
@@ -413,8 +751,12 @@ def _metadata() -> dict[str, object]:
     }
 
 
-def _manual_artifact(action_stats: dict[str, dict[str, object]]) -> dict[str, object]:
-    key = transition_value_feature_keys(
+def _manual_artifact(
+    action_stats: dict[str, dict[str, object]],
+    *,
+    source_key: str | None = None,
+) -> dict[str, object]:
+    key = source_key or transition_value_feature_keys(
         observation_input={"values": _observation_values()},
         valid_action_mask=_action_mask("stay", "eat", "drink"),
         state=RolloutContextState(),

@@ -124,6 +124,8 @@ def _mind_v3_policy(
     transition_value_action_override: bool = False,
     transition_value_action_override_source_integrity_passed: bool = False,
     transition_value_min_observed_support_count: int = 2,
+    transition_value_source_key_specificity_gate_enabled: bool = False,
+    transition_value_allowed_source_key_categories: list[str] | None = None,
 ) -> MindV3EvolutionPolicy:
     return MindV3EvolutionPolicy(
         seed=seed,
@@ -142,6 +144,12 @@ def _mind_v3_policy(
         ),
         transition_value_min_observed_support_count=(
             transition_value_min_observed_support_count
+        ),
+        transition_value_source_key_specificity_gate_enabled=(
+            transition_value_source_key_specificity_gate_enabled
+        ),
+        transition_value_allowed_source_key_categories=(
+            transition_value_allowed_source_key_categories
         ),
     )
 
@@ -425,6 +433,15 @@ def _flatten_transition_value_diagnostics(
         ),
         "transition_value_predicted_action": transition.get("predicted_action"),
         "transition_value_score_source": transition.get("score_source"),
+        "transition_value_source_key_category": transition.get(
+            "source_key_category"
+        ),
+        "transition_value_source_key_specificity_gate_enabled": transition.get(
+            "source_key_specificity_gate_enabled"
+        ),
+        "transition_value_source_key_specificity_gate_passed": transition.get(
+            "source_key_specificity_gate_passed"
+        ),
         "transition_value_utility_margin": transition.get("utility_margin"),
         "transition_value_selected_utility": transition.get("selected_utility"),
         "transition_value_supported_scores_for_all_valid_actions": (
@@ -506,6 +523,8 @@ def run_mind_v3_fixture_suite(
     transition_value_action_override: bool = False,
     transition_value_action_override_source_integrity_passed: bool = False,
     transition_value_min_observed_support_count: int = 2,
+    transition_value_source_key_specificity_gate_enabled: bool = False,
+    transition_value_allowed_source_key_categories: list[str] | None = None,
     trajectory_output_dir: Path | None = None,
     trajectory_prefix: str = "fixture",
 ) -> dict[str, object]:
@@ -532,6 +551,12 @@ def run_mind_v3_fixture_suite(
                 ),
                 transition_value_min_observed_support_count=(
                     transition_value_min_observed_support_count
+                ),
+                transition_value_source_key_specificity_gate_enabled=(
+                    transition_value_source_key_specificity_gate_enabled
+                ),
+                transition_value_allowed_source_key_categories=(
+                    transition_value_allowed_source_key_categories
                 ),
             )
         ),
@@ -2254,11 +2279,15 @@ def _aggregate_transition_value_scorer_diagnostics(
             "imputed_valid_action_score_count",
             "low_observed_support_decision_count",
             "low_observed_support_valid_action_score_count",
+            "source_key_specificity_gate_enabled_count",
+            "source_key_specificity_gate_passed_count",
+            "source_key_specificity_gate_failed_count",
         ):
             stats[key] = int(stats[key]) + int(diagnostics.get(key, 0))
         for source_key, target_key in (
             ("predicted_action_counts", "predicted_action_counts"),
             ("score_source_counts", "score_source_counts"),
+            ("source_key_category_counts", "source_key_category_counts"),
             (
                 "override_rejected_reason_counts",
                 "override_rejected_reason_counts",
@@ -2288,8 +2317,12 @@ def _empty_transition_value_scorer_stats() -> dict[str, object]:
         "imputed_valid_action_score_count": 0,
         "low_observed_support_decision_count": 0,
         "low_observed_support_valid_action_score_count": 0,
+        "source_key_specificity_gate_enabled_count": 0,
+        "source_key_specificity_gate_passed_count": 0,
+        "source_key_specificity_gate_failed_count": 0,
         "predicted_action_counts": Counter(),
         "score_source_counts": Counter(),
+        "source_key_category_counts": Counter(),
         "override_rejected_reason_counts": Counter(),
     }
 
@@ -2352,6 +2385,23 @@ def _update_transition_value_scorer_stats(
         counter = stats["score_source_counts"]
         if isinstance(counter, Counter):
             counter.update([score_source])
+    source_key_category = transition.get("source_key_category")
+    if isinstance(source_key_category, str) and source_key_category:
+        counter = stats["source_key_category_counts"]
+        if isinstance(counter, Counter):
+            counter.update([source_key_category])
+    if transition.get("source_key_specificity_gate_enabled") is True:
+        stats["source_key_specificity_gate_enabled_count"] = (
+            int(stats["source_key_specificity_gate_enabled_count"]) + 1
+        )
+        if transition.get("source_key_specificity_gate_passed") is True:
+            stats["source_key_specificity_gate_passed_count"] = (
+                int(stats["source_key_specificity_gate_passed_count"]) + 1
+            )
+        else:
+            stats["source_key_specificity_gate_failed_count"] = (
+                int(stats["source_key_specificity_gate_failed_count"]) + 1
+            )
 
 
 def _finalize_transition_value_scorer_stats(
@@ -2417,12 +2467,36 @@ def _finalize_transition_value_scorer_stats(
         "low_observed_support_valid_action_score_count": int(
             stats.get("low_observed_support_valid_action_score_count", 0)
         ),
+        "source_key_specificity_gate_enabled_count": int(
+            stats.get("source_key_specificity_gate_enabled_count", 0)
+        ),
+        "source_key_specificity_gate_enabled_share": _share(
+            int(stats.get("source_key_specificity_gate_enabled_count", 0)),
+            decision_count,
+        ),
+        "source_key_specificity_gate_passed_count": int(
+            stats.get("source_key_specificity_gate_passed_count", 0)
+        ),
+        "source_key_specificity_gate_passed_share": _share(
+            int(stats.get("source_key_specificity_gate_passed_count", 0)),
+            decision_count,
+        ),
+        "source_key_specificity_gate_failed_count": int(
+            stats.get("source_key_specificity_gate_failed_count", 0)
+        ),
+        "source_key_specificity_gate_failed_share": _share(
+            int(stats.get("source_key_specificity_gate_failed_count", 0)),
+            decision_count,
+        ),
         "no_prediction_count": int(stats.get("no_prediction_count", 0)),
         "predicted_action_counts": dict(
             sorted(_int_counter(stats.get("predicted_action_counts", {})).items())
         ),
         "score_source_counts": dict(
             sorted(_int_counter(stats.get("score_source_counts", {})).items())
+        ),
+        "source_key_category_counts": dict(
+            sorted(_int_counter(stats.get("source_key_category_counts", {})).items())
         ),
         "override_rejected_reason_counts": dict(
             sorted(
