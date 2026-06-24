@@ -383,9 +383,15 @@ Default workflow:
 
 1. Edit, review, and run quick checks on the Mac.
 2. Push source changes to GitHub.
-3. Fast-forward the trainer with `npm run trainer:pull`.
-4. Start long trainer jobs in remote `tmux` with `npm run trainer -- start ...`.
-5. Fetch only needed artifacts back with `npm run trainer -- fetch ...`.
+3. Check trainer cleanliness with `npm run trainer:status`.
+4. If the default trainer checkout is dirty, stale, or on the wrong branch, do
+   not launch jobs there. Preserve unknown remote work. Use a separate clean
+   checkout through private `TRAINER_REPO`/`--repo` configuration, or stop for
+   explicit cleanup approval.
+5. Fast-forward the selected clean trainer checkout with
+   `npm run trainer:pull` or the equivalent `--repo` override.
+6. Start long trainer jobs in remote `tmux` with `npm run trainer -- start ...`.
+7. Fetch only needed artifacts back with `npm run trainer -- fetch ...`.
 
 Useful commands:
 
@@ -419,6 +425,15 @@ Known trainer caveats:
   overridden for regenerated, metric-equivalent artifacts.
 - Do not add new imports from `python/evolution_sim/cli/` into `mind/` modules;
   shared experiment harness code belongs under `python/evolution_sim/mind/`.
+
+## Local Tooling Gaps
+
+When a validation or maintenance command is blocked only because a local
+development tool is missing, install the narrow missing tool and notify the
+user. Prefer the project virtual environment or another local/dev-scoped
+location. Do not add runtime dependencies, commit lockfile changes, or modify
+system/package-manager state unless the task requires that broader dependency
+surface.
 
 ## Test Discipline
 

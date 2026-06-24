@@ -81,6 +81,26 @@ source and local-only `output/mind/` evidence block reproducibility or trainer
 execution. If they do, route to backlog commit/artifact triage before policy
 work.
 
+For long-running Mind v3 campaigns, also insert a historical-evidence
+checkpoint before dispatching a coder. The coordinator must turn durable prior
+runs into actionable constraints: consumed slice budget, report and artifact
+digests, routes already authorized or closed, seeds consumed as support, failure
+mechanisms that were ruled in or out, and lanes that must not be repeated. The
+coder prompt should carry those constraints explicitly so older v40/v60/v90 and
+current v190+ work are used as accumulated evidence rather than rediscovered.
+
+For RTX work, trainer hygiene is the coordinator's responsibility. Run the
+trainer status check before dispatching remote work. If the default trainer
+checkout is dirty, stale, or on the wrong branch, do not launch jobs there. Use
+a separate clean checkout configured through private `TRAINER_REPO`/`--repo`
+settings, or stop for explicit cleanup approval. Never hide trainer dirtiness in
+the coder prompt.
+
+For local validation/tooling gaps, fix narrow missing developer dependencies
+instead of treating them as blockers. Prefer the project virtual environment or
+another local/dev-scoped install, then report what was installed. Do not expand
+the committed runtime dependency surface unless the task itself requires it.
+
 ## Coordinator Cycle
 
 ### 1. Intake
@@ -118,6 +138,9 @@ Write a short implementation plan only after the audit. A good plan names:
 - validation commands;
 - expected artifacts or reports;
 - risks to replay compatibility, determinism, or gates.
+- historical evidence being reused and the traps it prevents;
+- trainer state, whether a clean checkout is available, and whether RTX work is
+  allowed in this slice.
 
 For learned-controller work, the plan must include the falsification metric
 before any training command. For Mind v3, it must also state whether the

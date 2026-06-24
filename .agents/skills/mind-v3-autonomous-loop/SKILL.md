@@ -35,6 +35,15 @@ durable context. A fresh coder should not be expected to know them unless the
 dispatch prompt includes the relevant content or points to a committed summary
 in `AGENTS.md` or `docs/mind-v3-autonomous-evolution.md`.
 
+Historical evidence constraint: the version chain is an evidence bank, not
+dead history. Before proposing a new same-lane Mind v3 action, mine the durable
+ledger, source constants, tests, and pinned reports for reusable constraints:
+what was already tried, what failed, what was ruled out, which seeds/artifacts
+were consumed as support, which reports authorized the current route, and which
+mechanisms remain active. Convert that evidence into explicit stop rules and
+test expectations. Do not rediscover closed lanes as "fresh diagnostics" unless
+the user explicitly asks for a negative control.
+
 ## Inspect First
 
 Read the smallest relevant set:
@@ -354,21 +363,28 @@ Do not use:
 ## Work Loop
 
 1. Define the hypothesis and first falsification metric.
-2. Run the durability checkpoint: inspect `git status --short`, identify
+2. Run the historical-evidence checkpoint: summarize the durable prior evidence
+   that constrains the route, including the current report digest, route, slice
+   budget, known failure mechanism, and lanes that must not be repeated.
+3. Run the durability checkpoint: inspect `git status --short`, identify
    whether the work depends on local-only source or gitignored evidence, and
    stop for commit/artifact triage when the backlog blocks reproducibility.
-3. Add or update the smallest diagnostic/report contract before heavy training.
-4. Implement the smallest opt-in policy/data/artifact path.
-5. Run focused tests and JSON parse checks before RTX work.
-6. Before ending a completed source slice, make a Git durability decision:
+   For remote trainer work, also verify the trainer checkout is clean/current;
+   if the default trainer checkout is dirty or stale, do not train there. Use a
+   separate clean checkout via private `TRAINER_REPO`/`--repo` configuration or
+   stop for explicit trainer cleanup approval.
+4. Add or update the smallest diagnostic/report contract before heavy training.
+5. Implement the smallest opt-in policy/data/artifact path.
+6. Run focused tests and JSON parse checks before RTX work.
+7. Before ending a completed source slice, make a Git durability decision:
    commit and push when authorized, or record the exact reason the slice is
    intentionally left local-only. Do not let code, tests, package scripts, or
    digest-bound ledger entries accumulate as an undocumented dirty backlog.
-7. Use the RTX trainer only for CUDA or long seed/gate runs after source has
-   been pushed.
-8. Evaluate on the strict broad-plus-fixture matrix or on a freshly declared
+8. Use the RTX trainer only for CUDA or long seed/gate runs after source has
+   been pushed and the trainer checkout has passed the clean/current check.
+9. Evaluate on the strict broad-plus-fixture matrix or on a freshly declared
    diagnostic matrix when prior held-out seeds have been consumed as support.
-9. Document the exact command, artifact/report paths, blockers, and next stop
+10. Document the exact command, artifact/report paths, blockers, and next stop
    rule in `docs/mind-v3-autonomous-evolution.md`.
 
 ## Acceptance Surface

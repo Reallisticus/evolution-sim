@@ -798,3 +798,9 @@ Use the default Matt Pocock skills triage vocabulary. See `docs/agents/triage-la
 ### Domain docs
 
 Use a multi-context domain-doc layout rooted at `CONTEXT-MAP.md`. See `docs/agents/domain.md`.
+
+### RALPH orchestration
+
+Use `.agents/skills/ralph-orchestration-loop/SKILL.md` and
+`docs/agents/ralph-orchestration-loop.md` when acting as the second brain,
+prompt manager, orchestrator, or cross-session QA coordinator.
