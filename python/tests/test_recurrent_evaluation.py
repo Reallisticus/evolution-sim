@@ -18,10 +18,15 @@ if torch is not None:
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
     )
-    from evolution_sim.mind.recurrent_artifact import save_recurrent_artifact
+    from evolution_sim.mind.recurrent_artifact import (
+        FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
+        save_frozen_recurrent_policy_artifact,
+        save_recurrent_artifact,
+    )
     from evolution_sim.mind.recurrent_evaluation import (
         RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE,
         RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE,
+        RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE,
         RECURRENT_EVALUATION_SELECTION_SEED_ROLE,
         RECURRENT_EVALUATION_RUNTIME_SCHEMA_VERSION,
         RECURRENT_EVALUATION_SCHEMA_VERSION,
@@ -32,11 +37,14 @@ if torch is not None:
         RecurrentEvaluationSeedPlan,
         _EvaluationEnvironmentTask,
         _aggregate_runs,
+        _artifact_independent_behavior_payload,
+        _canonical_sha256,
         _candidate_sampling_seeds,
         _evaluate_context,
         _run_parallel_environment_tasks,
         _run_policy_world,
         _validate_report,
+        evaluate_frozen_recurrent_policy_artifact,
         evaluate_recurrent_artifact,
         evaluate_recurrent_model,
     )
@@ -47,6 +55,8 @@ if torch is not None:
     from evolution_sim.mind.recurrent_seed_registry import (
         CANONICAL_SEED_REGISTRY_SHA256,
         RECURRENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        SCALE_DEVELOPMENT_SEED_REGISTRY,
     )
 
 
@@ -97,6 +107,45 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         assert torch is not None
         torch.set_num_threads(1)
 
+    def test_full_behavior_digest_normalizes_only_recurrent_artifact_labels(
+        self,
+    ) -> None:
+        first = {
+            "summary": {"alive_agents": 2},
+            "trajectory_records": [
+                {
+                    "policy_id": "mind_v3_public_recurrent_actor_critic",
+                    "policy_version": (
+                        "mind_v3_public_recurrent_actor_critic_v1+aaaaaaaaaaaaaaaa+"
+                        "deterministic_masked_argmax"
+                    ),
+                    "requested_action": "eat",
+                }
+            ],
+            "policy_decision_diagnostics": [
+                {"artifact_digest": "a" * 64, "selected_action": "eat"}
+            ],
+        }
+        second = copy.deepcopy(first)
+        second["trajectory_records"][0]["policy_version"] = (  # type: ignore[index]
+            "mind_v3_public_recurrent_actor_critic_v1+bbbbbbbbbbbbbbbb+"
+            "deterministic_masked_argmax"
+        )
+        second["policy_decision_diagnostics"][0]["artifact_digest"] = (  # type: ignore[index]
+            "b" * 64
+        )
+
+        self.assertNotEqual(_canonical_sha256(first), _canonical_sha256(second))
+        self.assertEqual(
+            _canonical_sha256(_artifact_independent_behavior_payload(first)),
+            _canonical_sha256(_artifact_independent_behavior_payload(second)),
+        )
+        second["trajectory_records"][0]["requested_action"] = "stay"  # type: ignore[index]
+        self.assertNotEqual(
+            _canonical_sha256(_artifact_independent_behavior_payload(first)),
+            _canonical_sha256(_artifact_independent_behavior_payload(second)),
+        )
+
     def test_seed_plan_requires_unique_holdouts_excluded_from_training(self) -> None:
         plan = RecurrentEvaluationSeedPlan(
             broad_seeds=[101, 103],
@@ -135,6 +184,131 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 broad_seeds=(101,),
                 fixture_seeds=(103,),
             )
+
+    def test_scale_selection_plan_is_canonical_and_keeps_old_sealed_roles_closed(
+        self,
+    ) -> None:
+        selection = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][:8]
+        excluded = (
+            *SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"],
+            *SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"],
+        )
+        plan = RecurrentEvaluationSeedPlan(
+            broad_seeds=selection,
+            fixture_seeds=selection,
+            excluded_training_seeds=excluded,
+            environment_seed_role=(RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE),
+        )
+
+        self.assertEqual(plan.canonical_registry_role, "scale_selection")
+        self.assertFalse(plan.contains_validation_seed)
+        self.assertFalse(plan.contains_lockbox_seed)
+        self.assertTrue(set(selection).isdisjoint(excluded))
+
+        with self.assertRaisesRegex(RecurrentEvaluationError, "canonical"):
+            RecurrentEvaluationSeedPlan(
+                broad_seeds=tuple(reversed(selection)),
+                fixture_seeds=tuple(reversed(selection)),
+                excluded_training_seeds=excluded,
+                environment_seed_role=(RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE),
+            )
+
+        with self.assertRaisesRegex(RecurrentEvaluationError, "declare"):
+            RecurrentEvaluationSeedPlan(
+                broad_seeds=selection,
+                fixture_seeds=selection,
+                excluded_training_seeds=excluded,
+            )
+
+    def test_frozen_v2_scale_artifact_requires_source_manifest_and_scale_registry(
+        self,
+    ) -> None:
+        source_commit = "a" * 40
+        source_manifest = "b" * 64
+        train_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"][0]
+        curriculum_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"][0]
+        selection_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][0]
+        plan = RecurrentEvaluationSeedPlan(
+            broad_seeds=(selection_seed,),
+            fixture_seeds=(selection_seed,),
+            excluded_training_seeds=(train_seed, curriculum_seed),
+            environment_seed_role=(RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE),
+        )
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=16, hidden_size=16),
+            initialization_seed=7,
+        )
+        replay_manifest = {
+            "schema_version": FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
+            "manifest_sha256": "c" * 64,
+            "replay_engine_contract_sha256": "d" * 64,
+            "environment_seed_registry_sha256": (SCALE_DEVELOPMENT_CANONICAL_SHA256),
+            "environment_seed_roles": ["scale_selection"],
+            "scenario_names": ["broad", "carrion_only"],
+            "tick_horizons": [120],
+            "world_count": 2,
+            "replay_verified_world_count": 2,
+            "policy_sampling_stream_count": 1,
+            "all_replays_exact": True,
+            "verification_runner": "unit-test",
+            "verification_runner_sha256": "e" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_path = Path(temporary) / "scale-policy.json"
+            save_frozen_recurrent_policy_artifact(
+                artifact_path,
+                model,
+                training_config={"feed_forward_history_ablation": False},
+                experiment_config={"arm": "base"},
+                seed_registry_digest=SCALE_DEVELOPMENT_CANONICAL_SHA256,
+                source_commit=source_commit,
+                source_manifest_sha256=source_manifest,
+                data_metadata={
+                    "environment_seed_roles": [
+                        "scale_train",
+                        "scale_curriculum",
+                    ],
+                    "environment_seeds_by_role": {
+                        "scale_train": [train_seed],
+                        "scale_curriculum": [curriculum_seed],
+                    },
+                },
+                run_metadata={"development_only": True},
+                full_world_replay_manifest=replay_manifest,
+                learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0],
+                learner_device="cpu",
+            )
+            with patch(
+                "evolution_sim.mind.recurrent_evaluation._evaluate_frozen_model",
+                return_value={"verified": True},
+            ) as evaluator:
+                report = evaluate_frozen_recurrent_policy_artifact(
+                    artifact_path,
+                    seed_plan=plan,
+                    expected_source_commit=source_commit,
+                    expected_source_manifest_sha256=source_manifest,
+                    expected_seed_registry_digest=(SCALE_DEVELOPMENT_CANONICAL_SHA256),
+                    fixture_names=("carrion_only",),
+                )
+            self.assertEqual(report, {"verified": True})
+            evidence = evaluator.call_args.kwargs["artifact_evidence"][
+                "training_seed_evidence"
+            ]
+            self.assertEqual(
+                evidence["required_environment_seed_roles"],
+                ["scale_train", "scale_curriculum"],
+            )
+            self.assertTrue(evidence["role_bound_provenance_complete"])
+
+            with self.assertRaisesRegex(RecurrentEvaluationError, "manifest"):
+                evaluate_frozen_recurrent_policy_artifact(
+                    artifact_path,
+                    seed_plan=plan,
+                    expected_source_commit=source_commit,
+                    expected_source_manifest_sha256="f" * 64,
+                    expected_seed_registry_digest=(SCALE_DEVELOPMENT_CANONICAL_SHA256),
+                    fixture_names=("carrion_only",),
+                )
 
     def test_role_bound_seed_plans_require_exact_canonical_membership(
         self,

@@ -23,6 +23,11 @@ if torch is not None:
         RecurrentCounterfactualAuxiliaryConfig,
         RecurrentCounterfactualAuxiliaryStepConfig,
     )
+    from evolution_sim.mind.recurrent_counterfactual_branch import (
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+        derive_recurrent_counterfactual_tape_seed,
+    )
     from evolution_sim.mind.recurrent_counterfactual_collection import (
         RecurrentCounterfactualCollectionConfig,
     )
@@ -30,7 +35,9 @@ if torch is not None:
         RECURRENT_EXPERIMENT_CONTRACT_VERSION,
         RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
         RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION,
+        RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION,
         RECURRENT_TRAINING_SCENARIOS,
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
         RecurrentCounterfactualExperimentConfig,
         RecurrentExperimentError,
         RecurrentExperimentRunner,
@@ -51,6 +58,7 @@ if torch is not None:
     from evolution_sim.mind.recurrent_seed_registry import (
         LEGACY_DIAGNOSTIC_SEEDS,
         RECURRENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_SEED_REGISTRY,
     )
 
 
@@ -93,6 +101,269 @@ class RecurrentExperimentTests(unittest.TestCase):
                     task_identity=str(task.policy_sampling_identity)
                 ),
             )
+
+    def test_scale_schedule_explicitly_uses_fresh_scale_only_roles(self) -> None:
+        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        schedule = build_recurrent_training_schedule(
+            update_count=2,
+            worlds_per_update=10,
+            rollout_ticks=120,
+            seed_registry_contract=(RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT),
+            scale_learner_seed=learner_seed,
+        )
+
+        tasks = tuple(task for update in schedule for task in update)
+        old_seeds = {
+            seed for seeds in RECURRENT_SEED_REGISTRY.values() for seed in seeds
+        }
+        self.assertEqual(len(tasks), 20)
+        self.assertTrue(
+            all(
+                str(task.policy_sampling_identity).startswith(
+                    RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+                )
+                for task in tasks
+            )
+        )
+        self.assertTrue(
+            all(
+                task.task_id.startswith(f"scale-learner-{learner_seed}-")
+                for task in tasks
+            )
+        )
+        for task in tasks:
+            role = "scale_train" if task.scenario == "broad" else "scale_curriculum"
+            self.assertEqual(task.seed_role, role)
+            self.assertIn(
+                task.environment_seed,
+                SCALE_DEVELOPMENT_SEED_REGISTRY[role],
+            )
+            self.assertNotIn(task.environment_seed, old_seeds)
+
+    def test_scale_learner_namespaces_rollout_branch_and_tape_rng(self) -> None:
+        first_learner, second_learner = SCALE_DEVELOPMENT_SEED_REGISTRY[
+            "scale_learner"
+        ][:2]
+        schedule_kwargs = {
+            "update_count": 1,
+            "worlds_per_update": 10,
+            "rollout_ticks": 120,
+            "seed_registry_contract": (
+                RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+            ),
+        }
+        first = build_recurrent_training_schedule(
+            **schedule_kwargs,
+            scale_learner_seed=first_learner,
+        )
+        repeated = build_recurrent_training_schedule(
+            **schedule_kwargs,
+            scale_learner_seed=first_learner,
+        )
+        second = build_recurrent_training_schedule(
+            **schedule_kwargs,
+            scale_learner_seed=second_learner,
+        )
+
+        self.assertEqual(first, repeated)
+        first_tasks = first[0]
+        second_tasks = second[0]
+        self.assertEqual(
+            tuple((task.scenario, task.environment_seed) for task in first_tasks),
+            tuple((task.scenario, task.environment_seed) for task in second_tasks),
+        )
+        for first_task, second_task in zip(first_tasks, second_tasks, strict=True):
+            self.assertNotEqual(first_task.task_id, second_task.task_id)
+            self.assertNotEqual(
+                first_task.policy_sampling_identity,
+                second_task.policy_sampling_identity,
+            )
+            self.assertNotEqual(
+                first_task.policy_sampling_seed,
+                second_task.policy_sampling_seed,
+            )
+
+        first_branches = build_recurrent_counterfactual_collection_tasks(
+            first_tasks,
+            update_index=0,
+            bundles_per_update=2,
+            branch_tick_candidates=(16, 40, 64, 72),
+        )
+        second_branches = build_recurrent_counterfactual_collection_tasks(
+            second_tasks,
+            update_index=0,
+            bundles_per_update=2,
+            branch_tick_candidates=(16, 40, 64, 72),
+        )
+        for first_branch, second_branch in zip(
+            first_branches,
+            second_branches,
+            strict=True,
+        ):
+            self.assertNotEqual(first_branch.task_id, second_branch.task_id)
+            self.assertNotEqual(
+                first_branch.source_policy_sampling_seed,
+                second_branch.source_policy_sampling_seed,
+            )
+            self.assertNotEqual(
+                first_branch.branch_selection_seed,
+                second_branch.branch_selection_seed,
+            )
+            first_tape_identity = f"{first_branch.task_id}:continuation-tapes"
+            second_tape_identity = f"{second_branch.task_id}:continuation-tapes"
+            for namespace, suffix in (
+                (
+                    RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE,
+                    "environment",
+                ),
+                (
+                    RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+                    "policy",
+                ),
+            ):
+                self.assertNotEqual(
+                    derive_recurrent_counterfactual_tape_seed(
+                        namespace=namespace,
+                        identity=f"{first_tape_identity}:{suffix}:0",
+                    ),
+                    derive_recurrent_counterfactual_tape_seed(
+                        namespace=namespace,
+                        identity=f"{second_tape_identity}:{suffix}:0",
+                    ),
+                )
+
+    def test_scale_schedule_requires_registered_learner_and_legacy_rejects_it(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(RecurrentExperimentError, "required"):
+            build_recurrent_training_schedule(
+                update_count=1,
+                worlds_per_update=1,
+                rollout_ticks=8,
+                seed_registry_contract=(
+                    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+                ),
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "scale_learner role"):
+            build_recurrent_training_schedule(
+                update_count=1,
+                worlds_per_update=1,
+                rollout_ticks=8,
+                seed_registry_contract=(
+                    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+                ),
+                scale_learner_seed=RECURRENT_SEED_REGISTRY["learner_development"][0],
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "only valid"):
+            build_recurrent_training_schedule(
+                update_count=1,
+                worlds_per_update=1,
+                rollout_ticks=8,
+                scale_learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0],
+            )
+
+    def test_legacy_schedule_identity_shape_is_unchanged(self) -> None:
+        task = build_recurrent_training_schedule(
+            update_count=1,
+            worlds_per_update=1,
+            rollout_ticks=8,
+            scenarios=("broad",),
+        )[0][0]
+        environment_seed = RECURRENT_SEED_REGISTRY["train"][0]
+        self.assertEqual(
+            task.task_id,
+            f"update-0000-world-000000-broad-seed-{environment_seed}",
+        )
+        self.assertEqual(
+            task.policy_sampling_identity,
+            (
+                f"{RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION}|"
+                "update=0000|world=000000|scenario=broad"
+            ),
+        )
+
+    def test_scale_task_rejects_role_or_registry_mismatch(self) -> None:
+        with self.assertRaisesRegex(RecurrentExperimentError, "seed_role"):
+            RecurrentRolloutTask(
+                "scale-role-mismatch",
+                "broad",
+                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"][0],
+                8,
+                seed_role="scale_curriculum",
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "canonical"):
+            RecurrentRolloutTask(
+                "scale-registry-mismatch",
+                "broad",
+                RECURRENT_SEED_REGISTRY["train"][0],
+                8,
+                seed_role="scale_train",
+            )
+
+    def test_runner_checkpoint_state_restores_model_optimizer_rng_and_progress(
+        self,
+    ) -> None:
+        model_config = RecurrentActorCriticConfig(
+            encoder_size=16,
+            hidden_size=16,
+        )
+        ppo_config = RecurrentPPOConfig(
+            learner_seed=RECURRENT_SEED_REGISTRY["learner_development"][0],
+            update_epochs=1,
+            sequence_minibatch_size=2,
+            tbptt_steps=4,
+            burn_in_steps=0,
+            target_kl=0.1,
+        )
+        schedule = build_recurrent_training_schedule(
+            update_count=2,
+            worlds_per_update=2,
+            rollout_ticks=4,
+            scenarios=("broad",),
+        )
+        original = RecurrentExperimentRunner(
+            learner_seed=ppo_config.learner_seed,
+            device="cpu",
+            model_config=model_config,
+            ppo_config=ppo_config,
+        )
+        original.train_update(schedule[0])
+        checkpoint = original.export_training_checkpoint_state()
+        model_state = {
+            name: value.detach().clone()
+            for name, value in original.model.state_dict().items()
+        }
+
+        restored = RecurrentExperimentRunner(
+            learner_seed=ppo_config.learner_seed,
+            device="cpu",
+            model_config=model_config,
+            ppo_config=ppo_config,
+        )
+        restored.restore_training_checkpoint_state(
+            model_state=model_state,
+            optimizer_state=checkpoint["optimizer_state"],  # type: ignore[arg-type]
+            rng_state=checkpoint["rng_state"],  # type: ignore[arg-type]
+            completed_updates=1,
+        )
+
+        self.assertEqual(restored.completed_update_count, 1)
+        self.assertEqual(restored.trainer.update_index, 1)
+        self.assertEqual(
+            recurrent_model_state_sha256(restored.model),
+            recurrent_model_state_sha256(original.model),
+        )
+        with self.assertRaisesRegex(RecurrentExperimentError, "pristine"):
+            restored.restore_training_checkpoint_state(
+                model_state=model_state,
+                optimizer_state=checkpoint["optimizer_state"],  # type: ignore[arg-type]
+                rng_state=checkpoint["rng_state"],  # type: ignore[arg-type]
+                completed_updates=1,
+            )
+
+        restored_update = restored.train_update(schedule[1])
+        self.assertEqual(restored_update.update_index, 1)
+        self.assertEqual(restored.completed_update_count, 2)
 
     def test_canonical_fixture_curricula_advance_without_per_scenario_repeats(
         self,
@@ -666,6 +937,71 @@ class RecurrentExperimentTests(unittest.TestCase):
             update.counterfactual_auxiliary.runtime_action_selection_changed
         )
         self.assertFalse(update.counterfactual_auxiliary.promotion_authorized)
+
+    def test_real_multi_tape_aggregate_transaction_consumes_terminal_target(
+        self,
+    ) -> None:
+        schedule = build_recurrent_training_schedule(
+            update_count=1,
+            worlds_per_update=1,
+            rollout_ticks=3,
+            scenarios=("carrion_only",),
+            seed_registry_contract=RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+            scale_learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0],
+        )
+        runner = RecurrentExperimentRunner(
+            learner_seed=123,
+            device="cpu",
+            model_config=RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+            ),
+            ppo_config=RecurrentPPOConfig(
+                learner_seed=123,
+                update_epochs=1,
+                sequence_minibatch_size=64,
+                tbptt_steps=2,
+                burn_in_steps=1,
+            ),
+            counterfactual_config=RecurrentCounterfactualExperimentConfig(
+                collection=RecurrentCounterfactualCollectionConfig(
+                    horizons=(1, 2),
+                    gamma=0.99,
+                    continuation_tape_count=2,
+                    terminal_target_world_tick=3,
+                    uncertainty_penalty=0.5,
+                ),
+                auxiliary=RecurrentCounterfactualAuxiliaryConfig(
+                    scalarization=CounterfactualHorizonScalarization(
+                        horizon_weights=((1, 0.5), (2, 0.5)),
+                    ),
+                    terminal_target_weight=0.5,
+                    advantage_clip=2.0,
+                    behavior_kl_coefficient=1.0,
+                ),
+                step=RecurrentCounterfactualAuxiliaryStepConfig(
+                    mean_behavior_kl_limit=1.0,
+                    max_state_behavior_kl_limit=1.0,
+                ),
+                bundles_per_update=1,
+                branch_tick_candidates=(0,),
+                workers=1,
+            ),
+        )
+
+        update = runner.train_update(schedule[0])
+
+        assert update.counterfactual_collection is not None
+        assert update.counterfactual_auxiliary is not None
+        bundle = update.counterfactual_collection.bundles[0]
+        self.assertIsNotNone(bundle.aggregate_rows)
+        self.assertIsNotNone(bundle.terminal_target)
+        self.assertEqual(update.counterfactual_auxiliary.group_count, 1)
+        self.assertEqual(update.counterfactual_auxiliary.row_count, 3)
+        self.assertIn(
+            update.counterfactual_auxiliary.accepted,
+            (True, False),
+        )
 
     def test_post_ppo_collection_failure_restores_whole_update_before_retry(
         self,

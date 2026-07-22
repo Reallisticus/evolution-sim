@@ -1383,6 +1383,7 @@ def _run(
         "eat_without_positive_resource_gain_share": 1.0 / 3.0,
         "learned_masked_distribution": distribution,
     }
+    run["behavior_digest"] = stable_payload_digest({"run": run})
     run["replay_digest"] = stable_payload_digest(
         {"run": run, "arm_specific_policy_label": label}
     )

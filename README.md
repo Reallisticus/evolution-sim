@@ -234,6 +234,78 @@ The bounded v31 pure-Python direct artifact and later residual/support-scorer
 families are recorded as non-promotable diagnostics, not as active promotion
 routes.
 
+The current trainable research path is a preregistered, development-only
+recurrent-IPPO scale campaign. It crosses eight fresh learner seeds with base,
+exact multi-tape counterfactual, and shuffled-label arms (`6,144` PPO worlds),
+uses eight common-random-number continuation tapes per exact branch, and writes
+crash checkpoints plus exact CPU-reloadable frozen artifacts. Generate the
+pinned protocol, execute individual resumable cells, and reconcile all `24`
+reports with:
+
+```bash
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+PREREG=output/mind/recurrent-scale/preregistration.json
+RUNTIME=output/mind/recurrent-scale/runtime-provenance.json
+
+npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- preregister \
+  --source-commit "$SOURCE_COMMIT" \
+  --output "$PREREG"
+
+PREREG_DIGEST="$(PYTHONPATH=python python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["exact_digest"])' \
+  "$PREREG")"
+
+PYTHONPATH=python python3 -m \
+  evolution_sim.cli.mind_v3_public_recurrent_ippo_runtime_provenance \
+  --preregistration "$PREREG" \
+  --output "$RUNTIME" \
+  --device cuda:0 \
+  --rollout-workers 8 \
+  --counterfactual-workers 8 \
+  --evaluation-workers 8
+
+npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- run-arm \
+  --preregistration "$PREREG" \
+  --expected-preregistration-digest "$PREREG_DIGEST" \
+  --learner-seed 1171366450 \
+  --arm base_recurrent_ppo \
+  --output-root output/mind/recurrent-scale/runs \
+  --runtime-provenance "$RUNTIME" \
+  --rollout-workers 8 \
+  --counterfactual-workers 8 \
+  --evaluation-workers 8 \
+  --device cuda:0
+
+npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- aggregate \
+  --preregistration "$PREREG" \
+  --reports-root output/mind/recurrent-scale/runs \
+  --runtime-provenance "$RUNTIME" \
+  --output output/mind/recurrent-scale/analysis.json
+```
+
+For the full GPU study, prefer the isolated launcher. It creates or verifies a
+detached exact-SHA checkout, a content-addressed virtual environment, and an
+external output tree; pins CUDA/Torch/dependencies/workers; runs the three
+paired arms concurrently for each learner; resumes crash checkpoints; and
+aggregates only after all 24 reports exist. Before tmux starts, it also runs a
+real exact-arm CUDA warmup, checkpoints populated Adam/RNG/auxiliary state, and
+requires the restored continuation to match the uninterrupted model and update
+evidence exactly:
+
+```bash
+scripts/run_recurrent_scale_campaign_gpu.sh \
+  --source-commit "$SOURCE_COMMIT" \
+  --repository-url "$(git remote get-url origin)" \
+  --workspace-parent /absolute/new-workspaces \
+  --venv-parent /absolute/versioned-venvs \
+  --output-parent /absolute/recurrent-scale-runs \
+  --uv-command /absolute/path/to/uv
+```
+
+The scale-selection registry is reusable development evidence; validation and
+lockbox roles are unavailable to this command. A successful development gate
+does not authorize runtime integration or promotion.
+
 Generate the first label reports with:
 
 ```bash

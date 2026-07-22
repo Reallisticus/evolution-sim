@@ -26,8 +26,14 @@ from evolution_sim.env.runtime.trajectory import REWARD_COMPONENT_BOUNDS
 from evolution_sim.env.world import SimulationWorld
 from evolution_sim.mind.evaluation_harness import CONTROLLED_FIXTURE_NAMES
 from evolution_sim.mind.evaluation_helpers import dominant_action_summary, round_float
+from evolution_sim.mind.recurrent_evaluation_contract import (
+    RECURRENT_EVALUATION_SCHEMA_VERSION,
+    RecurrentEvaluationError,
+)
 from evolution_sim.mind.recurrent_artifact import (
+    LoadedFrozenRecurrentPolicyArtifact,
     LoadedRecurrentArtifact,
+    load_frozen_recurrent_policy_artifact,
     load_recurrent_artifact,
 )
 from evolution_sim.mind.recurrent_actor_critic import PublicRecurrentActorCritic
@@ -35,6 +41,7 @@ from evolution_sim.mind.recurrent_policy import (
     PUBLIC_RECURRENT_ARGMAX_SELECTION,
     PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION,
     PUBLIC_RECURRENT_POLICY_ID,
+    PUBLIC_RECURRENT_POLICY_VERSION,
     PUBLIC_RECURRENT_SAMPLED_SELECTION,
     RECURRENT_COUNTERFACTUAL_ACTION_SOURCE,
     DeterministicPublicRecurrentPolicy,
@@ -43,11 +50,12 @@ from evolution_sim.mind.recurrent_policy import (
 from evolution_sim.mind.recurrent_seed_registry import (
     CANONICAL_SEED_REGISTRY_SHA256,
     RECURRENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_SEED_REGISTRY,
 )
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
 
-RECURRENT_EVALUATION_SCHEMA_VERSION = "mind_public_recurrent_evaluation_v4"
 RECURRENT_EVALUATION_EXECUTION_SCHEMA_VERSION = (
     "mind_public_recurrent_evaluation_execution_v2"
 )
@@ -67,10 +75,12 @@ _PUBLIC_RECURRENT_SAMPLING_SEED_NAMESPACE = (
 UNPINNED_NONCANDIDATE_DIGEST_PREFIX = "unpinned-noncandidate-development-canary:"
 RECURRENT_EVALUATION_DEVELOPMENT_SEED_ROLE = "development"
 RECURRENT_EVALUATION_SELECTION_SEED_ROLE = "selection"
+RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE = "scale_selection"
 RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE = "candidate"
 RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE = "lockbox"
 _EVALUATION_SEED_ROLE_TO_REGISTRY_ROLE = {
     RECURRENT_EVALUATION_SELECTION_SEED_ROLE: "selection",
+    RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE: "scale_selection",
     RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE: "validation",
     RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE: "lockbox",
 }
@@ -79,6 +89,12 @@ _CANONICAL_TRAINING_SEEDS = frozenset(
     seed
     for role in _CANONICAL_TRAINING_SEED_ROLES
     for seed in RECURRENT_SEED_REGISTRY[role]
+)
+_SCALE_TRAINING_SEED_ROLES = ("scale_train", "scale_curriculum")
+_SCALE_TRAINING_SEEDS = frozenset(
+    seed
+    for role in _SCALE_TRAINING_SEED_ROLES
+    for seed in SCALE_DEVELOPMENT_SEED_REGISTRY[role]
 )
 _POLICY_KEYS = ("public_recurrent", "mind_v3_linear", "masked_random")
 _DISTRIBUTION_METRICS = (
@@ -99,10 +115,6 @@ _AMBIGUOUS_V3_TERMINAL_FIELDS = frozenset(
 )
 _TORCH_THREAD_SCOPE_LOCK = Lock()
 _PARALLEL_EVALUATION_MODEL: PublicRecurrentActorCritic | None = None
-
-
-class RecurrentEvaluationError(ValueError):
-    """Raised when a recurrent evaluation contract fails closed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,13 +165,18 @@ class RecurrentEvaluationSeedPlan:
             )
         registry_role = _EVALUATION_SEED_ROLE_TO_REGISTRY_ROLE.get(role)
         if registry_role is None:
-            reserved_roles = ("selection", "validation", "lockbox")
+            reserved_seed_sets = (
+                RECURRENT_SEED_REGISTRY["selection"],
+                RECURRENT_SEED_REGISTRY["validation"],
+                RECURRENT_SEED_REGISTRY["lockbox"],
+                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"],
+            )
             reserved_overlap = sorted(
                 holdout
                 & {
                     seed
-                    for reserved_role in reserved_roles
-                    for seed in RECURRENT_SEED_REGISTRY[reserved_role]
+                    for reserved_seeds in reserved_seed_sets
+                    for seed in reserved_seeds
                 }
             )
             if reserved_overlap:
@@ -168,7 +185,11 @@ class RecurrentEvaluationSeedPlan:
                     "validation, or lockbox seeds; declare the canonical role"
                 )
         else:
-            expected = RECURRENT_SEED_REGISTRY[registry_role]
+            expected = (
+                SCALE_DEVELOPMENT_SEED_REGISTRY[registry_role]
+                if role == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
+                else RECURRENT_SEED_REGISTRY[registry_role]
+            )
             if (
                 broad != fixture
                 or not _is_canonical_ordered_subset(broad, expected)
@@ -348,6 +369,142 @@ def evaluate_recurrent_artifact(
             "feed_forward_history_ablation": feed_forward_history_ablation,
             "pin_verification": (
                 "canonical_seed_registry_and_external_expected_source_commit"
+            ),
+        },
+        feed_forward_history_ablation=feed_forward_history_ablation,
+        candidate_action_selection=selection,
+        candidate_sampling_seed_count=candidate_sampling_seed_count,
+        candidate_sampling_stream_id=candidate_sampling_stream_id,
+        evaluation_workers=resolved_workers,
+    )
+
+
+def evaluate_frozen_recurrent_policy_artifact(
+    artifact_path: str | Path,
+    *,
+    seed_plan: RecurrentEvaluationSeedPlan,
+    expected_source_commit: str,
+    expected_source_manifest_sha256: str,
+    expected_seed_registry_digest: str,
+    fixture_names: Sequence[str] = CONTROLLED_FIXTURE_NAMES,
+    candidate_action_selection: str = PUBLIC_RECURRENT_ARGMAX_SELECTION,
+    candidate_sampling_seed_count: int = 1,
+    candidate_sampling_stream_id: str | None = None,
+    evaluation_workers: int = 1,
+) -> dict[str, object]:
+    """Evaluate a v2 frozen policy after strict source and registry pin checks."""
+
+    resolved_workers = _validated_evaluation_workers(evaluation_workers)
+    if not isinstance(seed_plan, RecurrentEvaluationSeedPlan):
+        raise TypeError("seed_plan must be a RecurrentEvaluationSeedPlan")
+    _reject_unavailable_restricted_evaluation_access(seed_plan)
+    selected_fixtures = _validated_fixture_names(fixture_names)
+    resolved_source_commit = _validated_expected_source_commit(expected_source_commit)
+    resolved_source_manifest = _validated_sha256(
+        expected_source_manifest_sha256,
+        field="expected source manifest SHA256",
+    )
+    resolved_registry_digest = _validated_sha256(
+        expected_seed_registry_digest,
+        field="expected seed registry digest",
+    )
+    loaded = load_frozen_recurrent_policy_artifact(artifact_path)
+    artifact_digest = _artifact_digest(loaded)
+    provenance = _required_mapping(
+        loaded.artifact.get("provenance"),
+        field="artifact.provenance",
+    )
+    integrity = _required_mapping(
+        loaded.artifact.get("integrity"),
+        field="artifact.integrity",
+    )
+    artifact_registry_digest = provenance.get("seed_registry_digest")
+    if (
+        artifact_registry_digest != resolved_registry_digest
+        or integrity.get("seed_registry_digest") != resolved_registry_digest
+    ):
+        raise RecurrentEvaluationError(
+            "frozen artifact seed registry does not match the expected pin"
+        )
+    if resolved_registry_digest not in {
+        CANONICAL_SEED_REGISTRY_SHA256,
+        SCALE_DEVELOPMENT_CANONICAL_SHA256,
+    }:
+        raise RecurrentEvaluationError("unsupported frozen artifact seed registry")
+    if (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
+        and resolved_registry_digest != SCALE_DEVELOPMENT_CANONICAL_SHA256
+    ):
+        raise RecurrentEvaluationError(
+            "scale selection evaluation requires the scale seed registry"
+        )
+    artifact_source_commit = provenance.get("source_commit")
+    artifact_source_manifest = provenance.get("source_manifest_sha256")
+    if artifact_source_commit != resolved_source_commit:
+        raise RecurrentEvaluationError(
+            "frozen artifact source commit does not match the expected pin"
+        )
+    if (
+        artifact_source_manifest != resolved_source_manifest
+        or integrity.get("source_manifest_sha256") != resolved_source_manifest
+    ):
+        raise RecurrentEvaluationError(
+            "frozen artifact source manifest does not match the expected pin"
+        )
+    selection = _validated_candidate_action_selection(candidate_action_selection)
+    training_seed_evidence = _artifact_training_seed_evidence(
+        provenance,
+        seed_plan=seed_plan,
+    )
+    feed_forward_history_ablation = _artifact_feed_forward_history_ablation(loaded)
+    return _evaluate_frozen_model(
+        candidate_model=loaded.model,
+        policy_digest_label=artifact_digest,
+        seed_plan=seed_plan,
+        selected_fixtures=selected_fixtures,
+        artifact_evidence={
+            "path": str(Path(artifact_path)),
+            "artifact_sha256": artifact_digest,
+            "artifact_kind": loaded.artifact.get("artifact_kind"),
+            "model_contract_version": _artifact_model_contract(loaded),
+            "seed_registry_digest": artifact_registry_digest,
+            "source_commit": artifact_source_commit,
+            "expected_source_commit": resolved_source_commit,
+            "source_commit_match": True,
+            "source_manifest_sha256": artifact_source_manifest,
+            "expected_source_manifest_sha256": resolved_source_manifest,
+            "source_manifest_match": True,
+            "training_seed_evidence": training_seed_evidence,
+        },
+        candidate_provenance={
+            "mode": "verified_frozen_policy_artifact_v2",
+            "source_pinned": True,
+            "synthetic_digest_label": False,
+            "noncandidate_development_canary": False,
+            "promotion_evidence_eligible_from_provenance": False,
+            "promotion_eligibility_requires_external_one_use_lockbox_authorization": (
+                True
+            ),
+            "external_one_use_lockbox_authorization_available": False,
+            "research_candidate_evidence_requires_external_validation_authorization": (
+                True
+            ),
+            "external_validation_authorization_available": False,
+            "full_canonical_lockbox_plan": seed_plan.full_canonical_lockbox_plan,
+            "contains_canonical_validation_seed": seed_plan.contains_validation_seed,
+            "contains_canonical_lockbox_seed": seed_plan.contains_lockbox_seed,
+            "artifact_training_seed_evidence": training_seed_evidence,
+            "caller_excluded_training_seeds_used_as_proof": False,
+            "candidate_action_selection_promotion_eligible": (
+                selection == PUBLIC_RECURRENT_ARGMAX_SELECTION
+            ),
+            "sampled_candidate_diagnostic": (
+                selection == PUBLIC_RECURRENT_SAMPLED_SELECTION
+            ),
+            "feed_forward_history_ablation": feed_forward_history_ablation,
+            "pin_verification": (
+                "frozen_v2_registry_source_commit_source_manifest_and_cpu_probe"
             ),
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
@@ -668,10 +825,12 @@ def _evaluate_frozen_model_impl(
             "caller_excluded_training_seeds": list(seed_plan.excluded_training_seeds),
             "excluded_training_seed_count": len(seed_plan.excluded_training_seeds),
             "caller_excluded_training_seeds_used_as_proof": False,
-            "canonical_training_seed_count": len(_CANONICAL_TRAINING_SEEDS),
+            "canonical_training_seed_count": len(
+                _training_seed_set_for_plan(seed_plan)
+            ),
             "train_evaluation_overlap_count": len(
                 (set(seed_plan.broad_seeds) | set(seed_plan.fixture_seeds))
-                & _CANONICAL_TRAINING_SEEDS
+                & _training_seed_set_for_plan(seed_plan)
             ),
         },
         "broad": broad,
@@ -1208,16 +1367,58 @@ def _run_policy_world(
             learned_distribution_rows
         ),
     }
-    run["replay_digest"] = _canonical_sha256(
-        {
-            "run": run,
-            "summary": summary,
-            "trajectory_records": records,
-            "policy_decision_diagnostics": (decision_diagnostics_records),
-        }
+    full_behavior_payload = {
+        "run": run,
+        "summary": summary,
+        "trajectory_records": records,
+        "policy_decision_diagnostics": decision_diagnostics_records,
+    }
+    run["behavior_digest"] = _canonical_sha256(
+        _artifact_independent_behavior_payload(full_behavior_payload)
     )
+    run["replay_digest"] = _canonical_sha256(full_behavior_payload)
     _validate_run(run)
     return run
+
+
+def _artifact_independent_behavior_payload(value: object) -> object:
+    """Remove only serialized artifact labels from full-world replay evidence.
+
+    The ordinary replay digest remains provenance-bound.  This second view is
+    deliberately narrow: it retains every observation, action, mask, outcome,
+    reward, state transition, policy identifier, and controller version while
+    replacing the frozen-artifact label embedded in recurrent diagnostics.
+    That makes an in-memory policy and its serialized CPU reload comparable at
+    full-trajectory granularity without weakening either artifact's own replay
+    identity.
+    """
+
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            if key == "artifact_digest":
+                normalized[key] = "<artifact-digest>"
+            elif (
+                key == "policy_version"
+                and isinstance(raw_value, str)
+                and raw_value.startswith(f"{PUBLIC_RECURRENT_POLICY_VERSION}+")
+            ):
+                prefix, separator, selection = raw_value.rpartition("+")
+                if not separator or "+" not in prefix:
+                    raise RecurrentEvaluationError(
+                        "public recurrent policy version cannot be normalized"
+                    )
+                normalized[key] = (
+                    f"{PUBLIC_RECURRENT_POLICY_VERSION}+<artifact-digest-prefix>+"
+                    f"{selection}"
+                )
+            else:
+                normalized[key] = _artifact_independent_behavior_payload(raw_value)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_artifact_independent_behavior_payload(item) for item in value]
+    return value
 
 
 def _build_controlled_fixture_world_adapter(
@@ -1789,6 +1990,7 @@ def _paired_deltas(
 
 
 def _validate_run(run: Mapping[str, object]) -> None:
+    _validated_sha256(run.get("behavior_digest"), field="run.behavior_digest")
     _validated_sha256(run.get("replay_digest"), field="run.replay_digest")
     if run.get("horizon_ticks") != RECURRENT_EVALUATION_TICKS:
         raise RecurrentEvaluationError("run horizon is not the exact 120-tick contract")
@@ -2196,6 +2398,45 @@ def validate_recurrent_evaluation_report(report: Mapping[str, object]) -> None:
     _validate_report(report)
 
 
+def _training_seed_set_for_plan(
+    seed_plan: RecurrentEvaluationSeedPlan,
+) -> frozenset[int]:
+    if (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
+    ):
+        return _SCALE_TRAINING_SEEDS
+    return _CANONICAL_TRAINING_SEEDS
+
+
+def _artifact_training_seed_contract(
+    artifact_provenance: Mapping[str, object],
+    *,
+    seed_plan: RecurrentEvaluationSeedPlan,
+) -> tuple[tuple[str, str], Mapping[str, Sequence[int]], str]:
+    registry_digest = artifact_provenance.get("seed_registry_digest")
+    if registry_digest == SCALE_DEVELOPMENT_CANONICAL_SHA256:
+        if (
+            seed_plan.environment_seed_role
+            != RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
+        ):
+            raise RecurrentEvaluationError(
+                "scale artifact requires an explicit scale selection seed plan"
+            )
+        return (
+            _SCALE_TRAINING_SEED_ROLES,
+            SCALE_DEVELOPMENT_SEED_REGISTRY,
+            "mind_public_recurrent_training_seed_evidence_v2",
+        )
+    if registry_digest != CANONICAL_SEED_REGISTRY_SHA256:
+        raise RecurrentEvaluationError("artifact training seed registry is unsupported")
+    return (
+        _CANONICAL_TRAINING_SEED_ROLES,
+        RECURRENT_SEED_REGISTRY,
+        "mind_public_recurrent_training_seed_evidence_v1",
+    )
+
+
 def _artifact_training_seed_evidence(
     artifact_provenance: Mapping[str, object],
     *,
@@ -2220,7 +2461,13 @@ def _artifact_training_seed_evidence(
         and all(isinstance(role, str) for role in declared_roles_value)
         else ()
     )
-    roles_exact = declared_roles == _CANONICAL_TRAINING_SEED_ROLES
+    required_roles, training_registry, evidence_schema = (
+        _artifact_training_seed_contract(
+            artifact_provenance,
+            seed_plan=seed_plan,
+        )
+    )
+    roles_exact = declared_roles == required_roles
 
     role_seed_map_value = data_metadata.get("environment_seeds_by_role")
     role_seed_map = (
@@ -2230,13 +2477,13 @@ def _artifact_training_seed_evidence(
     role_seed_values: dict[str, list[int]] = {}
     observed_training_seeds: set[int] = set()
     membership_valid = role_seed_map is not None and set(role_seed_map) == set(
-        _CANONICAL_TRAINING_SEED_ROLES
+        required_roles
     )
     if membership_valid:
         assert role_seed_map is not None
-        for role in _CANONICAL_TRAINING_SEED_ROLES:
+        for role in required_roles:
             parsed = _optional_validated_seed_sequence(role_seed_map.get(role))
-            canonical = RECURRENT_SEED_REGISTRY[role]
+            canonical = training_registry[role]
             if parsed is None or not _is_canonical_ordered_subset(parsed, canonical):
                 membership_valid = False
                 break
@@ -2277,10 +2524,10 @@ def _artifact_training_seed_evidence(
         reasons.append("artifact_training_and_evaluation_seeds_overlap")
 
     return {
-        "schema_version": "mind_public_recurrent_training_seed_evidence_v1",
+        "schema_version": evidence_schema,
         "evidence_source": "artifact.provenance.data_metadata",
         "declared_environment_seed_roles": list(declared_roles),
-        "required_environment_seed_roles": list(_CANONICAL_TRAINING_SEED_ROLES),
+        "required_environment_seed_roles": list(required_roles),
         "canonical_training_roles_exact": roles_exact,
         "canonical_training_membership_valid": membership_valid,
         "legacy_training_seed_evidence_consistent": legacy_consistent,
@@ -2373,12 +2620,13 @@ def _validate_seed_plan_report(
         raise RecurrentEvaluationError(
             "evaluation seed-plan caller exclusion count drifted"
         )
-    if payload.get("canonical_training_seed_count") != len(_CANONICAL_TRAINING_SEEDS):
+    expected_training_seeds = _training_seed_set_for_plan(plan)
+    if payload.get("canonical_training_seed_count") != len(expected_training_seeds):
         raise RecurrentEvaluationError(
             "evaluation seed-plan canonical training count drifted"
         )
     expected_overlap = len(
-        (set(plan.broad_seeds) | set(plan.fixture_seeds)) & _CANONICAL_TRAINING_SEEDS
+        (set(plan.broad_seeds) | set(plan.fixture_seeds)) & expected_training_seeds
     )
     if payload.get("train_evaluation_overlap_count") != expected_overlap:
         raise RecurrentEvaluationError(
@@ -2392,9 +2640,23 @@ def _validate_artifact_training_seed_evidence(
     *,
     seed_plan: RecurrentEvaluationSeedPlan,
 ) -> None:
+    scale_contract = (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
+    )
+    expected_schema = (
+        "mind_public_recurrent_training_seed_evidence_v2"
+        if scale_contract
+        else "mind_public_recurrent_training_seed_evidence_v1"
+    )
+    expected_roles = (
+        _SCALE_TRAINING_SEED_ROLES if scale_contract else _CANONICAL_TRAINING_SEED_ROLES
+    )
+    expected_registry = (
+        SCALE_DEVELOPMENT_SEED_REGISTRY if scale_contract else RECURRENT_SEED_REGISTRY
+    )
     if (
-        evidence.get("schema_version")
-        != "mind_public_recurrent_training_seed_evidence_v1"
+        evidence.get("schema_version") != expected_schema
         or evidence.get("evidence_source") != "artifact.provenance.data_metadata"
         or evidence.get("legacy_caller_exclusions_consulted") is not False
     ):
@@ -2405,7 +2667,7 @@ def _validate_artifact_training_seed_evidence(
             field="artifact training required roles",
         )
     )
-    if required_roles != _CANONICAL_TRAINING_SEED_ROLES:
+    if required_roles != expected_roles:
         raise RecurrentEvaluationError("artifact training required roles drifted")
     declared_roles_value = _required_sequence(
         evidence.get("declared_environment_seed_roles"),
@@ -2416,22 +2678,20 @@ def _validate_artifact_training_seed_evidence(
             "artifact training declared roles must be strings"
         )
     declared_roles = tuple(declared_roles_value)
-    expected_roles_exact = declared_roles == _CANONICAL_TRAINING_SEED_ROLES
+    expected_roles_exact = declared_roles == expected_roles
 
     role_seed_map = _required_mapping(
         evidence.get("environment_seeds_by_role"),
         field="artifact training environment_seeds_by_role",
     )
-    expected_membership_valid = set(role_seed_map) == set(
-        _CANONICAL_TRAINING_SEED_ROLES
-    )
+    expected_membership_valid = set(role_seed_map) == set(expected_roles)
     observed_from_roles: set[int] = set()
     expected_role_counts: dict[str, int] = {}
     if expected_membership_valid:
-        for role in _CANONICAL_TRAINING_SEED_ROLES:
+        for role in expected_roles:
             parsed = _optional_validated_seed_sequence(role_seed_map.get(role))
             if parsed is None or not _is_canonical_ordered_subset(
-                parsed, RECURRENT_SEED_REGISTRY[role]
+                parsed, expected_registry[role]
             ):
                 expected_membership_valid = False
                 break
@@ -2980,12 +3240,16 @@ def _validated_evaluation_workers(value: object) -> int:
     return value
 
 
-def _artifact_digest(loaded: LoadedRecurrentArtifact) -> str:
+def _artifact_digest(
+    loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact,
+) -> str:
     digest = loaded.artifact.get("artifact_sha256")
     return _validated_sha256(digest, field="loaded artifact digest")
 
 
-def _artifact_model_contract(loaded: LoadedRecurrentArtifact) -> str:
+def _artifact_model_contract(
+    loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact,
+) -> str:
     model = _required_mapping(loaded.artifact.get("model"), field="artifact.model")
     contract = model.get("contract_version")
     if not isinstance(contract, str) or not contract:
@@ -2994,7 +3258,7 @@ def _artifact_model_contract(loaded: LoadedRecurrentArtifact) -> str:
 
 
 def _artifact_feed_forward_history_ablation(
-    loaded: LoadedRecurrentArtifact,
+    loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact,
 ) -> bool:
     provenance = _required_mapping(
         loaded.artifact.get("provenance"),

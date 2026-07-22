@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+import hashlib
 import math
 import random
 
@@ -37,7 +38,10 @@ from evolution_sim.mind.recurrent_policy import (
     verified_source_recurrent_state_for_exact_artifact,
 )
 from evolution_sim.mind.recurrent_rollout import RECURRENT_ROLLOUT_ACTION_SOURCE
-from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
+from evolution_sim.mind.recurrent_seed_registry import (
+    RECURRENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_SEED_REGISTRY,
+)
 
 
 RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION = (
@@ -46,11 +50,26 @@ RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION = (
 RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION = (
     "mind_v3_recurrent_exact_all_valid_action_branch_protocol_v4"
 )
+RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION = (
+    "mind_v3_recurrent_counterfactual_multi_tape_aggregate_v1"
+)
+RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE = (
+    "mind_v3_recurrent_counterfactual_continuation_environment_tape_seed_v1"
+)
+RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE = (
+    "mind_v3_recurrent_counterfactual_continuation_policy_tape_seed_v1"
+)
+MAX_RECURRENT_COUNTERFACTUAL_TAPE_SEED = 2**63 - 1
 RECURRENT_COUNTERFACTUAL_TRAINING_USE = (
     "post_update_supervised_auxiliary_policy_improvement_only"
 )
 RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO = "broad"
-RECURRENT_COUNTERFACTUAL_SEED_ROLES = ("train", "curriculum")
+RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES = ("train", "curriculum")
+RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES = ("scale_train", "scale_curriculum")
+RECURRENT_COUNTERFACTUAL_SEED_ROLES = (
+    *RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES,
+    *RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES,
+)
 RECURRENT_COUNTERFACTUAL_SCENARIOS = (
     RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO,
     *CONTROLLED_FIXTURE_NAMES,
@@ -131,10 +150,38 @@ _FORBIDDEN_TRAINABLE_KEY_TOKENS = (
     "metadata",
     "split",
 )
+_PAIRED_DELTA_FIELDS = (
+    "focal_discounted_return_delta",
+    "focal_terminal_alive_delta",
+    "population_alive_delta",
+    "births_during_horizon_delta",
+    "deaths_during_horizon_delta",
+)
 
 
 class RecurrentCounterfactualBranchError(ValueError):
     """Raised when an exact recurrent counterfactual contract fails closed."""
+
+
+def derive_recurrent_counterfactual_tape_seed(
+    *,
+    namespace: str,
+    identity: str,
+) -> int:
+    """Derive one independent continuation-tape seed from explicit provenance."""
+
+    if namespace not in {
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+    }:
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual continuation tape seed namespace is unsupported"
+        )
+    resolved_identity = _nonempty_string(identity, field="tape seed identity")
+    payload = f"{namespace}|{resolved_identity}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & (
+        MAX_RECURRENT_COUNTERFACTUAL_TAPE_SEED
+    )
 
 
 class OneShotRecurrentCounterfactualPolicy:
@@ -530,7 +577,10 @@ def build_recurrent_counterfactual_branch_row(
         "valid_action_count": len(valid_actions),
         "baseline_source_action_behavior_match": baseline_behavior_match,
     }
-    contract = _counterfactual_contract(verify_replay=verify_replay)
+    contract = _counterfactual_contract(
+        verify_replay=verify_replay,
+        seed_role=resolved_seed_role,
+    )
     protocol_digest = stable_payload_digest(contract)
     source_record_digest = stable_payload_digest(source_record)
     source_diagnostics_digest = stable_payload_digest(source_decision_diagnostics)
@@ -641,7 +691,12 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     horizons: Sequence[int],
     source_policy_sampling_seed: int,
     branch_selection_seed: int,
+    branch_tick_stratum_index: int | None = None,
     gamma: float = 0.99,
+    continuation_tape_count: int = 1,
+    continuation_tape_identity: str | None = None,
+    terminal_target_world_tick: int | None = None,
+    uncertainty_penalty: float = 0.0,
 ) -> dict[str, object]:
     """Materialize one source checkpoint and derive exact nested horizon rows.
 
@@ -669,6 +724,62 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         branch_selection_seed,
         field="branch_selection_seed",
     )
+    resolved_stratum_index = (
+        None
+        if branch_tick_stratum_index is None
+        else _nonnegative_int(
+            branch_tick_stratum_index,
+            field="branch_tick_stratum_index",
+        )
+    )
+    if resolved_stratum_index is not None and resolved_stratum_index >= len(
+        resolved_branch_ticks
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "branch_tick_stratum_index must index branch_tick_candidates"
+        )
+    resolved_tape_count = _positive_int(
+        continuation_tape_count,
+        field="continuation_tape_count",
+    )
+    resolved_tape_identity = (
+        None
+        if continuation_tape_identity is None
+        else _nonempty_string(
+            continuation_tape_identity,
+            field="continuation_tape_identity",
+        )
+    )
+    resolved_terminal_target = (
+        None
+        if terminal_target_world_tick is None
+        else _positive_int(
+            terminal_target_world_tick,
+            field="terminal_target_world_tick",
+        )
+    )
+    resolved_uncertainty_penalty = _finite_float(
+        uncertainty_penalty,
+        field="uncertainty_penalty",
+    )
+    if resolved_uncertainty_penalty < 0.0:
+        raise RecurrentCounterfactualBranchError(
+            "uncertainty_penalty must be non-negative"
+        )
+    upgraded_evidence_requested = (
+        resolved_tape_count != 1
+        or resolved_tape_identity is not None
+        or resolved_terminal_target is not None
+        or resolved_uncertainty_penalty != 0.0
+        or resolved_stratum_index is not None
+    )
+    if upgraded_evidence_requested and resolved_tape_identity is None:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape or terminal aggregate evidence requires "
+            "continuation_tape_identity"
+        )
+    if not upgraded_evidence_requested and resolved_tape_count != 1:
+        raise AssertionError("unreachable continuation tape configuration")
     if (
         len(
             {
@@ -685,6 +796,21 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     resolved_gamma = _unit_interval(gamma, field="gamma")
     maximum_branch_tick = max(resolved_branch_ticks)
     maximum_horizon = resolved_horizons[-1]
+    if resolved_terminal_target is not None:
+        overrun_ticks = tuple(
+            tick
+            for tick in resolved_branch_ticks
+            if tick + maximum_horizon > resolved_terminal_target
+        )
+        if overrun_ticks:
+            raise RecurrentCounterfactualBranchError(
+                "relative counterfactual horizons must not run beyond the "
+                "absolute terminal target; offending branch ticks: "
+                f"{list(overrun_ticks)}"
+            )
+    source_tick_limit = maximum_branch_tick + maximum_horizon
+    if resolved_terminal_target is not None:
+        source_tick_limit = max(source_tick_limit, resolved_terminal_target)
     source_model_state_sha256 = recurrent_model_state_sha256(model)
 
     policy = DeterministicPublicRecurrentPolicy(
@@ -696,7 +822,7 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     source_world = _world_for_scenario(
         scenario=resolved_scenario,
         environment_seed=environment_seed,
-        ticks=maximum_branch_tick + maximum_horizon,
+        ticks=source_tick_limit,
         policy=policy,
     )
     _configure_manual_world(source_world)
@@ -738,16 +864,40 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
                 tick_diagnostics,
             )
 
-    selected_tick: int | None = None
-    fallback_index = -1
-    for index, tick in enumerate(resolved_branch_ticks):
-        if tick in materialized_candidates:
-            selected_tick = tick
-            fallback_index = index
-            break
-    if selected_tick is None:
+    eligible_branch_ticks = tuple(
+        tick for tick in resolved_branch_ticks if tick in materialized_candidates
+    )
+    if not eligible_branch_ticks:
         raise RecurrentCounterfactualBranchError(
             "no requested branch tick contained an eligible learner decision"
+        )
+    selection_rng = random.Random(resolved_selection_seed)
+    stratum_traversal: tuple[int, ...] | None = None
+    if resolved_stratum_index is not None:
+        stratum_traversal = tuple(
+            resolved_branch_ticks[
+                (resolved_stratum_index + offset) % len(resolved_branch_ticks)
+            ]
+            for offset in range(len(resolved_branch_ticks))
+        )
+        selected_tick = next(
+            tick for tick in stratum_traversal if tick in materialized_candidates
+        )
+        selected_eligible_tick_index = eligible_branch_ticks.index(selected_tick)
+    else:
+        selected_eligible_tick_index = (
+            selection_rng.randrange(len(eligible_branch_ticks))
+            if upgraded_evidence_requested
+            else 0
+        )
+        selected_tick = eligible_branch_ticks[selected_eligible_tick_index]
+    fallback_index = resolved_branch_ticks.index(selected_tick)
+    if (
+        resolved_terminal_target is not None
+        and resolved_terminal_target <= selected_tick
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "terminal_target_world_tick must be after the selected branch tick"
         )
     checkpoint_world, source_records, source_diagnostics = materialized_candidates[
         selected_tick
@@ -758,7 +908,6 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         for record, diagnostics in eligible
     ]
     candidate_list_digest = stable_payload_digest(candidate_payload)
-    selection_rng = random.Random(resolved_selection_seed)
     selected_candidate_index = selection_rng.randrange(len(eligible))
     source_record, source_decision_diagnostics = eligible[selected_candidate_index]
     resolved_focal_agent_id = _positive_int(
@@ -977,21 +1126,79 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         for run in (baseline_max, *action_max_runs, *replay_max_runs)
     )
     max_horizon_continuation_count = 1 + (2 * len(valid_actions))
+    upgraded_payload: dict[str, object] = {}
+    if resolved_tape_identity is not None:
+        aggregate_rows, terminal_target, multi_tape_compute = (
+            _materialize_multi_tape_aggregate_evidence(
+                checkpoint_world,
+                legacy_rows=rows,
+                tape_count=resolved_tape_count,
+                tape_identity=resolved_tape_identity,
+                terminal_target_world_tick=resolved_terminal_target,
+                uncertainty_penalty=resolved_uncertainty_penalty,
+                branch_id=branch_id,
+                branch_tick=selected_tick,
+                horizons=resolved_horizons,
+                focal_agent_id=resolved_focal_agent_id,
+                source_action=source_action,
+                valid_actions=valid_actions,
+                expected_observation_digest=source_observation_digest,
+                expected_action_mask_digest=source_action_mask_digest,
+                gamma=resolved_gamma,
+                excluded_seeds=(
+                    environment_seed,
+                    resolved_source_sampling_seed,
+                    resolved_selection_seed,
+                ),
+            )
+        )
+        upgraded_payload = {
+            "aggregate_rows": aggregate_rows,
+            "terminal_target": terminal_target,
+            "multi_tape_compute": multi_tape_compute,
+        }
+    selection_payload = {
+        "requested_branch_ticks": list(resolved_branch_ticks),
+        "selected_branch_tick": selected_tick,
+        "fallback_index": fallback_index,
+        "eligible_candidate_count": len(eligible),
+        "candidate_list_digest": candidate_list_digest,
+        "selected_candidate_index": selected_candidate_index,
+        "selected_focal_agent_id": resolved_focal_agent_id,
+        "selection_policy": (
+            "deterministic_stratified_tick_rotation_with_eligible_fallback_then_"
+            "uniform_current_tick_learner_decision"
+            if resolved_stratum_index is not None
+            else (
+                "stratified_uniform_seeded_tick_then_uniform_current_tick_"
+                "learner_decision"
+                if upgraded_evidence_requested
+                else "uniform_seeded_over_current_tick_multi_action_learner_decisions"
+            )
+        ),
+        "outcome_or_future_data_used": False,
+    }
+    if upgraded_evidence_requested:
+        selection_payload.update(
+            {
+                "eligible_branch_ticks": list(eligible_branch_ticks),
+                "eligible_branch_tick_count": len(eligible_branch_ticks),
+                "selected_eligible_tick_index": selected_eligible_tick_index,
+            }
+        )
+    if resolved_stratum_index is not None:
+        selection_payload.update(
+            {
+                "requested_branch_tick_stratum_index": resolved_stratum_index,
+                "branch_tick_strata_traversal": list(stratum_traversal or ()),
+                "selected_branch_tick_stratum_index": resolved_branch_ticks.index(
+                    selected_tick
+                ),
+            }
+        )
     return {
         "rows": tuple(rows),
-        "selection": {
-            "requested_branch_ticks": list(resolved_branch_ticks),
-            "selected_branch_tick": selected_tick,
-            "fallback_index": fallback_index,
-            "eligible_candidate_count": len(eligible),
-            "candidate_list_digest": candidate_list_digest,
-            "selected_candidate_index": selected_candidate_index,
-            "selected_focal_agent_id": resolved_focal_agent_id,
-            "selection_policy": (
-                "uniform_seeded_over_current_tick_multi_action_learner_decisions"
-            ),
-            "outcome_or_future_data_used": False,
-        },
+        "selection": selection_payload,
         "prefix_proof": prefix_proof,
         "compute": {
             "source_tick_executions": source_tick_executions,
@@ -1027,6 +1234,704 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         "training_ran": False,
         "runtime_action_selection_changed": False,
         "promotion_authorized": False,
+        **upgraded_payload,
+    }
+
+
+def _materialize_multi_tape_aggregate_evidence(
+    checkpoint_world: SimulationWorld,
+    *,
+    legacy_rows: Sequence[Mapping[str, object]],
+    tape_count: int,
+    tape_identity: str,
+    terminal_target_world_tick: int | None,
+    uncertainty_penalty: float,
+    branch_id: str,
+    branch_tick: int,
+    horizons: Sequence[int],
+    focal_agent_id: int,
+    source_action: str,
+    valid_actions: Sequence[str],
+    expected_observation_digest: str,
+    expected_action_mask_digest: str,
+    gamma: float,
+    excluded_seeds: Sequence[int],
+) -> tuple[tuple[dict[str, object], ...], dict[str, object] | None, dict[str, int]]:
+    """Estimate action outcomes over independently retaped exact checkpoints."""
+
+    if not legacy_rows:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape evidence requires legacy source rows"
+        )
+    terminal_horizon = (
+        None
+        if terminal_target_world_tick is None
+        else terminal_target_world_tick - branch_tick
+    )
+    if terminal_horizon is not None and terminal_horizon <= 0:
+        raise RecurrentCounterfactualBranchError(
+            "absolute terminal target must follow the branch state"
+        )
+    execution_horizons = tuple(
+        sorted(
+            {
+                *(_positive_int(item, field="aggregate horizon") for item in horizons),
+                *(() if terminal_horizon is None else (terminal_horizon,)),
+            }
+        )
+    )
+    maximum_horizon = execution_horizons[-1]
+    tape_entries_by_horizon: dict[int, list[dict[str, object]]] = {
+        horizon: [] for horizon in execution_horizons
+    }
+    actual_continuation_tick_count = 0
+    all_environment_seeds: list[int] = []
+    all_policy_seeds: list[int] = []
+    excluded_seed_set = set(excluded_seeds)
+
+    for tape_index in range(tape_count):
+        environment_identity = f"{tape_identity}:environment:{tape_index}"
+        policy_identity = f"{tape_identity}:policy:{tape_index}"
+        environment_sampling_seed = derive_recurrent_counterfactual_tape_seed(
+            namespace=(
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+            ),
+            identity=environment_identity,
+        )
+        policy_sampling_seed = derive_recurrent_counterfactual_tape_seed(
+            namespace=RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+            identity=policy_identity,
+        )
+        if (
+            environment_sampling_seed == policy_sampling_seed
+            or environment_sampling_seed in excluded_seed_set
+            or policy_sampling_seed in excluded_seed_set
+            or environment_sampling_seed in all_environment_seeds
+            or policy_sampling_seed in all_policy_seeds
+            or environment_sampling_seed in all_policy_seeds
+            or policy_sampling_seed in all_environment_seeds
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "continuation tape seeds must be globally unique and source-disjoint"
+            )
+        all_environment_seeds.append(environment_sampling_seed)
+        all_policy_seeds.append(policy_sampling_seed)
+        tape_checkpoint, initial_rng = _retaped_continuation_checkpoint(
+            checkpoint_world,
+            environment_sampling_seed=environment_sampling_seed,
+            policy_sampling_seed=policy_sampling_seed,
+            focal_agent_id=focal_agent_id,
+        )
+        tape_branch_id = f"{branch_id}:tape:{tape_index}"
+        baseline_max = _execute_continuation(
+            tape_checkpoint,
+            branch_id=tape_branch_id,
+            branch_tick=branch_tick,
+            horizon_ticks=maximum_horizon,
+            focal_agent_id=focal_agent_id,
+            source_action=source_action,
+            expected_observation_digest=expected_observation_digest,
+            expected_action_mask_digest=expected_action_mask_digest,
+            forced_action=None,
+            gamma=gamma,
+            prefix_horizons=execution_horizons,
+            require_source_action_match=False,
+        )
+        baseline_replay_max = _execute_continuation(
+            tape_checkpoint,
+            branch_id=tape_branch_id,
+            branch_tick=branch_tick,
+            horizon_ticks=maximum_horizon,
+            focal_agent_id=focal_agent_id,
+            source_action=source_action,
+            expected_observation_digest=expected_observation_digest,
+            expected_action_mask_digest=expected_action_mask_digest,
+            forced_action=None,
+            gamma=gamma,
+            prefix_horizons=execution_horizons,
+            require_source_action_match=False,
+        )
+        tape_natural_action = _stable_action(
+            baseline_max.get("natural_requested_action"),
+            field="multi-tape baseline natural action",
+        )
+        baseline_by_horizon = _nested_runs_by_horizon(
+            baseline_max,
+            horizons=execution_horizons,
+            field=f"tape {tape_index} baseline",
+        )
+        baseline_replay_by_horizon = _nested_runs_by_horizon(
+            baseline_replay_max,
+            horizons=execution_horizons,
+            field=f"tape {tape_index} baseline replay",
+        )
+        action_runs_by_horizon: dict[int, list[dict[str, object]]] = {
+            horizon: [] for horizon in execution_horizons
+        }
+        action_replays_by_horizon: dict[int, list[dict[str, object]]] = {
+            horizon: [] for horizon in execution_horizons
+        }
+        action_max_runs: list[dict[str, object]] = []
+        action_replay_max_runs: list[dict[str, object]] = []
+        for action in valid_actions:
+            action_max = _execute_continuation(
+                tape_checkpoint,
+                branch_id=tape_branch_id,
+                branch_tick=branch_tick,
+                horizon_ticks=maximum_horizon,
+                focal_agent_id=focal_agent_id,
+                source_action=tape_natural_action,
+                expected_observation_digest=expected_observation_digest,
+                expected_action_mask_digest=expected_action_mask_digest,
+                forced_action=action,
+                gamma=gamma,
+                prefix_horizons=execution_horizons,
+            )
+            action_replay_max = _execute_continuation(
+                tape_checkpoint,
+                branch_id=tape_branch_id,
+                branch_tick=branch_tick,
+                horizon_ticks=maximum_horizon,
+                focal_agent_id=focal_agent_id,
+                source_action=tape_natural_action,
+                expected_observation_digest=expected_observation_digest,
+                expected_action_mask_digest=expected_action_mask_digest,
+                forced_action=action,
+                gamma=gamma,
+                prefix_horizons=execution_horizons,
+            )
+            runs = _nested_runs_by_horizon(
+                action_max,
+                horizons=execution_horizons,
+                field=f"tape {tape_index} action {action}",
+            )
+            replays = _nested_runs_by_horizon(
+                action_replay_max,
+                horizons=execution_horizons,
+                field=f"tape {tape_index} action replay {action}",
+            )
+            for horizon in execution_horizons:
+                action_runs_by_horizon[horizon].append(runs[horizon])
+                action_replays_by_horizon[horizon].append(replays[horizon])
+            action_max_runs.append(action_max)
+            action_replay_max_runs.append(action_replay_max)
+
+        for horizon in execution_horizons:
+            baseline = baseline_by_horizon[horizon]
+            baseline_replay = baseline_replay_by_horizon[horizon]
+            if baseline.get("behavior_digest") != baseline_replay.get(
+                "behavior_digest"
+            ) or baseline.get("evidence_digest") != baseline_replay.get(
+                "evidence_digest"
+            ):
+                raise RecurrentCounterfactualBranchError(
+                    f"multi-tape baseline replay mismatch at tape {tape_index} "
+                    f"horizon {horizon}"
+                )
+            action_entries: list[dict[str, object]] = []
+            for action, run, replay in zip(
+                valid_actions,
+                action_runs_by_horizon[horizon],
+                action_replays_by_horizon[horizon],
+                strict=True,
+            ):
+                if run.get("behavior_digest") != replay.get(
+                    "behavior_digest"
+                ) or run.get("evidence_digest") != replay.get("evidence_digest"):
+                    raise RecurrentCounterfactualBranchError(
+                        f"multi-tape action replay mismatch for {action!r} "
+                        f"at tape {tape_index} horizon {horizon}"
+                    )
+                action_entries.append(
+                    _compact_multi_tape_action_evidence(
+                        run,
+                        replay=replay,
+                        baseline=baseline,
+                    )
+                )
+            baseline_entry = _compact_multi_tape_baseline_evidence(
+                baseline,
+                replay=baseline_replay,
+            )
+            for run in (baseline_entry, *action_entries):
+                if (
+                    run["initial_environment_rng_state_sha256"]
+                    != initial_rng["initial_environment_rng_state_sha256"]
+                    or run["initial_policy_sampling_state_sha256"]
+                    != initial_rng["initial_policy_sampling_state_sha256"]
+                ):
+                    raise RecurrentCounterfactualBranchError(
+                        "forced actions within a tape did not share initial RNG state"
+                    )
+            tape_entries_by_horizon[horizon].append(
+                {
+                    "tape_index": tape_index,
+                    "environment_sampling_identity": environment_identity,
+                    "environment_sampling_seed": environment_sampling_seed,
+                    "policy_sampling_identity": policy_identity,
+                    "policy_sampling_seed": policy_sampling_seed,
+                    **initial_rng,
+                    "baseline": baseline_entry,
+                    "action_outcomes": action_entries,
+                }
+            )
+        actual_continuation_tick_count += sum(
+            int(run["executed_tick_count"])
+            for run in (
+                baseline_max,
+                baseline_replay_max,
+                *action_max_runs,
+                *action_replay_max_runs,
+            )
+        )
+
+    first_legacy_row = legacy_rows[0]
+    aggregate_rows = tuple(
+        _assemble_multi_tape_aggregate_row(
+            source_row=first_legacy_row,
+            target_kind="relative_horizon",
+            branch_tick=branch_tick,
+            horizon_ticks=horizon,
+            terminal_target_world_tick=terminal_target_world_tick,
+            tape_identity=tape_identity,
+            tape_provenance=tape_entries_by_horizon[horizon],
+            uncertainty_penalty=uncertainty_penalty,
+            excluded_seeds=excluded_seeds,
+        )
+        for horizon in horizons
+    )
+    terminal_target = (
+        None
+        if terminal_horizon is None
+        else _assemble_multi_tape_aggregate_row(
+            source_row=first_legacy_row,
+            target_kind="absolute_terminal_world_tick",
+            branch_tick=branch_tick,
+            horizon_ticks=terminal_horizon,
+            terminal_target_world_tick=terminal_target_world_tick,
+            tape_identity=tape_identity,
+            tape_provenance=tape_entries_by_horizon[terminal_horizon],
+            uncertainty_penalty=uncertainty_penalty,
+            excluded_seeds=excluded_seeds,
+        )
+    )
+    continuation_count_per_tape = 2 + (2 * len(valid_actions))
+    maximum_budget = tape_count * continuation_count_per_tape * maximum_horizon
+    if actual_continuation_tick_count > maximum_budget:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape continuation execution exceeded its maximum budget"
+        )
+    return (
+        aggregate_rows,
+        terminal_target,
+        {
+            "continuation_tape_count": tape_count,
+            "continuation_count_per_tape": continuation_count_per_tape,
+            "max_horizon_continuation_count": (
+                tape_count * continuation_count_per_tape
+            ),
+            "exact_replay_continuation_count": (tape_count * (1 + len(valid_actions))),
+            "maximum_horizon_ticks": maximum_horizon,
+            "actual_continuation_tick_count": actual_continuation_tick_count,
+            "maximum_continuation_tick_budget": maximum_budget,
+        },
+    )
+
+
+def _compact_multi_tape_baseline_evidence(
+    run: Mapping[str, object],
+    *,
+    replay: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "natural_requested_action": _stable_action(
+            run.get("natural_requested_action"),
+            field="multi-tape baseline action",
+        ),
+        **_compact_multi_tape_outcome_metrics(run),
+        "first_transition": deepcopy(run.get("first_transition")),
+        "unsupported_requested_action_count": run.get(
+            "unsupported_requested_action_count"
+        ),
+        "heuristic_action_source_count": run.get("heuristic_action_source_count"),
+        "unexpected_action_source_count": run.get("unexpected_action_source_count"),
+        "behavior_digest": run.get("behavior_digest"),
+        "evidence_digest": run.get("evidence_digest"),
+        "replay_verified": True,
+        "replay_evidence_digest": replay.get("evidence_digest"),
+        "initial_environment_rng_state_sha256": run.get(
+            "initial_environment_rng_state_sha256"
+        ),
+        "initial_policy_sampling_state_sha256": run.get(
+            "initial_policy_sampling_state_sha256"
+        ),
+    }
+
+
+def _compact_multi_tape_action_evidence(
+    run: Mapping[str, object],
+    *,
+    replay: Mapping[str, object],
+    baseline: Mapping[str, object],
+) -> dict[str, object]:
+    action = _stable_action(run.get("forced_action"), field="multi-tape action")
+    return {
+        "action": action,
+        "natural_requested_action": _stable_action(
+            run.get("natural_requested_action"),
+            field="multi-tape natural action",
+        ),
+        **_compact_multi_tape_outcome_metrics(run),
+        "first_transition": deepcopy(run.get("first_transition")),
+        "paired_vs_baseline": _paired_delta_payload(run, baseline=baseline),
+        "unsupported_requested_action_count": run.get(
+            "unsupported_requested_action_count"
+        ),
+        "heuristic_action_source_count": run.get("heuristic_action_source_count"),
+        "unexpected_action_source_count": run.get("unexpected_action_source_count"),
+        "behavior_digest": run.get("behavior_digest"),
+        "evidence_digest": run.get("evidence_digest"),
+        "replay_verified": True,
+        "replay_evidence_digest": replay.get("evidence_digest"),
+        "initial_environment_rng_state_sha256": run.get(
+            "initial_environment_rng_state_sha256"
+        ),
+        "initial_policy_sampling_state_sha256": run.get(
+            "initial_policy_sampling_state_sha256"
+        ),
+    }
+
+
+def _compact_multi_tape_outcome_metrics(
+    run: Mapping[str, object],
+) -> dict[str, object]:
+    terminal = _mapping(run.get("focal_terminal"), field="multi-tape terminal")
+    alive = terminal.get("alive")
+    if type(alive) is not bool:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape focal terminal alive must be an exact boolean"
+        )
+    return {
+        "focal_discounted_return": _finite_float(
+            run.get("focal_discounted_return"),
+            field="multi-tape focal discounted return",
+        ),
+        "focal_terminal_alive": alive,
+        "population_alive": _nonnegative_int(
+            run.get("population_alive"),
+            field="multi-tape population alive",
+        ),
+        "births_during_horizon": _nonnegative_int(
+            run.get("births_during_horizon"),
+            field="multi-tape births",
+        ),
+        "deaths_during_horizon": _nonnegative_int(
+            run.get("deaths_during_horizon"),
+            field="multi-tape deaths",
+        ),
+    }
+
+
+def _paired_delta_payload(
+    run: Mapping[str, object],
+    *,
+    baseline: Mapping[str, object],
+) -> dict[str, object]:
+    run_terminal = _mapping(run.get("focal_terminal"), field="run terminal")
+    baseline_terminal = _mapping(
+        baseline.get("focal_terminal"),
+        field="baseline terminal",
+    )
+    return {
+        "focal_discounted_return_delta": _round(
+            float(run["focal_discounted_return"])
+            - float(baseline["focal_discounted_return"])
+        ),
+        "focal_terminal_alive_delta": int(run_terminal.get("alive") is True)
+        - int(baseline_terminal.get("alive") is True),
+        "population_alive_delta": int(run["population_alive"])
+        - int(baseline["population_alive"]),
+        "births_during_horizon_delta": int(run["births_during_horizon"])
+        - int(baseline["births_during_horizon"]),
+        "deaths_during_horizon_delta": int(run["deaths_during_horizon"])
+        - int(baseline["deaths_during_horizon"]),
+    }
+
+
+def _assemble_multi_tape_aggregate_row(
+    *,
+    source_row: Mapping[str, object],
+    target_kind: str,
+    branch_tick: int,
+    horizon_ticks: int,
+    terminal_target_world_tick: int | None,
+    tape_identity: str,
+    tape_provenance: Sequence[Mapping[str, object]],
+    uncertainty_penalty: float,
+    excluded_seeds: Sequence[int],
+) -> dict[str, object]:
+    validate_recurrent_counterfactual_branch_row(source_row)
+    source_metadata = _mapping(source_row.get("metadata"), field="source metadata")
+    source_labels = _mapping(source_row.get("labels"), field="source labels")
+    trainable_public_context = deepcopy(
+        dict(
+            _mapping(
+                source_row.get("trainable_public_context"),
+                field="source trainable public context",
+            )
+        )
+    )
+    optimizer_context = deepcopy(
+        dict(
+            _mapping(
+                source_row.get("optimizer_context"),
+                field="source optimizer context",
+            )
+        )
+    )
+    source_checkpoint_identity = {
+        "seed_role": source_metadata.get("seed_role"),
+        "environment_seed": source_metadata.get("environment_seed"),
+        "scenario": source_metadata.get("scenario"),
+        "branch_tick": branch_tick,
+        "focal_agent_id": source_metadata.get("focal_agent_id"),
+        "source_record_digest": source_metadata.get("source_record_digest"),
+        "source_observation_digest": source_metadata.get("source_observation_digest"),
+        "source_action_mask_digest": source_metadata.get("source_action_mask_digest"),
+        "source_public_history_prefix_sha256": source_metadata.get(
+            "source_public_history_prefix_sha256"
+        ),
+    }
+    source_identity = {
+        "source_model_state_sha256": source_metadata.get("source_model_state_sha256"),
+        "source_artifact_digest": source_metadata.get("source_artifact_digest"),
+        "source_policy_sampling_seed": source_metadata.get("policy_sampling_seed"),
+        "source_checkpoint_identity_sha256": stable_payload_digest(
+            source_checkpoint_identity
+        ),
+        "trainable_public_context_sha256": stable_payload_digest(
+            trainable_public_context
+        ),
+    }
+    source_behavior = {
+        "source_requested_action": source_labels.get("source_requested_action"),
+        "current_public_action_mask": deepcopy(
+            trainable_public_context["current_public_action_mask"]
+        ),
+        "source_behavior_distribution": deepcopy(
+            source_labels.get("source_behavior_distribution")
+        ),
+    }
+    tape_contract = {
+        "tape_identity": tape_identity,
+        "tape_count": len(tape_provenance),
+        "environment_seed_namespace": (
+            RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+        ),
+        "policy_seed_namespace": (
+            RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE
+        ),
+        "excluded_source_seeds": list(excluded_seeds),
+        "same_exact_source_checkpoint": True,
+        "environment_rng_retaped_after_source_checkpoint": True,
+        "policy_rng_retaped_after_source_checkpoint": True,
+        "common_initial_rng_state_across_actions_within_tape": True,
+        "paired_baseline_and_forced_actions_share_tape": True,
+        "exact_replay_required_for_baseline_and_actions": True,
+        "event_aligned_common_random_numbers": False,
+        "sequential_rng_event_reassignment_after_divergence_possible": True,
+        "private_world_checkpoint_serialized": False,
+    }
+    copied_tapes = deepcopy([dict(tape) for tape in tape_provenance])
+    aggregate = _aggregate_multi_tape_outcomes(
+        copied_tapes,
+        uncertainty_penalty=uncertainty_penalty,
+    )
+    target = {
+        "kind": target_kind,
+        "branch_tick": branch_tick,
+        "horizon_ticks": horizon_ticks,
+        "target_world_tick": branch_tick + horizon_ticks,
+        "absolute_terminal_target_world_tick": terminal_target_world_tick,
+        "is_absolute_terminal_target": (target_kind == "absolute_terminal_world_tick"),
+    }
+    components = {
+        "target": stable_payload_digest(target),
+        "trainable_public_context": stable_payload_digest(trainable_public_context),
+        "optimizer_context": stable_payload_digest(optimizer_context),
+        "source_identity": stable_payload_digest(source_identity),
+        "source_behavior": stable_payload_digest(source_behavior),
+        "tape_contract": stable_payload_digest(tape_contract),
+        "tape_provenance": stable_payload_digest(copied_tapes),
+        "aggregate": stable_payload_digest(aggregate),
+    }
+    row: dict[str, object] = {
+        "schema_version": RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION,
+        "target": target,
+        "trainable_public_context": trainable_public_context,
+        "optimizer_context": optimizer_context,
+        "source_identity": source_identity,
+        "source_behavior": source_behavior,
+        "tape_contract": tape_contract,
+        "tape_provenance": copied_tapes,
+        "aggregate": aggregate,
+        "component_digests": components,
+        "training_ran": False,
+        "runtime_artifact_created": False,
+        "runtime_action_selection_changed": False,
+        "promotion_authorized": False,
+    }
+    row["exact_digest"] = stable_payload_digest(row)
+    validate_recurrent_counterfactual_aggregate_row(row)
+    return row
+
+
+def _aggregate_multi_tape_outcomes(
+    tape_provenance: Sequence[Mapping[str, object]],
+    *,
+    uncertainty_penalty: float,
+) -> dict[str, object]:
+    tape_count = len(tape_provenance)
+    if tape_count <= 0:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape aggregate requires at least one tape"
+        )
+    baseline_values = {
+        field: [
+            _multi_tape_metric(
+                _mapping(tape.get("baseline"), field="tape baseline"),
+                field=field,
+            )
+            for tape in tape_provenance
+        ]
+        for field in (
+            "focal_discounted_return",
+            "focal_terminal_alive",
+            "population_alive",
+            "births_during_horizon",
+            "deaths_during_horizon",
+        )
+    }
+    first_actions = _mapping(
+        tape_provenance[0],
+        field="first tape",
+    ).get("action_outcomes")
+    if not isinstance(first_actions, list) or not first_actions:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape action outcomes cannot be empty"
+        )
+    actions = [
+        _stable_action(
+            _mapping(item, field="first tape action").get("action"),
+            field="first tape action",
+        )
+        for item in first_actions
+    ]
+    action_aggregates: list[dict[str, object]] = []
+    for action in actions:
+        outcomes = [
+            next(
+                _mapping(item, field="tape action outcome")
+                for item in _action_outcome_sequence(tape)
+                if _mapping(item, field="tape action outcome").get("action") == action
+            )
+            for tape in tape_provenance
+        ]
+        outcome_statistics = {
+            field: _sample_statistics(
+                [_multi_tape_metric(outcome, field=field) for outcome in outcomes]
+            )
+            for field in (
+                "focal_discounted_return",
+                "focal_terminal_alive",
+                "population_alive",
+                "births_during_horizon",
+                "deaths_during_horizon",
+            )
+        }
+        paired_statistics = {
+            field: _sample_statistics(
+                [
+                    _finite_float(
+                        _mapping(
+                            outcome.get("paired_vs_baseline"),
+                            field="paired outcome",
+                        ).get(field),
+                        field=field,
+                    )
+                    for outcome in outcomes
+                ]
+            )
+            for field in _PAIRED_DELTA_FIELDS
+        }
+        return_delta = paired_statistics["focal_discounted_return_delta"]
+        action_aggregates.append(
+            {
+                "action": action,
+                "tape_count": tape_count,
+                "outcome_statistics": outcome_statistics,
+                "paired_delta_statistics": paired_statistics,
+                "focal_survival_probability": outcome_statistics[
+                    "focal_terminal_alive"
+                ]["mean"],
+                "uncertainty_penalized_score": _round(
+                    float(return_delta["mean"])
+                    - uncertainty_penalty * float(return_delta["standard_error"])
+                ),
+            }
+        )
+    return {
+        "tape_count": tape_count,
+        "uncertainty_penalty": uncertainty_penalty,
+        "uncertainty_penalized_score_policy": (
+            "paired_focal_discounted_return_delta_mean_minus_coefficient_times_standard_error"
+        ),
+        "baseline_outcome_statistics": {
+            field: _sample_statistics(values)
+            for field, values in baseline_values.items()
+        },
+        "baseline_focal_survival_probability": _sample_statistics(
+            baseline_values["focal_terminal_alive"]
+        )["mean"],
+        "action_outcomes": action_aggregates,
+    }
+
+
+def _action_outcome_sequence(tape: Mapping[str, object]) -> list[object]:
+    outcomes = tape.get("action_outcomes")
+    if not isinstance(outcomes, list):
+        raise RecurrentCounterfactualBranchError("tape action outcomes must be a list")
+    return outcomes
+
+
+def _multi_tape_metric(outcome: Mapping[str, object], *, field: str) -> float:
+    value = outcome.get(field)
+    if field == "focal_terminal_alive":
+        if type(value) is not bool:
+            raise RecurrentCounterfactualBranchError(
+                "focal terminal alive must be an exact boolean"
+            )
+        return float(value)
+    return _finite_float(value, field=field)
+
+
+def _sample_statistics(values: Sequence[float]) -> dict[str, float]:
+    if not values:
+        raise RecurrentCounterfactualBranchError(
+            "sample statistics require at least one value"
+        )
+    parsed = tuple(_finite_float(value, field="sample value") for value in values)
+    mean = math.fsum(parsed) / len(parsed)
+    sample_variance = (
+        0.0
+        if len(parsed) == 1
+        else math.fsum((value - mean) ** 2 for value in parsed) / (len(parsed) - 1)
+    )
+    standard_error = math.sqrt(sample_variance / len(parsed))
+    return {
+        "mean": _round(mean),
+        "sample_variance": _round(sample_variance),
+        "standard_error": _round(standard_error),
     }
 
 
@@ -1103,7 +2008,10 @@ def _assemble_nested_branch_row(
         "valid_action_count": len(valid_actions),
         "baseline_source_action_behavior_match": True,
     }
-    contract = _counterfactual_contract(verify_replay=True)
+    contract = _counterfactual_contract(
+        verify_replay=True,
+        seed_role=seed_role,
+    )
     protocol_digest = stable_payload_digest(contract)
     source_record_digest = stable_payload_digest(source_record)
     source_diagnostics_digest = stable_payload_digest(source_decision_diagnostics)
@@ -1780,6 +2688,15 @@ def validate_recurrent_counterfactual_branch_row(
     role = str(metadata.get("seed_role", ""))
     seed = _positive_int(metadata.get("environment_seed"), field="environment_seed")
     _validated_seed_role(role, seed)
+    expected_allowed_roles = (
+        RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+        if role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+        else RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES
+    )
+    if contract.get("allowed_seed_roles") != list(expected_allowed_roles):
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual allowed seed-role cohort drifted"
+        )
     if metadata.get("private_checkpoint_serialized") is not False:
         raise RecurrentCounterfactualBranchError(
             "private world checkpoint cannot be serialized in a branch row"
@@ -1917,6 +2834,576 @@ def validate_recurrent_counterfactual_branch_row(
             )
 
 
+def validate_recurrent_counterfactual_aggregate_row(
+    row: Mapping[str, object],
+) -> None:
+    """Validate compact multi-tape evidence without treating it as PPO data."""
+
+    if not isinstance(row, Mapping):
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual aggregate row must be a mapping"
+        )
+    if row.get("schema_version") != RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION:
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual aggregate schema version drifted"
+        )
+    target = _mapping(row.get("target"), field="aggregate target")
+    if set(target) != {
+        "kind",
+        "branch_tick",
+        "horizon_ticks",
+        "target_world_tick",
+        "absolute_terminal_target_world_tick",
+        "is_absolute_terminal_target",
+    }:
+        raise RecurrentCounterfactualBranchError("aggregate target field set drifted")
+    target_kind = target.get("kind")
+    if target_kind not in {"relative_horizon", "absolute_terminal_world_tick"}:
+        raise RecurrentCounterfactualBranchError("aggregate target kind drifted")
+    branch_tick = _nonnegative_int(target.get("branch_tick"), field="branch tick")
+    horizon_ticks = _positive_int(target.get("horizon_ticks"), field="horizon")
+    if target.get("target_world_tick") != branch_tick + horizon_ticks:
+        raise RecurrentCounterfactualBranchError("aggregate target tick drifted")
+    terminal_target = target.get("absolute_terminal_target_world_tick")
+    if terminal_target is not None:
+        terminal_target = _positive_int(terminal_target, field="terminal target tick")
+    is_terminal = target.get("is_absolute_terminal_target")
+    if type(is_terminal) is not bool or is_terminal != (
+        target_kind == "absolute_terminal_world_tick"
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate absolute terminal flag drifted"
+        )
+    if is_terminal and target.get("target_world_tick") != terminal_target:
+        raise RecurrentCounterfactualBranchError(
+            "absolute terminal aggregate does not end at its target tick"
+        )
+
+    context = _mapping(
+        row.get("trainable_public_context"),
+        field="aggregate trainable public context",
+    )
+    if set(context) != _TRAINABLE_PUBLIC_CONTEXT_KEYS:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate trainable public context field set drifted"
+        )
+    forbidden = _forbidden_key_paths(context)
+    if forbidden:
+        raise RecurrentCounterfactualBranchError(
+            f"aggregate trainable public context contains forbidden keys: "
+            f"{forbidden[:8]}"
+        )
+    prefix = _mapping(
+        context.get("public_history_prefix"),
+        field="aggregate public history prefix",
+    )
+    try:
+        validate_public_recurrent_history_prefix(prefix)
+    except RecurrentPolicyAdapterError as error:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate public recurrent history prefix is invalid"
+        ) from error
+    observation = _mapping(
+        context.get("current_public_observation"),
+        field="aggregate public observation",
+    )
+    observation_values = observation.get("values")
+    if not isinstance(observation_values, list):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate public observation values must be a list"
+        )
+    _validate_numeric_vector(
+        observation_values,
+        expected_length=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        field="aggregate public observation",
+    )
+    mask = _complete_action_mask(context.get("current_public_action_mask"))
+    feedback = _mapping(
+        context.get("previous_public_feedback"),
+        field="aggregate previous public feedback",
+    )
+    feedback_values = feedback.get("values")
+    if not isinstance(feedback_values, list):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate previous public feedback values must be a list"
+        )
+    _validate_numeric_vector(
+        feedback_values,
+        expected_length=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+        field="aggregate previous public feedback",
+    )
+
+    optimizer = _mapping(
+        row.get("optimizer_context"),
+        field="aggregate optimizer context",
+    )
+    if set(optimizer) != _OPTIMIZER_CONTEXT_KEYS:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer context field set drifted"
+        )
+    if (
+        optimizer.get("derived_from_public_history") is not True
+        or optimizer.get("source_artifact_match_required") is not True
+        or optimizer.get("runtime_environment_input") is not False
+        or optimizer.get("current_model_state_policy")
+        != "reconstruct_from_trainable_public_history_prefix"
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer context safety contract drifted"
+        )
+    if optimizer.get("source_public_history_prefix_sha256") != (
+        stable_payload_digest(prefix)
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer public-history digest drifted"
+        )
+
+    source_identity = _mapping(
+        row.get("source_identity"),
+        field="aggregate source identity",
+    )
+    if set(source_identity) != {
+        "source_model_state_sha256",
+        "source_artifact_digest",
+        "source_policy_sampling_seed",
+        "source_checkpoint_identity_sha256",
+        "trainable_public_context_sha256",
+    }:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source identity field set drifted"
+        )
+    if not _valid_sha256(source_identity.get("source_model_state_sha256")):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source model-state digest is malformed"
+        )
+    _nonempty_string(
+        source_identity.get("source_artifact_digest"),
+        field="aggregate source artifact digest",
+    )
+    _required_sampling_seed(
+        source_identity.get("source_policy_sampling_seed"),
+        field="aggregate source policy sampling seed",
+    )
+    if (
+        source_identity.get("source_model_state_sha256")
+        != optimizer.get("source_model_state_sha256")
+        or source_identity.get("source_artifact_digest")
+        != optimizer.get("source_artifact_digest")
+        or source_identity.get("trainable_public_context_sha256")
+        != stable_payload_digest(context)
+        or not _valid_sha256(source_identity.get("source_checkpoint_identity_sha256"))
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source identity does not match its exact public source"
+        )
+
+    source_behavior = _mapping(
+        row.get("source_behavior"),
+        field="aggregate source behavior",
+    )
+    if set(source_behavior) != {
+        "source_requested_action",
+        "current_public_action_mask",
+        "source_behavior_distribution",
+    }:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source behavior field set drifted"
+        )
+    source_action = _stable_action(
+        source_behavior.get("source_requested_action"),
+        field="aggregate source action",
+    )
+    if _complete_action_mask(source_behavior.get("current_public_action_mask")) != mask:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source action mask drifted from public context"
+        )
+    behavior_distribution = _mapping(
+        source_behavior.get("source_behavior_distribution"),
+        field="aggregate source behavior distribution",
+    )
+    try:
+        validate_public_recurrent_distribution_diagnostics(
+            behavior_distribution,
+            action_mask=mask,
+        )
+    except RecurrentPolicyAdapterError as error:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source behavior distribution is invalid"
+        ) from error
+    if behavior_distribution.get("selected_action") != source_action:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source selected action drifted"
+        )
+
+    tape_contract = _mapping(
+        row.get("tape_contract"),
+        field="aggregate tape contract",
+    )
+    expected_tape_contract_fields = {
+        "tape_identity",
+        "tape_count",
+        "environment_seed_namespace",
+        "policy_seed_namespace",
+        "excluded_source_seeds",
+        "same_exact_source_checkpoint",
+        "environment_rng_retaped_after_source_checkpoint",
+        "policy_rng_retaped_after_source_checkpoint",
+        "common_initial_rng_state_across_actions_within_tape",
+        "paired_baseline_and_forced_actions_share_tape",
+        "exact_replay_required_for_baseline_and_actions",
+        "event_aligned_common_random_numbers",
+        "sequential_rng_event_reassignment_after_divergence_possible",
+        "private_world_checkpoint_serialized",
+    }
+    if set(tape_contract) != expected_tape_contract_fields:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate tape contract field set drifted"
+        )
+    tape_identity = _nonempty_string(
+        tape_contract.get("tape_identity"),
+        field="aggregate tape identity",
+    )
+    tape_count = _positive_int(tape_contract.get("tape_count"), field="tape count")
+    if (
+        tape_contract.get("environment_seed_namespace")
+        != RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+        or tape_contract.get("policy_seed_namespace")
+        != RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation seed namespace drifted"
+        )
+    for field in (
+        "same_exact_source_checkpoint",
+        "environment_rng_retaped_after_source_checkpoint",
+        "policy_rng_retaped_after_source_checkpoint",
+        "common_initial_rng_state_across_actions_within_tape",
+        "paired_baseline_and_forced_actions_share_tape",
+        "exact_replay_required_for_baseline_and_actions",
+        "sequential_rng_event_reassignment_after_divergence_possible",
+    ):
+        if tape_contract.get(field) is not True:
+            raise RecurrentCounterfactualBranchError(
+                f"aggregate tape contract field {field!r} must be true"
+            )
+    if (
+        tape_contract.get("event_aligned_common_random_numbers") is not False
+        or tape_contract.get("private_world_checkpoint_serialized") is not False
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate tape contract overclaims RNG alignment or serializes private state"
+        )
+    excluded_raw = tape_contract.get("excluded_source_seeds")
+    if not isinstance(excluded_raw, list):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate excluded source seeds must be a list"
+        )
+    excluded_seeds = {
+        _required_sampling_seed(seed, field="excluded source seed")
+        for seed in excluded_raw
+    }
+    if len(excluded_seeds) != len(excluded_raw):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate excluded source seeds must be unique"
+        )
+
+    tape_provenance = row.get("tape_provenance")
+    if not isinstance(tape_provenance, list) or len(tape_provenance) != tape_count:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate tape provenance count drifted"
+        )
+    expected_actions = [action for action in ACTION_NAMES if mask[action] is True]
+    observed_tape_seeds: set[int] = set()
+    for expected_index, raw_tape in enumerate(tape_provenance):
+        tape = _mapping(raw_tape, field="aggregate tape provenance")
+        if tape.get("tape_index") != expected_index:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape indices must be contiguous and ordered"
+            )
+        environment_identity = f"{tape_identity}:environment:{expected_index}"
+        policy_identity = f"{tape_identity}:policy:{expected_index}"
+        if (
+            tape.get("environment_sampling_identity") != environment_identity
+            or tape.get("policy_sampling_identity") != policy_identity
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape seed identity drifted"
+            )
+        environment_seed = _required_sampling_seed(
+            tape.get("environment_sampling_seed"),
+            field="aggregate environment tape seed",
+        )
+        policy_seed = _required_sampling_seed(
+            tape.get("policy_sampling_seed"),
+            field="aggregate policy tape seed",
+        )
+        if environment_seed != derive_recurrent_counterfactual_tape_seed(
+            namespace=(
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+            ),
+            identity=environment_identity,
+        ) or policy_seed != derive_recurrent_counterfactual_tape_seed(
+            namespace=RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+            identity=policy_identity,
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape seed does not match its namespaced identity"
+            )
+        if (
+            environment_seed in excluded_seeds
+            or policy_seed in excluded_seeds
+            or environment_seed in observed_tape_seeds
+            or policy_seed in observed_tape_seeds
+            or environment_seed == policy_seed
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape seeds are not independent and source-disjoint"
+            )
+        observed_tape_seeds.update((environment_seed, policy_seed))
+        initial_environment_digest = tape.get("initial_environment_rng_state_sha256")
+        initial_policy_digest = tape.get("initial_policy_sampling_state_sha256")
+        if not _valid_sha256(initial_environment_digest) or not _valid_sha256(
+            initial_policy_digest
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate initial tape RNG digest is malformed"
+            )
+        baseline = _mapping(tape.get("baseline"), field="aggregate tape baseline")
+        _validate_compact_multi_tape_outcome(
+            baseline,
+            action=None,
+            baseline=None,
+            initial_environment_digest=initial_environment_digest,
+            initial_policy_digest=initial_policy_digest,
+        )
+        outcomes = _action_outcome_sequence(tape)
+        observed_actions = [
+            _stable_action(
+                _mapping(outcome, field="aggregate tape action").get("action"),
+                field="aggregate tape action",
+            )
+            for outcome in outcomes
+        ]
+        if observed_actions != expected_actions:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape action coverage drifted"
+            )
+        tape_natural_action = _stable_action(
+            baseline.get("natural_requested_action"),
+            field="aggregate baseline natural action",
+        )
+        for action, outcome in zip(expected_actions, outcomes, strict=True):
+            parsed = _mapping(outcome, field="aggregate tape action")
+            if parsed.get("natural_requested_action") != tape_natural_action:
+                raise RecurrentCounterfactualBranchError(
+                    "aggregate forced action did not share its tape baseline draw"
+                )
+            _validate_compact_multi_tape_outcome(
+                parsed,
+                action=action,
+                baseline=baseline,
+                initial_environment_digest=initial_environment_digest,
+                initial_policy_digest=initial_policy_digest,
+            )
+
+    aggregate = _mapping(row.get("aggregate"), field="aggregate statistics")
+    uncertainty_penalty = _finite_float(
+        aggregate.get("uncertainty_penalty"),
+        field="aggregate uncertainty penalty",
+    )
+    if uncertainty_penalty < 0.0:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate uncertainty penalty must be non-negative"
+        )
+    expected_aggregate = _aggregate_multi_tape_outcomes(
+        tape_provenance,
+        uncertainty_penalty=uncertainty_penalty,
+    )
+    if dict(aggregate) != expected_aggregate:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate statistics do not match tape evidence"
+        )
+
+    components = _mapping(
+        row.get("component_digests"),
+        field="aggregate component digests",
+    )
+    expected_components = {
+        "target": stable_payload_digest(target),
+        "trainable_public_context": stable_payload_digest(context),
+        "optimizer_context": stable_payload_digest(optimizer),
+        "source_identity": stable_payload_digest(source_identity),
+        "source_behavior": stable_payload_digest(source_behavior),
+        "tape_contract": stable_payload_digest(tape_contract),
+        "tape_provenance": stable_payload_digest(tape_provenance),
+        "aggregate": stable_payload_digest(aggregate),
+    }
+    if dict(components) != expected_components:
+        raise RecurrentCounterfactualBranchError("aggregate component digest mismatch")
+    without_exact = dict(row)
+    observed_exact = without_exact.pop("exact_digest", None)
+    if observed_exact != stable_payload_digest(without_exact):
+        raise RecurrentCounterfactualBranchError("aggregate exact digest mismatch")
+    for flag in (
+        "training_ran",
+        "runtime_artifact_created",
+        "runtime_action_selection_changed",
+        "promotion_authorized",
+    ):
+        if row.get(flag) is not False:
+            raise RecurrentCounterfactualBranchError(
+                f"aggregate lifecycle flag {flag!r} must remain false"
+            )
+
+
+def _validate_compact_multi_tape_outcome(
+    outcome: Mapping[str, object],
+    *,
+    action: str | None,
+    baseline: Mapping[str, object] | None,
+    initial_environment_digest: object,
+    initial_policy_digest: object,
+) -> None:
+    for field in (
+        "focal_discounted_return",
+        "population_alive",
+        "births_during_horizon",
+        "deaths_during_horizon",
+    ):
+        _finite_float(outcome.get(field), field=f"aggregate outcome {field}")
+    if type(outcome.get("focal_terminal_alive")) is not bool:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate focal terminal alive must be an exact boolean"
+        )
+    if (
+        outcome.get("unsupported_requested_action_count") != 0
+        or outcome.get("heuristic_action_source_count") != 0
+        or outcome.get("unexpected_action_source_count") != 0
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation contains an unsupported action source"
+        )
+    if (
+        outcome.get("replay_verified") is not True
+        or outcome.get("replay_evidence_digest") != outcome.get("evidence_digest")
+        or not _valid_sha256(outcome.get("behavior_digest"))
+        or not _valid_sha256(outcome.get("evidence_digest"))
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation lacks exact replay evidence"
+        )
+    if (
+        outcome.get("initial_environment_rng_state_sha256")
+        != initial_environment_digest
+        or outcome.get("initial_policy_sampling_state_sha256") != initial_policy_digest
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation did not share its tape initial RNG state"
+        )
+    first_transition = _mapping(
+        outcome.get("first_transition"),
+        field="aggregate first transition",
+    )
+    if first_transition.get("observation_action_valid") is not True:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition was not public-mask valid"
+        )
+    if action is None:
+        _stable_action(
+            outcome.get("natural_requested_action"),
+            field="aggregate baseline natural action",
+        )
+        return
+    if (
+        outcome.get("action") != action
+        or first_transition.get("requested_action") != action
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate forced action identity drifted"
+        )
+    if baseline is None:
+        raise AssertionError("action aggregate validation requires a baseline")
+    paired = _mapping(
+        outcome.get("paired_vs_baseline"),
+        field="aggregate paired delta",
+    )
+    expected_paired = {
+        "focal_discounted_return_delta": _round(
+            float(outcome["focal_discounted_return"])
+            - float(baseline["focal_discounted_return"])
+        ),
+        "focal_terminal_alive_delta": int(outcome["focal_terminal_alive"] is True)
+        - int(baseline["focal_terminal_alive"] is True),
+        "population_alive_delta": int(outcome["population_alive"])
+        - int(baseline["population_alive"]),
+        "births_during_horizon_delta": int(outcome["births_during_horizon"])
+        - int(baseline["births_during_horizon"]),
+        "deaths_during_horizon_delta": int(outcome["deaths_during_horizon"])
+        - int(baseline["deaths_during_horizon"]),
+    }
+    if dict(paired) != expected_paired:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate paired delta does not match its tape baseline"
+        )
+
+
+def _retaped_continuation_checkpoint(
+    checkpoint_world: SimulationWorld,
+    *,
+    environment_sampling_seed: int,
+    policy_sampling_seed: int,
+    focal_agent_id: int,
+) -> tuple[SimulationWorld, dict[str, object]]:
+    """Deep-copy one exact source state and replace only future RNG tapes."""
+
+    world = deepcopy(checkpoint_world)
+    _configure_manual_world(world)
+    world.rng.seed(environment_sampling_seed)
+    policy = world.policy
+    if not isinstance(policy, DeterministicPublicRecurrentPolicy):
+        raise RecurrentCounterfactualBranchError(
+            "continuation tape checkpoint lost its recurrent policy"
+        )
+    if policy._sampling_generator is None:  # noqa: SLF001 - diagnostics seam
+        raise RecurrentCounterfactualBranchError(
+            "independent policy tapes require sampled recurrent policy state"
+        )
+    policy._sampling_generator.manual_seed(  # noqa: SLF001 - diagnostics seam
+        policy_sampling_seed
+    )
+    policy._sampling_seed = policy_sampling_seed  # noqa: SLF001 - diagnostics seam
+    provenance = _continuation_initial_rng_provenance(
+        world,
+        focal_agent_id=focal_agent_id,
+    )
+    if provenance["initial_policy_sampling_state_sha256"] is None:
+        raise RecurrentCounterfactualBranchError(
+            "retaped continuation policy lacks a sampling-state digest"
+        )
+    return world, provenance
+
+
+def _continuation_initial_rng_provenance(
+    world: SimulationWorld,
+    *,
+    focal_agent_id: int,
+) -> dict[str, object]:
+    policy = world.policy
+    if isinstance(policy, OneShotRecurrentCounterfactualPolicy):
+        policy = policy.delegate
+    if not isinstance(policy, DeterministicPublicRecurrentPolicy):
+        raise RecurrentCounterfactualBranchError(
+            "continuation checkpoint lost its recurrent policy"
+        )
+    checkpoint = policy.diagnostics_checkpoint_state(agent_id=focal_agent_id)
+    return {
+        "initial_environment_rng_state_sha256": stable_payload_digest(
+            world.rng.getstate()
+        ),
+        "initial_policy_sampling_state_sha256": checkpoint.get("sampling_state_sha256"),
+    }
+
+
 def _execute_continuation(
     checkpoint_world: SimulationWorld,
     *,
@@ -1930,9 +3417,14 @@ def _execute_continuation(
     forced_action: str | None,
     gamma: float,
     prefix_horizons: Sequence[int] | None = None,
+    require_source_action_match: bool = True,
 ) -> dict[str, object]:
     world = deepcopy(checkpoint_world)
     _configure_manual_world(world)
+    initial_rng_provenance = _continuation_initial_rng_provenance(
+        world,
+        focal_agent_id=focal_agent_id,
+    )
     record_start = len(world.trajectory_records)
     diagnostics_start = len(world.policy_decision_diagnostics_records)
     wrapper: OneShotRecurrentCounterfactualPolicy | None = None
@@ -2001,7 +3493,9 @@ def _execute_continuation(
         gamma=gamma,
         intervention_count=intervention_count,
         natural_action=natural_action,
+        require_source_action_match=require_source_action_match,
     )
+    result.update(initial_rng_provenance)
     if resolved_prefix_horizons:
         result["nested_prefix_runs"] = {
             str(prefix_horizon): _summarize_continuation_snapshot(
@@ -2014,9 +3508,12 @@ def _execute_continuation(
                 gamma=gamma,
                 intervention_count=intervention_count,
                 natural_action=natural_action,
+                require_source_action_match=require_source_action_match,
             )
             for prefix_horizon in resolved_prefix_horizons
         }
+        for nested in result["nested_prefix_runs"].values():
+            nested.update(initial_rng_provenance)
     return result
 
 
@@ -2054,6 +3551,7 @@ def _summarize_continuation_snapshot(
     gamma: float,
     intervention_count: int,
     natural_action: str | None,
+    require_source_action_match: bool,
 ) -> dict[str, object]:
     raw_records = snapshot.get("records")
     raw_diagnostics = snapshot.get("diagnostics")
@@ -2083,7 +3581,14 @@ def _summarize_continuation_snapshot(
         raise RecurrentCounterfactualBranchError(
             "focal agent did not act at the materialized branch state"
         )
-    expected_first_action = forced_action or source_action
+    expected_first_action = (
+        _stable_action(
+            first_focal.get("requested_action"),
+            field="retaped baseline first requested action",
+        )
+        if forced_action is None and not require_source_action_match
+        else forced_action or source_action
+    )
     if first_focal.get("requested_action") != expected_first_action:
         raise RecurrentCounterfactualBranchError(
             "focal continuation requested an unexpected first action"
@@ -2094,7 +3599,7 @@ def _summarize_continuation_snapshot(
             first_focal.get("requested_action"),
             field="baseline first requested action",
         )
-    if natural_action != source_action:
+    if require_source_action_match and natural_action != source_action:
         raise RecurrentCounterfactualBranchError(
             "branch learner natural action drifted from the source decision"
         )
@@ -2497,7 +4002,16 @@ def _configure_manual_world(world: SimulationWorld) -> None:
     world.trajectory_sink = None
 
 
-def _counterfactual_contract(*, verify_replay: bool) -> dict[str, object]:
+def _counterfactual_contract(
+    *,
+    verify_replay: bool,
+    seed_role: str,
+) -> dict[str, object]:
+    allowed_seed_roles = (
+        RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+        if seed_role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+        else RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES
+    )
     return {
         "schema_version": RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION,
         "diagnostics_only": True,
@@ -2511,7 +4025,7 @@ def _counterfactual_contract(*, verify_replay: bool) -> dict[str, object]:
         "actual_forced_outcome_used_as_next_public_feedback": True,
         "exact_replay_required": verify_replay,
         "baseline_equivalence": "source_action_behavior_digest_exact_match",
-        "allowed_seed_roles": list(RECURRENT_COUNTERFACTUAL_SEED_ROLES),
+        "allowed_seed_roles": list(allowed_seed_roles),
         "trainable_public_context_fields": sorted(_TRAINABLE_PUBLIC_CONTEXT_KEYS),
         "optimizer_context_fields": sorted(_OPTIMIZER_CONTEXT_KEYS),
         "metadata_used_as_actor_input": False,
@@ -2589,10 +4103,16 @@ def _validated_seed_role(seed_role: object, environment_seed: object) -> str:
     role = _nonempty_string(seed_role, field="seed_role")
     if role not in RECURRENT_COUNTERFACTUAL_SEED_ROLES:
         raise RecurrentCounterfactualBranchError(
-            "counterfactual queries may use only train or curriculum seeds"
+            "counterfactual queries may use only train or curriculum legacy "
+            "seeds or scale_train/scale_curriculum development seeds"
         )
     seed = _positive_int(environment_seed, field="environment_seed")
-    if seed not in RECURRENT_SEED_REGISTRY[role]:
+    registry = (
+        SCALE_DEVELOPMENT_SEED_REGISTRY
+        if role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+        else RECURRENT_SEED_REGISTRY
+    )
+    if seed not in registry[role]:
         raise RecurrentCounterfactualBranchError(
             f"environment_seed is not registered for seed role {role!r}"
         )
@@ -2748,16 +4268,23 @@ def _round(value: float) -> float:
 
 __all__ = [
     "OneShotRecurrentCounterfactualPolicy",
+    "RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION",
     "RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO",
+    "RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE",
+    "RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE",
+    "RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES",
+    "RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_SCENARIOS",
     "RECURRENT_COUNTERFACTUAL_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_TRAINING_USE",
     "RecurrentCounterfactualBranchError",
     "build_recurrent_counterfactual_branch_row",
     "build_recurrent_counterfactual_nested_horizon_materialization",
+    "derive_recurrent_counterfactual_tape_seed",
     "reconstruct_current_model_hidden_from_branch_row",
+    "validate_recurrent_counterfactual_aggregate_row",
     "validate_recurrent_counterfactual_branch_row",
     "verified_source_recurrent_state_from_branch_row",
 ]

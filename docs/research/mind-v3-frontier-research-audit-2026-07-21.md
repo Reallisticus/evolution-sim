@@ -322,6 +322,68 @@ tiny fraction of it), and replicate the matched experiment across multiple
 learner seeds on the GPU trainer after the source is reviewed, pinned, and made
 durable.
 
+### Preregistered recurrent scale campaign implementation (pending execution)
+
+That next-step implementation is now source-complete but has not yet produced a
+campaign result. The executable contract is deliberately stricter than the
+single-learner canary:
+
+- eight fresh learner seeds define eight paired blocks; each block crosses base
+  PPO, exact aggregate counterfactual, and deterministically shuffled-label
+  arms, yielding `24` learner/arm runs rather than `24` independent replicates;
+- rollout sampling, branch selection, and continuation tapes are independent
+  across learner seeds while all three arms remain common-random-number paired
+  within a learner;
+- `16` updates of `16` real policy-induced worlds per run, or `6,144` PPO
+  training worlds before counterfactual continuations and evaluation;
+- eight independent continuation RNG tapes per exact branch, with the same
+  restored checkpoint and initial tape state reused across forced actions;
+- deterministic branch-tick strata at ticks `16,40,64,72`, relative targets at
+  `16` and `48` ticks, and an absolute fixed-tick target at tick `120`;
+- for action `a`, horizon `h`, and tape `i`, the paired composite first computes
+  `z[h,i,a] = delta_return + delta_focal_alive + 0.05*delta_population_alive +
+  0.02*delta_births - 0.02*delta_deaths`, then the horizon score
+  `L[h,a] = mean_i(z[h,i,a]) - 0.5*SE_i(z[h,i,a])` over eight tapes. The code
+  first forms the normalized relative mixture `0.5*L[16,a] + 0.5*L[48,a]`,
+  then blends that mixture at weight `0.5` with `L[120,a]` at weight `0.5`,
+  giving effective weights `0.25/0.25/0.50`; uncertainty is applied before the
+  horizon blend;
+- no critic auxiliary on tick-120 survivors because they are truncated, not
+  terminal, and the evidence format does not yet serialize a frozen bootstrap
+  value;
+- one stronger shared-Adam auxiliary update per PPO update, accepted only when
+  forward `KL(pi_pre_aux || pi_post)` over the source public action mask,
+  measured at one full-public-history reconstructed branch state per aggregate
+  bundle (`2` states per update), has arithmetic mean at most `0.003` and
+  per-state maximum at most `0.015`; either excess triggers exact model/Adam
+  rollback with no retry;
+- fresh scale-train, scale-curriculum, scale-selection, and learner registries
+  that expose neither validation nor lockbox seeds;
+- per-update optimizer/RNG crash checkpoints, frozen policy artifacts, exact
+  CPU full-trajectory behavior digests, full-world replay manifests, and
+  arm-independent evaluation sampling streams paired within learner seed;
+- one content-addressed CUDA/Python/Torch/cuDNN/dependency/worker runtime
+  provenance contract is embedded in every checkpoint, artifact, arm report,
+  and the final analysis; resumed work fails closed on runtime drift;
+- the final analysis binds the 24 report, artifact, update-journal, checkpoint,
+  seed-plan, and evaluation-file hashes before computing any acceptance gate;
+- a treatment-delivery gate requiring at least `12/16` accepted auxiliary
+  updates in both treatment arms. For each accepted update, movement is the
+  global model-state delta
+  `sqrt(sum_tensor ||state_post - state_pre||_2^2)`; the gate sums those
+  per-update deltas and requires strict `> 0.0`, with no epsilon tolerance. All
+  accepted transactions must also remain within the preregistered KL bounds.
+
+The implementation is in
+`python/evolution_sim/mind/recurrent_scale_campaign.py`,
+`python/evolution_sim/mind/recurrent_scale_execution.py`, and
+`python/evolution_sim/cli/mind_v3_public_recurrent_ippo_scale_campaign.py`.
+It is informed by exact fixed-context counterfactual credit, common-random-number
+terminal credit, pessimistic uncertainty, and trust-region work, but those
+papers are hypotheses for this simulator rather than result evidence. The
+campaign remains development-only: runtime integration, validation, lockbox,
+promotion, and gate relaxation stay closed regardless of the scale outcome.
+
 ### The latest slice is not yet the trainable example the project is looking for
 
 The key implementation fact is visible in

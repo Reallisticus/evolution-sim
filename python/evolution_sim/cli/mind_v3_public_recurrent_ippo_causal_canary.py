@@ -30,6 +30,7 @@ from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
 )
 from evolution_sim.mind.recurrent_counterfactual_collection import (
     RecurrentCounterfactualCollectionConfig,
+    recurrent_counterfactual_collection_config_payload,
 )
 from evolution_sim.mind.recurrent_evaluation import (
     RECURRENT_EVALUATION_SELECTION_SEED_ROLE,
@@ -677,7 +678,9 @@ def _resolved_counterfactual_config(
         )
     )
     resolved_contract = {
-        "collection": asdict(declared_config.collection),
+        "collection": recurrent_counterfactual_collection_config_payload(
+            declared_config.collection
+        ),
         "auxiliary": declared_config.auxiliary.as_contract(),
         "step": declared_config.step.as_contract(),
         "bundles_per_update": declared_config.bundles_per_update,

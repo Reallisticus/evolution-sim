@@ -26,6 +26,7 @@ from evolution_sim.mind.recurrent_rollout import (
 
 if TYPE_CHECKING:
     from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+        RecurrentCounterfactualAggregateGroup,
         RecurrentCounterfactualAuxiliaryConfig,
         RecurrentCounterfactualAuxiliaryStepConfig,
         RecurrentCounterfactualAuxiliaryStepDiagnostics,
@@ -33,6 +34,11 @@ if TYPE_CHECKING:
 
 
 RECURRENT_PPO_CONTRACT_VERSION = "mind_public_recurrent_ppo_v1"
+_POST_STEP_KL_ABSOLUTE_TOLERANCE = 1.0e-7
+_POST_STEP_KL_RELATIVE_TOLERANCE = 1.0e-5
+_POST_STEP_KL_AUDIT_SCOPE = (
+    "unchanged_optimizer_minibatch_vs_frozen_update_start_policy"
+)
 
 
 class RecurrentPPOError(ValueError):
@@ -177,6 +183,14 @@ class PPOUpdateDiagnostics:
     gradient_clip_fraction: float
     parameter_delta_l2: float
     minibatch_order_sha256: str
+    post_step_kl_audit_count: int = 0
+    post_step_kl_rejected_step_count: int = 0
+    post_step_forward_kl_mean: float = 0.0
+    post_step_forward_kl_max: float = 0.0
+    post_step_kl_tolerance: float = 0.0
+    post_step_kl_rollback_performed: bool = False
+    post_step_kl_rejection_reason: str | None = None
+    post_step_kl_audit_scope: str = _POST_STEP_KL_AUDIT_SCOPE
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +216,7 @@ class _EvaluatedRows:
     new_log_probs: Tensor
     new_values: Tensor
     entropy: Tensor
+    masked_logits: Tensor | None
     old_log_probs: Tensor
     old_values: Tensor
     advantages: Tensor
@@ -229,6 +244,14 @@ class _WorldLossWeighting:
     transition_weights: dict[str, float]
     effective_total_weights: dict[str, float]
     mean_transition_weight: float
+
+
+@dataclass(frozen=True, slots=True)
+class _PostStepKLAudit:
+    mean_forward_kl: float
+    max_forward_kl: float
+    tolerance: float
+    rejection_reason: str | None
 
 
 def recurrent_ppo_contract(
@@ -271,6 +294,23 @@ def recurrent_ppo_contract(
             "entropy_coefficient": resolved.entropy_coefficient,
             "value_loss_coefficient": resolved.value_loss_coefficient,
             "advantage_normalization": resolved.normalize_advantages,
+        },
+        "post_step_kl_enforcement": {
+            "enabled": resolved.target_kl is not None,
+            "target_kl": resolved.target_kl,
+            "audit_scope": "unchanged_optimizer_minibatch",
+            "reference_policy": "frozen_update_start_policy",
+            "metric": "exact_categorical_forward_kl",
+            "mean_and_max_must_pass": True,
+            "audit_timing": "after_optimizer_step_before_commit",
+            "diagnostic_aggregation": (
+                "maximum_across_attempted_audits_including_rejected_step"
+            ),
+            "absolute_tolerance": _POST_STEP_KL_ABSOLUTE_TOLERANCE,
+            "relative_tolerance": _POST_STEP_KL_RELATIVE_TOLERANCE,
+            "on_violation": (
+                "restore_exact_pre_step_model_and_optimizer_then_early_stop"
+            ),
         },
         "world_balancing": {
             "enabled": resolved.world_balanced_loss,
@@ -580,6 +620,63 @@ class RecurrentPPOTrainer:
             update_counters_restored=counters_restored,
         )
 
+    def counterfactual_aggregate_auxiliary_update(
+        self,
+        aggregate_groups: Sequence[RecurrentCounterfactualAggregateGroup],
+        *,
+        artifact_digest: str,
+        config: RecurrentCounterfactualAuxiliaryConfig,
+        step_config: RecurrentCounterfactualAuxiliaryStepConfig | None = None,
+    ) -> RecurrentCounterfactualAuxiliaryStepDiagnostics:
+        """Attempt one non-retryable multi-tape auxiliary shared-Adam step."""
+
+        from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+            RecurrentCounterfactualAuxiliaryError,
+            _transactional_recurrent_counterfactual_aggregate_auxiliary_step,
+            recurrent_counterfactual_aggregate_auxiliary_bundle_digest,
+        )
+
+        bundle_digest = recurrent_counterfactual_aggregate_auxiliary_bundle_digest(
+            aggregate_groups,
+            artifact_digest=artifact_digest,
+        )
+        if bundle_digest in self._attempted_counterfactual_auxiliary_bundles:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "counterfactual aggregate bundle was already attempted; retry is "
+                "forbidden"
+            )
+        self._attempted_counterfactual_auxiliary_bundles.add(bundle_digest)
+        update_index_snapshot = self._update_index
+        auxiliary_count_snapshot = self._counterfactual_auxiliary_update_count
+        try:
+            diagnostics = (
+                _transactional_recurrent_counterfactual_aggregate_auxiliary_step(
+                    self.model,
+                    self.optimizer,
+                    aggregate_groups,
+                    artifact_digest=artifact_digest,
+                    config=config,
+                    step_config=step_config,
+                )
+            )
+        except Exception:
+            self._update_index = update_index_snapshot
+            self._counterfactual_auxiliary_update_count = auxiliary_count_snapshot
+            raise
+        if diagnostics.accepted:
+            self._counterfactual_auxiliary_update_count += 1
+            counters_restored = False
+        else:
+            self._update_index = update_index_snapshot
+            self._counterfactual_auxiliary_update_count = auxiliary_count_snapshot
+            counters_restored = True
+        return replace(
+            diagnostics,
+            ppo_update_index=self._update_index,
+            auxiliary_update_count=self._counterfactual_auxiliary_update_count,
+            update_counters_restored=counters_restored,
+        )
+
     def update(
         self,
         sequences: Sequence[PPOTrainingSequence],
@@ -637,12 +734,23 @@ class RecurrentPPOTrainer:
                 chunks,
                 normalized,
                 world_weighting=world_weighting,
+                collect_masked_logits=self.config.target_kl is not None,
             )
             initial_terms = _loss_terms(initial_rows, config=self.config)
             initial_objective = -_finite_scalar(
                 initial_terms.policy_loss,
                 field="initial policy objective",
             )
+        if self.config.target_kl is not None:
+            if initial_rows.masked_logits is None:
+                raise RecurrentPPOError("initial KL policy logits were not collected")
+            frozen_policy_logits = _frozen_chunk_policy_logits(
+                chunks,
+                initial_rows.masked_logits,
+            )
+        else:
+            frozen_policy_logits = {}
+        del initial_rows, initial_terms
 
         rng = random.Random(self.config.learner_seed + self._update_index)
         order_digest = hashlib.sha256()
@@ -651,6 +759,13 @@ class RecurrentPPOTrainer:
         early_stopped = False
         gradient_norms: list[float] = []
         gradient_clipped = 0
+        post_step_kl_audit_count = 0
+        post_step_kl_rejected_step_count = 0
+        post_step_forward_kl_means: list[float] = []
+        post_step_forward_kl_maxima: list[float] = []
+        post_step_kl_tolerance = 0.0
+        post_step_kl_rollback_performed = False
+        post_step_kl_rejection_reason: str | None = None
         for epoch in range(self.config.update_epochs):
             epoch_chunks = list(chunks)
             rng.shuffle(epoch_chunks)
@@ -691,24 +806,61 @@ class RecurrentPPOTrainer:
                     gradient_norm_tensor,
                     field="gradient norm",
                 )
-                gradient_norms.append(gradient_norm)
-                if gradient_norm > self.config.max_gradient_norm:
-                    gradient_clipped += 1
+                if self.config.target_kl is not None:
+                    step_model_snapshot = {
+                        key: value.detach().clone()
+                        for key, value in self.model.state_dict().items()
+                    }
+                    step_optimizer_snapshot = copy.deepcopy(self.optimizer.state_dict())
                 self.optimizer.step()
                 _assert_finite_model(self.model)
                 _assert_finite_optimizer_state(self.optimizer)
-                minibatch_count += 1
+                if self.config.target_kl is not None:
+                    with torch.no_grad():
+                        post_step_rows = self._evaluate_chunks(
+                            minibatch,
+                            normalized,
+                            world_weighting=world_weighting,
+                            collect_masked_logits=True,
+                        )
+                    if post_step_rows.masked_logits is None:
+                        raise RecurrentPPOError(
+                            "post-step KL policy logits were not collected"
+                        )
+                    frozen_logits = torch.cat(
+                        tuple(frozen_policy_logits[chunk] for chunk in minibatch)
+                    )
+                    kl_audit = _post_step_forward_kl_audit(
+                        frozen_logits,
+                        post_step_rows.masked_logits,
+                        loss_weights=post_step_rows.loss_weights,
+                        target_kl=self.config.target_kl,
+                        world_balanced=self.config.world_balanced_loss,
+                    )
+                    post_step_kl_audit_count += 1
+                    post_step_forward_kl_means.append(kl_audit.mean_forward_kl)
+                    post_step_forward_kl_maxima.append(kl_audit.max_forward_kl)
+                    post_step_kl_tolerance = kl_audit.tolerance
+                    if kl_audit.rejection_reason is not None:
+                        self.model.load_state_dict(step_model_snapshot)
+                        self.optimizer.load_state_dict(step_optimizer_snapshot)
+                        self.optimizer.zero_grad(set_to_none=True)
+                        _assert_exact_training_state_restored(
+                            self.model,
+                            self.optimizer,
+                            model_state=step_model_snapshot,
+                            optimizer_state=step_optimizer_snapshot,
+                        )
+                        post_step_kl_rejected_step_count += 1
+                        post_step_kl_rollback_performed = True
+                        post_step_kl_rejection_reason = kl_audit.rejection_reason
+                        early_stopped = True
+                        break
 
-                approximate_kl = _finite_scalar(
-                    terms.approximate_kl,
-                    field="approximate KL",
-                )
-                if (
-                    self.config.target_kl is not None
-                    and approximate_kl > self.config.target_kl
-                ):
-                    early_stopped = True
-                    break
+                gradient_norms.append(gradient_norm)
+                if gradient_norm > self.config.max_gradient_norm:
+                    gradient_clipped += 1
+                minibatch_count += 1
             if early_stopped:
                 break
 
@@ -812,6 +964,20 @@ class RecurrentPPOTrainer:
             ),
             parameter_delta_l2=parameter_delta_l2,
             minibatch_order_sha256=order_digest.hexdigest(),
+            post_step_kl_audit_count=post_step_kl_audit_count,
+            post_step_kl_rejected_step_count=post_step_kl_rejected_step_count,
+            post_step_forward_kl_mean=max(
+                post_step_forward_kl_means,
+                default=0.0,
+            ),
+            post_step_forward_kl_max=max(
+                post_step_forward_kl_maxima,
+                default=0.0,
+            ),
+            post_step_kl_tolerance=post_step_kl_tolerance,
+            post_step_kl_rollback_performed=post_step_kl_rollback_performed,
+            post_step_kl_rejection_reason=post_step_kl_rejection_reason,
+            post_step_kl_audit_scope=_POST_STEP_KL_AUDIT_SCOPE,
         )
         _assert_finite_diagnostics(diagnostics)
         return diagnostics
@@ -822,10 +988,14 @@ class RecurrentPPOTrainer:
         sequences: Sequence[PPOTrainingSequence],
         *,
         world_weighting: _WorldLossWeighting,
+        collect_masked_logits: bool = False,
     ) -> _EvaluatedRows:
+        if type(collect_masked_logits) is not bool:
+            raise RecurrentPPOError("collect_masked_logits must be an exact boolean")
         new_log_probs: list[Tensor] = []
         new_values: list[Tensor] = []
         entropies: list[Tensor] = []
+        masked_logits: list[Tensor] = []
         old_log_probs: list[Tensor] = []
         old_values: list[Tensor] = []
         advantages: list[Tensor] = []
@@ -854,6 +1024,8 @@ class RecurrentPPOTrainer:
                 new_log_probs.append(evaluation.log_probs.squeeze(0))
                 new_values.append(evaluation.values.squeeze(0))
                 entropies.append(evaluation.entropy.squeeze(0))
+                if collect_masked_logits:
+                    masked_logits.append(evaluation.masked_logits.squeeze(0))
             else:
                 (
                     initial_state,
@@ -876,6 +1048,8 @@ class RecurrentPPOTrainer:
                 new_log_probs.append(evaluation.log_probs.squeeze(1))
                 new_values.append(evaluation.values.squeeze(1))
                 entropies.append(evaluation.entropy.squeeze(1))
+                if collect_masked_logits:
+                    masked_logits.append(evaluation.masked_logits.squeeze(1))
             old_log_probs.append(sequence.old_log_probs[selected])
             old_values.append(sequence.old_values[selected])
             advantages.append(sequence.advantages[selected])
@@ -892,6 +1066,7 @@ class RecurrentPPOTrainer:
             new_log_probs=torch.cat(new_log_probs),
             new_values=torch.cat(new_values),
             entropy=torch.cat(entropies),
+            masked_logits=torch.cat(masked_logits) if masked_logits else None,
             old_log_probs=torch.cat(old_log_probs),
             old_values=torch.cat(old_values),
             advantages=torch.cat(advantages),
@@ -1222,6 +1397,176 @@ def _chunk_references(
     return tuple(chunks)
 
 
+def _frozen_chunk_policy_logits(
+    chunks: Sequence[_ChunkReference],
+    masked_logits: Tensor,
+) -> dict[_ChunkReference, Tensor]:
+    if not isinstance(masked_logits, Tensor) or not masked_logits.is_floating_point():
+        raise RecurrentPPOError("frozen policy logits must be a floating torch.Tensor")
+    if masked_logits.ndim != 2 or int(masked_logits.shape[1]) != ACTION_COUNT:
+        raise RecurrentPPOError(
+            "frozen policy logits must have shape [transitions, action_count]"
+        )
+    expected_rows = sum(chunk.stop - chunk.start for chunk in chunks)
+    if int(masked_logits.shape[0]) != expected_rows:
+        raise RecurrentPPOError(
+            "frozen policy logits must align exactly with the ordered chunks"
+        )
+    frozen: dict[_ChunkReference, Tensor] = {}
+    offset = 0
+    for chunk in chunks:
+        stop = offset + chunk.stop - chunk.start
+        if chunk in frozen:
+            raise RecurrentPPOError("PPO chunks must be unique for KL auditing")
+        frozen[chunk] = masked_logits[offset:stop].detach().clone()
+        offset = stop
+    if offset != expected_rows:
+        raise RecurrentPPOError("frozen policy-logit partition was incomplete")
+    return frozen
+
+
+def _post_step_forward_kl_audit(
+    frozen_masked_logits: Tensor,
+    post_step_masked_logits: Tensor,
+    *,
+    loss_weights: Tensor,
+    target_kl: float,
+    world_balanced: bool,
+) -> _PostStepKLAudit:
+    """Audit exact ``KL(pi_frozen || pi_post)`` on one unchanged minibatch."""
+
+    _positive_float(target_kl, field="target_kl")
+    if type(world_balanced) is not bool:
+        raise RecurrentPPOError("world_balanced must be an exact boolean")
+    for field, logits in (
+        ("frozen masked logits", frozen_masked_logits),
+        ("post-step masked logits", post_step_masked_logits),
+    ):
+        if not isinstance(logits, Tensor) or not logits.is_floating_point():
+            raise RecurrentPPOError(f"{field} must be a floating torch.Tensor")
+        if logits.ndim != 2 or int(logits.shape[1]) != ACTION_COUNT:
+            raise RecurrentPPOError(
+                f"{field} must have shape [transitions, action_count]"
+            )
+        if int(logits.shape[0]) == 0:
+            raise RecurrentPPOError(f"{field} cannot be empty")
+        if bool(torch.isnan(logits).any().item()) or bool(
+            torch.isposinf(logits).any().item()
+        ):
+            raise RecurrentPPOError(f"{field} contains invalid nonfinite values")
+    if frozen_masked_logits.shape != post_step_masked_logits.shape:
+        raise RecurrentPPOError(
+            "frozen and post-step masked logits must have identical shapes"
+        )
+    if frozen_masked_logits.device != post_step_masked_logits.device:
+        raise RecurrentPPOError(
+            "frozen and post-step masked logits must use the same device"
+        )
+
+    frozen_support = torch.isfinite(frozen_masked_logits)
+    post_step_support = torch.isfinite(post_step_masked_logits)
+    if not bool(frozen_support.any(dim=-1).all().item()):
+        raise RecurrentPPOError(
+            "every frozen policy row must have valid action support"
+        )
+    if not torch.equal(frozen_support, post_step_support):
+        raise RecurrentPPOError(
+            "post-step action support drifted from the frozen minibatch mask"
+        )
+
+    calculation_dtype = (
+        torch.float32 if frozen_masked_logits.device.type == "mps" else torch.float64
+    )
+    frozen_logits = frozen_masked_logits.detach().to(dtype=calculation_dtype)
+    post_step_logits = post_step_masked_logits.detach().to(dtype=calculation_dtype)
+    frozen_log_probabilities = torch.log_softmax(frozen_logits, dim=-1)
+    post_step_log_probabilities = torch.log_softmax(post_step_logits, dim=-1)
+    zeros = torch.zeros_like(frozen_log_probabilities)
+    safe_frozen_log_probabilities = torch.where(
+        frozen_support,
+        frozen_log_probabilities,
+        zeros,
+    )
+    safe_post_step_log_probabilities = torch.where(
+        frozen_support,
+        post_step_log_probabilities,
+        zeros,
+    )
+    frozen_probabilities = torch.where(
+        frozen_support,
+        torch.exp(frozen_log_probabilities),
+        zeros,
+    )
+    row_forward_kl = torch.sum(
+        frozen_probabilities
+        * (safe_frozen_log_probabilities - safe_post_step_log_probabilities),
+        dim=-1,
+    )
+    if not bool(torch.isfinite(row_forward_kl).all().item()):
+        raise RecurrentPPOError("post-step forward KL became nonfinite")
+
+    tolerance = max(
+        _POST_STEP_KL_ABSOLUTE_TOLERANCE,
+        float(target_kl) * _POST_STEP_KL_RELATIVE_TOLERANCE,
+    )
+    if not math.isfinite(tolerance):
+        raise RecurrentPPOError("post-step KL tolerance became nonfinite")
+    minimum_row_kl = _finite_scalar(
+        row_forward_kl.min(),
+        field="minimum post-step row forward KL",
+    )
+    if minimum_row_kl < -tolerance:
+        raise RecurrentPPOError(
+            "post-step forward KL was negative beyond numerical tolerance"
+        )
+    row_forward_kl = row_forward_kl.clamp_min(0.0)
+
+    if (
+        not isinstance(loss_weights, Tensor)
+        or not loss_weights.is_floating_point()
+        or loss_weights.ndim != 1
+        or int(loss_weights.shape[0]) != int(row_forward_kl.shape[0])
+    ):
+        raise RecurrentPPOError(
+            "KL loss_weights must be a floating vector aligned to transitions"
+        )
+    if loss_weights.device != row_forward_kl.device:
+        raise RecurrentPPOError("KL loss_weights must use the policy-logit device")
+    if not bool(torch.isfinite(loss_weights).all().item()) or not bool(
+        (loss_weights > 0.0).all().item()
+    ):
+        raise RecurrentPPOError("KL loss_weights must be finite and positive")
+    if world_balanced:
+        weights = loss_weights.detach().to(dtype=calculation_dtype)
+        weight_sum = weights.sum()
+        _finite_scalar(weight_sum, field="post-step KL weight sum")
+        mean_forward_kl_tensor = torch.sum(row_forward_kl * weights) / weight_sum
+    else:
+        mean_forward_kl_tensor = row_forward_kl.mean()
+    mean_forward_kl = _finite_scalar(
+        mean_forward_kl_tensor,
+        field="post-step mean forward KL",
+    )
+    max_forward_kl = _finite_scalar(
+        row_forward_kl.max(),
+        field="post-step maximum forward KL",
+    )
+    limit = float(target_kl) + tolerance
+    if not math.isfinite(limit):
+        raise RecurrentPPOError("post-step KL limit became nonfinite")
+    rejection_reason: str | None = None
+    if mean_forward_kl > limit:
+        rejection_reason = "mean_post_step_forward_kl_exceeded"
+    elif max_forward_kl > limit:
+        rejection_reason = "max_post_step_forward_kl_exceeded"
+    return _PostStepKLAudit(
+        mean_forward_kl=mean_forward_kl,
+        max_forward_kl=max_forward_kl,
+        tolerance=tolerance,
+        rejection_reason=rejection_reason,
+    )
+
+
 def _loss_terms(
     rows: _EvaluatedRows,
     *,
@@ -1377,6 +1722,54 @@ def _assert_finite_optimizer_state(optimizer: torch.optim.Optimizer) -> None:
                 raise RecurrentPPOError(f"optimizer state {key!r} is nonfinite")
 
 
+def _assert_exact_training_state_restored(
+    model: PublicRecurrentActorCritic,
+    optimizer: torch.optim.Optimizer,
+    *,
+    model_state: Mapping[str, Tensor],
+    optimizer_state: Mapping[str, object],
+) -> None:
+    current_model_state = model.state_dict()
+    if set(current_model_state) != set(model_state) or any(
+        not torch.equal(current_model_state[key], model_state[key])
+        for key in current_model_state
+    ):
+        raise RecurrentPPOError("KL rollback did not restore the exact model state")
+    if not _nested_state_equal(optimizer.state_dict(), optimizer_state):
+        raise RecurrentPPOError("KL rollback did not restore the exact optimizer state")
+    _assert_finite_model(model)
+    _assert_finite_optimizer_state(optimizer)
+
+
+def _nested_state_equal(left: object, right: object) -> bool:
+    if isinstance(left, Tensor) or isinstance(right, Tensor):
+        return (
+            isinstance(left, Tensor)
+            and isinstance(right, Tensor)
+            and left.dtype == right.dtype
+            and tuple(left.shape) == tuple(right.shape)
+            and torch.equal(left, right)
+        )
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        return (
+            isinstance(left, Mapping)
+            and isinstance(right, Mapping)
+            and set(left) == set(right)
+            and all(_nested_state_equal(left[key], right[key]) for key in left)
+        )
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        return (
+            isinstance(left, (list, tuple))
+            and isinstance(right, (list, tuple))
+            and len(left) == len(right)
+            and all(
+                _nested_state_equal(left_item, right_item)
+                for left_item, right_item in zip(left, right, strict=True)
+            )
+        )
+    return left == right
+
+
 def _assert_finite_diagnostics(diagnostics: PPOUpdateDiagnostics) -> None:
     for field_name in (
         "advantage_mean",
@@ -1400,10 +1793,35 @@ def _assert_finite_diagnostics(diagnostics: PPOUpdateDiagnostics) -> None:
         "min_effective_world_total_weight",
         "max_effective_world_total_weight",
         "mean_transition_loss_weight",
+        "post_step_forward_kl_mean",
+        "post_step_forward_kl_max",
+        "post_step_kl_tolerance",
     ):
         value = getattr(diagnostics, field_name)
         if not math.isfinite(value):
             raise RecurrentPPOError(f"diagnostic {field_name!r} is nonfinite")
+    if (
+        diagnostics.post_step_kl_audit_count < 0
+        or diagnostics.post_step_kl_rejected_step_count not in (0, 1)
+        or diagnostics.post_step_kl_rejected_step_count
+        > diagnostics.post_step_kl_audit_count
+    ):
+        raise RecurrentPPOError("post-step KL diagnostic counts are inconsistent")
+    rejected = diagnostics.post_step_kl_rejected_step_count == 1
+    if diagnostics.post_step_kl_rollback_performed != rejected:
+        raise RecurrentPPOError("post-step KL rollback diagnostics are inconsistent")
+    if (diagnostics.post_step_kl_rejection_reason is not None) != rejected:
+        raise RecurrentPPOError("post-step KL rejection diagnostics are inconsistent")
+    if rejected and not diagnostics.early_stopped_for_kl:
+        raise RecurrentPPOError("rejected post-step KL audit must early-stop PPO")
+    if (
+        diagnostics.post_step_forward_kl_mean < 0.0
+        or diagnostics.post_step_forward_kl_max < 0.0
+        or diagnostics.post_step_kl_tolerance < 0.0
+    ):
+        raise RecurrentPPOError("post-step KL diagnostics must be non-negative")
+    if diagnostics.post_step_kl_audit_scope != _POST_STEP_KL_AUDIT_SCOPE:
+        raise RecurrentPPOError("post-step KL diagnostic scope is malformed")
 
 
 def _step_key(step: RecurrentRolloutStep) -> tuple[str, int, int]:

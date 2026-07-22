@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import unittest
 from dataclasses import replace
@@ -29,6 +30,7 @@ if torch is not None:
         _WorldLossWeighting,
         _chunk_references,
         _loss_terms,
+        _post_step_forward_kl_audit,
         _world_loss_weighting,
         recurrent_ppo_contract,
     )
@@ -62,6 +64,12 @@ class RecurrentPPOTests(unittest.TestCase):
         self.assertFalse(config.world_balanced_loss)
         self.assertFalse(contract["world_balancing"]["enabled"])
         self.assertFalse(contract["world_balancing"]["default_enabled"])
+        self.assertFalse(contract["post_step_kl_enforcement"]["enabled"])
+        self.assertEqual(
+            contract["post_step_kl_enforcement"]["metric"],
+            "exact_categorical_forward_kl",
+        )
+        self.assertTrue(contract["post_step_kl_enforcement"]["mean_and_max_must_pass"])
 
         with self.assertRaises(RecurrentPPOError):
             RecurrentPPOConfig(gamma=1.01)
@@ -561,6 +569,154 @@ class RecurrentPPOTests(unittest.TestCase):
         )
         self.assertAlmostEqual(balanced.mean_transition_loss_weight, 1.0)
 
+    def test_post_step_target_kl_overshoot_restores_model_and_optimizer(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=16, hidden_size=16),
+            initialization_seed=811,
+        )
+        trainer = RecurrentPPOTrainer(
+            model,
+            RecurrentPPOConfig(
+                learning_rate=0.2,
+                policy_clip_range=0.4,
+                value_loss_coefficient=0.0,
+                entropy_coefficient=0.0,
+                update_epochs=3,
+                sequence_minibatch_size=16,
+                tbptt_steps=32,
+                burn_in_steps=0,
+                max_gradient_norm=100.0,
+                normalize_advantages=False,
+                target_kl=1.0e-12,
+                learner_seed=911,
+            ),
+        )
+        learning_rates = tuple(group["lr"] for group in trainer.optimizer.param_groups)
+        for group in trainer.optimizer.param_groups:
+            group["lr"] = 1.0e-3
+        for parameter in model.parameters():
+            parameter.grad = torch.full_like(parameter, 0.01)
+        trainer.optimizer.step()
+        trainer.optimizer.zero_grad(set_to_none=True)
+        for group, learning_rate in zip(
+            trainer.optimizer.param_groups,
+            learning_rates,
+            strict=True,
+        ):
+            group["lr"] = learning_rate
+        self.assertTrue(trainer.optimizer.state)
+        sequences = _behavior_sequences(model, lengths=(5, 7))
+        model_before = {
+            key: value.detach().clone() for key, value in model.state_dict().items()
+        }
+        optimizer_before = copy.deepcopy(trainer.optimizer.state_dict())
+
+        diagnostics = trainer.update(sequences)
+
+        self.assertTrue(diagnostics.early_stopped_for_kl)
+        self.assertEqual(diagnostics.minibatch_count, 0)
+        self.assertEqual(diagnostics.post_step_kl_audit_count, 1)
+        self.assertEqual(diagnostics.post_step_kl_rejected_step_count, 1)
+        self.assertTrue(diagnostics.post_step_kl_rollback_performed)
+        self.assertIsNotNone(diagnostics.post_step_kl_rejection_reason)
+        self.assertEqual(
+            diagnostics.post_step_kl_audit_scope,
+            "unchanged_optimizer_minibatch_vs_frozen_update_start_policy",
+        )
+        self.assertTrue(
+            diagnostics.post_step_forward_kl_mean
+            > 1.0e-12 + diagnostics.post_step_kl_tolerance
+            or diagnostics.post_step_forward_kl_max
+            > 1.0e-12 + diagnostics.post_step_kl_tolerance
+        )
+        self.assertEqual(diagnostics.parameter_delta_l2, 0.0)
+        self.assertTrue(
+            all(
+                torch.equal(model.state_dict()[key], value)
+                for key, value in model_before.items()
+            )
+        )
+        self.assertTrue(
+            _nested_state_equal(trainer.optimizer.state_dict(), optimizer_before)
+        )
+
+    def test_post_step_target_kl_accepts_bounded_optimizer_step(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=16, hidden_size=16),
+            initialization_seed=821,
+        )
+        sequences = _behavior_sequences(model, lengths=(5, 7))
+        trainer = RecurrentPPOTrainer(
+            model,
+            RecurrentPPOConfig(
+                learning_rate=1.0e-3,
+                value_loss_coefficient=0.0,
+                entropy_coefficient=0.0,
+                update_epochs=1,
+                sequence_minibatch_size=16,
+                tbptt_steps=32,
+                burn_in_steps=0,
+                max_gradient_norm=100.0,
+                normalize_advantages=False,
+                target_kl=0.1,
+                learner_seed=921,
+            ),
+        )
+        model_before = {
+            key: value.detach().clone() for key, value in model.state_dict().items()
+        }
+        optimizer_before = copy.deepcopy(trainer.optimizer.state_dict())
+
+        diagnostics = trainer.update(sequences)
+
+        self.assertFalse(diagnostics.early_stopped_for_kl)
+        self.assertEqual(diagnostics.minibatch_count, 1)
+        self.assertEqual(diagnostics.post_step_kl_audit_count, 1)
+        self.assertEqual(diagnostics.post_step_kl_rejected_step_count, 0)
+        self.assertFalse(diagnostics.post_step_kl_rollback_performed)
+        self.assertIsNone(diagnostics.post_step_kl_rejection_reason)
+        self.assertGreater(diagnostics.post_step_forward_kl_mean, 0.0)
+        self.assertGreaterEqual(
+            diagnostics.post_step_forward_kl_max,
+            diagnostics.post_step_forward_kl_mean,
+        )
+        self.assertLessEqual(
+            diagnostics.post_step_forward_kl_mean,
+            0.1 + diagnostics.post_step_kl_tolerance,
+        )
+        self.assertLessEqual(
+            diagnostics.post_step_forward_kl_max,
+            0.1 + diagnostics.post_step_kl_tolerance,
+        )
+        self.assertGreater(diagnostics.parameter_delta_l2, 0.0)
+        self.assertTrue(
+            any(
+                not torch.equal(model.state_dict()[key], value)
+                for key, value in model_before.items()
+                if value.is_floating_point()
+            )
+        )
+        self.assertFalse(
+            _nested_state_equal(trainer.optimizer.state_dict(), optimizer_before)
+        )
+
+    def test_post_step_forward_kl_audit_fails_closed_on_nonfinite_logits(
+        self,
+    ) -> None:
+        frozen = torch.full((2, ACTION_COUNT), -torch.inf)
+        frozen[:, :2] = torch.tensor(((0.1, -0.1), (-0.2, 0.2)))
+        malformed = frozen.clone()
+        malformed[0, 0] = torch.nan
+
+        with self.assertRaisesRegex(RecurrentPPOError, "invalid nonfinite"):
+            _post_step_forward_kl_audit(
+                frozen,
+                malformed,
+                loss_weights=torch.ones(2),
+                target_kl=0.1,
+                world_balanced=False,
+            )
+
     def test_illegal_stored_action_fails_closed_without_parameter_change(self) -> None:
         model = PublicRecurrentActorCritic(
             RecurrentActorCriticConfig(encoder_size=12, hidden_size=12),
@@ -646,6 +802,7 @@ def _scalar_feed_forward_rows(
         new_log_probs=torch.cat(new_log_probs),
         new_values=torch.cat(new_values),
         entropy=torch.cat(entropies),
+        masked_logits=None,
         old_log_probs=torch.cat(old_log_probs),
         old_values=torch.cat(old_values),
         advantages=torch.cat(advantages),

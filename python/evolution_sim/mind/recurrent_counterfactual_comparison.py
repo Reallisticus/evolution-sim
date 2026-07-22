@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 import copy
-from dataclasses import asdict
 import hashlib
 import json
 import math
@@ -24,6 +23,7 @@ from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
 from evolution_sim.mind.recurrent_counterfactual_collection import (
     RecurrentCounterfactualCollectionBundle,
     RecurrentCounterfactualCollectionConfig,
+    recurrent_counterfactual_collection_config_payload,
     RecurrentCounterfactualCollectionError,
     RecurrentCounterfactualCollectionResult,
     RecurrentCounterfactualCollectionTask,
@@ -1362,9 +1362,9 @@ def _validate_counterfactual_training(
             raise RecurrentCounterfactualComparisonError(
                 f"{arm} update {update_index} counterfactual collection is invalid"
             ) from error
-        if stable_payload_digest(asdict(collection.config)) != stable_payload_digest(
-            resolved.get("collection")
-        ):
+        if stable_payload_digest(
+            recurrent_counterfactual_collection_config_payload(collection.config)
+        ) != stable_payload_digest(resolved.get("collection")):
             raise RecurrentCounterfactualComparisonError(
                 f"{arm} update {update_index} collection config drifted"
             )

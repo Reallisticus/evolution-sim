@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import random
+import statistics
 import unittest
 
 try:
@@ -18,16 +20,24 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_counterfactual_branch import (
         RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION,
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
         RECURRENT_COUNTERFACTUAL_TRAINING_USE,
         RecurrentCounterfactualBranchError,
         _discounted_focal_return,
         build_recurrent_counterfactual_branch_row,
+        build_recurrent_counterfactual_nested_horizon_materialization,
+        derive_recurrent_counterfactual_tape_seed,
         reconstruct_current_model_hidden_from_branch_row,
+        validate_recurrent_counterfactual_aggregate_row,
         validate_recurrent_counterfactual_branch_row,
         verified_source_recurrent_state_from_branch_row,
     )
     from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
-    from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
+    from evolution_sim.mind.recurrent_seed_registry import (
+        RECURRENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_SEED_REGISTRY,
+    )
 
 
 @unittest.skipIf(torch is None, "optional Mind ML dependency torch is not installed")
@@ -391,6 +401,272 @@ class RecurrentCounterfactualBranchTests(unittest.TestCase):
                 scenario="broad",
                 branch_tick=0,
                 horizon_ticks=1,
+            )
+
+    def test_stratified_branch_selection_draws_tick_before_focal_agent(self) -> None:
+        selection_seed = next(
+            seed for seed in range(100) if random.Random(seed).randrange(2) == 1
+        )
+        materialized = build_recurrent_counterfactual_nested_horizon_materialization(
+            self.source_model,
+            artifact_digest="a" * 64,
+            seed_role="curriculum",
+            environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+            scenario="carrion_only",
+            branch_tick_candidates=(0, 1),
+            horizons=(1, 2),
+            source_policy_sampling_seed=991,
+            branch_selection_seed=selection_seed,
+            gamma=0.99,
+            continuation_tape_count=1,
+            continuation_tape_identity="branch-tests:stratified-selection",
+        )
+
+        selection = materialized["selection"]
+        self.assertEqual(selection["eligible_branch_ticks"], [0, 1])
+        self.assertEqual(selection["eligible_branch_tick_count"], 2)
+        self.assertEqual(selection["selected_eligible_tick_index"], 1)
+        self.assertEqual(selection["selected_branch_tick"], 1)
+        self.assertEqual(
+            selection["selection_policy"],
+            "stratified_uniform_seeded_tick_then_uniform_current_tick_learner_decision",
+        )
+
+    def test_explicit_branch_tick_strata_rotate_without_first_eligible_bias(
+        self,
+    ) -> None:
+        selections = []
+        for stratum_index in range(2):
+            materialized = (
+                build_recurrent_counterfactual_nested_horizon_materialization(
+                    self.source_model,
+                    artifact_digest="a" * 64,
+                    seed_role="curriculum",
+                    environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+                    scenario="carrion_only",
+                    branch_tick_candidates=(0, 1),
+                    horizons=(1, 2),
+                    source_policy_sampling_seed=991,
+                    branch_selection_seed=123_456,
+                    branch_tick_stratum_index=stratum_index,
+                    continuation_tape_identity=(
+                        f"branch-tests:rotation:{stratum_index}"
+                    ),
+                )
+            )
+            selections.append(materialized["selection"])
+
+        self.assertEqual(
+            [selection["selected_branch_tick"] for selection in selections],
+            [0, 1],
+        )
+        for stratum_index, selection in enumerate(selections):
+            self.assertEqual(
+                selection["requested_branch_tick_stratum_index"],
+                stratum_index,
+            )
+            self.assertEqual(
+                selection["branch_tick_strata_traversal"],
+                [stratum_index, 1 - stratum_index],
+            )
+            self.assertEqual(
+                selection["selection_policy"],
+                "deterministic_stratified_tick_rotation_with_eligible_fallback_"
+                "then_uniform_current_tick_learner_decision",
+            )
+
+    def test_scale_training_seed_roles_are_explicit_and_registry_bound(self) -> None:
+        for role, scenario in (
+            ("scale_train", "broad"),
+            ("scale_curriculum", "carrion_only"),
+        ):
+            row = build_recurrent_counterfactual_branch_row(
+                self.source_model,
+                artifact_digest="a" * 64,
+                seed_role=role,
+                environment_seed=SCALE_DEVELOPMENT_SEED_REGISTRY[role][0],
+                scenario=scenario,
+                branch_tick=0,
+                horizon_ticks=1,
+                policy_sampling_seed=991,
+            )
+            validate_recurrent_counterfactual_branch_row(row)
+            self.assertEqual(
+                row["contract"]["allowed_seed_roles"],
+                ["scale_train", "scale_curriculum"],
+            )
+
+    def test_multi_tape_aggregate_is_paired_replay_verified_and_terminal_aware(
+        self,
+    ) -> None:
+        identity = "branch-tests:independent-continuation-tapes"
+        materialized = build_recurrent_counterfactual_nested_horizon_materialization(
+            self.source_model,
+            artifact_digest="a" * 64,
+            seed_role="curriculum",
+            environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+            scenario="carrion_only",
+            branch_tick_candidates=(0,),
+            horizons=(1, 2),
+            source_policy_sampling_seed=991,
+            branch_selection_seed=123_456,
+            gamma=0.99,
+            continuation_tape_count=3,
+            continuation_tape_identity=identity,
+            terminal_target_world_tick=3,
+            uncertainty_penalty=0.5,
+        )
+
+        self.assertEqual(len(materialized["aggregate_rows"]), 2)
+        self.assertEqual(
+            materialized["terminal_target"]["target"]["target_world_tick"],
+            3,
+        )
+        self.assertTrue(
+            materialized["terminal_target"]["target"]["is_absolute_terminal_target"]
+        )
+        for aggregate_row in (
+            *materialized["aggregate_rows"],
+            materialized["terminal_target"],
+        ):
+            validate_recurrent_counterfactual_aggregate_row(aggregate_row)
+            self.assertEqual(
+                aggregate_row["trainable_public_context"],
+                materialized["rows"][0]["trainable_public_context"],
+            )
+            self.assertEqual(
+                aggregate_row["source_identity"]["source_model_state_sha256"],
+                recurrent_model_state_sha256(self.source_model),
+            )
+            self.assertEqual(
+                aggregate_row["source_identity"]["source_artifact_digest"],
+                "a" * 64,
+            )
+            self.assertEqual(aggregate_row["tape_contract"]["tape_count"], 3)
+            tapes = aggregate_row["tape_provenance"]
+            self.assertEqual([tape["tape_index"] for tape in tapes], [0, 1, 2])
+            self.assertEqual(
+                len({tape["environment_sampling_seed"] for tape in tapes}),
+                3,
+            )
+            self.assertEqual(
+                len({tape["policy_sampling_seed"] for tape in tapes}),
+                3,
+            )
+            for tape in tapes:
+                index = tape["tape_index"]
+                self.assertEqual(
+                    tape["environment_sampling_seed"],
+                    derive_recurrent_counterfactual_tape_seed(
+                        namespace=(
+                            RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+                        ),
+                        identity=f"{identity}:environment:{index}",
+                    ),
+                )
+                self.assertEqual(
+                    tape["policy_sampling_seed"],
+                    derive_recurrent_counterfactual_tape_seed(
+                        namespace=(
+                            RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE
+                        ),
+                        identity=f"{identity}:policy:{index}",
+                    ),
+                )
+                self.assertTrue(tape["baseline"]["replay_verified"])
+                self.assertEqual(
+                    tape["baseline"]["evidence_digest"],
+                    tape["baseline"]["replay_evidence_digest"],
+                )
+                for outcome in tape["action_outcomes"]:
+                    self.assertTrue(outcome["replay_verified"])
+                    self.assertEqual(
+                        outcome["evidence_digest"],
+                        outcome["replay_evidence_digest"],
+                    )
+                    self.assertEqual(
+                        outcome["initial_environment_rng_state_sha256"],
+                        tape["initial_environment_rng_state_sha256"],
+                    )
+                    self.assertEqual(
+                        outcome["initial_policy_sampling_state_sha256"],
+                        tape["initial_policy_sampling_state_sha256"],
+                    )
+
+            first_action = aggregate_row["aggregate"]["action_outcomes"][0]
+            action = first_action["action"]
+            raw_deltas = [
+                next(
+                    outcome
+                    for outcome in tape["action_outcomes"]
+                    if outcome["action"] == action
+                )["paired_vs_baseline"]["focal_discounted_return_delta"]
+                for tape in tapes
+            ]
+            expected_mean = statistics.fmean(raw_deltas)
+            expected_variance = statistics.variance(raw_deltas)
+            expected_se = (expected_variance / len(raw_deltas)) ** 0.5
+            stats = first_action["paired_delta_statistics"][
+                "focal_discounted_return_delta"
+            ]
+            self.assertAlmostEqual(stats["mean"], expected_mean, places=12)
+            self.assertAlmostEqual(
+                stats["sample_variance"],
+                expected_variance,
+                places=12,
+            )
+            self.assertAlmostEqual(stats["standard_error"], expected_se, places=12)
+            self.assertAlmostEqual(
+                first_action["uncertainty_penalized_score"],
+                round(stats["mean"] - 0.5 * stats["standard_error"], 12),
+                places=12,
+            )
+
+    def test_multi_tape_aggregate_tampering_fails_closed(self) -> None:
+        materialized = build_recurrent_counterfactual_nested_horizon_materialization(
+            self.source_model,
+            artifact_digest="a" * 64,
+            seed_role="curriculum",
+            environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+            scenario="carrion_only",
+            branch_tick_candidates=(0,),
+            horizons=(1, 2),
+            source_policy_sampling_seed=991,
+            branch_selection_seed=123_456,
+            continuation_tape_count=2,
+            continuation_tape_identity="branch-tests:tamper",
+            terminal_target_world_tick=3,
+            uncertainty_penalty=0.25,
+        )
+        tampered = deepcopy(materialized["aggregate_rows"][0])
+        tampered["aggregate"]["action_outcomes"][0]["paired_delta_statistics"][
+            "focal_discounted_return_delta"
+        ]["mean"] += 1.0
+
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualBranchError,
+            "aggregate statistics|component digest|exact digest",
+        ):
+            validate_recurrent_counterfactual_aggregate_row(tampered)
+
+    def test_relative_horizons_cannot_overrun_absolute_terminal_target(self) -> None:
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualBranchError,
+            "must not run beyond the absolute terminal target",
+        ):
+            build_recurrent_counterfactual_nested_horizon_materialization(
+                self.source_model,
+                artifact_digest="a" * 64,
+                seed_role="curriculum",
+                environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+                scenario="carrion_only",
+                branch_tick_candidates=(88,),
+                horizons=(16, 48),
+                source_policy_sampling_seed=991,
+                branch_selection_seed=123_456,
+                continuation_tape_count=4,
+                continuation_tape_identity="branch-tests:terminal-overrun",
+                terminal_target_world_tick=120,
             )
 
 

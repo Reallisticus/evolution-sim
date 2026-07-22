@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 import unittest
 from unittest.mock import patch
 
@@ -20,15 +21,19 @@ if torch is not None:
         CounterfactualHorizonScalarization,
         RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET,
         RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_VALID_ACTIONS,
+        RecurrentCounterfactualAggregateGroup,
         RecurrentCounterfactualAuxiliaryConfig,
         RecurrentCounterfactualAuxiliaryError,
         RecurrentCounterfactualAuxiliaryStepConfig,
         build_recurrent_counterfactual_auxiliary_target,
+        build_recurrent_counterfactual_aggregate_auxiliary_target,
+        recurrent_counterfactual_aggregate_auxiliary_loss,
         recurrent_counterfactual_auxiliary_batch_loss,
         recurrent_counterfactual_auxiliary_loss,
     )
     from evolution_sim.mind.recurrent_counterfactual_branch import (
         build_recurrent_counterfactual_branch_row,
+        build_recurrent_counterfactual_nested_horizon_materialization,
     )
     from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
     from evolution_sim.mind.recurrent_ppo import RecurrentPPOTrainer
@@ -76,6 +81,46 @@ class RecurrentCounterfactualAuxiliaryTests(unittest.TestCase):
             cls.model,
             horizon_ticks=2,
             **alternate_common,
+        )
+        cls.aggregate_materialization = (
+            build_recurrent_counterfactual_nested_horizon_materialization(
+                cls.model,
+                artifact_digest=cls.artifact_digest,
+                seed_role="curriculum",
+                environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+                scenario="carrion_only",
+                branch_tick_candidates=(0,),
+                horizons=(1, 2),
+                source_policy_sampling_seed=991,
+                branch_selection_seed=123_456,
+                gamma=0.99,
+                continuation_tape_count=3,
+                continuation_tape_identity="auxiliary-tests:aggregate-primary",
+                terminal_target_world_tick=3,
+                uncertainty_penalty=0.5,
+            )
+        )
+        cls.alternate_aggregate_materialization = (
+            build_recurrent_counterfactual_nested_horizon_materialization(
+                cls.model,
+                artifact_digest=cls.artifact_digest,
+                seed_role="curriculum",
+                environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+                scenario="carrion_only",
+                branch_tick_candidates=(0,),
+                horizons=(1, 2),
+                source_policy_sampling_seed=991,
+                branch_selection_seed=123_456,
+                gamma=0.99,
+                continuation_tape_count=3,
+                continuation_tape_identity="auxiliary-tests:aggregate-alternate",
+                terminal_target_world_tick=3,
+                uncertainty_penalty=0.5,
+            )
+        )
+        cls.aggregate_group = RecurrentCounterfactualAggregateGroup(
+            aggregate_rows=tuple(cls.aggregate_materialization["aggregate_rows"]),
+            terminal_target=cls.aggregate_materialization["terminal_target"],
         )
 
     def test_one_real_exact_branch_row_builds_finite_masked_soft_target(self) -> None:
@@ -654,6 +699,274 @@ class RecurrentCounterfactualAuxiliaryTests(unittest.TestCase):
         result.loss.backward()
         self.assertIsNotNone(terminal_model.value.weight.grad)
 
+    def test_multi_tape_target_matches_paired_composite_lower_confidence_math(
+        self,
+    ) -> None:
+        config = _aggregate_config()
+        first = build_recurrent_counterfactual_aggregate_auxiliary_target(
+            self.model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=config,
+        )
+        second = build_recurrent_counterfactual_aggregate_auxiliary_target(
+            self.model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=config,
+        )
+
+        expected = torch.zeros_like(first.scalarized_action_values)
+        rows = self.aggregate_group.aggregate_rows
+        terminal = self.aggregate_group.terminal_target
+        self.assertIsNotNone(terminal)
+        for action_index, action in enumerate(ACTION_NAMES):
+            if not bool(first.action_mask[action_index]):
+                continue
+            relative = 0.25 * _aggregate_action_lcb(
+                rows[0],
+                action=action,
+                config=config,
+            ) + 0.75 * _aggregate_action_lcb(
+                rows[1],
+                action=action,
+                config=config,
+            )
+            terminal_score = _aggregate_action_lcb(
+                terminal,
+                action=action,
+                config=config,
+            )
+            expected[action_index] = 0.5 * relative + 0.5 * terminal_score
+        torch.testing.assert_close(
+            first.scalarized_action_values,
+            expected,
+            rtol=0.0,
+            atol=2.0e-6,
+        )
+        torch.testing.assert_close(
+            first.scalarized_action_values,
+            second.scalarized_action_values,
+            rtol=0.0,
+            atol=0.0,
+        )
+        expected_baseline = torch.sum(first.behavior_probabilities * expected)
+        torch.testing.assert_close(
+            first.behavior_centered_advantages,
+            torch.where(
+                first.action_mask,
+                expected - expected_baseline,
+                torch.zeros_like(expected),
+            ),
+            rtol=0.0,
+            atol=2.0e-6,
+        )
+        expected_value = 0.0
+        for action_index, action in enumerate(ACTION_NAMES):
+            if not bool(first.action_mask[action_index]):
+                continue
+            outcome = next(
+                item
+                for item in terminal["aggregate"]["action_outcomes"]
+                if item["action"] == action
+            )
+            expected_value += float(first.behavior_probabilities[action_index]) * float(
+                outcome["outcome_statistics"]["focal_discounted_return"]["mean"]
+            )
+        self.assertIsNotNone(first.value_target)
+        self.assertAlmostEqual(float(first.value_target), expected_value, places=5)
+        self.assertEqual(first.horizons, (1, 2))
+        self.assertEqual(len(first.row_exact_digests), 3)
+        self.assertEqual(
+            first.contract["branch_label_statistical_semantics"],
+            "paired_multi_tape_common_random_numbers_lower_confidence_action_effect",
+        )
+        self.assertTrue(first.contract["branch_outcome_uncertainty_estimated"])
+        self.assertEqual(first.contract["terminal_target_weight"], 0.5)
+        self.assertFalse(
+            first.contract["stored_tape_or_provenance_used_as_model_input"]
+        )
+
+    def test_multi_tape_shuffled_control_is_deterministic_and_context_keyed(
+        self,
+    ) -> None:
+        normal = build_recurrent_counterfactual_aggregate_auxiliary_target(
+            self.model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=_aggregate_config(),
+        )
+        control_config = _aggregate_config(shuffled=True)
+        first = build_recurrent_counterfactual_aggregate_auxiliary_target(
+            self.model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=control_config,
+        )
+        second = build_recurrent_counterfactual_aggregate_auxiliary_target(
+            self.model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=control_config,
+        )
+
+        torch.testing.assert_close(
+            first.scalarized_action_values,
+            second.scalarized_action_values,
+            rtol=0.0,
+            atol=0.0,
+        )
+        self.assertFalse(
+            torch.equal(
+                first.scalarized_action_values,
+                normal.scalarized_action_values,
+            )
+        )
+        torch.testing.assert_close(
+            torch.sort(first.scalarized_action_values[first.action_mask]).values,
+            torch.sort(normal.scalarized_action_values[normal.action_mask]).values,
+            rtol=0.0,
+            atol=0.0,
+        )
+        control = first.contract["scientific_negative_control"]
+        self.assertTrue(control["enabled"])
+        self.assertFalse(control["branch_rows_mutated"])
+        self.assertFalse(control["exact_branch_labels_claimed_after_permutation"])
+
+    def test_multi_tape_tamper_and_cross_tape_provenance_fail_closed(self) -> None:
+        tampered_rows = deepcopy(self.aggregate_group.aggregate_rows)
+        tampered_rows[0]["aggregate"]["action_outcomes"][0]["paired_delta_statistics"][
+            "focal_discounted_return_delta"
+        ]["mean"] += 1.0
+        tampered_group = RecurrentCounterfactualAggregateGroup(
+            aggregate_rows=tampered_rows,
+            terminal_target=self.aggregate_group.terminal_target,
+        )
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualAuxiliaryError,
+            "failed its replay-verified contract",
+        ):
+            build_recurrent_counterfactual_aggregate_auxiliary_target(
+                self.model,
+                tampered_group,
+                artifact_digest=self.artifact_digest,
+                config=_aggregate_config(),
+            )
+
+        mixed_group = RecurrentCounterfactualAggregateGroup(
+            aggregate_rows=self.aggregate_group.aggregate_rows,
+            terminal_target=self.alternate_aggregate_materialization["terminal_target"],
+        )
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualAuxiliaryError,
+            "RNG tape set|tape contract",
+        ):
+            build_recurrent_counterfactual_aggregate_auxiliary_target(
+                self.model,
+                mixed_group,
+                artifact_digest=self.artifact_digest,
+                config=_aggregate_config(),
+            )
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualAuxiliaryError,
+            "artifact",
+        ):
+            build_recurrent_counterfactual_aggregate_auxiliary_target(
+                self.model,
+                self.aggregate_group,
+                artifact_digest="d" * 64,
+                config=_aggregate_config(),
+            )
+
+    def test_multi_tape_loss_accepts_survivor_terminal_and_replays_public_prefix(
+        self,
+    ) -> None:
+        terminal = self.aggregate_group.terminal_target
+        self.assertIsNotNone(terminal)
+        self.assertTrue(
+            any(
+                tape["baseline"]["focal_terminal_alive"]
+                for tape in terminal["tape_provenance"]
+            )
+        )
+        model = deepcopy(self.model)
+        model.zero_grad(set_to_none=True)
+        result = recurrent_counterfactual_aggregate_auxiliary_loss(
+            model,
+            self.aggregate_group,
+            artifact_digest=self.artifact_digest,
+            config=_aggregate_config(),
+        )
+        self.assertTrue(torch.isfinite(result.loss))
+        self.assertIsNotNone(result.target.value_target)
+        result.loss.backward()
+        self.assertGreater(float(model.actor.weight.grad.abs().sum()), 0.0)
+        self.assertGreater(float(model.encoder[0].weight.grad.abs().sum()), 0.0)
+        self.assertGreater(float(model.recurrent.weight_ih_l0.grad.abs().sum()), 0.0)
+        self.assertGreater(float(model.value.weight.grad.abs().sum()), 0.0)
+
+    def test_multi_tape_transaction_accepts_once_and_rejection_rolls_back(self) -> None:
+        accepted_trainer = RecurrentPPOTrainer(deepcopy(self.model))
+        accepted = accepted_trainer.counterfactual_aggregate_auxiliary_update(
+            [self.aggregate_group],
+            artifact_digest=self.artifact_digest,
+            config=_aggregate_config(),
+        )
+        self.assertTrue(accepted.accepted)
+        self.assertEqual(accepted.group_count, 1)
+        self.assertEqual(accepted.row_count, 3)
+        self.assertEqual(accepted.auxiliary_update_count, 1)
+        self.assertTrue(accepted.rows_stale_after_step)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualAuxiliaryError,
+            "already attempted",
+        ):
+            accepted_trainer.counterfactual_aggregate_auxiliary_update(
+                [self.aggregate_group],
+                artifact_digest=self.artifact_digest,
+                config=_aggregate_config(),
+            )
+
+        rejected_trainer = RecurrentPPOTrainer(deepcopy(self.model))
+        model_before = {
+            key: value.detach().clone()
+            for key, value in rejected_trainer.model.state_dict().items()
+        }
+        optimizer_before = deepcopy(rejected_trainer.optimizer.state_dict())
+        rejected = rejected_trainer.counterfactual_aggregate_auxiliary_update(
+            [self.aggregate_group],
+            artifact_digest=self.artifact_digest,
+            config=_aggregate_config(),
+            step_config=RecurrentCounterfactualAuxiliaryStepConfig(
+                learning_rate_multiplier=100.0,
+                mean_behavior_kl_limit=0.0,
+                max_state_behavior_kl_limit=0.0,
+            ),
+        )
+        self.assertFalse(rejected.accepted)
+        self.assertTrue(rejected.rollback_performed)
+        self.assertTrue(rejected.optimizer_state_restored)
+        self.assertTrue(rejected.update_counters_restored)
+        self.assertEqual(rejected_trainer.counterfactual_auxiliary_update_count, 0)
+        self.assertTrue(
+            all(
+                torch.equal(rejected_trainer.model.state_dict()[key], expected)
+                for key, expected in model_before.items()
+            )
+        )
+        self.assertTrue(
+            _nested_equal(rejected_trainer.optimizer.state_dict(), optimizer_before)
+        )
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualAuxiliaryError,
+            "retry is forbidden",
+        ):
+            rejected_trainer.counterfactual_aggregate_auxiliary_update(
+                [self.aggregate_group],
+                artifact_digest=self.artifact_digest,
+                config=_aggregate_config(),
+            )
+
     def test_tamper_leakage_mask_artifact_and_horizon_fail_closed(self) -> None:
         config = _config_for_horizons((2,))
         tampered = deepcopy(self.real_horizon_2)
@@ -759,6 +1072,70 @@ def _config_for_horizons(
         advantage_clip=100.0,
         behavior_kl_coefficient=0.1,
     )
+
+
+def _aggregate_config(
+    *,
+    shuffled: bool = False,
+) -> RecurrentCounterfactualAuxiliaryConfig:
+    return RecurrentCounterfactualAuxiliaryConfig(
+        scalarization=CounterfactualHorizonScalarization(
+            horizon_weights=((1, 0.25), (2, 0.75)),
+            focal_discounted_return_weight=1.0,
+            focal_terminal_alive_weight=1.0,
+            population_alive_weight=0.05,
+            births_during_horizon_weight=0.02,
+            deaths_during_horizon_weight=-0.02,
+        ),
+        temperature=0.5,
+        advantage_clip=2.0,
+        policy_improvement_coefficient=2.0,
+        behavior_kl_coefficient=1.0,
+        value_loss_coefficient=0.25,
+        value_target_mode=RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET,
+        target_permutation_mode=(
+            RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_VALID_ACTIONS
+            if shuffled
+            else "disabled"
+        ),
+        target_permutation_seed=991 if shuffled else None,
+        terminal_target_weight=0.5,
+    )
+
+
+def _aggregate_action_lcb(
+    row: dict[str, object],
+    *,
+    action: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> float:
+    delta_fields = {
+        "focal_discounted_return": "focal_discounted_return_delta",
+        "focal_terminal_alive": "focal_terminal_alive_delta",
+        "population_alive": "population_alive_delta",
+        "births_during_horizon": "births_during_horizon_delta",
+        "deaths_during_horizon": "deaths_during_horizon_delta",
+    }
+    scores: list[float] = []
+    for tape in row["tape_provenance"]:
+        outcome = next(
+            item for item in tape["action_outcomes"] if item["action"] == action
+        )
+        paired = outcome["paired_vs_baseline"]
+        scores.append(
+            math.fsum(
+                weight * float(paired[delta_fields[name]])
+                for name, weight in config.scalarization.outcome_weights().items()
+            )
+        )
+    mean = math.fsum(scores) / len(scores)
+    standard_error = 0.0
+    if len(scores) > 1:
+        variance = math.fsum((score - mean) ** 2 for score in scores) / (
+            len(scores) - 1
+        )
+        standard_error = math.sqrt(variance / len(scores))
+    return mean - float(row["aggregate"]["uncertainty_penalty"]) * standard_error
 
 
 def _with_synthetic_returns(

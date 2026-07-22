@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -460,6 +462,27 @@ def _report(*, arm: str) -> dict[str, object]:
 
 
 class RecurrentPairedAnalysisTests(unittest.TestCase):
+    def test_module_import_does_not_require_optional_torch_dependency(self) -> None:
+        probe = """
+import importlib.abc
+import sys
+
+class BlockTorch(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == 'torch' or fullname.startswith('torch.'):
+            raise ModuleNotFoundError("blocked optional torch", name='torch')
+        return None
+
+sys.meta_path.insert(0, BlockTorch())
+import evolution_sim.mind.recurrent_paired_analysis
+"""
+        subprocess.run(
+            [sys.executable, "-c", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def setUp(self) -> None:
         self.gru = _report(arm="gru")
         self.feed_forward = _report(arm="feed_forward")

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
 import math
 import multiprocessing as mp
 import os
+import random
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 
@@ -23,6 +25,7 @@ from evolution_sim.mind.recurrent_actor_critic import (
 )
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+    RecurrentCounterfactualAggregateGroup,
     RecurrentCounterfactualAuxiliaryConfig,
     RecurrentCounterfactualAuxiliaryStepConfig,
     RecurrentCounterfactualAuxiliaryStepDiagnostics,
@@ -32,6 +35,7 @@ from evolution_sim.mind.recurrent_counterfactual_collection import (
     RecurrentCounterfactualCollectionResult,
     RecurrentCounterfactualCollectionTask,
     collect_recurrent_counterfactual_bundles,
+    recurrent_counterfactual_collection_config_payload,
 )
 from evolution_sim.mind.recurrent_policy import (
     frozen_cpu_model_copy,
@@ -55,17 +59,32 @@ from evolution_sim.mind.recurrent_rollout import (
     derive_recurrent_policy_sampling_seed,
 )
 from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
+from evolution_sim.mind.recurrent_seed_registry import (
+    SCALE_DEVELOPMENT_SEED_REGISTRY,
+)
 
 
 RECURRENT_EXPERIMENT_CONTRACT_VERSION = "mind_public_recurrent_ippo_experiment_v4"
 RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_public_recurrent_training_seed_provenance_v1"
 )
+RECURRENT_SCALE_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
+    "mind_public_recurrent_scale_training_seed_provenance_v1"
+)
 RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
     "mind_public_recurrent_ippo_training_schedule_task_v1"
 )
 RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION = (
     "mind_public_recurrent_counterfactual_collection_task_v1"
+)
+RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
+    "mind_public_recurrent_ippo_scale_training_schedule_task_v1"
+)
+RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL = "canonical_v1"
+RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT = "scale_development_v1"
+RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS = (
+    RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL,
+    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
 )
 RECURRENT_BROAD_SCENARIO = "broad"
 RECURRENT_TRAINING_SCENARIOS: tuple[str, ...] = (
@@ -152,6 +171,20 @@ class RecurrentCounterfactualExperimentConfig:
             raise RecurrentExperimentError(
                 "counterfactual collection and scalarization horizons must match"
             )
+        if (
+            self.auxiliary.terminal_target_weight > 0.0
+            and self.collection.terminal_target_world_tick is None
+        ):
+            raise RecurrentExperimentError(
+                "terminal target weight requires an absolute collection target"
+            )
+        if (
+            not self.collection.multi_tape_enabled
+            and self.auxiliary.terminal_target_weight != 0.0
+        ):
+            raise RecurrentExperimentError(
+                "legacy one-tape collection cannot use aggregate terminal targets"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,14 +208,25 @@ class RecurrentRolloutTask:
             self.environment_seed,
             field="environment_seed",
         )
-        expected_seed_role = (
+        legacy_seed_role = (
             "train" if self.scenario == RECURRENT_BROAD_SCENARIO else "curriculum"
         )
-        if self.seed_role is not None and self.seed_role != expected_seed_role:
+        scale_seed_role = (
+            "scale_train"
+            if self.scenario == RECURRENT_BROAD_SCENARIO
+            else "scale_curriculum"
+        )
+        expected_seed_role = self.seed_role or legacy_seed_role
+        if expected_seed_role not in {legacy_seed_role, scale_seed_role}:
             raise RecurrentExperimentError(
                 "rollout task seed_role does not match its training scenario"
             )
-        if environment_seed not in RECURRENT_SEED_REGISTRY[expected_seed_role]:
+        seed_registry = (
+            RECURRENT_SEED_REGISTRY
+            if expected_seed_role == legacy_seed_role
+            else SCALE_DEVELOPMENT_SEED_REGISTRY
+        )
+        if environment_seed not in seed_registry[expected_seed_role]:
             raise RecurrentExperimentError(
                 f"{self.scenario} training requires a canonical "
                 f"{expected_seed_role} environment seed"
@@ -300,8 +344,15 @@ def build_recurrent_training_schedule(
     worlds_per_update: int,
     rollout_ticks: int,
     scenarios: Sequence[str] = RECURRENT_TRAINING_SCENARIOS,
+    seed_registry_contract: str = RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL,
+    scale_learner_seed: int | None = None,
 ) -> tuple[tuple[RecurrentRolloutTask, ...], ...]:
-    """Build a deterministic policy-optimization schedule from train-only roles."""
+    """Build a deterministic policy-optimization schedule from train-only roles.
+
+    The scale-development registry is an explicit opt-in.  It is disjoint from
+    every historical development, validation, and lockbox seed and therefore
+    cannot be selected by an existing caller accidentally.
+    """
 
     _positive_int(update_count, field="update_count")
     _positive_int(worlds_per_update, field="worlds_per_update")
@@ -319,8 +370,51 @@ def build_recurrent_training_schedule(
     if unsupported:
         raise RecurrentExperimentError(f"unsupported training scenarios: {unsupported}")
 
-    broad_seeds = RECURRENT_SEED_REGISTRY["train"]
-    fixture_seeds = RECURRENT_SEED_REGISTRY["curriculum"]
+    if seed_registry_contract not in RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS:
+        raise RecurrentExperimentError(
+            "seed_registry_contract must be one of "
+            + ", ".join(RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS)
+        )
+    scale_development = (
+        seed_registry_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+    )
+    if scale_development:
+        if scale_learner_seed is None:
+            raise RecurrentExperimentError(
+                "scale_learner_seed is required for the scale-development registry"
+            )
+        resolved_scale_learner_seed = _positive_seed(
+            scale_learner_seed,
+            field="scale_learner_seed",
+        )
+        if (
+            resolved_scale_learner_seed
+            not in (SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"])
+        ):
+            raise RecurrentExperimentError(
+                "scale_learner_seed must be registered for the scale_learner role"
+            )
+    else:
+        if scale_learner_seed is not None:
+            raise RecurrentExperimentError(
+                "scale_learner_seed is only valid with the scale-development registry"
+            )
+        resolved_scale_learner_seed = None
+    seed_registry = (
+        SCALE_DEVELOPMENT_SEED_REGISTRY
+        if scale_development
+        else RECURRENT_SEED_REGISTRY
+    )
+    broad_role = "scale_train" if scale_development else "train"
+    fixture_role = "scale_curriculum" if scale_development else "curriculum"
+    sampling_identity_version = (
+        RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+        if scale_development
+        else RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+    )
+
+    broad_seeds = seed_registry[broad_role]
+    fixture_seeds = seed_registry[fixture_role]
     broad_index = 0
     fixture_indices = {
         scenario: 0
@@ -341,11 +435,28 @@ def build_recurrent_training_schedule(
                 fixture_index = fixture_indices[scenario]
                 seed = fixture_seeds[fixture_index % len(fixture_seeds)]
                 fixture_indices[scenario] = fixture_index + 1
-            policy_sampling_identity = (
-                f"{RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION}|"
-                f"update={update_index:04d}|world={global_index:06d}|"
-                f"scenario={scenario}"
-            )
+            if scale_development:
+                policy_sampling_identity = (
+                    f"{sampling_identity_version}|"
+                    f"learner={resolved_scale_learner_seed}|"
+                    f"update={update_index:04d}|world={global_index:06d}|"
+                    f"scenario={scenario}"
+                )
+                task_id = (
+                    f"scale-learner-{resolved_scale_learner_seed}-"
+                    f"update-{update_index:04d}-world-{global_index:06d}-"
+                    f"{scenario}-seed-{seed}"
+                )
+            else:
+                policy_sampling_identity = (
+                    f"{sampling_identity_version}|"
+                    f"update={update_index:04d}|world={global_index:06d}|"
+                    f"scenario={scenario}"
+                )
+                task_id = (
+                    f"update-{update_index:04d}-world-{global_index:06d}-"
+                    f"{scenario}-seed-{seed}"
+                )
             policy_sampling_seed = derive_recurrent_policy_sampling_seed(
                 task_identity=policy_sampling_identity
             )
@@ -356,15 +467,17 @@ def build_recurrent_training_schedule(
             policy_sampling_seeds.add(policy_sampling_seed)
             tasks.append(
                 RecurrentRolloutTask(
-                    task_id=(
-                        f"update-{update_index:04d}-world-{global_index:06d}-"
-                        f"{scenario}-seed-{seed}"
-                    ),
+                    task_id=task_id,
                     scenario=scenario,
                     environment_seed=seed,
                     rollout_ticks=rollout_ticks,
                     policy_sampling_identity=policy_sampling_identity,
                     policy_sampling_seed=policy_sampling_seed,
+                    seed_role=(
+                        broad_role
+                        if scenario == RECURRENT_BROAD_SCENARIO
+                        else fixture_role
+                    ),
                 )
             )
             global_index += 1
@@ -434,21 +547,30 @@ def build_recurrent_counterfactual_collection_tasks(
 
     collection_tasks: list[RecurrentCounterfactualCollectionTask] = []
     for slot, task in enumerate(selected):
+        scale_task = str(task.seed_role).startswith("scale_")
         identity_prefix = (
             f"{RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION}|"
             f"update={update_index:04d}|slot={slot:02d}|"
             f"source_task={task.task_id}"
         )
+        collection_task_id = (
+            (f"counterfactual-{task.task_id}-update-{update_index:04d}-slot-{slot:02d}")
+            if scale_task
+            else (
+                f"counterfactual-update-{update_index:04d}-slot-{slot:02d}-"
+                f"{task.scenario}-seed-{task.environment_seed}"
+            )
+        )
         collection_tasks.append(
             RecurrentCounterfactualCollectionTask(
-                task_id=(
-                    f"counterfactual-update-{update_index:04d}-slot-{slot:02d}-"
-                    f"{task.scenario}-seed-{task.environment_seed}"
-                ),
+                task_id=collection_task_id,
                 seed_role=str(task.seed_role),
                 scenario=task.scenario,
                 environment_seed=task.environment_seed,
                 branch_tick_candidates=branch_tick_candidates,
+                branch_tick_stratum_index=(
+                    update_index % len(branch_tick_candidates) if scale_task else None
+                ),
                 source_policy_sampling_identity=f"{identity_prefix}|source-policy",
                 branch_selection_identity=f"{identity_prefix}|branch-selection",
             )
@@ -688,7 +810,203 @@ class RecurrentExperimentRunner:
         self.trainer = RecurrentPPOTrainer(self.model, self.ppo_config)
         self.counterfactual_config = counterfactual_config
         self._updates: list[RecurrentTrainingUpdateResult] = []
+        self._completed_update_count = 0
         self._scheduled_run_state = "not_started"
+
+    @property
+    def completed_update_count(self) -> int:
+        return self._completed_update_count
+
+    def export_training_checkpoint_state(self) -> dict[str, object]:
+        """Return JSON-safe-encodable optimizer, RNG, and trainer state.
+
+        The durable checkpoint serializer owns the wire format.  This method
+        exposes only resumable training state and never an inference artifact.
+        """
+
+        if self._scheduled_run_state == "failed":
+            raise RecurrentExperimentError(
+                "failed experiment runner cannot create a resumable checkpoint"
+            )
+        rng_state: dict[str, object] = {
+            "schema_version": "mind_public_recurrent_runner_rng_state_v1",
+            "python_random_state": random.getstate(),
+            "torch_cpu_rng_state": torch.get_rng_state(),
+            "torch_cuda_rng_state_all": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "trainer_update_index": self.trainer.update_index,
+            "counterfactual_auxiliary_update_count": (
+                self.trainer.counterfactual_auxiliary_update_count
+            ),
+            "attempted_counterfactual_auxiliary_bundles": sorted(
+                self.trainer._attempted_counterfactual_auxiliary_bundles
+            ),
+        }
+        if (
+            torch.backends.mps.is_available()
+            and hasattr(torch, "mps")
+            and hasattr(torch.mps, "get_rng_state")
+        ):
+            rng_state["torch_mps_rng_state"] = torch.mps.get_rng_state()
+        return {
+            "optimizer_state": copy.deepcopy(self.trainer.optimizer.state_dict()),
+            "rng_state": rng_state,
+        }
+
+    def restore_training_checkpoint_state(
+        self,
+        *,
+        model_state: Mapping[str, torch.Tensor],
+        optimizer_state: Mapping[object, object],
+        rng_state: Mapping[object, object],
+        completed_updates: int,
+    ) -> None:
+        """Restore an externally verified crash checkpoint exactly once."""
+
+        if (
+            self._scheduled_run_state != "not_started"
+            or self._updates
+            or self._completed_update_count != 0
+            or self.trainer.update_index != 0
+        ):
+            raise RecurrentExperimentError(
+                "training checkpoint restore requires a pristine runner"
+            )
+        if (
+            isinstance(completed_updates, bool)
+            or not isinstance(completed_updates, int)
+            or completed_updates < 0
+        ):
+            raise RecurrentExperimentError(
+                "completed_updates must be a non-negative integer"
+            )
+        if rng_state.get("schema_version") != (
+            "mind_public_recurrent_runner_rng_state_v1"
+        ):
+            raise RecurrentExperimentError("runner RNG checkpoint schema drifted")
+        trainer_update_index = rng_state.get("trainer_update_index")
+        if trainer_update_index != completed_updates:
+            raise RecurrentExperimentError(
+                "checkpoint trainer update index disagrees with completed updates"
+            )
+        auxiliary_update_count = rng_state.get("counterfactual_auxiliary_update_count")
+        if (
+            isinstance(auxiliary_update_count, bool)
+            or not isinstance(auxiliary_update_count, int)
+            or not 0 <= auxiliary_update_count <= completed_updates
+        ):
+            raise RecurrentExperimentError(
+                "checkpoint auxiliary update count is invalid"
+            )
+        attempted_value = rng_state.get("attempted_counterfactual_auxiliary_bundles")
+        if not isinstance(attempted_value, list) or any(
+            not isinstance(value, str) or not value for value in attempted_value
+        ):
+            raise RecurrentExperimentError(
+                "checkpoint attempted auxiliary bundle ledger is invalid"
+            )
+        if attempted_value != sorted(set(attempted_value)):
+            raise RecurrentExperimentError(
+                "checkpoint attempted auxiliary bundle ledger is not canonical"
+            )
+        python_random_state = rng_state.get("python_random_state")
+        torch_cpu_rng_state = rng_state.get("torch_cpu_rng_state")
+        if not isinstance(torch_cpu_rng_state, torch.Tensor):
+            raise RecurrentExperimentError(
+                "checkpoint torch CPU RNG state must be a tensor"
+            )
+        try:
+            python_probe = random.Random()
+            python_probe.setstate(python_random_state)  # type: ignore[arg-type]
+            cpu_rng_state = torch_cpu_rng_state.to(device="cpu", dtype=torch.uint8)
+            torch.Generator(device="cpu").set_state(cpu_rng_state)
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise RecurrentExperimentError(
+                "checkpoint CPU RNG state is invalid"
+            ) from error
+        cuda_rng_state = rng_state.get("torch_cuda_rng_state_all")
+        if cuda_rng_state is not None:
+            if (
+                not torch.cuda.is_available()
+                or not isinstance(cuda_rng_state, list)
+                or len(cuda_rng_state) != torch.cuda.device_count()
+                or any(not isinstance(value, torch.Tensor) for value in cuda_rng_state)
+            ):
+                raise RecurrentExperimentError(
+                    "CUDA RNG checkpoint cannot be restored on this runtime"
+                )
+            try:
+                for device_index, state in enumerate(cuda_rng_state):
+                    torch.Generator(device=f"cuda:{device_index}").set_state(
+                        state.to(device="cpu", dtype=torch.uint8)
+                    )
+            except RuntimeError as error:
+                raise RecurrentExperimentError(
+                    "checkpoint CUDA RNG state is invalid"
+                ) from error
+        mps_rng_state = rng_state.get("torch_mps_rng_state")
+        if mps_rng_state is not None:
+            if (
+                not isinstance(mps_rng_state, torch.Tensor)
+                or not hasattr(torch, "mps")
+                or not hasattr(torch.mps, "set_rng_state")
+            ):
+                raise RecurrentExperimentError(
+                    "MPS RNG checkpoint cannot be restored on this runtime"
+                )
+
+        model_snapshot = {
+            name: value.detach().clone()
+            for name, value in self.model.state_dict().items()
+        }
+        optimizer_snapshot = copy.deepcopy(self.trainer.optimizer.state_dict())
+        python_rng_snapshot = random.getstate()
+        cpu_rng_snapshot = torch.get_rng_state()
+        cuda_rng_snapshot = (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        )
+        mps_rng_snapshot = (
+            torch.mps.get_rng_state()
+            if torch.backends.mps.is_available()
+            and hasattr(torch, "mps")
+            and hasattr(torch.mps, "get_rng_state")
+            else None
+        )
+        try:
+            self.model.load_state_dict(dict(model_state), strict=True)
+            self.model.to(device=self.device, dtype=torch.float32)
+            self.trainer.optimizer.load_state_dict(copy.deepcopy(dict(optimizer_state)))
+            self.trainer.optimizer.zero_grad(set_to_none=True)
+            random.setstate(python_random_state)  # type: ignore[arg-type]
+            torch.set_rng_state(cpu_rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_state)
+            if mps_rng_state is not None:
+                torch.mps.set_rng_state(mps_rng_state)
+            self.trainer._update_index = completed_updates
+            self.trainer._counterfactual_auxiliary_update_count = auxiliary_update_count
+            self.trainer._attempted_counterfactual_auxiliary_bundles = set(
+                attempted_value
+            )
+            self._completed_update_count = completed_updates
+        except Exception as error:
+            self.model.load_state_dict(model_snapshot, strict=True)
+            self.trainer.optimizer.load_state_dict(optimizer_snapshot)
+            self.trainer.optimizer.zero_grad(set_to_none=True)
+            random.setstate(python_rng_snapshot)
+            torch.set_rng_state(cpu_rng_snapshot)
+            if cuda_rng_snapshot is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_snapshot)
+            if mps_rng_snapshot is not None:
+                torch.mps.set_rng_state(mps_rng_snapshot)
+            self.trainer._update_index = 0
+            self.trainer._counterfactual_auxiliary_update_count = 0
+            self.trainer._attempted_counterfactual_auxiliary_bundles = set()
+            self._completed_update_count = 0
+            raise RecurrentExperimentError(
+                "checkpoint restore failed transactionally"
+            ) from error
 
     def train_update(
         self,
@@ -734,7 +1052,7 @@ class RecurrentExperimentRunner:
                 )
                 branch_tasks = build_recurrent_counterfactual_collection_tasks(
                     task_tuple,
-                    update_index=len(self._updates),
+                    update_index=self._completed_update_count,
                     bundles_per_update=(self.counterfactual_config.bundles_per_update),
                     branch_tick_candidates=(
                         self.counterfactual_config.branch_tick_candidates
@@ -756,19 +1074,48 @@ class RecurrentExperimentRunner:
                     raise RecurrentExperimentError(
                         "counterfactual collection source identity drifted"
                     )
-                row_groups = tuple(
-                    bundle.rows for bundle in counterfactual_collection.bundles
-                )
-                if len(row_groups) != len(branch_tasks):
-                    raise RecurrentExperimentError(
-                        "counterfactual collector did not return one bundle per task"
+                if self.counterfactual_config.collection.multi_tape_enabled:
+                    aggregate_groups: list[RecurrentCounterfactualAggregateGroup] = []
+                    for bundle in counterfactual_collection.bundles:
+                        if bundle.aggregate_rows is None:
+                            raise RecurrentExperimentError(
+                                "multi-tape collection omitted aggregate rows"
+                            )
+                        aggregate_groups.append(
+                            RecurrentCounterfactualAggregateGroup(
+                                aggregate_rows=tuple(bundle.aggregate_rows),
+                                terminal_target=bundle.terminal_target,
+                            )
+                        )
+                    if len(aggregate_groups) != len(branch_tasks):
+                        raise RecurrentExperimentError(
+                            "counterfactual collector did not return one aggregate "
+                            "bundle per task"
+                        )
+                    counterfactual_auxiliary = (
+                        self.trainer.counterfactual_aggregate_auxiliary_update(
+                            tuple(aggregate_groups),
+                            artifact_digest=ephemeral_artifact_sha256,
+                            config=self.counterfactual_config.auxiliary,
+                            step_config=self.counterfactual_config.step,
+                        )
                     )
-                counterfactual_auxiliary = self.trainer.counterfactual_auxiliary_update(
-                    row_groups,
-                    artifact_digest=ephemeral_artifact_sha256,
-                    config=self.counterfactual_config.auxiliary,
-                    step_config=self.counterfactual_config.step,
-                )
+                else:
+                    row_groups = tuple(
+                        bundle.rows for bundle in counterfactual_collection.bundles
+                    )
+                    if len(row_groups) != len(branch_tasks):
+                        raise RecurrentExperimentError(
+                            "counterfactual collector did not return one bundle per task"
+                        )
+                    counterfactual_auxiliary = (
+                        self.trainer.counterfactual_auxiliary_update(
+                            row_groups,
+                            artifact_digest=ephemeral_artifact_sha256,
+                            config=self.counterfactual_config.auxiliary,
+                            step_config=self.counterfactual_config.step,
+                        )
+                    )
                 if (
                     counterfactual_auxiliary.pre_model_state_sha256
                     != post_ppo_model_sha256
@@ -777,7 +1124,7 @@ class RecurrentExperimentRunner:
                         "counterfactual auxiliary did not consume the exact collected model"
                     )
             result = RecurrentTrainingUpdateResult(
-                update_index=len(self._updates),
+                update_index=self._completed_update_count,
                 tasks=task_tuple,
                 rollout=rollout_diagnostics,
                 optimizer=optimizer_diagnostics,
@@ -787,6 +1134,7 @@ class RecurrentExperimentRunner:
                 counterfactual_auxiliary=counterfactual_auxiliary,
             )
             self._updates.append(result)
+            self._completed_update_count += 1
         except Exception:
             self.trainer._restore_experiment_transaction(
                 transaction_snapshot,
@@ -805,7 +1153,7 @@ class RecurrentExperimentRunner:
             raise RecurrentExperimentError(
                 "scheduled experiment run is single-use and already started"
             )
-        if self._updates:
+        if self._updates or self._completed_update_count != 0:
             raise RecurrentExperimentError(
                 "scheduled experiment run requires a pristine update journal"
             )
@@ -879,7 +1227,9 @@ class RecurrentExperimentRunner:
                 if self.counterfactual_config is None
                 else {
                     "enabled": True,
-                    "collection": asdict(self.counterfactual_config.collection),
+                    "collection": recurrent_counterfactual_collection_config_payload(
+                        self.counterfactual_config.collection
+                    ),
                     "auxiliary": self.counterfactual_config.auxiliary.as_contract(),
                     "step": self.counterfactual_config.step.as_contract(),
                     "bundles_per_update": (
@@ -911,7 +1261,43 @@ def recurrent_training_run_payload(
 def _training_seed_provenance(
     updates: Sequence[RecurrentTrainingUpdateResult],
 ) -> dict[str, object]:
-    observed: dict[str, set[int]] = {"train": set(), "curriculum": set()}
+    role_contracts = {
+        RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL: (
+            ("train", "curriculum"),
+            RECURRENT_SEED_REGISTRY,
+            RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
+        ),
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT: (
+            ("scale_train", "scale_curriculum"),
+            SCALE_DEVELOPMENT_SEED_REGISTRY,
+            RECURRENT_SCALE_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
+        ),
+    }
+    observed_roles = {
+        str(task.seed_role) for update in updates for task in update.tasks
+    }
+    selected_contract: str | None = None
+    selected_roles: tuple[str, str] | None = None
+    selected_registry: Mapping[str, Sequence[int]] | None = None
+    schema_version: str | None = None
+    for contract, (roles, registry, candidate_schema) in role_contracts.items():
+        if observed_roles and observed_roles.issubset(set(roles)):
+            selected_contract = contract
+            selected_roles = roles
+            selected_registry = registry
+            schema_version = candidate_schema
+            break
+    if (
+        selected_contract is None
+        or selected_roles is None
+        or selected_registry is None
+        or schema_version is None
+    ):
+        raise RecurrentExperimentError(
+            "committed updates mix seed registries or contain unsupported roles"
+        )
+
+    observed: dict[str, set[int]] = {role: set() for role in selected_roles}
     for update in updates:
         for task in update.tasks:
             role = task.seed_role
@@ -919,18 +1305,18 @@ def _training_seed_provenance(
                 raise RecurrentExperimentError(
                     "committed update contains a non-training environment seed role"
                 )
-            if task.environment_seed not in RECURRENT_SEED_REGISTRY[role]:
+            if task.environment_seed not in selected_registry[role]:
                 raise RecurrentExperimentError(
                     "committed update contains an environment seed outside its role"
                 )
             observed[role].add(task.environment_seed)
     seeds_by_role = {
-        role: [seed for seed in RECURRENT_SEED_REGISTRY[role] if seed in observed[role]]
-        for role in ("train", "curriculum")
+        role: [seed for seed in selected_registry[role] if seed in observed[role]]
+        for role in selected_roles
     }
-    return {
-        "schema_version": RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
-        "environment_seed_roles": ["train", "curriculum"],
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
+        "environment_seed_roles": list(selected_roles),
         "environment_seeds_by_role": seeds_by_role,
         "observed_environment_seed_count": sum(
             len(seeds) for seeds in seeds_by_role.values()
@@ -941,6 +1327,9 @@ def _training_seed_provenance(
         "validation_seeds_accessed": False,
         "lockbox_seeds_accessed": False,
     }
+    if selected_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT:
+        payload["seed_registry_contract"] = selected_contract
+    return payload
 
 
 def _require_unique_schedule_values(
@@ -1030,14 +1419,24 @@ def _rollout_diagnostics(
             field="world summary environment_seed",
         )
         seed_role = summary.get("seed_role")
-        expected_seed_role = (
+        legacy_seed_role = (
             "train" if scenario == RECURRENT_BROAD_SCENARIO else "curriculum"
         )
-        if seed_role != expected_seed_role:
+        scale_seed_role = (
+            "scale_train"
+            if scenario == RECURRENT_BROAD_SCENARIO
+            else "scale_curriculum"
+        )
+        if seed_role not in {legacy_seed_role, scale_seed_role}:
             raise RecurrentExperimentError(
                 "world summary seed role does not match its training scenario"
             )
-        if environment_seed not in RECURRENT_SEED_REGISTRY[expected_seed_role]:
+        seed_registry = (
+            RECURRENT_SEED_REGISTRY
+            if seed_role == legacy_seed_role
+            else SCALE_DEVELOPMENT_SEED_REGISTRY
+        )
+        if environment_seed not in seed_registry[seed_role]:
             raise RecurrentExperimentError(
                 "world summary environment seed is outside its canonical training role"
             )

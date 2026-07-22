@@ -11,14 +11,29 @@ from evolution_sim.mind.recurrent_seed_registry import (
     GENERATED_SEED_REGISTRY_SHA256,
     LEGACY_DIAGNOSTIC_SEEDS,
     RECURRENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_EXPECTED_LEARNER_SEEDS,
+    SCALE_DEVELOPMENT_GENERATED_SHA256,
+    SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_SEED_REGISTRY_NAMESPACE,
+    SCALE_DEVELOPMENT_SEED_REGISTRY_VERSION,
+    SCALE_DEVELOPMENT_SEED_ROLE_COUNTS,
+    SCALE_DEVELOPMENT_SEED_ROLE_POLICIES,
+    SCALE_DEVELOPMENT_UNAVAILABLE_ROLES,
     SEED_REGISTRY_NAMESPACE,
     SEED_ROLE_COUNTS,
     SEED_ROLE_POLICIES,
     SeedRegistryError,
     build_recurrent_seed_registry,
+    build_scale_development_seed_registry,
     canonical_seed_registry_json,
     canonical_seed_registry_payload,
     recurrent_seed_registry_contract,
+    scale_development_seed_registry_contract,
+    scale_development_seed_registry_json,
+    scale_development_seed_registry_payload,
+    scale_development_seeds_for_role,
+    validate_scale_development_seed_registry,
     validate_recurrent_seed_registry,
 )
 
@@ -116,6 +131,108 @@ class RecurrentSeedRegistryTests(unittest.TestCase):
         )
         self.assertEqual(set(contract["policies"]), set(contract["seeds"]))
         json.dumps(contract, sort_keys=True, allow_nan=False)
+
+    def test_scale_registry_is_versioned_pinned_and_has_eight_learners(self) -> None:
+        self.assertEqual(
+            SCALE_DEVELOPMENT_SEED_REGISTRY_VERSION,
+            "mind_v3_public_recurrent_scale_development_seed_registry_v1",
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_SEED_REGISTRY_NAMESPACE,
+            "evolution-sim|mind-v3-public-recurrent-ppo|"
+            "scale-development-seed-registry-v1|2026-07-22",
+        )
+        self.assertEqual(
+            hashlib.sha256(scale_development_seed_registry_json()).hexdigest(),
+            SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_GENERATED_SHA256,
+            "42d6b8aa68340379cef16ac48278a579643f15a28497ea4b07e28c90bc6b8557",
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"],
+            SCALE_DEVELOPMENT_EXPECTED_LEARNER_SEEDS,
+        )
+        self.assertEqual(len(SCALE_DEVELOPMENT_EXPECTED_LEARNER_SEEDS), 8)
+
+    def test_scale_environment_and_learner_roles_are_globally_disjoint(self) -> None:
+        scale = scale_development_seed_registry_payload()
+        old = canonical_seed_registry_payload()
+        self.assertEqual(
+            {role: len(seeds) for role, seeds in scale.items()},
+            dict(SCALE_DEVELOPMENT_SEED_ROLE_COUNTS),
+        )
+        scale_flat = [seed for seeds in scale.values() for seed in seeds]
+        old_flat = [seed for seeds in old.values() for seed in seeds]
+        self.assertEqual(len(scale_flat), len(set(scale_flat)))
+        self.assertTrue(set(scale_flat).isdisjoint(old_flat))
+        self.assertTrue(all(1 <= seed <= 2_147_483_647 for seed in scale_flat))
+
+        for role in ("scale_curriculum", "scale_train", "scale_selection"):
+            self.assertEqual(
+                SCALE_DEVELOPMENT_SEED_ROLE_POLICIES[role].axis,
+                "environment",
+            )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_SEED_ROLE_POLICIES["scale_learner"].axis,
+            "learner",
+        )
+
+    def test_scale_validation_and_lockbox_are_unavailable_not_empty_roles(self) -> None:
+        contract = scale_development_seed_registry_contract()
+        self.assertEqual(
+            set(contract["unavailable_roles"]),
+            set(SCALE_DEVELOPMENT_UNAVAILABLE_ROLES),
+        )
+        self.assertTrue(
+            set(contract["seeds"]).isdisjoint(SCALE_DEVELOPMENT_UNAVAILABLE_ROLES)
+        )
+        for role in SCALE_DEVELOPMENT_UNAVAILABLE_ROLES:
+            unavailable = contract["unavailable_roles"][role]
+            self.assertIs(unavailable["available"], False)
+            self.assertIs(unavailable["seed_values_included"], False)
+            with self.assertRaisesRegex(SeedRegistryError, "forbidden"):
+                scale_development_seeds_for_role(role)
+
+        self.assertEqual(
+            scale_development_seeds_for_role("scale_train"),
+            SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"],
+        )
+        with self.assertRaisesRegex(SeedRegistryError, "unknown"):
+            scale_development_seeds_for_role("train")
+
+    def test_scale_validator_rejects_cross_role_and_v1_seed_substitution(self) -> None:
+        canonical = build_scale_development_seed_registry()
+        validate_scale_development_seed_registry(canonical)
+
+        cross_role = build_scale_development_seed_registry()
+        cross_role["scale_selection"][0] = cross_role["scale_train"][0]
+        with self.assertRaisesRegex(SeedRegistryError, "not canonical"):
+            validate_scale_development_seed_registry(cross_role)
+
+        v1_substitution = build_scale_development_seed_registry()
+        v1_substitution["scale_train"][0] = RECURRENT_SEED_REGISTRY["train"][0]
+        with self.assertRaisesRegex(SeedRegistryError, "not canonical"):
+            validate_scale_development_seed_registry(v1_substitution)
+
+        exposed = build_scale_development_seed_registry()
+        exposed["validation"] = [RECURRENT_SEED_REGISTRY["validation"][0]]
+        with self.assertRaisesRegex(SeedRegistryError, "roles"):
+            validate_scale_development_seed_registry(exposed)
+
+    def test_scale_generation_is_deterministic_and_returns_copies(self) -> None:
+        first = build_scale_development_seed_registry()
+        second = build_scale_development_seed_registry()
+        self.assertEqual(first, second)
+        first["scale_train"][0] = -1
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, scale_development_seed_registry_payload())
+        json.dumps(
+            scale_development_seed_registry_contract(),
+            sort_keys=True,
+            allow_nan=False,
+        )
 
 
 if __name__ == "__main__":

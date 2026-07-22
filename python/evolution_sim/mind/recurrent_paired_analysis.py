@@ -12,10 +12,9 @@ from typing import TypeAlias
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.mind.provenance import stable_payload_digest
-from evolution_sim.mind.recurrent_evaluation import (
+from evolution_sim.mind.recurrent_evaluation_contract import (
     RECURRENT_EVALUATION_SCHEMA_VERSION,
     RecurrentEvaluationError,
-    validate_recurrent_evaluation_report,
 )
 
 
@@ -651,6 +650,17 @@ def _validate_evaluation(
 ) -> None:
     evaluation_schema = evaluation.get("schema_version")
     if evaluation_schema == RECURRENT_EVALUATION_SCHEMA_VERSION:
+        try:
+            from evolution_sim.mind.recurrent_evaluation import (
+                validate_recurrent_evaluation_report,
+            )
+        except ModuleNotFoundError as error:
+            if error.name not in {"numpy", "torch"}:
+                raise
+            raise RecurrentPairedAnalysisError(
+                f"{label} v4 recurrent evaluation validation requires the "
+                "optional Mind ML dependencies"
+            ) from error
         try:
             validate_recurrent_evaluation_report(evaluation)
         except RecurrentEvaluationError as error:

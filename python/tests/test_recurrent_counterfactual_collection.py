@@ -26,6 +26,7 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_counterfactual_collection import (
         RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
         RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE,
         RecurrentCounterfactualCollectionConfig,
         RecurrentCounterfactualCollectionError,
@@ -43,7 +44,10 @@ if torch is not None:
     from evolution_sim.mind.recurrent_policy import (
         DeterministicPublicRecurrentPolicy,
     )
-    from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
+    from evolution_sim.mind.recurrent_seed_registry import (
+        RECURRENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_SEED_REGISTRY,
+    )
 
 
 @unittest.skipIf(torch is None, "optional Mind ML dependency torch is not installed")
@@ -584,6 +588,134 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
                 self.assertFalse(row["training_ran"])
                 self.assertFalse(row["runtime_action_selection_changed"])
                 self.assertFalse(row["metadata"]["private_checkpoint_serialized"])
+
+    def test_legacy_one_tape_payload_omits_multi_tape_evidence(self) -> None:
+        payload = recurrent_counterfactual_collection_result_payload(self.sequential)
+
+        self.assertEqual(
+            payload["config"],
+            {"horizons": (1, 2), "gamma": 0.99},
+        )
+        for bundle in payload["bundles"]:
+            self.assertNotIn("branch_tick_stratum_index", bundle["task"])
+            self.assertNotIn("aggregate_rows", bundle)
+            self.assertNotIn("terminal_target", bundle)
+            self.assertNotIn("multi_tape_compute", bundle)
+
+    def test_multi_tape_collection_is_deterministic_and_strictly_validated(
+        self,
+    ) -> None:
+        scale_task = RecurrentCounterfactualCollectionTask(
+            task_id="scale-multi-tape",
+            seed_role="scale_curriculum",
+            scenario="carrion_only",
+            environment_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"][0],
+            branch_tick_candidates=(0, 1),
+            source_policy_sampling_identity="scale-multi-tape:source",
+            branch_selection_identity="scale-multi-tape:selection",
+            branch_tick_stratum_index=1,
+        )
+        config = RecurrentCounterfactualCollectionConfig(
+            horizons=(1, 2),
+            gamma=0.99,
+            continuation_tape_count=2,
+            terminal_target_world_tick=3,
+            uncertainty_penalty=0.5,
+        )
+        first = collect_recurrent_counterfactual_bundles(
+            self.model,
+            [scale_task],
+            artifact_digest=self.artifact_digest,
+            config=config,
+            workers=1,
+        )
+        second = collect_recurrent_counterfactual_bundles(
+            self.model,
+            [scale_task],
+            artifact_digest=self.artifact_digest,
+            config=config,
+            workers=1,
+        )
+
+        self.assertEqual(
+            first.contract_version,
+            RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
+        )
+        self.assertEqual(first.config.continuation_tape_count, 2)
+        self.assertEqual(first.config.terminal_target_world_tick, 3)
+        self.assertEqual(first.config.uncertainty_penalty, 0.5)
+        self.assertEqual(
+            recurrent_counterfactual_collection_result_payload(first)["config"],
+            {
+                "horizons": (1, 2),
+                "gamma": 0.99,
+                "continuation_tape_count": 2,
+                "terminal_target_world_tick": 3,
+                "uncertainty_penalty": 0.5,
+            },
+        )
+        self.assertEqual(first.exact_digest, second.exact_digest)
+        self.assertEqual(first.bundles[0].exact_digest, second.bundles[0].exact_digest)
+        bundle = first.bundles[0]
+        self.assertEqual(bundle.selection["selected_branch_tick"], 1)
+        self.assertEqual(
+            bundle.selection["requested_branch_tick_stratum_index"],
+            1,
+        )
+        self.assertIsNotNone(bundle.aggregate_rows)
+        self.assertEqual(len(bundle.aggregate_rows), 2)
+        self.assertIsNotNone(bundle.terminal_target)
+        self.assertEqual(bundle.terminal_target["target"]["target_world_tick"], 3)
+        self.assertEqual(bundle.multi_tape_compute["continuation_tape_count"], 2)
+        self.assertEqual(
+            bundle.aggregate_rows[0]["source_behavior"]["current_public_action_mask"],
+            bundle.rows[0]["trainable_public_context"]["current_public_action_mask"],
+        )
+        self.assertEqual(
+            bundle.aggregate_rows[0]["source_behavior"]["source_behavior_distribution"],
+            bundle.rows[0]["labels"]["source_behavior_distribution"],
+        )
+        validate_recurrent_counterfactual_collection_result(
+            first,
+            model=self.model,
+            artifact_digest=self.artifact_digest,
+        )
+
+        tampered = deepcopy(first)
+        tampered.bundles[0].aggregate_rows[0]["tape_provenance"][0][
+            "environment_sampling_seed"
+        ] += 1
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "aggregate|seed|exact digest",
+        ):
+            validate_recurrent_counterfactual_collection_result(tampered)
+
+    def test_scale_multi_tape_collection_rejects_implicit_tick_strata(self) -> None:
+        task = RecurrentCounterfactualCollectionTask(
+            task_id="scale-unstratified",
+            seed_role="scale_curriculum",
+            scenario="carrion_only",
+            environment_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"][0],
+            branch_tick_candidates=(0, 1),
+            source_policy_sampling_identity="scale-unstratified:source",
+            branch_selection_identity="scale-unstratified:selection",
+        )
+        config = RecurrentCounterfactualCollectionConfig(
+            horizons=(1, 2),
+            continuation_tape_count=2,
+        )
+
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "explicit deterministic stratum index",
+        ):
+            collect_recurrent_counterfactual_bundles(
+                self.model,
+                [task],
+                artifact_digest=self.artifact_digest,
+                config=config,
+            )
 
 
 if __name__ == "__main__":

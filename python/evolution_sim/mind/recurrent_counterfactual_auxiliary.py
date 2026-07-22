@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import copy
 from dataclasses import dataclass
 import math
@@ -19,16 +19,25 @@ from evolution_sim.mind.recurrent_actor_critic import (
     strict_action_mask_tensor,
 )
 from evolution_sim.mind.recurrent_counterfactual_branch import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION,
     RECURRENT_COUNTERFACTUAL_TRAINING_USE,
     RecurrentCounterfactualBranchError,
     reconstruct_current_model_hidden_from_branch_row,
+    validate_recurrent_counterfactual_aggregate_row,
     validate_recurrent_counterfactual_branch_row,
 )
-from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
+from evolution_sim.mind.recurrent_policy import (
+    RecurrentPolicyAdapterError,
+    reconstruct_current_model_hidden_from_public_prefix,
+    recurrent_model_state_sha256,
+)
 
 
 RECURRENT_COUNTERFACTUAL_AUXILIARY_SCHEMA_VERSION = (
     "mind_v3_recurrent_counterfactual_soft_policy_improvement_v2"
+)
+RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION = (
+    "mind_v3_recurrent_counterfactual_multi_tape_soft_policy_improvement_v1"
 )
 RECURRENT_COUNTERFACTUAL_AUXILIARY_STEP_SCHEMA_VERSION = (
     "mind_v3_recurrent_counterfactual_transactional_auxiliary_step_v1"
@@ -161,6 +170,7 @@ class RecurrentCounterfactualAuxiliaryConfig:
     value_target_mode: str = RECURRENT_COUNTERFACTUAL_VALUE_TARGET_DISABLED
     target_permutation_mode: str = RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_DISABLED
     target_permutation_seed: int | None = None
+    terminal_target_weight: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.scalarization, CounterfactualHorizonScalarization):
@@ -230,9 +240,17 @@ class RecurrentCounterfactualAuxiliaryConfig:
             raise RecurrentCounterfactualAuxiliaryError(
                 "enabled target permutation requires an integer seed in [0, 2**63 - 1]"
             )
+        terminal_target_weight = _finite_number(
+            self.terminal_target_weight,
+            field="terminal target weight",
+        )
+        if not 0.0 <= terminal_target_weight <= 1.0:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "terminal target weight must be in [0, 1]"
+            )
 
     def as_contract(self) -> dict[str, object]:
-        return {
+        contract = {
             "schema_version": RECURRENT_COUNTERFACTUAL_AUXILIARY_SCHEMA_VERSION,
             "scalarization": self.scalarization.as_contract(),
             "advantage_baseline": "source_behavior_probability_weighted_action_value",
@@ -281,6 +299,36 @@ class RecurrentCounterfactualAuxiliaryConfig:
             "optimizer_step_performed": False,
             "runtime_integrated": False,
         }
+        # Preserve the original legacy/default contract byte-for-byte. Aggregate
+        # targets add their statistical contract in the aggregate-only builder.
+        if self.terminal_target_weight != 0.0:
+            contract["terminal_target_weight"] = float(self.terminal_target_weight)
+        return contract
+
+
+@dataclass(frozen=True, slots=True)
+class RecurrentCounterfactualAggregateGroup:
+    """One public branch state's relative and absolute multi-tape evidence."""
+
+    aggregate_rows: tuple[Mapping[str, object], ...]
+    terminal_target: Mapping[str, object] | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.aggregate_rows, tuple) or not self.aggregate_rows:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate_rows must be a non-empty tuple"
+            )
+        if any(not isinstance(row, Mapping) for row in self.aggregate_rows):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate_rows must contain only mappings"
+            )
+        if self.terminal_target is not None and not isinstance(
+            self.terminal_target,
+            Mapping,
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "terminal_target must be a mapping or None"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +492,10 @@ def build_recurrent_counterfactual_auxiliary_target(
         raise TypeError("model must be a PublicRecurrentActorCritic")
     if not isinstance(config, RecurrentCounterfactualAuxiliaryConfig):
         raise TypeError("config must be a RecurrentCounterfactualAuxiliaryConfig")
+    if config.terminal_target_weight != 0.0:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "terminal target weight is supported only by the aggregate auxiliary path"
+        )
     resolved_artifact = _nonempty_string(
         artifact_digest,
         field="artifact_digest",
@@ -677,6 +729,301 @@ def recurrent_counterfactual_auxiliary_batch_loss(
     )
 
 
+def build_recurrent_counterfactual_aggregate_auxiliary_target(
+    model: PublicRecurrentActorCritic,
+    group: RecurrentCounterfactualAggregateGroup,
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> RecurrentCounterfactualAuxiliaryTarget:
+    """Build a pessimistic soft target from replay-verified multi-tape evidence.
+
+    Per-action effects use paired common-random-number deltas. Every tape is
+    scalarized with all configured outcome weights before the composite sample
+    mean and standard error are computed, preserving cross-outcome covariance.
+    The immutable aggregate row supplies the lower-confidence penalty; it is not
+    an optimizer-time tuning knob. No provenance, outcome, fixture, or seed field
+    is a model input.
+    """
+
+    if not isinstance(model, PublicRecurrentActorCritic):
+        raise TypeError("model must be a PublicRecurrentActorCritic")
+    if not isinstance(group, RecurrentCounterfactualAggregateGroup):
+        raise TypeError("group must be a RecurrentCounterfactualAggregateGroup")
+    if not isinstance(config, RecurrentCounterfactualAuxiliaryConfig):
+        raise TypeError("config must be a RecurrentCounterfactualAuxiliaryConfig")
+    resolved_artifact = _nonempty_string(
+        artifact_digest,
+        field="artifact_digest",
+    )
+    ordered_rows, terminal_target = _validated_ordered_aggregate_group(
+        model,
+        group,
+        artifact_digest=resolved_artifact,
+        config=config,
+    )
+    first = ordered_rows[0]
+    context = _mapping(
+        first.get("trainable_public_context"),
+        field="trainable_public_context",
+    )
+    public_context_sha256 = stable_payload_digest(context)
+    evidence_rows = (
+        ordered_rows if terminal_target is None else (*ordered_rows, terminal_target)
+    )
+    row_exact_digests = tuple(
+        _nonempty_string(row.get("exact_digest"), field="aggregate row exact digest")
+        for row in evidence_rows
+    )
+    permutation_identity_sha256 = stable_payload_digest(
+        {
+            "policy": "counterfactual_negative_control_group_permutation_v2",
+            "master_seed": config.target_permutation_seed,
+            "public_context_sha256": public_context_sha256,
+        }
+    )
+    reference = next(model.parameters())
+    action_mask = strict_action_mask_tensor(
+        _mapping(
+            context.get("current_public_action_mask"),
+            field="current public action mask",
+        ),
+        device=reference.device,
+    )
+    behavior = _aggregate_behavior_probability_tensor(
+        first,
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    parameter_versions_before = tuple(
+        parameter._version for parameter in model.parameters()
+    )
+    model_digest_before = recurrent_model_state_sha256(model)
+    with torch.no_grad():
+        current_probabilities, _ = _current_actor_distribution_and_value(
+            model,
+            first,
+        )
+        _require_probability_match(
+            current_probabilities,
+            behavior,
+            action_mask=action_mask,
+        )
+        scalarized_values, terminal_return_values, uncertainty_penalty = (
+            _aggregate_scalarized_action_values(
+                ordered_rows,
+                terminal_target=terminal_target,
+                config=config,
+                action_mask=action_mask,
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+        )
+        scalarized_values = _maybe_permute_scalarized_action_values(
+            scalarized_values,
+            action_mask=action_mask,
+            config=config,
+            permutation_identity_sha256=permutation_identity_sha256,
+        )
+        baseline = torch.sum(behavior * scalarized_values)
+        advantages = torch.where(
+            action_mask,
+            scalarized_values - baseline,
+            torch.zeros_like(scalarized_values),
+        )
+        clipped = torch.where(
+            action_mask,
+            torch.clamp(
+                advantages,
+                min=-float(config.advantage_clip),
+                max=float(config.advantage_clip),
+            ),
+            torch.zeros_like(advantages),
+        )
+        support = action_mask & (behavior > 0.0)
+        if not bool(support.any().item()):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "source behavior has no positive probability on a valid action"
+            )
+        target_logits = torch.full_like(behavior, -torch.inf)
+        target_logits[support] = torch.log(behavior[support]) + clipped[
+            support
+        ] / float(config.temperature)
+        soft_target = torch.softmax(target_logits, dim=-1)
+        value_target = _aggregate_terminal_value_target(
+            terminal_target,
+            behavior=behavior,
+            terminal_return_values=terminal_return_values,
+            config=config,
+        )
+
+    parameter_versions_after = tuple(
+        parameter._version for parameter in model.parameters()
+    )
+    model_digest_after = recurrent_model_state_sha256(model)
+    if (
+        parameter_versions_after != parameter_versions_before
+        or model_digest_after != model_digest_before
+    ):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate target construction mutated current model parameters"
+        )
+    _require_finite_masked_vector(
+        scalarized_values,
+        action_mask=action_mask,
+        field="aggregate scalarized action values",
+    )
+    _require_finite_masked_vector(
+        advantages,
+        action_mask=action_mask,
+        field="aggregate behavior-centered advantages",
+    )
+    _require_probability_vector(
+        soft_target,
+        action_mask=action_mask,
+        field="aggregate soft policy target",
+    )
+    target_contract = copy.deepcopy(config.as_contract())
+    target_contract.update(
+        {
+            "schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION
+            ),
+            "branch_label_statistical_semantics": (
+                "paired_multi_tape_common_random_numbers_lower_confidence_action_effect"
+            ),
+            "branch_outcome_uncertainty_estimated": True,
+            "uncertainty_penalty_source": ("immutable_replay_validated_aggregate_row"),
+            "uncertainty_penalty": uncertainty_penalty,
+            "pessimistic_composite_action_effect": (
+                "mean_of_per_tape_weighted_paired_outcome_deltas_minus_"
+                "uncertainty_penalty_times_composite_standard_error"
+            ),
+            "relative_horizon_total_weight": (
+                1.0 - float(config.terminal_target_weight)
+            ),
+            "terminal_target_weight": float(config.terminal_target_weight),
+            "absolute_terminal_target_world_tick": (
+                None
+                if terminal_target is None
+                else _mapping(
+                    terminal_target.get("target"),
+                    field="terminal target",
+                ).get("target_world_tick")
+            ),
+            "critic_target_statistical_semantics": (
+                "terminal_behavior_probability_weighted_mean_discounted_return"
+                if config.value_target_mode
+                == RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET
+                else "disabled"
+            ),
+            "stored_tape_or_provenance_used_as_model_input": False,
+        }
+    )
+    negative_control = _mapping(
+        target_contract.get("scientific_negative_control"),
+        field="scientific_negative_control",
+    )
+    negative_control["group_permutation_identity_sha256"] = permutation_identity_sha256
+    return RecurrentCounterfactualAuxiliaryTarget(
+        source_model_state_sha256=model_digest_before,
+        source_artifact_digest=resolved_artifact,
+        row_exact_digests=row_exact_digests,
+        public_context_sha256=public_context_sha256,
+        horizons=tuple(
+            _positive_int(
+                _mapping(row.get("target"), field="aggregate target").get(
+                    "horizon_ticks"
+                ),
+                field="horizon_ticks",
+            )
+            for row in ordered_rows
+        ),
+        action_mask=action_mask.detach().clone(),
+        behavior_probabilities=behavior.detach().clone(),
+        scalarized_action_values=scalarized_values.detach().clone(),
+        behavior_centered_advantages=advantages.detach().clone(),
+        clipped_advantages=clipped.detach().clone(),
+        soft_policy_target=soft_target.detach().clone(),
+        value_target=(None if value_target is None else value_target.detach().clone()),
+        contract=target_contract,
+    )
+
+
+def recurrent_counterfactual_aggregate_auxiliary_loss(
+    model: PublicRecurrentActorCritic,
+    group: RecurrentCounterfactualAggregateGroup,
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> RecurrentCounterfactualAuxiliaryLoss:
+    """Return one differentiable aggregate auxiliary loss without stepping."""
+
+    batch = recurrent_counterfactual_aggregate_auxiliary_batch_loss(
+        model,
+        (group,),
+        artifact_digest=artifact_digest,
+        config=config,
+    )
+    return batch.group_losses[0]
+
+
+def recurrent_counterfactual_aggregate_auxiliary_batch_loss(
+    model: PublicRecurrentActorCritic,
+    aggregate_groups: Sequence[RecurrentCounterfactualAggregateGroup],
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> RecurrentCounterfactualAuxiliaryBatchLoss:
+    """Build frozen aggregate targets, then one mean public-history loss."""
+
+    groups = _normalized_aggregate_groups(aggregate_groups)
+    model_digest_before = recurrent_model_state_sha256(model)
+    parameter_versions_before = tuple(
+        parameter._version for parameter in model.parameters()
+    )
+    targets = tuple(
+        build_recurrent_counterfactual_aggregate_auxiliary_target(
+            model,
+            group,
+            artifact_digest=artifact_digest,
+            config=config,
+        )
+        for group in groups
+    )
+    if (
+        recurrent_model_state_sha256(model) != model_digest_before
+        or tuple(parameter._version for parameter in model.parameters())
+        != parameter_versions_before
+    ):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate batch target construction mutated the current model"
+        )
+    group_losses = tuple(
+        _loss_against_frozen_target(
+            model,
+            group.aggregate_rows[0],
+            target,
+            config=config,
+        )
+        for group, target in zip(groups, targets, strict=True)
+    )
+    if recurrent_model_state_sha256(model) != model_digest_before:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "current model changed while building aggregate auxiliary batch loss"
+        )
+    return RecurrentCounterfactualAuxiliaryBatchLoss(
+        loss=torch.stack([result.loss for result in group_losses]).mean(),
+        policy_improvement_kl=torch.stack(
+            [result.policy_improvement_kl for result in group_losses]
+        ).mean(),
+        behavior_kl=torch.stack([result.behavior_kl for result in group_losses]).mean(),
+        value_loss=torch.stack([result.value_loss for result in group_losses]).mean(),
+        group_losses=group_losses,
+        targets=targets,
+    )
+
+
 def recurrent_counterfactual_auxiliary_bundle_digest(
     row_groups: Sequence[Sequence[Mapping[str, object]]],
     *,
@@ -707,6 +1054,46 @@ def recurrent_counterfactual_auxiliary_bundle_digest(
     )
 
 
+def recurrent_counterfactual_aggregate_auxiliary_bundle_digest(
+    aggregate_groups: Sequence[RecurrentCounterfactualAggregateGroup],
+    *,
+    artifact_digest: str,
+) -> str:
+    """Return a configuration-independent one-use aggregate evidence identity."""
+
+    groups = _normalized_aggregate_groups(aggregate_groups)
+    resolved_artifact = _nonempty_string(
+        artifact_digest,
+        field="artifact_digest",
+    )
+    canonical_groups: list[tuple[str, ...]] = []
+    for group in groups:
+        rows = (
+            group.aggregate_rows
+            if group.terminal_target is None
+            else (*group.aggregate_rows, group.terminal_target)
+        )
+        canonical_groups.append(
+            tuple(
+                sorted(
+                    _nonempty_string(
+                        row.get("exact_digest"),
+                        field="aggregate row exact digest",
+                    )
+                    for row in rows
+                )
+            )
+        )
+    canonical_groups.sort()
+    return stable_payload_digest(
+        {
+            "evidence_kind": "multi_tape_aggregate",
+            "artifact_digest": resolved_artifact,
+            "aggregate_groups": [list(group) for group in canonical_groups],
+        }
+    )
+
+
 def _transactional_recurrent_counterfactual_auxiliary_step(
     model: PublicRecurrentActorCritic,
     optimizer: torch.optim.Optimizer,
@@ -721,6 +1108,80 @@ def _transactional_recurrent_counterfactual_auxiliary_step(
     This low-level transaction does not authorize retries.  The PPO trainer
     owns durable in-process one-use tracking and update counters.
     """
+
+    groups = _normalized_row_groups(row_groups)
+    bundle_digest = recurrent_counterfactual_auxiliary_bundle_digest(
+        groups,
+        artifact_digest=artifact_digest,
+    )
+    audit_rows = tuple(
+        _ordered_rows_without_revalidation(group, config=config)[0] for group in groups
+    )
+    return _transactional_recurrent_counterfactual_auxiliary_step_core(
+        model,
+        optimizer,
+        config=config,
+        step_config=step_config,
+        bundle_digest=bundle_digest,
+        audit_rows=audit_rows,
+        row_count=sum(len(group) for group in groups),
+        batch_builder=lambda: recurrent_counterfactual_auxiliary_batch_loss(
+            model,
+            groups,
+            artifact_digest=artifact_digest,
+            config=config,
+        ),
+    )
+
+
+def _transactional_recurrent_counterfactual_aggregate_auxiliary_step(
+    model: PublicRecurrentActorCritic,
+    optimizer: torch.optim.Optimizer,
+    aggregate_groups: Sequence[RecurrentCounterfactualAggregateGroup],
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+    step_config: RecurrentCounterfactualAuxiliaryStepConfig | None = None,
+) -> RecurrentCounterfactualAuxiliaryStepDiagnostics:
+    """Attempt one shared-Adam step over one-use multi-tape evidence."""
+
+    groups = _normalized_aggregate_groups(aggregate_groups)
+    bundle_digest = recurrent_counterfactual_aggregate_auxiliary_bundle_digest(
+        groups,
+        artifact_digest=artifact_digest,
+    )
+    return _transactional_recurrent_counterfactual_auxiliary_step_core(
+        model,
+        optimizer,
+        config=config,
+        step_config=step_config,
+        bundle_digest=bundle_digest,
+        audit_rows=tuple(group.aggregate_rows[0] for group in groups),
+        row_count=sum(
+            len(group.aggregate_rows) + int(group.terminal_target is not None)
+            for group in groups
+        ),
+        batch_builder=lambda: recurrent_counterfactual_aggregate_auxiliary_batch_loss(
+            model,
+            groups,
+            artifact_digest=artifact_digest,
+            config=config,
+        ),
+    )
+
+
+def _transactional_recurrent_counterfactual_auxiliary_step_core(
+    model: PublicRecurrentActorCritic,
+    optimizer: torch.optim.Optimizer,
+    *,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+    step_config: RecurrentCounterfactualAuxiliaryStepConfig | None,
+    bundle_digest: str,
+    audit_rows: Sequence[Mapping[str, object]],
+    row_count: int,
+    batch_builder: Callable[[], RecurrentCounterfactualAuxiliaryBatchLoss],
+) -> RecurrentCounterfactualAuxiliaryStepDiagnostics:
+    """Shared exact transaction for legacy and aggregate target builders."""
 
     if not isinstance(model, PublicRecurrentActorCritic):
         raise TypeError("model must be a PublicRecurrentActorCritic")
@@ -738,12 +1199,15 @@ def _transactional_recurrent_counterfactual_auxiliary_step(
         raise TypeError(
             "step_config must be a RecurrentCounterfactualAuxiliaryStepConfig"
         )
-    groups = _normalized_row_groups(row_groups)
-    bundle_digest = recurrent_counterfactual_auxiliary_bundle_digest(
-        groups,
-        artifact_digest=artifact_digest,
-    )
-    prefix_lengths = tuple(_public_prefix_length(group[0]) for group in groups)
+    if not isinstance(bundle_digest, str) or not bundle_digest:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "auxiliary bundle digest must be non-empty"
+        )
+    if not audit_rows:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "auxiliary transaction requires public audit rows"
+        )
+    prefix_lengths = tuple(_public_prefix_length(row) for row in audit_rows)
     model_snapshot = {
         key: value.detach().clone() for key, value in model.state_dict().items()
     }
@@ -761,12 +1225,7 @@ def _transactional_recurrent_counterfactual_auxiliary_step(
     pre_digest = recurrent_model_state_sha256(model)
 
     try:
-        batch = recurrent_counterfactual_auxiliary_batch_loss(
-            model,
-            groups,
-            artifact_digest=artifact_digest,
-            config=config,
-        )
+        batch = batch_builder()
         if recurrent_model_state_sha256(model) != pre_digest:
             raise RecurrentCounterfactualAuxiliaryError(
                 "current model changed before the auxiliary optimizer step"
@@ -802,10 +1261,10 @@ def _transactional_recurrent_counterfactual_auxiliary_step(
         post_probabilities: list[Tensor] = []
         state_kls: list[float] = []
         with torch.no_grad():
-            for group, target in zip(groups, batch.targets, strict=True):
+            for row, target in zip(audit_rows, batch.targets, strict=True):
                 probabilities, _ = _current_actor_distribution_and_value(
                     model,
-                    _ordered_rows_without_revalidation(group, config=config)[0],
+                    row,
                     differentiable_prefix=True,
                 )
                 _require_probability_vector(
@@ -881,8 +1340,8 @@ def _transactional_recurrent_counterfactual_auxiliary_step(
             final_model_state_sha256=final_digest,
             ppo_update_index=-1,
             auxiliary_update_count=-1,
-            group_count=len(groups),
-            row_count=sum(len(group) for group in groups),
+            group_count=len(audit_rows),
+            row_count=row_count,
             min_public_prefix_length=min(prefix_lengths),
             max_public_prefix_length=max(prefix_lengths),
             optimizer_step_count=1,
@@ -1119,6 +1578,244 @@ def _validated_ordered_rows(
     return tuple(by_horizon[horizon] for horizon in expected_horizons)
 
 
+def _validated_ordered_aggregate_group(
+    model: PublicRecurrentActorCritic,
+    group: RecurrentCounterfactualAggregateGroup,
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> tuple[tuple[Mapping[str, object], ...], Mapping[str, object] | None]:
+    """Validate each aggregate and prove it is one immutable public branch."""
+
+    expected_horizons = tuple(
+        horizon for horizon, _ in config.scalarization.horizon_weights
+    )
+    by_horizon: dict[int, Mapping[str, object]] = {}
+    current_model_digest = recurrent_model_state_sha256(model)
+    shared_digests: tuple[str, str, str, str, str] | None = None
+    shared_branch_tick: int | None = None
+    shared_terminal_tick: int | None = None
+    terminal_reference_initialized = False
+    shared_uncertainty_penalty: float | None = None
+    seen_exact_digests: set[str] = set()
+    evidence_rows = (
+        group.aggregate_rows
+        if group.terminal_target is None
+        else (*group.aggregate_rows, group.terminal_target)
+    )
+    terminal_target: Mapping[str, object] | None = None
+    for index, row in enumerate(evidence_rows):
+        try:
+            validate_recurrent_counterfactual_aggregate_row(row)
+        except RecurrentCounterfactualBranchError as error:
+            raise RecurrentCounterfactualAuxiliaryError(
+                f"aggregate row {index} failed its replay-verified contract"
+            ) from error
+        exact_digest = _nonempty_string(
+            row.get("exact_digest"),
+            field="aggregate row exact digest",
+        )
+        if exact_digest in seen_exact_digests:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate group contains duplicate evidence rows"
+            )
+        seen_exact_digests.add(exact_digest)
+        context = _mapping(
+            row.get("trainable_public_context"),
+            field="aggregate trainable public context",
+        )
+        optimizer = _mapping(
+            row.get("optimizer_context"),
+            field="aggregate optimizer context",
+        )
+        source_identity = _mapping(
+            row.get("source_identity"),
+            field="aggregate source identity",
+        )
+        source_behavior = _mapping(
+            row.get("source_behavior"),
+            field="aggregate source behavior",
+        )
+        tape_contract = _mapping(
+            row.get("tape_contract"),
+            field="aggregate tape contract",
+        )
+        if (
+            optimizer.get("source_artifact_digest") != artifact_digest
+            or source_identity.get("source_artifact_digest") != artifact_digest
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate source artifact does not match the requested artifact"
+            )
+        if (
+            optimizer.get("source_model_state_sha256") != current_model_digest
+            or source_identity.get("source_model_state_sha256") != current_model_digest
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate row is stale for the current model state"
+            )
+        if optimizer.get("current_model_state_policy") != (
+            "reconstruct_from_trainable_public_history_prefix"
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate hidden state is not public-history reconstructable"
+            )
+        observed_shared = (
+            stable_payload_digest(context),
+            stable_payload_digest(optimizer),
+            stable_payload_digest(source_identity),
+            stable_payload_digest(source_behavior),
+            stable_payload_digest(tape_contract),
+        )
+        observed_tape_identity = _aggregate_tape_identity_digest(row)
+        if shared_digests is None:
+            shared_digests = (*observed_shared[:4], observed_tape_identity)
+        elif (*observed_shared[:4], observed_tape_identity) != shared_digests:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate rows do not share one public source, behavior, action "
+                "mask, and independent RNG tape set"
+            )
+        # The full tape contract includes the tape identity and exact replay
+        # promises. Compare it separately so this cannot be weakened by a tape
+        # provenance projection collision.
+        if observed_shared[4] != stable_payload_digest(
+            evidence_rows[0].get("tape_contract")
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate tape contract drifted across targets"
+            )
+        target = _mapping(row.get("target"), field="aggregate target")
+        branch_tick = _nonnegative_int(
+            target.get("branch_tick"),
+            field="aggregate branch tick",
+        )
+        if shared_branch_tick is None:
+            shared_branch_tick = branch_tick
+        elif branch_tick != shared_branch_tick:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate target branch ticks drifted"
+            )
+        aggregate = _mapping(row.get("aggregate"), field="aggregate statistics")
+        uncertainty_penalty = _finite_number(
+            aggregate.get("uncertainty_penalty"),
+            field="aggregate uncertainty penalty",
+        )
+        if shared_uncertainty_penalty is None:
+            shared_uncertainty_penalty = uncertainty_penalty
+        elif uncertainty_penalty != shared_uncertainty_penalty:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate uncertainty penalty drifted across targets"
+            )
+        kind = target.get("kind")
+        if kind == "relative_horizon":
+            horizon = _positive_int(
+                target.get("horizon_ticks"),
+                field="aggregate horizon",
+            )
+            if horizon in by_horizon:
+                raise RecurrentCounterfactualAuxiliaryError(
+                    "aggregate relative horizons must be unique"
+                )
+            by_horizon[horizon] = row
+            referenced_terminal = target.get("absolute_terminal_target_world_tick")
+            if referenced_terminal is not None:
+                referenced_terminal = _positive_int(
+                    referenced_terminal,
+                    field="aggregate referenced terminal tick",
+                )
+            if not terminal_reference_initialized:
+                shared_terminal_tick = referenced_terminal
+                terminal_reference_initialized = True
+            elif referenced_terminal != shared_terminal_tick:
+                raise RecurrentCounterfactualAuxiliaryError(
+                    "aggregate relative targets reference different terminal ticks"
+                )
+        elif kind == "absolute_terminal_world_tick":
+            if terminal_target is not None or row is not group.terminal_target:
+                raise RecurrentCounterfactualAuxiliaryError(
+                    "aggregate group contains an unexpected terminal target"
+                )
+            terminal_target = row
+        else:  # The strict aggregate validator should make this unreachable.
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate target kind is unsupported"
+            )
+    if set(by_horizon) != set(expected_horizons):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate horizons do not exactly match scalarization horizons"
+        )
+    ordered = tuple(by_horizon[horizon] for horizon in expected_horizons)
+    needs_terminal = (
+        config.terminal_target_weight > 0.0
+        or config.value_target_mode == RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET
+    )
+    if needs_terminal and terminal_target is None:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate policy or critic target requires absolute terminal evidence"
+        )
+    if terminal_target is None:
+        if shared_terminal_tick is not None:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "relative aggregates reference missing absolute terminal evidence"
+            )
+        return ordered, None
+    terminal_payload = _mapping(
+        terminal_target.get("target"),
+        field="absolute terminal target",
+    )
+    terminal_tick = _positive_int(
+        terminal_payload.get("target_world_tick"),
+        field="absolute terminal target tick",
+    )
+    if shared_terminal_tick != terminal_tick:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "relative and absolute aggregate terminal targets disagree"
+        )
+    latest_relative_tick = max(
+        _positive_int(
+            _mapping(row.get("target"), field="relative target").get(
+                "target_world_tick"
+            ),
+            field="relative target world tick",
+        )
+        for row in ordered
+    )
+    if terminal_tick < latest_relative_tick:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "absolute terminal target cannot precede a relative target"
+        )
+    return ordered, terminal_target
+
+
+def _aggregate_tape_identity_digest(row: Mapping[str, object]) -> str:
+    provenance = row.get("tape_provenance")
+    if not isinstance(provenance, list):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate tape provenance must be a list"
+        )
+    identities: list[dict[str, object]] = []
+    for index, raw_tape in enumerate(provenance):
+        tape = _mapping(raw_tape, field=f"aggregate tape provenance {index}")
+        identities.append(
+            {
+                "tape_index": tape.get("tape_index"),
+                "environment_sampling_identity": tape.get(
+                    "environment_sampling_identity"
+                ),
+                "environment_sampling_seed": tape.get("environment_sampling_seed"),
+                "policy_sampling_identity": tape.get("policy_sampling_identity"),
+                "policy_sampling_seed": tape.get("policy_sampling_seed"),
+                "initial_environment_rng_state_sha256": tape.get(
+                    "initial_environment_rng_state_sha256"
+                ),
+                "initial_policy_sampling_state_sha256": tape.get(
+                    "initial_policy_sampling_state_sha256"
+                ),
+            }
+        )
+    return stable_payload_digest(identities)
+
+
 def _ordered_rows_without_revalidation(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -1185,6 +1882,21 @@ def _current_actor_distribution_and_value(
     ).reshape(1, 1, -1)
     if differentiable_prefix:
         recurrent_state = _differentiable_public_prefix_hidden(model, context)
+    elif row.get("schema_version") == RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION:
+        prefix = _mapping(
+            context.get("public_history_prefix"),
+            field="public history prefix",
+        )
+        try:
+            recurrent_state = reconstruct_current_model_hidden_from_public_prefix(
+                model,
+                prefix,
+            )
+        except RecurrentPolicyAdapterError as error:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "failed to reconstruct aggregate current-model hidden state from "
+                "public history"
+            ) from error
     else:
         try:
             recurrent_state = reconstruct_current_model_hidden_from_branch_row(
@@ -1327,6 +2039,37 @@ def _behavior_probability_tensor(
     )
 
 
+def _aggregate_behavior_probability_tensor(
+    row: Mapping[str, object],
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    source_behavior = _mapping(
+        row.get("source_behavior"),
+        field="aggregate source behavior",
+    )
+    distribution = _mapping(
+        source_behavior.get("source_behavior_distribution"),
+        field="aggregate source behavior distribution",
+    )
+    probabilities = _mapping(
+        distribution.get("probabilities"),
+        field="aggregate source behavior probabilities",
+    )
+    return torch.tensor(
+        [
+            _finite_number(
+                probabilities.get(action),
+                field=f"aggregate source behavior probability {action}",
+            )
+            for action in ACTION_NAMES
+        ],
+        device=device,
+        dtype=dtype,
+    )
+
+
 def _scalarized_action_values(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -1401,6 +2144,235 @@ def _scalarized_action_values(
         action_mask, pure_returns, torch.zeros_like(pure_returns)
     )
     return scalarized, pure_returns
+
+
+def _aggregate_scalarized_action_values(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    terminal_target: Mapping[str, object] | None,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+    action_mask: Tensor,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor | None, float]:
+    relative = torch.zeros(ACTION_COUNT, device=device, dtype=dtype)
+    uncertainty_penalty: float | None = None
+    for row, (expected_horizon, horizon_weight) in zip(
+        rows,
+        config.scalarization.horizon_weights,
+        strict=True,
+    ):
+        target = _mapping(row.get("target"), field="aggregate relative target")
+        if target.get("horizon_ticks") != expected_horizon:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "ordered aggregate horizon does not match scalarization"
+            )
+        scores, _, observed_penalty = _aggregate_row_action_scores(
+            row,
+            outcome_weights=config.scalarization.outcome_weights(),
+            action_mask=action_mask,
+            device=device,
+            dtype=dtype,
+        )
+        if uncertainty_penalty is None:
+            uncertainty_penalty = observed_penalty
+        elif observed_penalty != uncertainty_penalty:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "aggregate uncertainty penalty drifted during scalarization"
+            )
+        relative += float(horizon_weight) * scores
+    terminal_scores: Tensor | None = None
+    terminal_returns: Tensor | None = None
+    if terminal_target is not None:
+        terminal_scores, terminal_returns, observed_penalty = (
+            _aggregate_row_action_scores(
+                terminal_target,
+                outcome_weights=config.scalarization.outcome_weights(),
+                action_mask=action_mask,
+                device=device,
+                dtype=dtype,
+            )
+        )
+        if uncertainty_penalty is None:
+            uncertainty_penalty = observed_penalty
+        elif observed_penalty != uncertainty_penalty:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "terminal aggregate uncertainty penalty drifted"
+            )
+    if uncertainty_penalty is None:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate target has no uncertainty contract"
+        )
+    terminal_weight = float(config.terminal_target_weight)
+    if terminal_weight > 0.0:
+        if terminal_scores is None:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "terminal-weighted scalarization lacks terminal action scores"
+            )
+        scalarized = (1.0 - terminal_weight) * relative + (
+            terminal_weight * terminal_scores
+        )
+    else:
+        scalarized = relative
+    return (
+        torch.where(action_mask, scalarized, torch.zeros_like(scalarized)),
+        (
+            None
+            if terminal_returns is None
+            else torch.where(
+                action_mask,
+                terminal_returns,
+                torch.zeros_like(terminal_returns),
+            )
+        ),
+        uncertainty_penalty,
+    )
+
+
+def _aggregate_row_action_scores(
+    row: Mapping[str, object],
+    *,
+    outcome_weights: Mapping[str, float],
+    action_mask: Tensor,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, float]:
+    aggregate = _mapping(row.get("aggregate"), field="aggregate statistics")
+    uncertainty_penalty = _finite_number(
+        aggregate.get("uncertainty_penalty"),
+        field="aggregate uncertainty penalty",
+    )
+    if uncertainty_penalty < 0.0:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate uncertainty penalty must be non-negative"
+        )
+    raw_outcomes = aggregate.get("action_outcomes")
+    if not isinstance(raw_outcomes, list):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate action outcomes must be a list"
+        )
+    by_action = {
+        _nonempty_string(
+            _mapping(outcome, field="aggregate action outcome").get("action"),
+            field="aggregate action",
+        ): _mapping(outcome, field="aggregate action outcome")
+        for outcome in raw_outcomes
+    }
+    valid_actions = {
+        action for index, action in enumerate(ACTION_NAMES) if bool(action_mask[index])
+    }
+    if set(by_action) != valid_actions:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate action score coverage drifted from the public mask"
+        )
+    provenance = row.get("tape_provenance")
+    if not isinstance(provenance, list) or not provenance:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate action scoring requires non-empty tape provenance"
+        )
+    scores = torch.zeros(ACTION_COUNT, device=device, dtype=dtype)
+    mean_returns = torch.zeros(ACTION_COUNT, device=device, dtype=dtype)
+    delta_field_by_outcome = {
+        "focal_discounted_return": "focal_discounted_return_delta",
+        "focal_terminal_alive": "focal_terminal_alive_delta",
+        "population_alive": "population_alive_delta",
+        "births_during_horizon": "births_during_horizon_delta",
+        "deaths_during_horizon": "deaths_during_horizon_delta",
+    }
+    for action, outcome in by_action.items():
+        per_tape_scores: list[float] = []
+        for raw_tape in provenance:
+            tape = _mapping(raw_tape, field="aggregate tape provenance")
+            tape_outcomes = tape.get("action_outcomes")
+            if not isinstance(tape_outcomes, list):
+                raise RecurrentCounterfactualAuxiliaryError(
+                    "aggregate tape action outcomes must be a list"
+                )
+            tape_outcome = next(
+                (
+                    _mapping(item, field="aggregate tape action outcome")
+                    for item in tape_outcomes
+                    if _mapping(item, field="aggregate tape action outcome").get(
+                        "action"
+                    )
+                    == action
+                ),
+                None,
+            )
+            if tape_outcome is None:
+                raise RecurrentCounterfactualAuxiliaryError(
+                    "aggregate tape is missing a currently valid action"
+                )
+            paired = _mapping(
+                tape_outcome.get("paired_vs_baseline"),
+                field="aggregate paired action outcome",
+            )
+            per_tape_scores.append(
+                math.fsum(
+                    float(weight)
+                    * _finite_number(
+                        paired.get(delta_field_by_outcome[name]),
+                        field=f"aggregate paired delta {name}",
+                    )
+                    for name, weight in outcome_weights.items()
+                )
+            )
+        sample_mean, standard_error = _sample_mean_and_standard_error(per_tape_scores)
+        paired_statistics = _mapping(
+            outcome.get("paired_delta_statistics"),
+            field="aggregate paired delta statistics",
+        )
+        aggregate_linear_mean = math.fsum(
+            float(weight)
+            * _finite_number(
+                _mapping(
+                    paired_statistics.get(delta_field_by_outcome[name]),
+                    field=f"aggregate paired statistics {name}",
+                ).get("mean"),
+                field=f"aggregate paired mean {name}",
+            )
+            for name, weight in outcome_weights.items()
+        )
+        if not math.isclose(
+            sample_mean,
+            aggregate_linear_mean,
+            rel_tol=0.0,
+            abs_tol=2.0e-9,
+        ):
+            raise RecurrentCounterfactualAuxiliaryError(
+                "per-tape scalarized mean disagrees with aggregate statistics"
+            )
+        index = ACTION_NAMES.index(action)
+        scores[index] = sample_mean - uncertainty_penalty * standard_error
+        outcome_statistics = _mapping(
+            outcome.get("outcome_statistics"),
+            field="aggregate outcome statistics",
+        )
+        mean_returns[index] = _finite_number(
+            _mapping(
+                outcome_statistics.get("focal_discounted_return"),
+                field="aggregate return statistics",
+            ).get("mean"),
+            field="aggregate mean discounted return",
+        )
+    return scores, mean_returns, uncertainty_penalty
+
+
+def _sample_mean_and_standard_error(values: Sequence[float]) -> tuple[float, float]:
+    if not values:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate scalarized sample cannot be empty"
+        )
+    parsed = tuple(
+        _finite_number(value, field="aggregate scalarized tape score")
+        for value in values
+    )
+    mean = math.fsum(parsed) / len(parsed)
+    if len(parsed) == 1:
+        return mean, 0.0
+    squared_deviations = math.fsum((value - mean) ** 2 for value in parsed)
+    sample_variance = squared_deviations / (len(parsed) - 1)
+    return mean, math.sqrt(sample_variance / len(parsed))
 
 
 def _maybe_permute_scalarized_action_values(
@@ -1486,6 +2458,35 @@ def _terminal_value_target(
                     "critic auxiliary target requires every branch return to be terminal"
                 )
     return torch.sum(behavior * pure_return_values)
+
+
+def _aggregate_terminal_value_target(
+    terminal_target: Mapping[str, object] | None,
+    *,
+    behavior: Tensor,
+    terminal_return_values: Tensor | None,
+    config: RecurrentCounterfactualAuxiliaryConfig,
+) -> Tensor | None:
+    if config.value_target_mode == RECURRENT_COUNTERFACTUAL_VALUE_TARGET_DISABLED:
+        return None
+    if config.value_target_mode != RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET:
+        raise AssertionError("validated value target mode drifted")
+    if terminal_target is None or terminal_return_values is None:
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate terminal critic target requires absolute terminal evidence"
+        )
+    target = _mapping(terminal_target.get("target"), field="terminal target")
+    if (
+        target.get("kind") != "absolute_terminal_world_tick"
+        or target.get("is_absolute_terminal_target") is not True
+    ):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate critic target is not absolute terminal evidence"
+        )
+    # Unlike the legacy death-terminal target, an absolute evaluation tick is a
+    # valid terminal boundary whether the focal agent survives or dies. Survival
+    # is a desired measured outcome, not a reason to discard the critic label.
+    return torch.sum(behavior * terminal_return_values)
 
 
 def _forward_kl(target: Tensor, current: Tensor) -> Tensor:
@@ -1608,6 +2609,47 @@ def _normalized_row_groups(
             )
         seen_groups.add(group_identity)
         normalized.append(tuple(rows))
+    return tuple(normalized)
+
+
+def _normalized_aggregate_groups(
+    aggregate_groups: Sequence[RecurrentCounterfactualAggregateGroup],
+) -> tuple[RecurrentCounterfactualAggregateGroup, ...]:
+    if (
+        isinstance(aggregate_groups, (str, bytes))
+        or not isinstance(aggregate_groups, Sequence)
+        or not aggregate_groups
+    ):
+        raise RecurrentCounterfactualAuxiliaryError(
+            "aggregate_groups must be a non-empty sequence"
+        )
+    normalized: list[RecurrentCounterfactualAggregateGroup] = []
+    seen_groups: set[tuple[str, ...]] = set()
+    for index, group in enumerate(aggregate_groups):
+        if not isinstance(group, RecurrentCounterfactualAggregateGroup):
+            raise RecurrentCounterfactualAuxiliaryError(
+                f"aggregate group {index} has an unsupported type"
+            )
+        rows = (
+            group.aggregate_rows
+            if group.terminal_target is None
+            else (*group.aggregate_rows, group.terminal_target)
+        )
+        identity = tuple(
+            sorted(
+                _nonempty_string(
+                    row.get("exact_digest"),
+                    field="aggregate row exact digest",
+                )
+                for row in rows
+            )
+        )
+        if identity in seen_groups:
+            raise RecurrentCounterfactualAuxiliaryError(
+                "one auxiliary batch cannot contain duplicate aggregate evidence"
+            )
+        seen_groups.add(identity)
+        normalized.append(group)
     return tuple(normalized)
 
 
@@ -1809,6 +2851,14 @@ def _positive_int(value: object, *, field: str) -> int:
     return value
 
 
+def _nonnegative_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RecurrentCounterfactualAuxiliaryError(
+            f"{field} must be a non-negative integer"
+        )
+    return value
+
+
 def _finite_number(value: object, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RecurrentCounterfactualAuxiliaryError(f"{field} must be numeric")
@@ -1820,12 +2870,14 @@ def _finite_number(value: object, *, field: str) -> float:
 
 __all__ = [
     "CounterfactualHorizonScalarization",
+    "RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_AUXILIARY_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_AUXILIARY_STEP_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_DISABLED",
     "RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_VALID_ACTIONS",
     "RECURRENT_COUNTERFACTUAL_TERMINAL_VALUE_TARGET",
     "RECURRENT_COUNTERFACTUAL_VALUE_TARGET_DISABLED",
+    "RecurrentCounterfactualAggregateGroup",
     "RecurrentCounterfactualAuxiliaryBatchLoss",
     "RecurrentCounterfactualAuxiliaryConfig",
     "RecurrentCounterfactualAuxiliaryError",
@@ -1833,7 +2885,11 @@ __all__ = [
     "RecurrentCounterfactualAuxiliaryStepConfig",
     "RecurrentCounterfactualAuxiliaryStepDiagnostics",
     "RecurrentCounterfactualAuxiliaryTarget",
+    "build_recurrent_counterfactual_aggregate_auxiliary_target",
     "build_recurrent_counterfactual_auxiliary_target",
+    "recurrent_counterfactual_aggregate_auxiliary_batch_loss",
+    "recurrent_counterfactual_aggregate_auxiliary_bundle_digest",
+    "recurrent_counterfactual_aggregate_auxiliary_loss",
     "recurrent_counterfactual_auxiliary_batch_loss",
     "recurrent_counterfactual_auxiliary_bundle_digest",
     "recurrent_counterfactual_auxiliary_loss",

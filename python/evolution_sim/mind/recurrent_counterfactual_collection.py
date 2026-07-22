@@ -19,21 +19,29 @@ from evolution_sim.mind.recurrent_actor_critic import (
 )
 from evolution_sim.mind.recurrent_counterfactual_branch import (
     RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO,
+    RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES,
     RECURRENT_COUNTERFACTUAL_SCENARIOS,
     RECURRENT_COUNTERFACTUAL_SEED_ROLES,
     RecurrentCounterfactualBranchError,
     build_recurrent_counterfactual_nested_horizon_materialization,
+    validate_recurrent_counterfactual_aggregate_row,
     validate_recurrent_counterfactual_branch_row,
 )
 from evolution_sim.mind.recurrent_policy import (
     frozen_cpu_model_copy,
     recurrent_model_state_sha256,
 )
-from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
+from evolution_sim.mind.recurrent_seed_registry import (
+    RECURRENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_SEED_REGISTRY,
+)
 
 
 RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION = (
     "mind_v3_recurrent_nested_counterfactual_collection_v1"
+)
+RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION = (
+    "mind_v3_recurrent_nested_counterfactual_multi_tape_collection_v2"
 )
 RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE = (
     "mind_v3_recurrent_counterfactual_source_policy_seed_v1"
@@ -86,19 +94,21 @@ class RecurrentCounterfactualCollectionTask:
     branch_selection_identity: str
     source_policy_sampling_seed: int | None = None
     branch_selection_seed: int | None = None
+    branch_tick_stratum_index: int | None = None
 
     def __post_init__(self) -> None:
         task_id = _nonempty_trimmed_string(self.task_id, field="task_id")
         if self.seed_role not in RECURRENT_COUNTERFACTUAL_SEED_ROLES:
             raise RecurrentCounterfactualCollectionError(
-                "seed_role must be train or curriculum"
+                "seed_role must be a legacy or scale training role"
             )
         if self.scenario not in RECURRENT_COUNTERFACTUAL_SCENARIOS:
             raise RecurrentCounterfactualCollectionError("scenario is unsupported")
+        scale_role = self.seed_role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
         expected_role = (
-            "train"
+            ("scale_train" if scale_role else "train")
             if self.scenario == RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO
-            else "curriculum"
+            else ("scale_curriculum" if scale_role else "curriculum")
         )
         if self.seed_role != expected_role:
             raise RecurrentCounterfactualCollectionError(
@@ -109,11 +119,26 @@ class RecurrentCounterfactualCollectionTask:
             self.environment_seed,
             field="environment_seed",
         )
-        if environment_seed not in RECURRENT_SEED_REGISTRY[self.seed_role]:
+        registry = (
+            SCALE_DEVELOPMENT_SEED_REGISTRY if scale_role else RECURRENT_SEED_REGISTRY
+        )
+        if environment_seed not in registry[self.seed_role]:
             raise RecurrentCounterfactualCollectionError(
                 "environment_seed is not registered for its training role"
             )
         branch_ticks = _branch_tick_candidates(self.branch_tick_candidates)
+        stratum_index = (
+            None
+            if self.branch_tick_stratum_index is None
+            else _nonnegative_int(
+                self.branch_tick_stratum_index,
+                field="branch_tick_stratum_index",
+            )
+        )
+        if stratum_index is not None and stratum_index >= len(branch_ticks):
+            raise RecurrentCounterfactualCollectionError(
+                "branch_tick_stratum_index must index branch_tick_candidates"
+            )
         source_identity = _nonempty_trimmed_string(
             self.source_policy_sampling_identity,
             field="source_policy_sampling_identity",
@@ -168,20 +193,55 @@ class RecurrentCounterfactualCollectionTask:
         object.__setattr__(self, "branch_selection_identity", selection_identity)
         object.__setattr__(self, "source_policy_sampling_seed", source_seed)
         object.__setattr__(self, "branch_selection_seed", selection_seed)
+        object.__setattr__(self, "branch_tick_stratum_index", stratum_index)
 
 
 @dataclass(frozen=True, slots=True)
 class RecurrentCounterfactualCollectionConfig:
     horizons: tuple[int, ...] = (8, 32, 64)
     gamma: float = 0.99
+    continuation_tape_count: int = 1
+    terminal_target_world_tick: int | None = None
+    uncertainty_penalty: float = 0.0
 
     def __post_init__(self) -> None:
         horizons = _nested_horizons(self.horizons)
         gamma = _finite_number(self.gamma, field="gamma")
         if not 0.0 < gamma <= 1.0:
             raise RecurrentCounterfactualCollectionError("gamma must be in (0, 1]")
+        tape_count = _positive_int(
+            self.continuation_tape_count,
+            field="continuation_tape_count",
+        )
+        terminal_target = (
+            None
+            if self.terminal_target_world_tick is None
+            else _positive_int(
+                self.terminal_target_world_tick,
+                field="terminal_target_world_tick",
+            )
+        )
+        uncertainty_penalty = _finite_number(
+            self.uncertainty_penalty,
+            field="uncertainty_penalty",
+        )
+        if uncertainty_penalty < 0.0:
+            raise RecurrentCounterfactualCollectionError(
+                "uncertainty_penalty must be non-negative"
+            )
         object.__setattr__(self, "horizons", horizons)
         object.__setattr__(self, "gamma", gamma)
+        object.__setattr__(self, "continuation_tape_count", tape_count)
+        object.__setattr__(self, "terminal_target_world_tick", terminal_target)
+        object.__setattr__(self, "uncertainty_penalty", uncertainty_penalty)
+
+    @property
+    def multi_tape_enabled(self) -> bool:
+        return (
+            self.continuation_tape_count != 1
+            or self.terminal_target_world_tick is not None
+            or self.uncertainty_penalty != 0.0
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +256,9 @@ class RecurrentCounterfactualCollectionBundle:
     valid_actions: tuple[str, ...]
     horizons: tuple[int, ...]
     exact_digest: str
+    aggregate_rows: tuple[dict[str, object], ...] | None = None
+    terminal_target: dict[str, object] | None = None
+    multi_tape_compute: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +301,7 @@ def collect_recurrent_counterfactual_bundles(
             "config must be a RecurrentCounterfactualCollectionConfig"
         )
     task_tuple = _validated_tasks(tasks)
+    _validate_task_selection_modes(task_tuple, config=resolved_config)
     worker_count = _worker_count(workers)
     source_model_digest = recurrent_model_state_sha256(model)
     behavior_model = frozen_cpu_model_copy(model)
@@ -277,11 +341,12 @@ def collect_recurrent_counterfactual_bundles(
         )
     )
     aggregate_compute = _aggregate_compute(bundles)
+    contract_version = _collection_contract_version(resolved_config)
     result_without_digest = {
-        "contract_version": RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION,
+        "contract_version": contract_version,
         "source_model_state_sha256": source_model_digest,
         "source_artifact_digest": resolved_artifact,
-        "config": asdict(resolved_config),
+        "config": recurrent_counterfactual_collection_config_payload(resolved_config),
         "bundles": [_bundle_payload(bundle) for bundle in bundles],
         "workers_requested": worker_count,
         "workers_resolved": min(worker_count, len(task_tuple)),
@@ -294,7 +359,7 @@ def collect_recurrent_counterfactual_bundles(
         "promotion_authorized": False,
     }
     result = RecurrentCounterfactualCollectionResult(
-        contract_version=RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION,
+        contract_version=contract_version,
         source_model_state_sha256=source_model_digest,
         source_artifact_digest=resolved_artifact,
         config=resolved_config,
@@ -326,7 +391,7 @@ def recurrent_counterfactual_collection_result_payload(
         "contract_version": result.contract_version,
         "source_model_state_sha256": result.source_model_state_sha256,
         "source_artifact_digest": result.source_artifact_digest,
-        "config": asdict(result.config),
+        "config": recurrent_counterfactual_collection_config_payload(result.config),
         "bundles": [_bundle_payload(bundle) for bundle in result.bundles],
         "workers_requested": result.workers_requested,
         "workers_resolved": result.workers_resolved,
@@ -352,7 +417,7 @@ def validate_recurrent_counterfactual_collection_result(
         raise RecurrentCounterfactualCollectionError(
             "result must be a RecurrentCounterfactualCollectionResult"
         )
-    if result.contract_version != RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION:
+    if result.contract_version != _collection_contract_version(result.config):
         raise RecurrentCounterfactualCollectionError(
             "collection contract version drifted"
         )
@@ -378,6 +443,10 @@ def validate_recurrent_counterfactual_collection_result(
         raise RecurrentCounterfactualCollectionError(
             "collection result must contain bundles"
         )
+    _validate_task_selection_modes(
+        tuple(bundle.task for bundle in result.bundles),
+        config=result.config,
+    )
     task_ids: set[str] = set()
     for bundle in result.bundles:
         _validate_bundle(
@@ -433,7 +502,7 @@ def _result_payload_without_validation(
         "contract_version": result.contract_version,
         "source_model_state_sha256": result.source_model_state_sha256,
         "source_artifact_digest": result.source_artifact_digest,
-        "config": asdict(result.config),
+        "config": recurrent_counterfactual_collection_config_payload(result.config),
         "bundles": [_bundle_payload(bundle) for bundle in result.bundles],
         "workers_requested": result.workers_requested,
         "workers_resolved": result.workers_resolved,
@@ -446,6 +515,57 @@ def _result_payload_without_validation(
         "promotion_authorized": result.promotion_authorized,
         "exact_digest": result.exact_digest,
     }
+
+
+def _collection_contract_version(
+    config: RecurrentCounterfactualCollectionConfig,
+) -> str:
+    if not isinstance(config, RecurrentCounterfactualCollectionConfig):
+        raise RecurrentCounterfactualCollectionError("collection config type drifted")
+    return (
+        RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION
+        if config.multi_tape_enabled
+        else RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION
+    )
+
+
+def recurrent_counterfactual_collection_config_payload(
+    config: RecurrentCounterfactualCollectionConfig,
+) -> dict[str, object]:
+    """Serialize config without retroactively changing the legacy v1 shape."""
+
+    if not isinstance(config, RecurrentCounterfactualCollectionConfig):
+        raise RecurrentCounterfactualCollectionError(
+            "collection config payload requires the exact config type"
+        )
+    payload: dict[str, object] = {
+        "horizons": config.horizons,
+        "gamma": config.gamma,
+    }
+    if config.multi_tape_enabled:
+        payload.update(
+            {
+                "continuation_tape_count": config.continuation_tape_count,
+                "terminal_target_world_tick": config.terminal_target_world_tick,
+                "uncertainty_penalty": config.uncertainty_penalty,
+            }
+        )
+    return payload
+
+
+def recurrent_counterfactual_collection_task_payload(
+    task: RecurrentCounterfactualCollectionTask,
+) -> dict[str, object]:
+    """Serialize a task while preserving the legacy task payload shape."""
+
+    if not isinstance(task, RecurrentCounterfactualCollectionTask):
+        raise RecurrentCounterfactualCollectionError(
+            "collection task payload requires the exact task type"
+        )
+    payload = asdict(task)
+    if task.branch_tick_stratum_index is None:
+        payload.pop("branch_tick_stratum_index")
+    return payload
 
 
 def _collect_one(
@@ -472,7 +592,16 @@ def _collect_one(
                 task.branch_selection_seed,
                 field="branch selection seed",
             ),
+            branch_tick_stratum_index=task.branch_tick_stratum_index,
             gamma=config.gamma,
+            continuation_tape_count=config.continuation_tape_count,
+            continuation_tape_identity=(
+                f"{task.task_id}:continuation-tapes"
+                if config.multi_tape_enabled
+                else None
+            ),
+            terminal_target_world_tick=config.terminal_target_world_tick,
+            uncertainty_penalty=config.uncertainty_penalty,
         )
     except RecurrentCounterfactualBranchError as error:
         raise RecurrentCounterfactualCollectionError(
@@ -562,6 +691,9 @@ def _bundle_from_materialization(
     rows = value.get("rows")
     valid_actions = value.get("valid_actions")
     horizons = value.get("horizons")
+    aggregate_rows = value.get("aggregate_rows")
+    terminal_target = value.get("terminal_target")
+    multi_tape_compute = value.get("multi_tape_compute")
     if (
         not isinstance(rows, tuple)
         or not isinstance(valid_actions, tuple)
@@ -574,7 +706,7 @@ def _bundle_from_materialization(
             "branch materialization tuple fields drifted"
         )
     fields = {
-        "task": asdict(task),
+        "task": recurrent_counterfactual_collection_task_payload(task),
         "rows": list(rows),
         "selection": dict(_mapping(value.get("selection"), field="selection")),
         "prefix_proof": dict(_mapping(value.get("prefix_proof"), field="prefix_proof")),
@@ -584,6 +716,24 @@ def _bundle_from_materialization(
         "valid_actions": list(valid_actions),
         "horizons": list(horizons),
     }
+    if aggregate_rows is not None:
+        if not isinstance(aggregate_rows, tuple):
+            raise RecurrentCounterfactualCollectionError(
+                "aggregate rows must be a tuple when present"
+            )
+        fields["aggregate_rows"] = copy.deepcopy(list(aggregate_rows))
+        fields["terminal_target"] = (
+            None
+            if terminal_target is None
+            else copy.deepcopy(dict(_mapping(terminal_target, field="terminal target")))
+        )
+        fields["multi_tape_compute"] = copy.deepcopy(
+            dict(_mapping(multi_tape_compute, field="multi-tape compute"))
+        )
+    elif terminal_target is not None or multi_tape_compute is not None:
+        raise RecurrentCounterfactualCollectionError(
+            "terminal or compute evidence cannot exist without aggregate rows"
+        )
     return RecurrentCounterfactualCollectionBundle(
         task=task,
         rows=tuple(copy.deepcopy(rows)),
@@ -600,6 +750,17 @@ def _bundle_from_materialization(
         ),
         valid_actions=tuple(valid_actions),
         horizons=tuple(horizons),
+        aggregate_rows=(
+            None if aggregate_rows is None else tuple(copy.deepcopy(aggregate_rows))
+        ),
+        terminal_target=(
+            None if terminal_target is None else copy.deepcopy(dict(terminal_target))
+        ),
+        multi_tape_compute=(
+            None
+            if multi_tape_compute is None
+            else copy.deepcopy(dict(multi_tape_compute))
+        ),
         exact_digest=stable_payload_digest(fields),
     )
 
@@ -662,6 +823,96 @@ def _validate_bundle(
             raise RecurrentCounterfactualCollectionError(
                 "bundle horizons do not share one trainable public context"
             )
+    if config.multi_tape_enabled:
+        if (
+            bundle.aggregate_rows is None
+            or len(bundle.aggregate_rows) != len(bundle.horizons)
+            or bundle.multi_tape_compute is None
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "multi-tape bundle is missing aggregate evidence"
+            )
+        for horizon, aggregate_row in zip(
+            bundle.horizons,
+            bundle.aggregate_rows,
+            strict=True,
+        ):
+            try:
+                validate_recurrent_counterfactual_aggregate_row(aggregate_row)
+            except RecurrentCounterfactualBranchError as error:
+                raise RecurrentCounterfactualCollectionError(
+                    "bundle contains an invalid aggregate row"
+                ) from error
+            target = _mapping(
+                aggregate_row.get("target"),
+                field="aggregate row target",
+            )
+            if (
+                target.get("kind") != "relative_horizon"
+                or target.get("horizon_ticks") != horizon
+                or target.get("absolute_terminal_target_world_tick")
+                != config.terminal_target_world_tick
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "aggregate relative horizon target drifted"
+                )
+            tape_contract = _mapping(
+                aggregate_row.get("tape_contract"),
+                field="aggregate tape contract",
+            )
+            aggregate = _mapping(
+                aggregate_row.get("aggregate"),
+                field="aggregate statistics",
+            )
+            if (
+                tape_contract.get("tape_count") != config.continuation_tape_count
+                or aggregate.get("uncertainty_penalty") != config.uncertainty_penalty
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "aggregate collection config drifted"
+                )
+            if stable_payload_digest(
+                aggregate_row.get("trainable_public_context")
+            ) != stable_payload_digest(bundle.rows[0]["trainable_public_context"]):
+                raise RecurrentCounterfactualCollectionError(
+                    "aggregate public branch context drifted"
+                )
+        if config.terminal_target_world_tick is None:
+            if bundle.terminal_target is not None:
+                raise RecurrentCounterfactualCollectionError(
+                    "bundle has an unrequested absolute terminal target"
+                )
+        else:
+            if bundle.terminal_target is None:
+                raise RecurrentCounterfactualCollectionError(
+                    "bundle is missing its absolute terminal target"
+                )
+            try:
+                validate_recurrent_counterfactual_aggregate_row(bundle.terminal_target)
+            except RecurrentCounterfactualBranchError as error:
+                raise RecurrentCounterfactualCollectionError(
+                    "bundle terminal aggregate is invalid"
+                ) from error
+            terminal_target = _mapping(
+                bundle.terminal_target.get("target"),
+                field="terminal aggregate target",
+            )
+            if (
+                terminal_target.get("kind") != "absolute_terminal_world_tick"
+                or terminal_target.get("target_world_tick")
+                != config.terminal_target_world_tick
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "bundle absolute terminal target drifted"
+                )
+    elif (
+        bundle.aggregate_rows is not None
+        or bundle.terminal_target is not None
+        or bundle.multi_tape_compute is not None
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "legacy bundle cannot carry multi-tape evidence"
+        )
     _validate_selection(bundle)
     _validate_prefix_proof(bundle)
     _validate_compute(bundle)
@@ -709,7 +960,94 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
         bundle.task.branch_selection_seed,
         field="branch selection seed",
     )
-    expected_selected_index = random.Random(selection_seed).randrange(candidate_count)
+    selection_rng = random.Random(selection_seed)
+    if bundle.aggregate_rows is None:
+        if selection.get("selection_policy") != (
+            "uniform_seeded_over_current_tick_multi_action_learner_decisions"
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "legacy selection policy drifted"
+            )
+        unexpected_scale_fields = {
+            "eligible_branch_ticks",
+            "eligible_branch_tick_count",
+            "selected_eligible_tick_index",
+            "requested_branch_tick_stratum_index",
+            "branch_tick_strata_traversal",
+            "selected_branch_tick_stratum_index",
+        } & set(selection)
+        if unexpected_scale_fields:
+            raise RecurrentCounterfactualCollectionError(
+                "legacy selection contains scale-only tick strata"
+            )
+    else:
+        eligible_ticks = selection.get("eligible_branch_ticks")
+        if (
+            not isinstance(eligible_ticks, list)
+            or not eligible_ticks
+            or any(
+                tick not in bundle.task.branch_tick_candidates
+                for tick in eligible_ticks
+            )
+            or len(set(eligible_ticks)) != len(eligible_ticks)
+            or selection.get("eligible_branch_tick_count") != len(eligible_ticks)
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "eligible branch tick strata drifted"
+            )
+        stratum_index = bundle.task.branch_tick_stratum_index
+        if stratum_index is None:
+            if selection.get("selection_policy") != (
+                "stratified_uniform_seeded_tick_then_uniform_current_tick_"
+                "learner_decision"
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "scale selection policy drifted"
+                )
+            unexpected_rotation_fields = {
+                "requested_branch_tick_stratum_index",
+                "branch_tick_strata_traversal",
+                "selected_branch_tick_stratum_index",
+            } & set(selection)
+            if unexpected_rotation_fields:
+                raise RecurrentCounterfactualCollectionError(
+                    "uniform tick selection contains rotation-only fields"
+                )
+            expected_tick_index = selection_rng.randrange(len(eligible_ticks))
+            if (
+                selection.get("selected_eligible_tick_index") != expected_tick_index
+                or eligible_ticks[expected_tick_index] != selected_tick
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "selected branch tick is not the seeded stratified draw"
+                )
+        else:
+            if selection.get("selection_policy") != (
+                "deterministic_stratified_tick_rotation_with_eligible_fallback_"
+                "then_uniform_current_tick_learner_decision"
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "deterministic stratum selection policy drifted"
+                )
+            candidates = bundle.task.branch_tick_candidates
+            traversal = tuple(
+                candidates[(stratum_index + offset) % len(candidates)]
+                for offset in range(len(candidates))
+            )
+            expected_tick = next(tick for tick in traversal if tick in eligible_ticks)
+            if (
+                selection.get("requested_branch_tick_stratum_index") != stratum_index
+                or selection.get("branch_tick_strata_traversal") != list(traversal)
+                or selection.get("selected_branch_tick_stratum_index")
+                != candidates.index(expected_tick)
+                or selection.get("selected_eligible_tick_index")
+                != eligible_ticks.index(expected_tick)
+                or selected_tick != expected_tick
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "deterministic branch-tick stratum rotation drifted"
+                )
+    expected_selected_index = selection_rng.randrange(candidate_count)
     if selected_index != expected_selected_index:
         raise RecurrentCounterfactualCollectionError(
             "selected candidate index is not the seeded uniform draw"
@@ -896,13 +1234,65 @@ def _validate_compute(bundle: RecurrentCounterfactualCollectionBundle) -> None:
             "actual continuation ticks exceed the exact maximum budget"
         )
     _positive_int(compute.get("source_tick_executions"), field="source ticks")
+    if bundle.multi_tape_compute is not None:
+        if bundle.aggregate_rows is None:
+            raise RecurrentCounterfactualCollectionError(
+                "multi-tape compute lacks aggregate rows"
+            )
+        tape_contract = _mapping(
+            bundle.aggregate_rows[0].get("tape_contract"),
+            field="aggregate tape contract",
+        )
+        tape_count = _positive_int(
+            tape_contract.get("tape_count"),
+            field="continuation tape count",
+        )
+        continuation_count_per_tape = 2 + 2 * action_count
+        target_horizons = list(bundle.horizons)
+        if bundle.terminal_target is not None:
+            terminal = _mapping(
+                bundle.terminal_target.get("target"),
+                field="terminal target",
+            )
+            target_horizons.append(
+                _positive_int(
+                    terminal.get("horizon_ticks"),
+                    field="terminal horizon",
+                )
+            )
+        multi_maximum_horizon = max(target_horizons)
+        multi_expected = {
+            "continuation_tape_count": tape_count,
+            "continuation_count_per_tape": continuation_count_per_tape,
+            "max_horizon_continuation_count": (
+                tape_count * continuation_count_per_tape
+            ),
+            "exact_replay_continuation_count": (tape_count * (1 + action_count)),
+            "maximum_horizon_ticks": multi_maximum_horizon,
+            "maximum_continuation_tick_budget": (
+                tape_count * continuation_count_per_tape * multi_maximum_horizon
+            ),
+        }
+        for field, expected_value in multi_expected.items():
+            if bundle.multi_tape_compute.get(field) != expected_value:
+                raise RecurrentCounterfactualCollectionError(
+                    f"multi-tape compute diagnostic {field!r} drifted"
+                )
+        multi_actual = _nonnegative_int(
+            bundle.multi_tape_compute.get("actual_continuation_tick_count"),
+            field="multi-tape actual continuation ticks",
+        )
+        if multi_actual > multi_expected["maximum_continuation_tick_budget"]:
+            raise RecurrentCounterfactualCollectionError(
+                "multi-tape actual continuation ticks exceed budget"
+            )
 
 
 def _bundle_payload(
     bundle: RecurrentCounterfactualCollectionBundle,
 ) -> dict[str, object]:
-    return {
-        "task": asdict(bundle.task),
+    payload = {
+        "task": recurrent_counterfactual_collection_task_payload(bundle.task),
         "rows": copy.deepcopy(list(bundle.rows)),
         "selection": copy.deepcopy(bundle.selection),
         "prefix_proof": copy.deepcopy(bundle.prefix_proof),
@@ -913,6 +1303,15 @@ def _bundle_payload(
         "horizons": list(bundle.horizons),
         "exact_digest": bundle.exact_digest,
     }
+    if bundle.aggregate_rows is not None:
+        payload.update(
+            {
+                "aggregate_rows": copy.deepcopy(list(bundle.aggregate_rows)),
+                "terminal_target": copy.deepcopy(bundle.terminal_target),
+                "multi_tape_compute": copy.deepcopy(bundle.multi_tape_compute),
+            }
+        )
+    return payload
 
 
 def _aggregate_compute(
@@ -929,13 +1328,46 @@ def _aggregate_compute(
         "independent_horizon_tick_budget",
         "nested_tick_budget_saved",
     )
-    return {
+    aggregate = {
         "bundle_count": len(bundles),
         **{
             field: sum(int(bundle.compute[field]) for bundle in bundles)
             for field in fields
         },
     }
+    multi_tape_bundles = [
+        bundle for bundle in bundles if bundle.multi_tape_compute is not None
+    ]
+    if multi_tape_bundles:
+        if len(multi_tape_bundles) != len(bundles):
+            raise RecurrentCounterfactualCollectionError(
+                "collection cannot mix legacy and multi-tape bundles"
+            )
+        aggregate.update(
+            {
+                "multi_tape_continuation_tape_count": sum(
+                    int(bundle.multi_tape_compute["continuation_tape_count"])
+                    for bundle in multi_tape_bundles
+                ),
+                "multi_tape_max_horizon_continuation_count": sum(
+                    int(bundle.multi_tape_compute["max_horizon_continuation_count"])
+                    for bundle in multi_tape_bundles
+                ),
+                "multi_tape_exact_replay_continuation_count": sum(
+                    int(bundle.multi_tape_compute["exact_replay_continuation_count"])
+                    for bundle in multi_tape_bundles
+                ),
+                "multi_tape_actual_continuation_tick_count": sum(
+                    int(bundle.multi_tape_compute["actual_continuation_tick_count"])
+                    for bundle in multi_tape_bundles
+                ),
+                "multi_tape_maximum_continuation_tick_budget": sum(
+                    int(bundle.multi_tape_compute["maximum_continuation_tick_budget"])
+                    for bundle in multi_tape_bundles
+                ),
+            }
+        )
+    return aggregate
 
 
 def _validated_tasks(
@@ -969,6 +1401,30 @@ def _validated_tasks(
             "source and branch-selection seed sets must be disjoint"
         )
     return parsed
+
+
+def _validate_task_selection_modes(
+    tasks: Sequence[RecurrentCounterfactualCollectionTask],
+    *,
+    config: RecurrentCounterfactualCollectionConfig,
+) -> None:
+    for task in tasks:
+        stratum_index = task.branch_tick_stratum_index
+        if stratum_index is not None and not config.multi_tape_enabled:
+            raise RecurrentCounterfactualCollectionError(
+                "explicit branch-tick strata require the versioned multi-tape "
+                "collection contract"
+            )
+        if (
+            config.multi_tape_enabled
+            and task.seed_role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
+            and len(task.branch_tick_candidates) > 1
+            and stratum_index is None
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "scale multi-tape tasks with multiple branch ticks require an "
+                "explicit deterministic stratum index"
+            )
 
 
 def _branch_tick_candidates(value: object) -> tuple[int, ...]:
@@ -1082,6 +1538,7 @@ __all__ = [
     "RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD",
+    "RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION",
     "RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE",
     "RecurrentCounterfactualCollectionBundle",
     "RecurrentCounterfactualCollectionConfig",
@@ -1090,6 +1547,8 @@ __all__ = [
     "RecurrentCounterfactualCollectionTask",
     "collect_recurrent_counterfactual_bundles",
     "derive_recurrent_counterfactual_collection_seed",
+    "recurrent_counterfactual_collection_config_payload",
     "recurrent_counterfactual_collection_result_payload",
+    "recurrent_counterfactual_collection_task_payload",
     "validate_recurrent_counterfactual_collection_result",
 ]
