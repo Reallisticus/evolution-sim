@@ -28,7 +28,7 @@ if torch is not None:
         write_atomic_json,
     )
     from evolution_sim.mind.recurrent_seed_registry import (
-        SCALE_DEVELOPMENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
     )
 
 
@@ -73,6 +73,14 @@ class RecurrentScaleCampaignTests(unittest.TestCase):
             counterfactual["absolute_terminal_target_tick"],
             120,
         )
+        self.assertEqual(  # type: ignore[index]
+            counterfactual["source_branch_row_schema_version"],
+            "mind_v3_recurrent_counterfactual_boundary_source_branch_row_v5",
+        )
+        self.assertEqual(  # type: ignore[index]
+            preregistration["execution"]["concurrent_cuda_arm_processes"],
+            3,
+        )
         self.assertFalse(  # type: ignore[index]
             preregistration["lifecycle"]["validation_seeds_accessed"]
         )
@@ -100,18 +108,20 @@ class RecurrentScaleCampaignTests(unittest.TestCase):
         optimized = set(plan.excluded_training_seeds)
 
         self.assertEqual(plan.broad_seeds, plan.fixture_seeds)
-        self.assertEqual(plan.canonical_registry_role, "scale_selection")
+        self.assertEqual(plan.canonical_registry_role, "scale_v2_selection")
         self.assertEqual(len(selected), 8)
         self.assertTrue(selected.isdisjoint(optimized))
         self.assertTrue(
-            selected.issubset(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"])
+            selected.issubset(
+                SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"]
+            )
         )
 
     def test_arm_run_identity_rejects_noncanonical_inputs(self) -> None:
-        learner = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         self.assertEqual(
             recurrent_scale_arm_run_id(learner_seed=learner, arm=BASE_ARM),
-            f"scale-v1-learner-{learner}-{BASE_ARM}",
+            f"scale-v2-learner-{learner}-{BASE_ARM}",
         )
         with self.assertRaisesRegex(RecurrentScaleCampaignError, "learner"):
             recurrent_scale_arm_run_id(learner_seed=1, arm=BASE_ARM)

@@ -11,12 +11,11 @@ Usage:
     --venv-parent <absolute-dir> \
     --output-parent <absolute-dir> [options]
 
-Creates a new content-addressed checkout, venv, and output tree without
-modifying an existing project checkout. It runs CUDA/source/dependency/tests
-preflight, pins runtime provenance, proves mid-training exact-auxiliary crash
-resume parity with populated Adam state, then starts all 8 x 3 resumable cells
-and aggregate
-analysis in tmux.
+Creates a new scale-v2 content-addressed checkout, venv, and output tree
+without modifying an existing project checkout. It runs
+CUDA/source/dependency/tests preflight, pins runtime provenance, proves
+mid-training exact-auxiliary crash resume parity with populated Adam state,
+then starts all 8 x 3 resumable cells and aggregate analysis in tmux.
 
 Options:
   --bootstrap-python <command>     Python used only to create a new venv
@@ -25,7 +24,7 @@ Options:
   --counterfactual-workers <count> Per arm; default: 8
   --evaluation-workers <count>     Per arm; default: 8
   --uv-command <absolute-path>     Optional uv binary outside PATH
-  --session-name <name>            Default: evosim-scale-<sha12>
+  --session-name <scale-v2-name>   Default: evosim-scale-v2-<sha12>
   --foreground                     Run the campaign worker in this terminal
 
 Use an SSH-configured Git remote or another credential-free argument. Do not
@@ -134,7 +133,7 @@ while (($#)); do
 done
 
 fail() {
-  echo "scale launcher error: $*" >&2
+  echo "scale-v2 launcher error: $*" >&2
   exit 1
 }
 
@@ -149,6 +148,13 @@ require_safe_absolute_parent() {
   local value="$2"
   [[ "$value" == /* ]] || fail "$label must be an absolute path"
   [[ "$value" != "/" ]] || fail "$label cannot be the filesystem root"
+}
+
+require_scale_v2_leaf() {
+  local label="$1"
+  local value="$2"
+  [[ "${value##*/}" == *scale-v2* ]] || \
+    fail "$label basename must contain scale-v2"
 }
 
 verify_clean_exact_checkout() {
@@ -199,8 +205,8 @@ prepare_preregistration_and_provenance() {
   local python="$2"
   local campaign_output="$3"
   local source_commit="$4"
-  local preregistration="$campaign_output/preregistration.json"
-  local runtime_provenance="$campaign_output/runtime-provenance.json"
+  local preregistration="$campaign_output/scale-v2-preregistration.json"
+  local runtime_provenance="$campaign_output/scale-v2-runtime-provenance.json"
 
   mkdir -p "$campaign_output"
   if [[ ! -f "$preregistration" ]]; then
@@ -260,14 +266,23 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 }
 
 run_campaign_worker() {
+  command -v flock >/dev/null || fail "flock is required"
+  mkdir -p "$scale_campaign_output"
+  local scale_worker_lock_file="$scale_campaign_output/.scale-v2-campaign.lock"
+  local scale_worker_lock_fd
+  exec {scale_worker_lock_fd}>"$scale_worker_lock_file"
+  flock -n "$scale_worker_lock_fd" || \
+    fail "campaign output is already owned by another live worker"
+  local preregistration="$scale_campaign_output/scale-v2-preregistration.json"
+  local runtime_provenance="$scale_campaign_output/scale-v2-runtime-provenance.json"
+  local reports_root="$scale_campaign_output/scale-v2-runs"
+  local analysis="$scale_campaign_output/scale-v2-analysis.json"
+  local logs="$scale_campaign_output/scale-v2-logs"
+  [[ ! -e "$analysis" ]] || \
+    fail "completed scale-v2 analysis already exists; refusing output mutation"
   verify_clean_exact_checkout "$scale_checkout" "$scale_source_commit"
   verify_venv "$scale_venv"
   local python="$scale_venv/bin/python"
-  local preregistration="$scale_campaign_output/preregistration.json"
-  local runtime_provenance="$scale_campaign_output/runtime-provenance.json"
-  local reports_root="$scale_campaign_output/runs"
-  local analysis="$scale_campaign_output/analysis.json"
-  local logs="$scale_campaign_output/logs"
 
   export PYTHONPATH="$scale_checkout/python"
   export PYTHONHASHSEED=0
@@ -286,7 +301,7 @@ run_campaign_worker() {
     "$python" \
     "$preregistration" \
     "$runtime_provenance" \
-    "$scale_campaign_output/preflight/cuda-training-smoke"
+    "$scale_campaign_output/scale-v2-preflight/cuda-training-resume-smoke"
 
   local preregistration_digest
   preregistration_digest="$($python -c '
@@ -322,7 +337,7 @@ for value in payload["arms"]["order"]:
   for learner_seed in "${learner_seeds[@]}"; do
     local -a arm_processes=()
     for arm in "${arms[@]}"; do
-      local run_id="scale-v1-learner-${learner_seed}-${arm}"
+      local run_id="scale-v2-learner-${learner_seed}-${arm}"
       echo "starting_or_resuming $run_id"
       (
         "$python" -m \
@@ -359,8 +374,8 @@ for value in payload["arms"]["order"]:
     --preregistration "$preregistration" \
     --reports-root "$reports_root" \
     --runtime-provenance "$runtime_provenance" \
-    --output "$analysis" 2>&1 | tee -a "$logs/aggregate.log"
-  echo "scale_campaign_complete analysis=$analysis"
+    --output "$analysis" 2>&1 | tee -a "$logs/scale-v2-aggregate.log"
+  echo "scale_v2_campaign_complete analysis=$analysis"
 }
 
 [[ "$scale_source_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || \
@@ -375,6 +390,9 @@ if [[ "$scale_mode" == "worker" ]]; then
   require_safe_absolute_parent "--checkout" "$scale_checkout"
   require_safe_absolute_parent "--venv" "$scale_venv"
   require_safe_absolute_parent "--campaign-output" "$scale_campaign_output"
+  require_scale_v2_leaf "--checkout" "$scale_checkout"
+  require_scale_v2_leaf "--venv" "$scale_venv"
+  require_scale_v2_leaf "--campaign-output" "$scale_campaign_output"
   run_campaign_worker
   exit 0
 fi
@@ -385,20 +403,33 @@ require_safe_absolute_parent "--venv-parent" "$scale_venv_parent"
 require_safe_absolute_parent "--output-parent" "$scale_output_parent"
 command -v git >/dev/null || fail "git is required"
 command -v tmux >/dev/null || fail "tmux is required"
+command -v flock >/dev/null || fail "flock is required"
 command -v "$scale_bootstrap_python" >/dev/null || \
   fail "bootstrap Python command is unavailable"
 
 scale_short_commit="${scale_source_commit:0:12}"
-scale_checkout="${scale_workspace_parent%/}/evolution-sim-scale-${scale_short_commit}"
-scale_venv="${scale_venv_parent%/}/${scale_short_commit}"
-scale_campaign_output="${scale_output_parent%/}/${scale_short_commit}"
+scale_checkout="${scale_workspace_parent%/}/evolution-sim-scale-v2-${scale_short_commit}"
+scale_venv="${scale_venv_parent%/}/scale-v2-${scale_short_commit}"
+scale_campaign_output="${scale_output_parent%/}/scale-v2-${scale_short_commit}"
 if [[ -z "$scale_session_name" ]]; then
-  scale_session_name="evosim-scale-${scale_short_commit}"
+  scale_session_name="evosim-scale-v2-${scale_short_commit}"
 fi
 [[ "$scale_session_name" =~ ^[A-Za-z0-9_.-]+$ ]] || \
   fail "--session-name contains unsupported characters"
+[[ "$scale_session_name" == *scale-v2* ]] || \
+  fail "--session-name must contain scale-v2"
+if tmux has-session -t "$scale_session_name" 2>/dev/null; then
+  fail "tmux session already exists; refusing ambiguous campaign reuse: $scale_session_name"
+fi
 
 mkdir -p "$scale_workspace_parent" "$scale_venv_parent" "$scale_output_parent"
+mkdir -p "$scale_campaign_output"
+scale_launch_lock_file="$scale_campaign_output/.scale-v2-campaign.lock"
+exec {scale_launch_lock_fd}>"$scale_launch_lock_file"
+flock -n "$scale_launch_lock_fd" || \
+  fail "campaign output is already owned by another launcher or worker"
+[[ ! -e "$scale_campaign_output/scale-v2-analysis.json" ]] || \
+  fail "completed scale-v2 analysis already exists; refusing output mutation"
 if [[ ! -e "$scale_checkout" ]]; then
   git clone --filter=blob:none --no-checkout \
     "$scale_repository_url" "$scale_checkout"
@@ -451,9 +482,17 @@ run_cuda_smoke "$scale_venv/bin/python" "$scale_device"
 (
   cd "$scale_checkout"
   "$scale_venv/bin/python" -m unittest \
+    python.tests.test_recurrent_seed_registry \
+    python.tests.test_recurrent_experiment \
+    python.tests.test_recurrent_evaluation \
+    python.tests.test_recurrent_counterfactual_branch \
+    python.tests.test_recurrent_counterfactual_collection \
+    python.tests.test_recurrent_counterfactual_auxiliary \
+    python.tests.test_recurrent_cuda_training_smoke \
     python.tests.test_recurrent_runtime_provenance \
     python.tests.test_recurrent_scale_campaign \
-    python.tests.test_recurrent_scale_execution
+    python.tests.test_recurrent_scale_execution \
+    python.tests.test_recurrent_scale_gpu_launcher
 )
 prepare_preregistration_and_provenance \
   "$scale_checkout" \
@@ -462,9 +501,9 @@ prepare_preregistration_and_provenance \
   "$scale_source_commit"
 run_cuda_training_resume_smoke \
   "$scale_venv/bin/python" \
-  "$scale_campaign_output/preregistration.json" \
-  "$scale_campaign_output/runtime-provenance.json" \
-  "$scale_campaign_output/preflight/cuda-training-smoke"
+  "$scale_campaign_output/scale-v2-preregistration.json" \
+  "$scale_campaign_output/scale-v2-runtime-provenance.json" \
+  "$scale_campaign_output/scale-v2-preflight/cuda-training-resume-smoke"
 
 scale_worker=(
   "$scale_checkout/scripts/run_recurrent_scale_campaign_gpu.sh"
@@ -478,21 +517,19 @@ scale_worker=(
   --counterfactual-workers "$scale_counterfactual_workers"
   --evaluation-workers "$scale_evaluation_workers"
 )
+flock -u "$scale_launch_lock_fd"
+exec {scale_launch_lock_fd}>&-
 if [[ "$scale_foreground" == true ]]; then
   "${scale_worker[@]}"
   exit 0
 fi
 
-if tmux has-session -t "$scale_session_name" 2>/dev/null; then
-  echo "scale campaign session already exists: $scale_session_name"
-  echo "attach with: tmux attach -t $scale_session_name"
-  exit 0
-fi
-mkdir -p "$scale_campaign_output/logs"
+mkdir -p "$scale_campaign_output/scale-v2-logs"
 printf -v scale_worker_command '%q ' "${scale_worker[@]}"
-printf -v scale_campaign_log '%q' "$scale_campaign_output/logs/campaign.log"
+printf -v scale_campaign_log '%q' \
+  "$scale_campaign_output/scale-v2-logs/scale-v2-campaign.log"
 tmux new-session -d -s "$scale_session_name" \
   "${scale_worker_command} >>${scale_campaign_log} 2>&1"
-echo "scale campaign launched: $scale_session_name"
+echo "scale-v2 campaign launched: $scale_session_name"
 echo "attach with: tmux attach -t $scale_session_name"
 echo "output root: $scale_campaign_output"

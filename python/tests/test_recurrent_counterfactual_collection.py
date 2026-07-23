@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
+import hashlib
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +12,7 @@ except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
 if torch is not None:
+    import evolution_sim.mind.recurrent_counterfactual_collection as collection_module
     import evolution_sim.mind.recurrent_counterfactual_branch as branch_module
     from evolution_sim.config import WorldConfig
     from evolution_sim.env.runtime.action_contract import ACTION_NAMES
@@ -37,9 +40,12 @@ if torch is not None:
         validate_recurrent_counterfactual_collection_result,
     )
     from evolution_sim.mind.recurrent_counterfactual_branch import (
+        RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
         build_recurrent_counterfactual_branch_row,
+        validate_recurrent_counterfactual_aggregate_row,
         validate_recurrent_counterfactual_branch_row,
     )
+    from evolution_sim.mind.provenance import stable_payload_digest
     from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
     from evolution_sim.mind.recurrent_policy import (
         DeterministicPublicRecurrentPolicy,
@@ -99,6 +105,46 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
             artifact_digest=cls.artifact_digest,
             config=cls.config,
             workers=1,
+        )
+
+    @staticmethod
+    def _rehash_aggregate(row: dict[str, object]) -> None:
+        row["component_digests"] = {
+            field: stable_payload_digest(row[field])
+            for field in (
+                "target",
+                "trainable_public_context",
+                "optimizer_context",
+                "source_identity",
+                "source_behavior",
+                "tape_contract",
+                "tape_provenance",
+                "aggregate",
+            )
+        }
+        row.pop("exact_digest", None)
+        row["exact_digest"] = stable_payload_digest(row)
+
+    @staticmethod
+    def _rehash_bundle_and_result(
+        result: object,
+        *,
+        bundle_index: int = 0,
+    ) -> None:
+        bundle = result.bundles[bundle_index]  # type: ignore[attr-defined]
+        bundle_payload = collection_module._bundle_payload(bundle)
+        bundle_payload.pop("exact_digest")
+        object.__setattr__(
+            bundle,
+            "exact_digest",
+            stable_payload_digest(bundle_payload),
+        )
+        result_payload = collection_module._result_payload_without_validation(result)
+        result_payload.pop("exact_digest")
+        object.__setattr__(
+            result,
+            "exact_digest",
+            stable_payload_digest(result_payload),
         )
 
     def test_fresh_frozen_source_rows_cover_all_valid_actions_and_horizons(
@@ -602,6 +648,199 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
             self.assertNotIn("terminal_target", bundle)
             self.assertNotIn("multi_tape_compute", bundle)
 
+    def test_nested_collection_payloads_have_exact_schemas_and_types(self) -> None:
+        mutations = (
+            (
+                "selection extra field",
+                lambda bundle: bundle.selection.__setitem__(
+                    "undeclared_private_state",
+                    {"forbidden": True},
+                ),
+                "selection field set",
+            ),
+            (
+                "selection bool tick",
+                lambda bundle: bundle.selection.__setitem__(
+                    "selected_branch_tick",
+                    False,
+                ),
+                "non-negative integer",
+            ),
+            (
+                "prefix proof extra field",
+                lambda bundle: bundle.prefix_proof.__setitem__(
+                    "undeclared",
+                    True,
+                ),
+                "prefix proof field set",
+            ),
+            (
+                "prefix stream extra field",
+                lambda bundle: bundle.prefix_proof["streams"][
+                    "baseline"
+                ].__setitem__("undeclared", True),
+                "prefix stream field set",
+            ),
+            (
+                "prefix horizon extra field",
+                lambda bundle: bundle.prefix_proof["streams"]["baseline"][
+                    "horizons"
+                ]["1"].__setitem__("undeclared", True),
+                "horizon prefix proof field set",
+            ),
+            (
+                "prefix horizon bool count",
+                lambda bundle: bundle.prefix_proof["streams"]["baseline"][
+                    "horizons"
+                ]["1"].__setitem__("executed_tick_count", True),
+                "positive integer",
+            ),
+            (
+                "compute extra field",
+                lambda bundle: bundle.compute.__setitem__("undeclared", 0),
+                "compute diagnostic field set",
+            ),
+            (
+                "compute bool count",
+                lambda bundle: bundle.compute.__setitem__(
+                    "selected_continuation_checkpoint_count",
+                    True,
+                ),
+                "non-negative integer",
+            ),
+        )
+        for name, mutate, expected_error in mutations:
+            with self.subTest(name=name):
+                tampered = deepcopy(self.sequential)
+                mutate(tampered.bundles[0])
+                self._rehash_bundle_and_result(tampered)
+                with self.assertRaisesRegex(
+                    RecurrentCounterfactualCollectionError,
+                    expected_error,
+                ):
+                    validate_recurrent_counterfactual_collection_result(tampered)
+
+        aggregate_compute_tampered = deepcopy(self.sequential)
+        aggregate_compute_tampered.aggregate_compute[
+            "selected_continuation_checkpoint_count"
+        ] = False
+        payload = collection_module._result_payload_without_validation(
+            aggregate_compute_tampered
+        )
+        payload.pop("exact_digest")
+        object.__setattr__(
+            aggregate_compute_tampered,
+            "exact_digest",
+            stable_payload_digest(payload),
+        )
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "non-negative integer",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                aggregate_compute_tampered
+            )
+
+        for field in ("workers_resolved", "torch_threads_per_worker"):
+            with self.subTest(result_integer_field=field):
+                result_tampered = deepcopy(self.sequential)
+                object.__setattr__(result_tampered, field, True)
+                payload = collection_module._result_payload_without_validation(
+                    result_tampered
+                )
+                payload.pop("exact_digest")
+                object.__setattr__(
+                    result_tampered,
+                    "exact_digest",
+                    stable_payload_digest(payload),
+                )
+                with self.assertRaisesRegex(
+                    RecurrentCounterfactualCollectionError,
+                    "positive integer",
+                ):
+                    validate_recurrent_counterfactual_collection_result(
+                        result_tampered
+                    )
+
+        horizon_alias = deepcopy(self.sequential)
+        alias_bundle = horizon_alias.bundles[0]
+        object.__setattr__(alias_bundle, "horizons", (True, 2))
+        for stream in alias_bundle.prefix_proof["streams"].values():
+            stream["horizons"]["True"] = stream["horizons"].pop("1")
+        self._rehash_bundle_and_result(horizon_alias)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "positive integer",
+        ):
+            validate_recurrent_counterfactual_collection_result(horizon_alias)
+
+        executed_ticks_tampered = deepcopy(self.sequential)
+        executed_ticks_tampered.bundles[0].prefix_proof["streams"]["baseline"][
+            "horizons"
+        ]["1"]["executed_tick_count"] = 999
+        self._rehash_bundle_and_result(executed_ticks_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "tick count drifted",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                executed_ticks_tampered
+            )
+
+        for field, value, expected_error in (
+            ("source_tick_executions", 999, "source ticks drifted"),
+            (
+                "actual_continuation_tick_count",
+                0,
+                "actual continuation ticks drifted",
+            ),
+        ):
+            with self.subTest(compute_field=field):
+                compute_tampered = deepcopy(self.sequential)
+                compute_tampered.bundles[0].compute[field] = value
+                object.__setattr__(
+                    compute_tampered,
+                    "aggregate_compute",
+                    collection_module._aggregate_compute(
+                        compute_tampered.bundles
+                    ),
+                )
+                self._rehash_bundle_and_result(compute_tampered)
+                with self.assertRaisesRegex(
+                    RecurrentCounterfactualCollectionError,
+                    expected_error,
+                ):
+                    validate_recurrent_counterfactual_collection_result(
+                        compute_tampered
+                    )
+
+    def test_prefix_sequence_lengths_cannot_shrink_across_horizons(self) -> None:
+        three_horizon = collect_recurrent_counterfactual_bundles(
+            self.model,
+            [self.tasks[0]],
+            artifact_digest=self.artifact_digest,
+            config=RecurrentCounterfactualCollectionConfig(
+                horizons=(1, 2, 3),
+                gamma=0.99,
+            ),
+            workers=1,
+        )
+        bundle = three_horizon.bundles[0]
+        middle = bundle.prefix_proof["streams"]["baseline"]["horizons"]["2"]
+        maximum = bundle.prefix_proof["streams"]["baseline"]["horizons"]["3"]
+        for field in (
+            "causal_record_digest_sequence",
+            "policy_record_digest_sequence",
+            "diagnostics_digest_sequence",
+        ):
+            middle[field] = maximum[field][:1]
+        self._rehash_bundle_and_result(three_horizon)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "sequence length",
+        ):
+            validate_recurrent_counterfactual_collection_result(three_horizon)
+
     def test_multi_tape_collection_is_deterministic_and_strictly_validated(
         self,
     ) -> None:
@@ -657,6 +896,26 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
         self.assertEqual(first.exact_digest, second.exact_digest)
         self.assertEqual(first.bundles[0].exact_digest, second.bundles[0].exact_digest)
         bundle = first.bundles[0]
+        for row in bundle.rows:
+            self.assertEqual(
+                row["schema_version"],
+                RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
+            )
+            metadata = row["metadata"]
+            self.assertEqual(
+                metadata[
+                    "source_pre_boundary_environment_rng_state_sha256"
+                ],
+                bundle.aggregate_rows[0]["source_identity"][
+                    "source_pre_boundary_environment_rng_state_sha256"
+                ],
+            )
+            self.assertEqual(
+                metadata["source_pre_boundary_policy_sampling_state_sha256"],
+                bundle.aggregate_rows[0]["source_identity"][
+                    "source_pre_boundary_policy_sampling_state_sha256"
+                ],
+            )
         self.assertEqual(bundle.selection["selected_branch_tick"], 1)
         self.assertEqual(
             bundle.selection["requested_branch_tick_stratum_index"],
@@ -681,6 +940,73 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
             artifact_digest=self.artifact_digest,
         )
 
+        multi_schema_mutations = (
+            (
+                "multi-tape selection extra field",
+                lambda bundle: bundle.selection.__setitem__(
+                    "undeclared",
+                    True,
+                ),
+                "selection field set",
+            ),
+            (
+                "rotation bool index",
+                lambda bundle: bundle.selection.__setitem__(
+                    "requested_branch_tick_stratum_index",
+                    True,
+                ),
+                "non-negative integer",
+            ),
+            (
+                "multi-tape compute extra field",
+                lambda bundle: bundle.multi_tape_compute.__setitem__(
+                    "undeclared",
+                    0,
+                ),
+                "multi-tape compute diagnostic field set",
+            ),
+            (
+                "multi-tape compute bool count",
+                lambda bundle: bundle.multi_tape_compute.__setitem__(
+                    "continuation_tape_count",
+                    True,
+                ),
+                "non-negative integer",
+            ),
+        )
+        for name, mutate, expected_error in multi_schema_mutations:
+            with self.subTest(name=name):
+                schema_tampered = deepcopy(first)
+                mutate(schema_tampered.bundles[0])
+                self._rehash_bundle_and_result(schema_tampered)
+                with self.assertRaisesRegex(
+                    RecurrentCounterfactualCollectionError,
+                    expected_error,
+                ):
+                    validate_recurrent_counterfactual_collection_result(
+                        schema_tampered
+                    )
+
+        multi_actual_tampered = deepcopy(first)
+        multi_actual_tampered.bundles[0].multi_tape_compute[
+            "actual_continuation_tick_count"
+        ] = 0
+        object.__setattr__(
+            multi_actual_tampered,
+            "aggregate_compute",
+            collection_module._aggregate_compute(
+                multi_actual_tampered.bundles
+            ),
+        )
+        self._rehash_bundle_and_result(multi_actual_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "positive integer",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                multi_actual_tampered
+            )
+
         tampered = deepcopy(first)
         tampered.bundles[0].aggregate_rows[0]["tape_provenance"][0][
             "environment_sampling_seed"
@@ -690,6 +1016,221 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
             "aggregate|seed|exact digest",
         ):
             validate_recurrent_counterfactual_collection_result(tampered)
+
+        scenario_tampered = deepcopy(first)
+        object.__setattr__(
+            scenario_tampered.bundles[0],
+            "task",
+            replace(scenario_tampered.bundles[0].task, scenario="plant_only"),
+        )
+        self._rehash_bundle_and_result(scenario_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "row source identity",
+        ):
+            validate_recurrent_counterfactual_collection_result(scenario_tampered)
+
+        task_id_tampered = deepcopy(first)
+        object.__setattr__(
+            task_id_tampered.bundles[0],
+            "task",
+            replace(task_id_tampered.bundles[0].task, task_id="relabelled-task"),
+        )
+        self._rehash_bundle_and_result(task_id_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "tape identity",
+        ):
+            validate_recurrent_counterfactual_collection_result(task_id_tampered)
+
+        for identity_field in (
+            "source_policy_sampling_identity",
+            "branch_selection_identity",
+        ):
+            with self.subTest(identity_field=identity_field):
+                identity_tampered = deepcopy(first)
+                object.__setattr__(
+                    identity_tampered.bundles[0].task,
+                    identity_field,
+                    f"relabelled:{identity_field}",
+                )
+                self._rehash_bundle_and_result(identity_tampered)
+                with self.assertRaisesRegex(
+                    RecurrentCounterfactualCollectionError,
+                    "namespaced identit",
+                ):
+                    validate_recurrent_counterfactual_collection_result(
+                        identity_tampered
+                    )
+
+        gamma_tampered = deepcopy(first)
+        object.__setattr__(gamma_tampered.config, "gamma", 0.5)
+        self._rehash_bundle_and_result(gamma_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "gamma",
+        ):
+            validate_recurrent_counterfactual_collection_result(gamma_tampered)
+
+        duplicated_evidence = deepcopy(first)
+        duplicate_bundle = deepcopy(duplicated_evidence.bundles[0])
+        object.__setattr__(
+            duplicate_bundle,
+            "task",
+            replace(
+                duplicate_bundle.task,
+                task_id="unique-id-with-duplicated-seed-evidence",
+            ),
+        )
+        object.__setattr__(
+            duplicated_evidence,
+            "bundles",
+            (duplicated_evidence.bundles[0], duplicate_bundle),
+        )
+        object.__setattr__(
+            duplicated_evidence,
+            "aggregate_compute",
+            collection_module._aggregate_compute(duplicated_evidence.bundles),
+        )
+        self._rehash_bundle_and_result(duplicated_evidence, bundle_index=1)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "sampling seeds must be unique",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                duplicated_evidence
+            )
+
+        optimizer_tampered = deepcopy(first)
+        optimizer_aggregate = optimizer_tampered.bundles[0].aggregate_rows[0]
+        optimizer_state = optimizer_aggregate["optimizer_context"][
+            "source_recurrent_state"
+        ]
+        optimizer_state[0][0][0] += 0.125
+        optimizer_tensor = torch.tensor(optimizer_state, dtype=torch.float32)
+        optimizer_aggregate["optimizer_context"][
+            "source_recurrent_state_sha256"
+        ] = hashlib.sha256(
+            bytes(
+                optimizer_tensor.contiguous()
+                .view(torch.uint8)
+                .reshape(-1)
+                .tolist()
+            )
+        ).hexdigest()
+        self._rehash_aggregate(optimizer_aggregate)
+        validate_recurrent_counterfactual_aggregate_row(optimizer_aggregate)
+        self._rehash_bundle_and_result(optimizer_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "optimizer context",
+        ):
+            validate_recurrent_counterfactual_collection_result(optimizer_tampered)
+
+        behavior_tampered = deepcopy(first)
+        behavior_aggregate = behavior_tampered.bundles[0].aggregate_rows[0]
+        logits = behavior_aggregate["source_behavior"][
+            "source_behavior_distribution"
+        ]["masked_logits"]
+        for action, value in logits.items():
+            if value is not None:
+                logits[action] = value + 1.0
+        self._rehash_aggregate(behavior_aggregate)
+        validate_recurrent_counterfactual_aggregate_row(behavior_aggregate)
+        self._rehash_bundle_and_result(behavior_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "source behavior",
+        ):
+            validate_recurrent_counterfactual_collection_result(behavior_tampered)
+
+        terminal_behavior_tampered = deepcopy(first)
+        terminal_aggregate = terminal_behavior_tampered.bundles[0].terminal_target
+        terminal_logits = terminal_aggregate["source_behavior"][
+            "source_behavior_distribution"
+        ]["masked_logits"]
+        for action, value in terminal_logits.items():
+            if value is not None:
+                terminal_logits[action] = value + 1.0
+        self._rehash_aggregate(terminal_aggregate)
+        validate_recurrent_counterfactual_aggregate_row(terminal_aggregate)
+        self._rehash_bundle_and_result(terminal_behavior_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "source behavior",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                terminal_behavior_tampered
+            )
+
+        checkpoint_tampered = deepcopy(first)
+        checkpoint_aggregate = checkpoint_tampered.bundles[0].aggregate_rows[0]
+        checkpoint_aggregate["source_identity"][
+            "source_checkpoint_identity_sha256"
+        ] = "f" * 64
+        self._rehash_aggregate(checkpoint_aggregate)
+        validate_recurrent_counterfactual_aggregate_row(checkpoint_aggregate)
+        self._rehash_bundle_and_result(checkpoint_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "source identity",
+        ):
+            validate_recurrent_counterfactual_collection_result(checkpoint_tampered)
+
+        pre_boundary_tampered = deepcopy(first)
+        pre_boundary_aggregate = pre_boundary_tampered.bundles[0].aggregate_rows[0]
+        pre_environment = "e" * 64
+        pre_policy = "d" * 64
+        pre_boundary_aggregate["source_identity"][
+            "source_pre_boundary_environment_rng_state_sha256"
+        ] = pre_environment
+        pre_boundary_aggregate["source_identity"][
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ] = pre_policy
+        pre_boundary_aggregate["source_identity"][
+            "source_checkpoint_identity_sha256"
+        ] = "c" * 64
+        for tape in pre_boundary_aggregate["tape_provenance"]:
+            tape["pre_boundary_environment_rng_state_sha256"] = pre_environment
+            tape["pre_boundary_policy_sampling_state_sha256"] = pre_policy
+            for outcome in (tape["baseline"], *tape["action_outcomes"]):
+                outcome[
+                    "pre_boundary_environment_rng_state_sha256"
+                ] = pre_environment
+                outcome["pre_boundary_policy_sampling_state_sha256"] = pre_policy
+        self._rehash_aggregate(pre_boundary_aggregate)
+        validate_recurrent_counterfactual_aggregate_row(pre_boundary_aggregate)
+        self._rehash_bundle_and_result(pre_boundary_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "source identity",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                pre_boundary_tampered
+            )
+
+        v4_source_tampered = deepcopy(first)
+        v4_source_row = v4_source_tampered.bundles[0].rows[0]
+        v4_source_row["schema_version"] = (
+            branch_module.RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION
+        )
+        for field in (
+            "source_pre_boundary_environment_rng_state_sha256",
+            "source_pre_boundary_policy_sampling_state_sha256",
+            "source_boundary_identity_sha256",
+        ):
+            v4_source_row["metadata"].pop(field)
+        v4_source_row["component_digests"]["metadata"] = stable_payload_digest(
+            v4_source_row["metadata"]
+        )
+        v4_source_row.pop("exact_digest")
+        v4_source_row["exact_digest"] = stable_payload_digest(v4_source_row)
+        self._rehash_bundle_and_result(v4_source_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "source branch-row schema",
+        ):
+            validate_recurrent_counterfactual_collection_result(v4_source_tampered)
 
     def test_scale_multi_tape_collection_rejects_implicit_tick_strata(self) -> None:
         task = RecurrentCounterfactualCollectionTask(

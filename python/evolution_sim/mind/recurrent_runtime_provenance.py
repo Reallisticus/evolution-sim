@@ -1,20 +1,43 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import ctypes
 from importlib import metadata
 import os
+from pathlib import Path
 import platform
 import re
 import struct
+import subprocess
 import sys
 
 import torch
 
 from evolution_sim.mind.provenance import stable_payload_digest
+from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION,
+)
+from evolution_sim.mind.recurrent_counterfactual_branch import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY,
+)
+from evolution_sim.mind.recurrent_counterfactual_collection import (
+    RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
+)
+from evolution_sim.mind.recurrent_scale_campaign import (
+    RECURRENT_SCALE_CAMPAIGN_POLICY,
+    RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION,
+    RECURRENT_SCALE_CONCURRENT_CUDA_ARM_PROCESSES,
+)
+from evolution_sim.mind.recurrent_seed_registry import (
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+)
 
 
 RECURRENT_SCALE_RUNTIME_PROVENANCE_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_scale_runtime_provenance_v1"
+    "mind_v3_public_recurrent_ippo_scale_runtime_provenance_v2"
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
@@ -140,6 +163,9 @@ def build_recurrent_scale_runtime_provenance(
         ),
         "logical_cpu_count": _optional_positive_int(os.cpu_count()),
         "worker_process_start_method": "spawn",
+        "concurrent_cuda_arm_processes": (
+            RECURRENT_SCALE_CONCURRENT_CUDA_ARM_PROCESSES
+        ),
     }
     freeze = (
         installed_dependency_freeze()
@@ -151,6 +177,27 @@ def build_recurrent_scale_runtime_provenance(
         "schema_version": RECURRENT_SCALE_RUNTIME_PROVENANCE_SCHEMA_VERSION,
         "contract_binding": {
             "preregistration_digest": parsed_preregistration,
+            "preregistration_schema_version": (
+                RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION
+            ),
+            "campaign_policy": RECURRENT_SCALE_CAMPAIGN_POLICY,
+            "seed_registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+            "seed_registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+            "counterfactual_collection_contract_version": (
+                RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION
+            ),
+            "counterfactual_source_branch_schema_version": (
+                RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+            ),
+            "counterfactual_aggregate_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION
+            ),
+            "counterfactual_aggregate_auxiliary_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION
+            ),
+            "counterfactual_rng_retape_boundary": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+            ),
             "source_commit": parsed_commit,
             "source_manifest_sha256": parsed_manifest,
             "repository_clean": True,
@@ -170,6 +217,7 @@ def build_recurrent_scale_runtime_provenance(
         },
         "torch": _torch_runtime_payload(),
         "device": _device_payload(resolved_device),
+        "nvidia": _nvidia_runtime_payload(resolved_device),
         "dependency_freeze": freeze,
         "workers": worker_contract,
         "determinism_environment": {
@@ -203,6 +251,7 @@ def validate_recurrent_scale_runtime_provenance(
             "platform",
             "torch",
             "device",
+            "nvidia",
             "dependency_freeze",
             "workers",
             "determinism_environment",
@@ -232,6 +281,15 @@ def validate_recurrent_scale_runtime_provenance(
         binding,
         {
             "preregistration_digest",
+            "preregistration_schema_version",
+            "campaign_policy",
+            "seed_registry_version",
+            "seed_registry_sha256",
+            "counterfactual_collection_contract_version",
+            "counterfactual_source_branch_schema_version",
+            "counterfactual_aggregate_schema_version",
+            "counterfactual_aggregate_auxiliary_schema_version",
+            "counterfactual_rng_retape_boundary",
             "source_commit",
             "source_manifest_sha256",
             "repository_clean",
@@ -242,6 +300,33 @@ def validate_recurrent_scale_runtime_provenance(
         binding.get("preregistration_digest"),
         field="contract_binding.preregistration_digest",
     )
+    expected_binding = {
+        "preregistration_schema_version": (
+            RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION
+        ),
+        "campaign_policy": RECURRENT_SCALE_CAMPAIGN_POLICY,
+        "seed_registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+        "seed_registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        "counterfactual_collection_contract_version": (
+            RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION
+        ),
+        "counterfactual_source_branch_schema_version": (
+            RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+        ),
+        "counterfactual_aggregate_schema_version": (
+            RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION
+        ),
+        "counterfactual_aggregate_auxiliary_schema_version": (
+            RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION
+        ),
+        "counterfactual_rng_retape_boundary": (
+            RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+        ),
+    }
+    if any(binding.get(field) != value for field, value in expected_binding.items()):
+        raise RecurrentRuntimeProvenanceError(
+            "runtime provenance v2 campaign contract binding drifted"
+        )
     _commit(
         binding.get("source_commit"),
         field="contract_binding.source_commit",
@@ -287,7 +372,12 @@ def validate_recurrent_scale_runtime_provenance(
         )
 
     _validate_torch_runtime(provenance.get("torch"))
-    _validate_device(provenance.get("device"))
+    device_payload = _mapping(provenance.get("device"), field="device")
+    _validate_device(device_payload)
+    _validate_nvidia_runtime(
+        provenance.get("nvidia"),
+        device_type=_nonempty_string(device_payload.get("type"), field="device.type"),
+    )
 
     freeze = _mapping(
         provenance.get("dependency_freeze"),
@@ -303,6 +393,7 @@ def validate_recurrent_scale_runtime_provenance(
             "torch_interop_threads",
             "logical_cpu_count",
             "worker_process_start_method",
+            "concurrent_cuda_arm_processes",
         },
         field="workers",
     )
@@ -314,6 +405,12 @@ def validate_recurrent_scale_runtime_provenance(
     if workers.get("worker_process_start_method") != "spawn":
         raise RecurrentRuntimeProvenanceError(
             "runtime worker process start method drifted"
+        )
+    if workers.get("concurrent_cuda_arm_processes") != (
+        RECURRENT_SCALE_CONCURRENT_CUDA_ARM_PROCESSES
+    ):
+        raise RecurrentRuntimeProvenanceError(
+            "runtime concurrent CUDA arm-process topology drifted"
         )
 
     determinism_environment = _mapping(
@@ -438,6 +535,119 @@ def _device_payload(device: torch.device) -> dict[str, object]:
     raise RecurrentRuntimeProvenanceError(
         f"unsupported runtime device type: {device.type!r}"
     )
+
+
+def _nvidia_runtime_payload(device: torch.device) -> dict[str, object]:
+    empty = {
+        "required": False,
+        "driver_version": None,
+        "cuda_driver_api_version": None,
+        "cuda_driver_api_version_raw": None,
+        "cuda_runtime_api_version": None,
+        "cuda_runtime_api_version_raw": None,
+    }
+    if device.type != "cuda":
+        return empty
+    if not torch.cuda.is_available():
+        raise RecurrentRuntimeProvenanceError(
+            "NVIDIA runtime provenance requested but CUDA is unavailable"
+        )
+    index = torch.cuda.current_device() if device.index is None else device.index
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version",
+                "--format=csv,noheader,nounits",
+                f"--id={index}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RecurrentRuntimeProvenanceError(
+            "NVIDIA driver version query failed"
+        ) from error
+    driver_versions = {
+        line.strip() for line in completed.stdout.splitlines() if line.strip()
+    }
+    if len(driver_versions) != 1:
+        raise RecurrentRuntimeProvenanceError(
+            "NVIDIA driver query did not return exactly one version"
+        )
+    driver_version = next(iter(driver_versions))
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", driver_version) is None:
+        raise RecurrentRuntimeProvenanceError(
+            "NVIDIA driver version is malformed"
+        )
+
+    try:
+        driver_library = ctypes.CDLL("libcuda.so.1")
+        driver_raw = ctypes.c_int()
+        driver_status = driver_library.cuDriverGetVersion(
+            ctypes.byref(driver_raw)
+        )
+    except (AttributeError, OSError) as error:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA driver API version query failed"
+        ) from error
+    if driver_status != 0 or driver_raw.value <= 0:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA driver API returned an invalid version"
+        )
+
+    torch.cuda.synchronize(index)
+    maps_path = Path("/proc/self/maps")
+    try:
+        mapped_paths = {
+            line.split()[-1]
+            for line in maps_path.read_text(encoding="utf-8").splitlines()
+            if "libcudart.so" in line and "/" in line
+        }
+    except OSError as error:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA runtime library inventory is unavailable"
+        ) from error
+    runtime_versions: set[int] = set()
+    for mapped_path in mapped_paths:
+        try:
+            runtime_library = ctypes.CDLL(mapped_path)
+            runtime_raw = ctypes.c_int()
+            runtime_status = runtime_library.cudaRuntimeGetVersion(
+                ctypes.byref(runtime_raw)
+            )
+        except (AttributeError, OSError) as error:
+            raise RecurrentRuntimeProvenanceError(
+                "CUDA runtime API version query failed"
+            ) from error
+        if runtime_status != 0 or runtime_raw.value <= 0:
+            raise RecurrentRuntimeProvenanceError(
+                "CUDA runtime API returned an invalid version"
+            )
+        runtime_versions.add(runtime_raw.value)
+    if len(runtime_versions) != 1:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA runtime API did not resolve to one loaded version"
+        )
+    runtime_raw_value = next(iter(runtime_versions))
+    return {
+        "required": True,
+        "driver_version": driver_version,
+        "cuda_driver_api_version": _cuda_api_version_string(driver_raw.value),
+        "cuda_driver_api_version_raw": driver_raw.value,
+        "cuda_runtime_api_version": _cuda_api_version_string(runtime_raw_value),
+        "cuda_runtime_api_version_raw": runtime_raw_value,
+    }
+
+
+def _cuda_api_version_string(value: int) -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA API version must be a positive integer"
+        )
+    return f"{value // 1000}.{(value % 1000) // 10}"
 
 
 def _validated_dependency_freeze(
@@ -626,6 +836,56 @@ def _validate_device(value: object) -> None:
     raise RecurrentRuntimeProvenanceError(
         "runtime device type must be cpu, mps, or cuda"
     )
+
+
+def _validate_nvidia_runtime(value: object, *, device_type: str) -> None:
+    runtime = _mapping(value, field="nvidia")
+    _exact_keys(
+        runtime,
+        {
+            "required",
+            "driver_version",
+            "cuda_driver_api_version",
+            "cuda_driver_api_version_raw",
+            "cuda_runtime_api_version",
+            "cuda_runtime_api_version_raw",
+        },
+        field="nvidia",
+    )
+    if device_type != "cuda":
+        if runtime != {
+            "required": False,
+            "driver_version": None,
+            "cuda_driver_api_version": None,
+            "cuda_driver_api_version_raw": None,
+            "cuda_runtime_api_version": None,
+            "cuda_runtime_api_version_raw": None,
+        }:
+            raise RecurrentRuntimeProvenanceError(
+                "non-CUDA runtime cannot carry NVIDIA version evidence"
+            )
+        return
+    if runtime.get("required") is not True:
+        raise RecurrentRuntimeProvenanceError(
+            "CUDA runtime requires NVIDIA version evidence"
+        )
+    driver_version = _nonempty_string(
+        runtime.get("driver_version"),
+        field="nvidia.driver_version",
+    )
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", driver_version) is None:
+        raise RecurrentRuntimeProvenanceError(
+            "NVIDIA driver version is malformed"
+        )
+    for prefix in ("cuda_driver_api", "cuda_runtime_api"):
+        raw = _positive_int(
+            runtime.get(f"{prefix}_version_raw"),
+            field=f"nvidia.{prefix}_version_raw",
+        )
+        if runtime.get(f"{prefix}_version") != _cuda_api_version_string(raw):
+            raise RecurrentRuntimeProvenanceError(
+                f"NVIDIA {prefix} version string/raw value drifted"
+            )
 
 
 def _canonical_distribution_name(value: str) -> str:

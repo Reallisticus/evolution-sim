@@ -61,6 +61,7 @@ from evolution_sim.mind.recurrent_rollout import (
 from evolution_sim.mind.recurrent_seed_registry import RECURRENT_SEED_REGISTRY
 from evolution_sim.mind.recurrent_seed_registry import (
     SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
 )
 
 
@@ -71,6 +72,9 @@ RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
 RECURRENT_SCALE_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_public_recurrent_scale_training_seed_provenance_v1"
 )
+RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
+    "mind_public_recurrent_scale_training_seed_provenance_v2"
+)
 RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
     "mind_public_recurrent_ippo_training_schedule_task_v1"
 )
@@ -80,11 +84,19 @@ RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION = (
 RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
     "mind_public_recurrent_ippo_scale_training_schedule_task_v1"
 )
+RECURRENT_SCALE_V2_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
+    "mind_public_recurrent_ippo_scale_training_schedule_task_v2"
+)
+RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION = (
+    "mind_public_recurrent_counterfactual_collection_task_v2"
+)
 RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL = "canonical_v1"
 RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT = "scale_development_v1"
+RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2 = "scale_development_v2"
 RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS = (
     RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL,
     RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
 )
 RECURRENT_BROAD_SCENARIO = "broad"
 RECURRENT_TRAINING_SCENARIOS: tuple[str, ...] = (
@@ -216,16 +228,26 @@ class RecurrentRolloutTask:
             if self.scenario == RECURRENT_BROAD_SCENARIO
             else "scale_curriculum"
         )
+        scale_v2_seed_role = (
+            "scale_v2_train"
+            if self.scenario == RECURRENT_BROAD_SCENARIO
+            else "scale_v2_curriculum"
+        )
         expected_seed_role = self.seed_role or legacy_seed_role
-        if expected_seed_role not in {legacy_seed_role, scale_seed_role}:
+        if expected_seed_role not in {
+            legacy_seed_role,
+            scale_seed_role,
+            scale_v2_seed_role,
+        }:
             raise RecurrentExperimentError(
                 "rollout task seed_role does not match its training scenario"
             )
-        seed_registry = (
-            RECURRENT_SEED_REGISTRY
-            if expected_seed_role == legacy_seed_role
-            else SCALE_DEVELOPMENT_SEED_REGISTRY
-        )
+        if expected_seed_role == legacy_seed_role:
+            seed_registry = RECURRENT_SEED_REGISTRY
+        elif expected_seed_role == scale_seed_role:
+            seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+        else:
+            seed_registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
         if environment_seed not in seed_registry[expected_seed_role]:
             raise RecurrentExperimentError(
                 f"{self.scenario} training requires a canonical "
@@ -375,9 +397,14 @@ def build_recurrent_training_schedule(
             "seed_registry_contract must be one of "
             + ", ".join(RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS)
         )
-    scale_development = (
+    scale_v1_development = (
         seed_registry_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
     )
+    scale_v2_development = (
+        seed_registry_contract
+        == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+    )
+    scale_development = scale_v1_development or scale_v2_development
     if scale_development:
         if scale_learner_seed is None:
             raise RecurrentExperimentError(
@@ -387,10 +414,12 @@ def build_recurrent_training_schedule(
             scale_learner_seed,
             field="scale_learner_seed",
         )
-        if (
-            resolved_scale_learner_seed
-            not in (SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"])
-        ):
+        learner_registry = (
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
+            if scale_v2_development
+            else SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+        )
+        if resolved_scale_learner_seed not in learner_registry:
             raise RecurrentExperimentError(
                 "scale_learner_seed must be registered for the scale_learner role"
             )
@@ -400,18 +429,23 @@ def build_recurrent_training_schedule(
                 "scale_learner_seed is only valid with the scale-development registry"
             )
         resolved_scale_learner_seed = None
-    seed_registry = (
-        SCALE_DEVELOPMENT_SEED_REGISTRY
-        if scale_development
-        else RECURRENT_SEED_REGISTRY
-    )
-    broad_role = "scale_train" if scale_development else "train"
-    fixture_role = "scale_curriculum" if scale_development else "curriculum"
-    sampling_identity_version = (
-        RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
-        if scale_development
-        else RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION
-    )
+    if scale_v2_development:
+        seed_registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
+        broad_role = "scale_v2_train"
+        fixture_role = "scale_v2_curriculum"
+        sampling_identity_version = (
+            RECURRENT_SCALE_V2_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+        )
+    elif scale_v1_development:
+        seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+        broad_role = "scale_train"
+        fixture_role = "scale_curriculum"
+        sampling_identity_version = RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+    else:
+        seed_registry = RECURRENT_SEED_REGISTRY
+        broad_role = "train"
+        fixture_role = "curriculum"
+        sampling_identity_version = RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION
 
     broad_seeds = seed_registry[broad_role]
     fixture_seeds = seed_registry[fixture_role]
@@ -442,8 +476,13 @@ def build_recurrent_training_schedule(
                     f"update={update_index:04d}|world={global_index:06d}|"
                     f"scenario={scenario}"
                 )
+                scale_task_prefix = (
+                    "scale-v2-learner"
+                    if scale_v2_development
+                    else "scale-learner"
+                )
                 task_id = (
-                    f"scale-learner-{resolved_scale_learner_seed}-"
+                    f"{scale_task_prefix}-{resolved_scale_learner_seed}-"
                     f"update-{update_index:04d}-world-{global_index:06d}-"
                     f"{scenario}-seed-{seed}"
                 )
@@ -548,8 +587,13 @@ def build_recurrent_counterfactual_collection_tasks(
     collection_tasks: list[RecurrentCounterfactualCollectionTask] = []
     for slot, task in enumerate(selected):
         scale_task = str(task.seed_role).startswith("scale_")
+        identity_version = (
+            RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION
+            if str(task.seed_role).startswith("scale_v2_")
+            else RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION
+        )
         identity_prefix = (
-            f"{RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION}|"
+            f"{identity_version}|"
             f"update={update_index:04d}|slot={slot:02d}|"
             f"source_task={task.task_id}"
         )
@@ -1272,6 +1316,11 @@ def _training_seed_provenance(
             SCALE_DEVELOPMENT_SEED_REGISTRY,
             RECURRENT_SCALE_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
         ),
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2: (
+            ("scale_v2_train", "scale_v2_curriculum"),
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+            RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
+        ),
     }
     observed_roles = {
         str(task.seed_role) for update in updates for task in update.tasks
@@ -1327,7 +1376,10 @@ def _training_seed_provenance(
         "validation_seeds_accessed": False,
         "lockbox_seeds_accessed": False,
     }
-    if selected_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT:
+    if selected_contract in {
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
+    }:
         payload["seed_registry_contract"] = selected_contract
     return payload
 
@@ -1427,15 +1479,25 @@ def _rollout_diagnostics(
             if scenario == RECURRENT_BROAD_SCENARIO
             else "scale_curriculum"
         )
-        if seed_role not in {legacy_seed_role, scale_seed_role}:
+        scale_v2_seed_role = (
+            "scale_v2_train"
+            if scenario == RECURRENT_BROAD_SCENARIO
+            else "scale_v2_curriculum"
+        )
+        if seed_role not in {
+            legacy_seed_role,
+            scale_seed_role,
+            scale_v2_seed_role,
+        }:
             raise RecurrentExperimentError(
                 "world summary seed role does not match its training scenario"
             )
-        seed_registry = (
-            RECURRENT_SEED_REGISTRY
-            if seed_role == legacy_seed_role
-            else SCALE_DEVELOPMENT_SEED_REGISTRY
-        )
+        if seed_role == legacy_seed_role:
+            seed_registry = RECURRENT_SEED_REGISTRY
+        elif seed_role == scale_seed_role:
+            seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+        else:
+            seed_registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
         if environment_seed not in seed_registry[seed_role]:
             raise RecurrentExperimentError(
                 "world summary environment seed is outside its canonical training role"
@@ -1769,8 +1831,18 @@ __all__ = [
     "MAX_RECURRENT_ROLLOUT_WORKERS",
     "RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE",
     "RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION",
+    "RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION",
+    "RECURRENT_SCALE_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION",
+    "RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION",
+    "RECURRENT_SCALE_V2_POLICY_SAMPLING_TASK_IDENTITY_VERSION",
+    "RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION",
     "RECURRENT_ROLLOUT_WORKER_START_METHOD",
     "RECURRENT_ROLLOUT_WORKER_TORCH_THREADS",
+    "RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL",
+    "RECURRENT_TRAINING_SEED_REGISTRY_CONTRACTS",
+    "RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT",
+    "RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2",
+    "RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION",
     "RECURRENT_TRAINING_SCENARIOS",
     "RecurrentExperimentError",
     "RecurrentExperimentRunner",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -18,6 +19,8 @@ if torch is not None:
     from evolution_sim.mind.recurrent_counterfactual_comparison import EXACT_ARM
     from evolution_sim.mind.recurrent_cuda_training_smoke import (
         RECURRENT_CUDA_TRAINING_SMOKE_BUNDLE_COUNT,
+        RECURRENT_CUDA_TRAINING_SMOKE_CONTRACT_VERSION,
+        RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID,
         RECURRENT_CUDA_TRAINING_SMOKE_SCHEMA_VERSION,
         RECURRENT_CUDA_TRAINING_SMOKE_UPDATE_COUNT,
         RECURRENT_CUDA_TRAINING_SMOKE_WORLD_COUNT,
@@ -29,6 +32,7 @@ if torch is not None:
         build_recurrent_scale_runtime_provenance,
     )
     from evolution_sim.mind.recurrent_scale_campaign import (
+        RecurrentScaleCampaignError,
         build_recurrent_scale_campaign_preregistration,
         load_strict_json,
         write_atomic_json,
@@ -38,6 +42,9 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_seed_registry import (
         SCALE_DEVELOPMENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
     )
 
 
@@ -48,7 +55,9 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
             source_commit="1" * 40,
             source_manifest_sha256="2" * 64,
         )
-        self.learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        self.learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+            "scale_v2_learner"
+        ][0]
 
     def test_smoke_contract_uses_full_exact_algorithm_and_only_bounds_workload(
         self,
@@ -71,6 +80,30 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
         )
 
         self.assertEqual(contract["arm"], EXACT_ARM)
+        self.assertEqual(
+            contract["schema_version"],
+            RECURRENT_CUDA_TRAINING_SMOKE_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            contract["purpose"],
+            "pre_tmux_scale_v2_cuda_training_and_crash_resume_launch_gate",
+        )
+        self.assertEqual(
+            contract["seed_contract"],
+            {
+                "registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+                "registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+                "learner_role": "scale_v2_learner",
+            },
+        )
+        self.assertEqual(
+            RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID,
+            "cuda-training-smoke-preflight-v2",
+        )
+        self.assertEqual(
+            RECURRENT_CUDA_TRAINING_SMOKE_SCHEMA_VERSION,
+            "mind_v3_public_recurrent_ippo_cuda_training_smoke_v2",
+        )
         algorithm = contract["algorithm"]
         self.assertIsInstance(algorithm, dict)
         assert isinstance(algorithm, dict)
@@ -126,10 +159,13 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
         for name in ("warmup_task", "continued_task"):
             task = workload[name]
             assert isinstance(task, dict)
-            self.assertIn(task["seed_role"], {"scale_train", "scale_curriculum"})
+            self.assertIn(
+                task["seed_role"],
+                {"scale_v2_train", "scale_v2_curriculum"},
+            )
             self.assertNotIn(
                 task["environment_seed"],
-                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"],
+                SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"],
             )
         self.assertEqual(
             isolation,
@@ -143,6 +179,24 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
                 "promotion_authorized": False,
             },
         )
+
+    def test_v1_scale_learner_seed_is_rejected_by_v2_smoke_contract(self) -> None:
+        stale_learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        self.assertNotIn(
+            stale_learner_seed,
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"],
+        )
+        with self.assertRaisesRegex(
+            RecurrentScaleCampaignError,
+            "scale_v2_learner",
+        ):
+            build_recurrent_cuda_training_smoke_contract(
+                self.preregistration,
+                learner_seed=stale_learner_seed,
+                rollout_workers=1,
+                counterfactual_workers=1,
+                evaluation_workers=1,
+            )
 
     def test_cli_requires_pinned_inputs_and_explicit_worker_topology(self) -> None:
         parser = build_parser()
@@ -198,6 +252,14 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
             "compute_capability": [8, 9],
             "total_memory_bytes": 12 * 1024**3,
             "multiprocessor_count": 56,
+        }
+        runtime["nvidia"] = {
+            "required": True,
+            "driver_version": "595.58.03",
+            "cuda_driver_api_version": "13.2",
+            "cuda_driver_api_version_raw": 13020,
+            "cuda_runtime_api_version": "13.0",
+            "cuda_runtime_api_version_raw": 13000,
         }
         runtime["exact_digest"] = stable_payload_digest(
             {key: value for key, value in runtime.items() if key != "exact_digest"}
@@ -295,6 +357,57 @@ class RecurrentCudaTrainingSmokeTests(unittest.TestCase):
             preregistration=self.preregistration,
             runtime_provenance=runtime,
         )
+
+        stale_schema = copy.deepcopy(report)
+        stale_schema["schema_version"] = (
+            "mind_v3_public_recurrent_ippo_cuda_training_smoke_v1"
+        )
+        stale_schema["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in stale_schema.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            RecurrentScaleCampaignError,
+            "schema drifted",
+        ):
+            validate_recurrent_cuda_training_smoke_report(
+                stale_schema,
+                preregistration=self.preregistration,
+                runtime_provenance=runtime,
+            )
+
+        stale_learner = copy.deepcopy(report)
+        stale_contract = stale_learner["contract"]
+        assert isinstance(stale_contract, dict)
+        stale_contract["learner_seed"] = SCALE_DEVELOPMENT_SEED_REGISTRY[
+            "scale_learner"
+        ][0]
+        stale_contract["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in stale_contract.items()
+                if key != "exact_digest"
+            }
+        )
+        stale_learner["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in stale_learner.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            RecurrentScaleCampaignError,
+            "contract drifted",
+        ):
+            validate_recurrent_cuda_training_smoke_report(
+                stale_learner,
+                preregistration=self.preregistration,
+                runtime_provenance=runtime,
+            )
 
 
 if __name__ == "__main__":

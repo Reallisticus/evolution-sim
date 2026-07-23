@@ -16,29 +16,42 @@ from evolution_sim.mind.recurrent_counterfactual_comparison import (
     EXACT_ARM,
     SHUFFLED_ARM,
 )
+from evolution_sim.mind.recurrent_counterfactual_branch import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE,
+    RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE,
+    RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY,
+)
+from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION,
+)
+from evolution_sim.mind.recurrent_counterfactual_collection import (
+    RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
+)
 from evolution_sim.mind.recurrent_evaluation import (
-    RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE,
+    RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE,
     RecurrentEvaluationSeedPlan,
 )
 from evolution_sim.mind.recurrent_experiment import RECURRENT_TRAINING_SCENARIOS
 from evolution_sim.mind.recurrent_seed_registry import (
-    SCALE_DEVELOPMENT_CANONICAL_SHA256,
-    SCALE_DEVELOPMENT_SEED_REGISTRY,
-    SCALE_DEVELOPMENT_SEED_REGISTRY_VERSION,
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
 )
 
 
 RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_scale_campaign_preregistration_v1"
+    "mind_v3_public_recurrent_ippo_scale_campaign_preregistration_v2"
 )
 RECURRENT_SCALE_ARM_REPORT_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_scale_arm_report_v1"
+    "mind_v3_public_recurrent_ippo_scale_arm_report_v2"
 )
 RECURRENT_SCALE_CAMPAIGN_ANALYSIS_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_scale_campaign_analysis_v1"
+    "mind_v3_public_recurrent_ippo_scale_campaign_analysis_v2"
 )
 RECURRENT_SCALE_CAMPAIGN_POLICY = (
-    "public_recurrent_ippo_multi_tape_terminal_counterfactual_scale_v1"
+    "public_recurrent_ippo_multi_tape_terminal_counterfactual_scale_v2"
 )
 RECURRENT_SCALE_ARMS = (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
 RECURRENT_SCALE_UPDATE_COUNT = 16
@@ -46,9 +59,10 @@ RECURRENT_SCALE_WORLDS_PER_UPDATE = 16
 RECURRENT_SCALE_ROLLOUT_TICKS = 120
 RECURRENT_SCALE_SELECTION_SEED_COUNT = 8
 RECURRENT_SCALE_POLICY_SAMPLING_STREAM_COUNT = 4
+RECURRENT_SCALE_CONCURRENT_CUDA_ARM_PROCESSES = 3
 RECURRENT_SCALE_TOTAL_TRAINING_WORLDS = (
     len(RECURRENT_SCALE_ARMS)
-    * len(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"])
+    * len(SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"])
     * RECURRENT_SCALE_UPDATE_COUNT
     * RECURRENT_SCALE_WORLDS_PER_UPDATE
 )
@@ -82,9 +96,9 @@ def _build_recurrent_scale_campaign_preregistration(
 
     _source_commit(source_commit)
     _sha256(source_manifest_sha256, field="source_manifest_sha256")
-    learner_seeds = list(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"])
+    learner_seeds = list(SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"])
     selection_seeds = list(
-        SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"][
             :RECURRENT_SCALE_SELECTION_SEED_COUNT
         ]
     )
@@ -97,14 +111,14 @@ def _build_recurrent_scale_campaign_preregistration(
             "clean_tree_required_for_every_arm": True,
         },
         "seed_contract": {
-            "registry_version": SCALE_DEVELOPMENT_SEED_REGISTRY_VERSION,
-            "registry_sha256": SCALE_DEVELOPMENT_CANONICAL_SHA256,
-            "learner_role": "scale_learner",
+            "registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+            "registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+            "learner_role": "scale_v2_learner",
             "learner_seeds": learner_seeds,
             "learner_specific_policy_and_counterfactual_rng_namespaces": True,
             "arm_paired_within_learner": True,
-            "optimization_roles": ["scale_train", "scale_curriculum"],
-            "selection_role": "scale_selection",
+            "optimization_roles": ["scale_v2_train", "scale_v2_curriculum"],
+            "selection_role": "scale_v2_selection",
             "selection_seeds": selection_seeds,
             "validation_available": False,
             "validation_accessed": False,
@@ -175,6 +189,18 @@ def _build_recurrent_scale_campaign_preregistration(
             },
         },
         "counterfactual": {
+            "collection_contract_version": (
+                RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION
+            ),
+            "source_branch_row_schema_version": (
+                RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+            ),
+            "aggregate_row_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION
+            ),
+            "aggregate_auxiliary_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION
+            ),
             "bundles_per_update": 2,
             "branch_tick_candidates": [16, 40, 64, 72],
             "branch_selection": (
@@ -187,6 +213,18 @@ def _build_recurrent_scale_campaign_preregistration(
             "absolute_terminal_weight": 0.5,
             "independent_rng_tapes_per_branch": 8,
             "same_checkpoint_and_rng_tape_across_forced_actions": True,
+            "continuation_rng_retape_boundary": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+            ),
+            "continuation_environment_tape_seed_namespace": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+            ),
+            "continuation_policy_tape_seed_namespace": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE
+            ),
+            "fixed_source_prefix_through_focal_natural_draw": True,
+            "horizon_includes_branch_tick": True,
+            "same_tick_post_focal_consequences_governed_by_tape": True,
             "uncertainty": {
                 "estimator": "paired_action_delta_mean_variance_standard_error",
                 "conservative_score": "mean_delta_minus_lambda_times_standard_error",
@@ -221,7 +259,7 @@ def _build_recurrent_scale_campaign_preregistration(
             },
         },
         "evaluation": {
-            "role": RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE,
+            "role": RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE,
             "seeds": selection_seeds,
             "fixtures": ["carrion_only"],
             "horizon_ticks": RECURRENT_SCALE_ROLLOUT_TICKS,
@@ -237,6 +275,9 @@ def _build_recurrent_scale_campaign_preregistration(
         },
         "execution": {
             "training_device_type": "cuda",
+            "concurrent_cuda_arm_processes": (
+                RECURRENT_SCALE_CONCURRENT_CUDA_ARM_PROCESSES
+            ),
             "runtime_provenance_required": True,
             "same_runtime_provenance_all_24_cells": True,
             "dependency_name_version_freeze_required": True,
@@ -344,7 +385,8 @@ def validate_recurrent_scale_campaign_preregistration(
         preregistration.get("seed_contract"), field="seed_contract"
     )
     if (
-        seed_contract.get("registry_sha256") != SCALE_DEVELOPMENT_CANONICAL_SHA256
+        seed_contract.get("registry_sha256")
+        != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
         or seed_contract.get("validation_accessed") is not False
         or seed_contract.get("lockbox_accessed") is not False
     ):
@@ -352,27 +394,27 @@ def validate_recurrent_scale_campaign_preregistration(
 
 
 def recurrent_scale_selection_seed_plan() -> RecurrentEvaluationSeedPlan:
-    selection = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][
+    selection = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"][
         :RECURRENT_SCALE_SELECTION_SEED_COUNT
     ]
     excluded = (
-        *SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"],
-        *SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"],
+        *SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"],
+        *SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_curriculum"],
     )
     return RecurrentEvaluationSeedPlan(
         broad_seeds=selection,
         fixture_seeds=selection,
         excluded_training_seeds=excluded,
-        environment_seed_role=RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE,
+        environment_seed_role=RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE,
     )
 
 
 def recurrent_scale_arm_run_id(*, learner_seed: int, arm: str) -> str:
-    if learner_seed not in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]:
-        raise RecurrentScaleCampaignError("learner seed is not in scale_learner")
+    if learner_seed not in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]:
+        raise RecurrentScaleCampaignError("learner seed is not in scale_v2_learner")
     if arm not in RECURRENT_SCALE_ARMS:
         raise RecurrentScaleCampaignError(f"unsupported scale arm: {arm!r}")
-    return f"scale-v1-learner-{learner_seed}-{arm}"
+    return f"scale-v2-learner-{learner_seed}-{arm}"
 
 
 def write_atomic_json(path: str | Path, payload: Mapping[str, object]) -> Path:

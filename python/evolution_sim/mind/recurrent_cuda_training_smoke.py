@@ -35,22 +35,29 @@ from evolution_sim.mind.recurrent_scale_campaign import (
 )
 from evolution_sim.mind.recurrent_scale_execution import build_scale_run_components
 from evolution_sim.mind.recurrent_seed_registry import (
-    SCALE_DEVELOPMENT_CANONICAL_SHA256,
-    SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
 )
 
 
 RECURRENT_CUDA_TRAINING_SMOKE_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_cuda_training_smoke_v1"
+    "mind_v3_public_recurrent_ippo_cuda_training_smoke_v2"
 )
 RECURRENT_CUDA_TRAINING_SMOKE_CONTRACT_VERSION = (
-    "mind_v3_public_recurrent_ippo_cuda_training_smoke_contract_v1"
+    "mind_v3_public_recurrent_ippo_cuda_training_smoke_contract_v2"
 )
-RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID = "cuda-training-smoke-preflight-v1"
+RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID = "cuda-training-smoke-preflight-v2"
 RECURRENT_CUDA_TRAINING_SMOKE_UPDATE_COUNT = 1
 RECURRENT_CUDA_TRAINING_SMOKE_WORLD_COUNT = 1
 RECURRENT_CUDA_TRAINING_SMOKE_BUNDLE_COUNT = 1
 RECURRENT_CUDA_TRAINING_SMOKE_WARMUP_UPDATE_COUNT = 1
+_RECURRENT_CUDA_TRAINING_SMOKE_RUNTIME_PROVENANCE_RNG_KEY = (
+    "cuda_training_smoke_v2_runtime_provenance_digest"
+)
+_RECURRENT_CUDA_TRAINING_SMOKE_V1_RUNTIME_PROVENANCE_RNG_KEY = (
+    "cuda_training_smoke_runtime_provenance_digest"
+)
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -73,6 +80,10 @@ def build_recurrent_cuda_training_smoke_contract(
     _positive_int(rollout_workers, field="rollout_workers")
     _positive_int(counterfactual_workers, field="counterfactual_workers")
     _positive_int(evaluation_workers, field="evaluation_workers")
+    if learner_seed not in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]:
+        raise RecurrentScaleCampaignError(
+            "CUDA training smoke learner seed is not in scale_v2_learner"
+        )
     model, ppo, counterfactual, schedule = build_scale_run_components(
         preregistration,
         learner_seed=learner_seed,
@@ -96,9 +107,14 @@ def build_recurrent_cuda_training_smoke_contract(
         raise RecurrentScaleCampaignError("scale schedule cannot supply smoke worlds")
     contract: dict[str, object] = {
         "schema_version": RECURRENT_CUDA_TRAINING_SMOKE_CONTRACT_VERSION,
-        "purpose": "pre_tmux_cuda_training_and_crash_resume_launch_gate",
+        "purpose": "pre_tmux_scale_v2_cuda_training_and_crash_resume_launch_gate",
         "preregistration_digest": preregistration["exact_digest"],
         "source": dict(_mapping(preregistration.get("source"), field="source")),
+        "seed_contract": {
+            "registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+            "registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+            "learner_role": "scale_v2_learner",
+        },
         "learner_seed": learner_seed,
         "arm": EXACT_ARM,
         "algorithm": {
@@ -225,7 +241,9 @@ def run_recurrent_cuda_training_smoke(
             evaluation_workers, field="evaluation_workers"
         ),
     }
-    learner_seed = int(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0])
+    learner_seed = int(
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
+    )
     configure_recurrent_training_determinism(
         learner_seed=learner_seed,
         device=resolved_device,
@@ -288,6 +306,10 @@ def run_recurrent_cuda_training_smoke(
             loaded_existing.checkpoint.get("progress"),
             field="loaded checkpoint progress",
         )
+        existing_source = _mapping(
+            loaded_existing.checkpoint.get("source"),
+            field="loaded checkpoint source",
+        )
         existing_rng = _mapping(
             loaded_existing.rng_state,
             field="loaded checkpoint rng state",
@@ -298,10 +320,21 @@ def run_recurrent_cuda_training_smoke(
         )
         if (
             existing_progress.get("completed_updates") != 1
+            or existing_progress.get("learner_seed") != learner_seed
+            or existing_progress.get("run_id")
+            != RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID
+            or existing_source.get("seed_registry_digest")
+            != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
             or recurrent_model_state_sha256(loaded_existing.model)
             != existing_parity.get("checkpoint_model_sha256")
             or existing_rng.get("trainer_update_index") != 1
             or existing_rng.get("counterfactual_auxiliary_update_count") != 1
+            or existing_rng.get(
+                _RECURRENT_CUDA_TRAINING_SMOKE_RUNTIME_PROVENANCE_RNG_KEY
+            )
+            != runtime_digest
+            or _RECURRENT_CUDA_TRAINING_SMOKE_V1_RUNTIME_PROVENANCE_RNG_KEY
+            in existing_rng
             or not isinstance(existing_attempted, list)
             or len(existing_attempted) != 1
             or not _optimizer_state_populated(loaded_existing.optimizer_state)
@@ -355,9 +388,9 @@ def run_recurrent_cuda_training_smoke(
     checkpoint_rng_state = dict(
         _mapping(checkpoint_state.get("rng_state"), field="checkpoint.rng_state")
     )
-    checkpoint_rng_state["cuda_training_smoke_runtime_provenance_digest"] = (
-        runtime_digest
-    )
+    checkpoint_rng_state[
+        _RECURRENT_CUDA_TRAINING_SMOKE_RUNTIME_PROVENANCE_RNG_KEY
+    ] = runtime_digest
     attempted_bundles = checkpoint_rng_state.get(
         "attempted_counterfactual_auxiliary_bundles"
     )
@@ -381,7 +414,7 @@ def run_recurrent_cuda_training_smoke(
         rng_state=checkpoint_rng_state,
         optimizer_type="torch.optim.Adam",
         training_config=contract,
-        seed_registry_digest=SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        seed_registry_digest=SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
         source_commit=source_commit,
         source_manifest_sha256=source_manifest_sha256,
         learner_seed=learner_seed,
@@ -401,10 +434,24 @@ def run_recurrent_cuda_training_smoke(
         raise RecurrentScaleCampaignError(
             "CUDA smoke crash checkpoint changed warmup model parameters"
         )
+    loaded_source = _mapping(
+        loaded.checkpoint.get("source"),
+        field="loaded checkpoint source",
+    )
+    loaded_progress = _mapping(
+        loaded.checkpoint.get("progress"),
+        field="loaded checkpoint progress",
+    )
     loaded_rng = _mapping(loaded.rng_state, field="loaded checkpoint rng_state")
     if (
-        loaded_rng.get("cuda_training_smoke_runtime_provenance_digest")
+        loaded_rng.get(_RECURRENT_CUDA_TRAINING_SMOKE_RUNTIME_PROVENANCE_RNG_KEY)
         != runtime_digest
+        or _RECURRENT_CUDA_TRAINING_SMOKE_V1_RUNTIME_PROVENANCE_RNG_KEY
+        in loaded_rng
+        or loaded_source.get("seed_registry_digest")
+        != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
+        or loaded_progress.get("learner_seed") != learner_seed
+        or loaded_progress.get("run_id") != RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID
         or loaded_rng.get("trainer_update_index") != 1
         or loaded_rng.get("counterfactual_auxiliary_update_count") != 1
         or loaded_rng.get("attempted_counterfactual_auxiliary_bundles")
@@ -607,7 +654,9 @@ def validate_recurrent_cuda_training_smoke_report(
     contract = _mapping(report.get("contract"), field="contract")
     expected_contract = build_recurrent_cuda_training_smoke_contract(
         preregistration,
-        learner_seed=int(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]),
+        learner_seed=int(
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
+        ),
         **dict(_mapping(contract.get("workers"), field="contract.workers")),
     )
     if dict(contract) != expected_contract:
@@ -863,6 +912,7 @@ def _sha256(value: object, *, field: str) -> str:
 __all__ = [
     "RECURRENT_CUDA_TRAINING_SMOKE_BUNDLE_COUNT",
     "RECURRENT_CUDA_TRAINING_SMOKE_CONTRACT_VERSION",
+    "RECURRENT_CUDA_TRAINING_SMOKE_RUN_ID",
     "RECURRENT_CUDA_TRAINING_SMOKE_SCHEMA_VERSION",
     "RECURRENT_CUDA_TRAINING_SMOKE_UPDATE_COUNT",
     "RECURRENT_CUDA_TRAINING_SMOKE_WARMUP_UPDATE_COUNT",

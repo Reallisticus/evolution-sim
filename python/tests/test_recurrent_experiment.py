@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -36,13 +37,18 @@ if torch is not None:
         RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
         RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION,
         RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION,
+        RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION,
+        RECURRENT_SCALE_V2_POLICY_SAMPLING_TASK_IDENTITY_VERSION,
+        RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
         RECURRENT_TRAINING_SCENARIOS,
         RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+        RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
         RecurrentCounterfactualExperimentConfig,
         RecurrentExperimentError,
         RecurrentExperimentRunner,
         RecurrentRolloutTask,
         _scope_diagnostics,
+        _training_seed_provenance,
         build_recurrent_counterfactual_collection_tasks,
         build_recurrent_training_schedule,
         collect_recurrent_rollout_batch,
@@ -59,6 +65,7 @@ if torch is not None:
         LEGACY_DIAGNOSTIC_SEEDS,
         RECURRENT_SEED_REGISTRY,
         SCALE_DEVELOPMENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
     )
 
 
@@ -139,6 +146,148 @@ class RecurrentExperimentTests(unittest.TestCase):
                 SCALE_DEVELOPMENT_SEED_REGISTRY[role],
             )
             self.assertNotIn(task.environment_seed, old_seeds)
+
+    def test_scale_v2_schedule_uses_fresh_roles_and_versioned_task_ids(
+        self,
+    ) -> None:
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+            "scale_v2_learner"
+        ][0]
+        schedule = build_recurrent_training_schedule(
+            update_count=2,
+            worlds_per_update=10,
+            rollout_ticks=120,
+            seed_registry_contract=(
+                RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+            ),
+            scale_learner_seed=learner_seed,
+        )
+
+        tasks = tuple(task for update in schedule for task in update)
+        prior_seeds = {
+            seed
+            for registry in (
+                RECURRENT_SEED_REGISTRY,
+                SCALE_DEVELOPMENT_SEED_REGISTRY,
+            )
+            for seeds in registry.values()
+            for seed in seeds
+        }
+        self.assertEqual(len(tasks), 20)
+        self.assertEqual(len({task.task_id for task in tasks}), 20)
+        self.assertTrue(
+            all(
+                str(task.policy_sampling_identity).startswith(
+                    RECURRENT_SCALE_V2_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+                )
+                for task in tasks
+            )
+        )
+        self.assertTrue(
+            all(
+                task.task_id.startswith(
+                    f"scale-v2-learner-{learner_seed}-"
+                )
+                for task in tasks
+            )
+        )
+        for task in tasks:
+            role = (
+                "scale_v2_train"
+                if task.scenario == "broad"
+                else "scale_v2_curriculum"
+            )
+            self.assertEqual(task.seed_role, role)
+            self.assertIn(
+                task.environment_seed,
+                SCALE_DEVELOPMENT_V2_SEED_REGISTRY[role],
+            )
+            self.assertNotIn(task.environment_seed, prior_seeds)
+
+        branches = build_recurrent_counterfactual_collection_tasks(
+            schedule[0],
+            update_index=0,
+            bundles_per_update=2,
+            branch_tick_candidates=(16, 40, 64, 72),
+        )
+        self.assertEqual(len(branches), 2)
+        for branch in branches:
+            self.assertTrue(branch.task_id.startswith("counterfactual-scale-v2-"))
+            self.assertTrue(
+                str(branch.source_policy_sampling_identity).startswith(
+                    RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION
+                )
+            )
+            self.assertTrue(
+                str(branch.branch_selection_identity).startswith(
+                    RECURRENT_SCALE_V2_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION
+                )
+            )
+
+    def test_scale_v2_training_provenance_is_role_bound_and_v1_stays_distinct(
+        self,
+    ) -> None:
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+            "scale_v2_learner"
+        ][0]
+        v2_schedule = build_recurrent_training_schedule(
+            update_count=1,
+            worlds_per_update=2,
+            rollout_ticks=8,
+            scenarios=("broad", "carrion_only"),
+            seed_registry_contract=(
+                RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+            ),
+            scale_learner_seed=learner_seed,
+        )
+        provenance = _training_seed_provenance(
+            (SimpleNamespace(tasks=v2_schedule[0]),)
+        )
+        self.assertEqual(
+            provenance["schema_version"],
+            RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            provenance["seed_registry_contract"],
+            RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
+        )
+        self.assertEqual(
+            provenance["environment_seed_roles"],
+            ["scale_v2_train", "scale_v2_curriculum"],
+        )
+        self.assertEqual(
+            provenance["environment_seeds_by_role"],
+            {
+                "scale_v2_train": [
+                    SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"][0]
+                ],
+                "scale_v2_curriculum": [
+                    SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+                        "scale_v2_curriculum"
+                    ][0]
+                ],
+            },
+        )
+
+        v1_schedule = build_recurrent_training_schedule(
+            update_count=1,
+            worlds_per_update=1,
+            rollout_ticks=8,
+            scenarios=("broad",),
+            seed_registry_contract=(
+                RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+            ),
+            scale_learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY[
+                "scale_learner"
+            ][0],
+        )
+        with self.assertRaisesRegex(RecurrentExperimentError, "mix"):
+            _training_seed_provenance(
+                (
+                    SimpleNamespace(tasks=v1_schedule[0]),
+                    SimpleNamespace(tasks=v2_schedule[0]),
+                )
+            )
 
     def test_scale_learner_namespaces_rollout_branch_and_tape_rng(self) -> None:
         first_learner, second_learner = SCALE_DEVELOPMENT_SEED_REGISTRY[
@@ -262,6 +411,31 @@ class RecurrentExperimentTests(unittest.TestCase):
                 scale_learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0],
             )
 
+        with self.assertRaisesRegex(RecurrentExperimentError, "scale_learner role"):
+            build_recurrent_training_schedule(
+                update_count=1,
+                worlds_per_update=1,
+                rollout_ticks=8,
+                seed_registry_contract=(
+                    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+                ),
+                scale_learner_seed=SCALE_DEVELOPMENT_SEED_REGISTRY[
+                    "scale_learner"
+                ][0],
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "scale_learner role"):
+            build_recurrent_training_schedule(
+                update_count=1,
+                worlds_per_update=1,
+                rollout_ticks=8,
+                seed_registry_contract=(
+                    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
+                ),
+                scale_learner_seed=SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+                    "scale_v2_learner"
+                ][0],
+            )
+
     def test_legacy_schedule_identity_shape_is_unchanged(self) -> None:
         task = build_recurrent_training_schedule(
             update_count=1,
@@ -298,6 +472,22 @@ class RecurrentExperimentTests(unittest.TestCase):
                 RECURRENT_SEED_REGISTRY["train"][0],
                 8,
                 seed_role="scale_train",
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "seed_role"):
+            RecurrentRolloutTask(
+                "scale-v2-role-mismatch",
+                "broad",
+                SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"][0],
+                8,
+                seed_role="scale_v2_curriculum",
+            )
+        with self.assertRaisesRegex(RecurrentExperimentError, "canonical"):
+            RecurrentRolloutTask(
+                "scale-v2-registry-mismatch",
+                "broad",
+                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"][0],
+                8,
+                seed_role="scale_v2_train",
             )
 
     def test_runner_checkpoint_state_restores_model_optimizer_rng_and_progress(

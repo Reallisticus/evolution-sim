@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ if torch is not None:
         RecurrentPolicyAdapterError,
         frozen_cpu_model_copy,
         validate_public_recurrent_distribution_diagnostics,
+        validate_public_recurrent_history_prefix,
     )
     from evolution_sim.mind.recurrent_rollout import RECURRENT_ROLLOUT_ACTION_SOURCE
 
@@ -31,6 +33,73 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         assert torch is not None
         torch.set_num_threads(1)
+
+    def test_public_history_prefix_record_count_rejects_bool_alias(self) -> None:
+        with self.assertRaisesRegex(
+            RecurrentPolicyAdapterError,
+            "record count",
+        ):
+            validate_public_recurrent_history_prefix(
+                {
+                    "schema_version": (
+                        "mind_v3_public_recurrent_history_prefix_v1"
+                    ),
+                    "record_count": False,
+                    "records": [],
+                }
+            )
+
+    def test_public_history_payload_shapes_reject_float_aliases(self) -> None:
+        policy = DeterministicPublicRecurrentPolicy(
+            PublicRecurrentActorCritic(initialization_seed=17),
+            artifact_digest="a" * 64,
+            capture_public_history=True,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=23, max_ticks=1),
+            policy=policy,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        agent = world.alive_agents()[0]
+        prefix = policy.diagnostics_checkpoint_state(
+            agent_id=agent.agent_id
+        )["public_history_prefix"]
+        self.assertTrue(prefix["records"])
+        for field in ("public_observation", "previous_public_feedback"):
+            with self.subTest(field=field):
+                tampered = deepcopy(prefix)
+                expected_size = tampered["records"][0][field]["shape"][0]
+                tampered["records"][0][field]["shape"] = [
+                    float(expected_size)
+                ]
+                with self.assertRaisesRegex(
+                    RecurrentPolicyAdapterError,
+                    "integer size",
+                ):
+                    validate_public_recurrent_history_prefix(tampered)
+
+    def test_public_history_rejects_fractional_previous_feedback_one_hot(self) -> None:
+        policy = DeterministicPublicRecurrentPolicy(
+            PublicRecurrentActorCritic(initialization_seed=17),
+            artifact_digest="a" * 64,
+            capture_public_history=True,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=23, max_ticks=1),
+            policy=policy,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        agent = world.alive_agents()[0]
+        prefix = policy.diagnostics_checkpoint_state(
+            agent_id=agent.agent_id
+        )["public_history_prefix"]
+        tampered = deepcopy(prefix)
+        tampered["records"][0]["previous_public_feedback"]["values"][0] = 0.5
+        with self.assertRaisesRegex(
+            RecurrentPolicyAdapterError,
+            "semantic contract",
+        ):
+            validate_public_recurrent_history_prefix(tampered)
 
     def test_frozen_copy_is_independent_cpu_float32_and_inference_only(self) -> None:
         model = PublicRecurrentActorCritic(initialization_seed=41)
@@ -190,6 +259,62 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         self.assertIsNone(distribution["top_two_probability_margin"])
         self.assertEqual(distribution["top_action_probability"], 1.0)
 
+        bool_count = dict(distribution)
+        bool_count["valid_action_count"] = True
+        with self.assertRaisesRegex(
+            RecurrentPolicyAdapterError,
+            "positive integer",
+        ):
+            validate_public_recurrent_distribution_diagnostics(
+                bool_count,
+                action_mask=action_mask,
+            )
+
+    def test_distribution_probabilities_and_entropy_are_bound_to_logits(
+        self,
+    ) -> None:
+        world = SimulationWorld(WorldConfig(seed=23, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = world._observe_agent(agent)
+        action_mask = dict(observation["action_mask"])
+        self.assertGreater(sum(action_mask.values()), 1)
+        policy = DeterministicPublicRecurrentPolicy(
+            PublicRecurrentActorCritic(initialization_seed=59),
+            artifact_digest="2" * 64,
+        )
+        distribution = policy.decide(
+            observation,
+            action_mask,
+        ).diagnostics["learned_masked_distribution"]
+        validate_public_recurrent_distribution_diagnostics(
+            distribution,
+            action_mask=action_mask,
+        )
+
+        logit_tampered = deepcopy(distribution)
+        action = next(name for name in ACTION_NAMES if action_mask[name])
+        logit_tampered["masked_logits"][action] += 1.0
+        with self.assertRaisesRegex(
+            RecurrentPolicyAdapterError,
+            "from masked logits",
+        ):
+            validate_public_recurrent_distribution_diagnostics(
+                logit_tampered,
+                action_mask=action_mask,
+            )
+
+        entropy_tampered = deepcopy(distribution)
+        entropy_tampered["entropy"] = 0.0
+        entropy_tampered["normalized_entropy"] = 0.0
+        with self.assertRaisesRegex(
+            RecurrentPolicyAdapterError,
+            "entropy from probabilities",
+        ):
+            validate_public_recurrent_distribution_diagnostics(
+                entropy_tampered,
+                action_mask=action_mask,
+            )
+
     def test_diagnostics_override_preserves_actor_state_and_sampler_progression(
         self,
     ) -> None:
@@ -285,7 +410,7 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
                     "requested_action": decision.requested_action,
                     "resolved_action": decision.requested_action,
                     "resolution_action_valid": True,
-                    "moved": False,
+                    "moved": decision.requested_action.startswith("move_"),
                     "reward": {"total": 0.0},
                     "after": {"alive": True},
                 }

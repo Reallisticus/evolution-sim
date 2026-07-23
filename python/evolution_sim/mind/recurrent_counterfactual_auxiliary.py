@@ -37,7 +37,7 @@ RECURRENT_COUNTERFACTUAL_AUXILIARY_SCHEMA_VERSION = (
     "mind_v3_recurrent_counterfactual_soft_policy_improvement_v2"
 )
 RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION = (
-    "mind_v3_recurrent_counterfactual_multi_tape_soft_policy_improvement_v1"
+    "mind_v3_recurrent_counterfactual_multi_tape_soft_policy_improvement_v2"
 )
 RECURRENT_COUNTERFACTUAL_AUXILIARY_STEP_SCHEMA_VERSION = (
     "mind_v3_recurrent_counterfactual_transactional_auxiliary_step_v1"
@@ -1805,11 +1805,27 @@ def _aggregate_tape_identity_digest(row: Mapping[str, object]) -> str:
                 "environment_sampling_seed": tape.get("environment_sampling_seed"),
                 "policy_sampling_identity": tape.get("policy_sampling_identity"),
                 "policy_sampling_seed": tape.get("policy_sampling_seed"),
-                "initial_environment_rng_state_sha256": tape.get(
-                    "initial_environment_rng_state_sha256"
+                "continuation_rng_retape_boundary": tape.get(
+                    "continuation_rng_retape_boundary"
                 ),
-                "initial_policy_sampling_state_sha256": tape.get(
-                    "initial_policy_sampling_state_sha256"
+                "pre_boundary_environment_rng_state_sha256": tape.get(
+                    "pre_boundary_environment_rng_state_sha256"
+                ),
+                "pre_boundary_policy_sampling_state_sha256": tape.get(
+                    "pre_boundary_policy_sampling_state_sha256"
+                ),
+                "post_boundary_environment_rng_state_sha256": tape.get(
+                    "post_boundary_environment_rng_state_sha256"
+                ),
+                "post_boundary_policy_sampling_state_sha256": tape.get(
+                    "post_boundary_policy_sampling_state_sha256"
+                ),
+                "boundary_reached": tape.get("boundary_reached"),
+                "source_natural_action_match": tape.get(
+                    "source_natural_action_match"
+                ),
+                "fixed_source_prefix_verified": tape.get(
+                    "fixed_source_prefix_verified"
                 ),
             }
         )

@@ -7,27 +7,36 @@ import hashlib
 import math
 import random
 
-from torch import Tensor
+from torch import Generator, Tensor, float32, float64, tensor, uint8
 
 from evolution_sim.config import WorldConfig
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 import evolution_sim.env.runtime.observations as runtime_observations
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.env.runtime.state import RunMode
+from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
 from evolution_sim.env.world import SimulationWorld
 from evolution_sim.mind.evaluation_harness import (
     CONTROLLED_FIXTURE_NAMES,
     _fixture_world,
 )
-from evolution_sim.mind.policy_inputs import ecological_policy_input_payload
+from evolution_sim.mind.policy_inputs import (
+    ECOLOGICAL_POLICY_INPUT_POLICY,
+    ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    ecological_policy_input_payload,
+)
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_actor_critic import (
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
     PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
     PublicRecurrentActorCritic,
+    RecurrentContextError,
+    validate_previous_feedback_tensor,
 )
 from evolution_sim.mind.recurrent_policy import (
+    PUBLIC_RECURRENT_ARGMAX_SELECTION,
+    PUBLIC_RECURRENT_SAMPLED_SELECTION,
     RECURRENT_COUNTERFACTUAL_ACTION_SOURCE,
     DeterministicPublicRecurrentPolicy,
     RecurrentPolicyAdapterError,
@@ -41,31 +50,192 @@ from evolution_sim.mind.recurrent_rollout import RECURRENT_ROLLOUT_ACTION_SOURCE
 from evolution_sim.mind.recurrent_seed_registry import (
     RECURRENT_SEED_REGISTRY,
     SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
 )
 
 
 RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION = (
     "mind_v3_recurrent_counterfactual_branch_row_v4"
 )
+RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION = (
+    "mind_v3_recurrent_counterfactual_boundary_source_branch_row_v5"
+)
 RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION = (
     "mind_v3_recurrent_exact_all_valid_action_branch_protocol_v4"
 )
 RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION = (
-    "mind_v3_recurrent_counterfactual_multi_tape_aggregate_v1"
+    "mind_v3_recurrent_counterfactual_multi_tape_aggregate_v2"
 )
 RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE = (
-    "mind_v3_recurrent_counterfactual_continuation_environment_tape_seed_v1"
+    "mind_v3_recurrent_counterfactual_continuation_environment_tape_seed_v2"
 )
 RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE = (
-    "mind_v3_recurrent_counterfactual_continuation_policy_tape_seed_v1"
+    "mind_v3_recurrent_counterfactual_continuation_policy_tape_seed_v2"
 )
+RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY = (
+    "after_focal_natural_policy_draw_before_action_resolution_v1"
+)
+_DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS = (
+    "pre_boundary_environment_rng_state_sha256",
+    "pre_boundary_policy_sampling_state_sha256",
+    "post_boundary_environment_rng_state_sha256",
+    "post_boundary_policy_sampling_state_sha256",
+)
+_DECISION_BOUNDARY_PROVENANCE_BOOLEAN_FIELDS = (
+    "boundary_reached",
+    "source_natural_action_match",
+    "fixed_source_prefix_verified",
+)
+_COMPACT_FIRST_TRANSITION_FIELDS = {
+    "requested_action",
+    "resolved_action",
+    "observation_action_valid",
+    "resolution_action_valid",
+    "same_tick_resolution_mask_drift",
+    "expected_same_tick_occupancy_drift",
+    "invalid_reason",
+    "moved",
+    "reward_total",
+    "reproduced",
+    "died",
+    "after_alive",
+    "after_energy_ratio",
+    "after_hydration_ratio",
+    "after_health_ratio",
+}
+_BRANCH_ROW_FIELDS = {
+    "schema_version",
+    "contract",
+    "trainable_public_context",
+    "optimizer_context",
+    "labels",
+    "metadata",
+    "component_digests",
+    "training_ran",
+    "training_artifact_created",
+    "runtime_artifact_created",
+    "runtime_action_selection_changed",
+    "promotion_authorized",
+    "exact_digest",
+}
+_BRANCH_LABEL_FIELDS = {
+    "source_requested_action",
+    "source_policy_value",
+    "source_behavior_distribution",
+    "baseline",
+    "action_outcomes",
+    "all_tick_start_mask_valid_actions_evaluated",
+    "valid_action_count",
+    "baseline_source_action_behavior_match",
+}
+_COMPACT_BRANCH_BASELINE_FIELDS = {
+    "first_transition",
+    "focal_transition_count",
+    "focal_policy_decision_count",
+    "focal_passive_transition_count",
+    "focal_discounted_return",
+    "focal_terminal",
+    "population_alive",
+    "births_during_horizon",
+    "deaths_during_horizon",
+    "behavior_digest",
+    "evidence_digest",
+}
+_COMPACT_BRANCH_ACTION_FIELDS = {
+    *_COMPACT_BRANCH_BASELINE_FIELDS,
+    "action",
+    "natural_requested_action",
+    "intervention_count",
+    "paired_vs_baseline",
+    "unsupported_requested_action_count",
+    "heuristic_action_source_count",
+    "unexpected_action_source_count",
+    "replay_verified",
+    "replay_evidence_digest",
+}
+_COMPACT_MULTI_TAPE_COMMON_OUTCOME_FIELDS = {
+    "natural_requested_action",
+    "focal_discounted_return",
+    "focal_terminal_alive",
+    "population_alive",
+    "births_during_horizon",
+    "deaths_during_horizon",
+    "first_transition",
+    "unsupported_requested_action_count",
+    "heuristic_action_source_count",
+    "unexpected_action_source_count",
+    "behavior_digest",
+    "evidence_digest",
+    "replay_verified",
+    "replay_evidence_digest",
+    "continuation_rng_retape_boundary",
+    *_DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS,
+    *_DECISION_BOUNDARY_PROVENANCE_BOOLEAN_FIELDS,
+}
+_COMPACT_MULTI_TAPE_BASELINE_FIELDS = _COMPACT_MULTI_TAPE_COMMON_OUTCOME_FIELDS
+_COMPACT_MULTI_TAPE_ACTION_FIELDS = {
+    *_COMPACT_MULTI_TAPE_COMMON_OUTCOME_FIELDS,
+    "action",
+    "paired_vs_baseline",
+}
+_MULTI_TAPE_PROVENANCE_FIELDS = {
+    "tape_index",
+    "environment_sampling_identity",
+    "environment_sampling_seed",
+    "policy_sampling_identity",
+    "policy_sampling_seed",
+    "continuation_rng_retape_boundary",
+    *_DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS,
+    *_DECISION_BOUNDARY_PROVENANCE_BOOLEAN_FIELDS,
+    "baseline",
+    "action_outcomes",
+}
+_SAMPLE_STATISTIC_FIELDS = {
+    "mean",
+    "sample_variance",
+    "standard_error",
+}
+_AGGREGATE_METRIC_FIELDS = {
+    "focal_discounted_return",
+    "focal_terminal_alive",
+    "population_alive",
+    "births_during_horizon",
+    "deaths_during_horizon",
+}
+_MULTI_TAPE_ACTION_AGGREGATE_FIELDS = {
+    "action",
+    "tape_count",
+    "outcome_statistics",
+    "paired_delta_statistics",
+    "focal_survival_probability",
+    "uncertainty_penalized_score",
+}
+_MULTI_TAPE_AGGREGATE_FIELDS = {
+    "tape_count",
+    "uncertainty_penalty",
+    "uncertainty_penalized_score_policy",
+    "baseline_outcome_statistics",
+    "baseline_focal_survival_probability",
+    "action_outcomes",
+}
 MAX_RECURRENT_COUNTERFACTUAL_TAPE_SEED = 2**63 - 1
 RECURRENT_COUNTERFACTUAL_TRAINING_USE = (
     "post_update_supervised_auxiliary_policy_improvement_only"
 )
 RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO = "broad"
 RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES = ("train", "curriculum")
-RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES = ("scale_train", "scale_curriculum")
+RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES = (
+    "scale_train",
+    "scale_curriculum",
+)
+RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES = (
+    "scale_v2_train",
+    "scale_v2_curriculum",
+)
+RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES = (
+    *RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES,
+    *RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES,
+)
 RECURRENT_COUNTERFACTUAL_SEED_ROLES = (
     *RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES,
     *RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES,
@@ -134,6 +304,12 @@ _METADATA_KEYS = {
     "baseline_evidence_digest",
     "private_checkpoint_serialized",
 }
+_BOUNDARY_SOURCE_METADATA_KEYS = {
+    *_METADATA_KEYS,
+    "source_pre_boundary_environment_rng_state_sha256",
+    "source_pre_boundary_policy_sampling_state_sha256",
+    "source_boundary_identity_sha256",
+}
 _FORBIDDEN_TRAINABLE_KEY_TOKENS = (
     "seed",
     "fixture",
@@ -156,6 +332,20 @@ _PAIRED_DELTA_FIELDS = (
     "population_alive_delta",
     "births_during_horizon_delta",
     "deaths_during_horizon_delta",
+)
+_SOURCE_DECISION_PREFIX_PROJECTION_FIELDS = (
+    "schema_version",
+    "artifact_digest",
+    "model_state_sha256",
+    "decision_index",
+    "agent_id",
+    "previous_feedback_available",
+    "recurrent_state_reset_each_decision",
+    "action_index",
+    "action_selection",
+    "sampling_seed",
+    "value",
+    "learned_masked_distribution",
 )
 
 
@@ -295,6 +485,223 @@ class OneShotRecurrentCounterfactualPolicy:
         self.intervention_count = 0
         self.natural_requested_action = None
         self.intervention_diagnostics = None
+
+
+class _DecisionBoundaryRetapedRecurrentCounterfactualPolicy:
+    """Retape continuation RNG only after the exact focal natural draw.
+
+    This diagnostics-only wrapper preserves the source checkpoint, all
+    pre-focal decisions, and the focal learner draw.  It replaces future
+    environment and policy randomness at the causal decision boundary, before
+    Foundation resolves either the natural baseline action or a forced action.
+    """
+
+    def __init__(
+        self,
+        *,
+        delegate: DeterministicPublicRecurrentPolicy,
+        environment_rng: random.Random,
+        target_agent_id: int,
+        source_action: str,
+        forced_action: str | None,
+        expected_observation_digest: str,
+        expected_action_mask_digest: str,
+        expected_source_decision_projection_sha256: str,
+        intervention_id: str,
+        environment_sampling_seed: int,
+        policy_sampling_seed: int,
+    ) -> None:
+        if not isinstance(delegate, DeterministicPublicRecurrentPolicy):
+            raise TypeError("delegate must be a DeterministicPublicRecurrentPolicy")
+        if not isinstance(environment_rng, random.Random):
+            raise TypeError("environment_rng must be random.Random")
+        self.delegate = delegate
+        self.environment_rng = environment_rng
+        self.target_agent_id = _positive_int(
+            target_agent_id,
+            field="target_agent_id",
+        )
+        self.source_action = _stable_action(
+            source_action,
+            field="source_action",
+        )
+        if forced_action is not None:
+            _stable_action(forced_action, field="forced_action")
+        self.forced_action = forced_action
+        self.expected_observation_digest = _nonempty_string(
+            expected_observation_digest,
+            field="expected_observation_digest",
+        )
+        self.expected_action_mask_digest = _nonempty_string(
+            expected_action_mask_digest,
+            field="expected_action_mask_digest",
+        )
+        if not _valid_sha256(expected_source_decision_projection_sha256):
+            raise RecurrentCounterfactualBranchError(
+                "expected source decision projection digest is malformed"
+            )
+        self.expected_source_decision_projection_sha256 = (
+            expected_source_decision_projection_sha256
+        )
+        self.intervention_id = _nonempty_string(
+            intervention_id,
+            field="intervention_id",
+        )
+        self.environment_sampling_seed = _required_sampling_seed(
+            environment_sampling_seed,
+            field="environment_sampling_seed",
+        )
+        self.policy_sampling_seed = _required_sampling_seed(
+            policy_sampling_seed,
+            field="policy_sampling_seed",
+        )
+        if self.environment_sampling_seed == self.policy_sampling_seed:
+            raise RecurrentCounterfactualBranchError(
+                "environment and policy continuation seeds must differ"
+            )
+        if delegate._sampling_generator is None:  # noqa: SLF001 - diagnostics seam
+            raise RecurrentCounterfactualBranchError(
+                "decision-boundary retaping requires sampled recurrent policy state"
+            )
+        self.used = False
+        self.intervention_count = 0
+        self.natural_requested_action: str | None = None
+        self.boundary_provenance: dict[str, object] | None = None
+
+    @property
+    def policy_id(self) -> str:
+        return self.delegate.policy_id
+
+    @property
+    def policy_version(self) -> str:
+        return self.delegate.policy_version
+
+    def decide(
+        self,
+        observation: dict[str, object],
+        action_mask: dict[str, bool],
+    ) -> ActionDecision:
+        agent_id = _observation_agent_id(observation)
+        if self.used or agent_id != self.target_agent_id:
+            return self.delegate.decide(observation, action_mask)
+
+        observation_digest = runtime_observations.observation_digest(observation)
+        if observation_digest != self.expected_observation_digest:
+            raise RecurrentCounterfactualBranchError(
+                "focal observation digest does not match the materialized state"
+            )
+        complete_mask = _complete_action_mask(action_mask)
+        if stable_payload_digest(complete_mask) != self.expected_action_mask_digest:
+            raise RecurrentCounterfactualBranchError(
+                "focal action-mask digest does not match the materialized state"
+            )
+        if (
+            self.forced_action is not None
+            and complete_mask[self.forced_action] is not True
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "forced action is not valid in the materialized tick-start mask"
+            )
+
+        if self.forced_action is None:
+            decision = self.delegate.decide(observation, action_mask)
+            natural_action = _stable_action(
+                decision.requested_action,
+                field="baseline natural action",
+            )
+        else:
+            decision = self.delegate.decide_with_action_override(
+                observation,
+                action_mask,
+                requested_action=self.forced_action,
+                intervention_id=self.intervention_id,
+            )
+            diagnostics = _mapping(
+                decision.diagnostics,
+                field="counterfactual decision diagnostics",
+            )
+            natural_action = _stable_action(
+                diagnostics.get("natural_requested_action"),
+                field="counterfactual natural action",
+            )
+            if decision.requested_action != self.forced_action:
+                raise RecurrentCounterfactualBranchError(
+                    "counterfactual decision did not return the forced action"
+                )
+        if natural_action != self.source_action:
+            raise RecurrentCounterfactualBranchError(
+                "branch learner natural action drifted from the source decision"
+            )
+        diagnostics = _mapping(
+            decision.diagnostics,
+            field="decision-boundary learner diagnostics",
+        )
+        if _source_decision_prefix_projection_sha256(diagnostics) != (
+            self.expected_source_decision_projection_sha256
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "branch learner decision projection drifted from the fixed "
+                "source prefix"
+            )
+
+        pre_environment_digest = stable_payload_digest(
+            self.environment_rng.getstate()
+        )
+        pre_policy_digest = _policy_sampling_state_sha256(self.delegate)
+        self.environment_rng.seed(self.environment_sampling_seed)
+        sampling_generator = self.delegate._sampling_generator  # noqa: SLF001
+        if sampling_generator is None:
+            raise RecurrentCounterfactualBranchError(
+                "decision-boundary policy sampling generator disappeared"
+            )
+        sampling_generator.manual_seed(self.policy_sampling_seed)
+        self.delegate._sampling_seed = self.policy_sampling_seed  # noqa: SLF001
+        post_environment_digest = stable_payload_digest(
+            self.environment_rng.getstate()
+        )
+        post_policy_digest = _policy_sampling_state_sha256(self.delegate)
+        if post_environment_digest != _seeded_environment_rng_state_sha256(
+            self.environment_sampling_seed
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "environment continuation seed did not produce its canonical state"
+            )
+        if post_policy_digest != _seeded_policy_sampling_state_sha256(
+            self.policy_sampling_seed
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "policy continuation seed did not produce its canonical CPU state"
+            )
+        self.boundary_provenance = {
+            "continuation_rng_retape_boundary": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+            ),
+            "pre_boundary_environment_rng_state_sha256": pre_environment_digest,
+            "pre_boundary_policy_sampling_state_sha256": pre_policy_digest,
+            "post_boundary_environment_rng_state_sha256": post_environment_digest,
+            "post_boundary_policy_sampling_state_sha256": post_policy_digest,
+            "boundary_reached": True,
+            "source_natural_action_match": True,
+            "fixed_source_prefix_verified": True,
+        }
+        self.used = True
+        self.natural_requested_action = natural_action
+        if self.forced_action is not None:
+            self.intervention_count += 1
+        return decision
+
+    def observe_transition(
+        self,
+        record: dict[str, object],
+    ) -> dict[str, object] | None:
+        return self.delegate.observe_transition(record)
+
+    def reset_world(self) -> None:
+        self.delegate.reset_world()
+        self.used = False
+        self.intervention_count = 0
+        self.natural_requested_action = None
+        self.boundary_provenance = None
 
 
 def build_recurrent_counterfactual_branch_row(
@@ -1128,7 +1535,12 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     max_horizon_continuation_count = 1 + (2 * len(valid_actions))
     upgraded_payload: dict[str, object] = {}
     if resolved_tape_identity is not None:
-        aggregate_rows, terminal_target, multi_tape_compute = (
+        (
+            aggregate_rows,
+            terminal_target,
+            multi_tape_compute,
+            boundary_bound_rows,
+        ) = (
             _materialize_multi_tape_aggregate_evidence(
                 checkpoint_world,
                 legacy_rows=rows,
@@ -1144,6 +1556,11 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
                 valid_actions=valid_actions,
                 expected_observation_digest=source_observation_digest,
                 expected_action_mask_digest=source_action_mask_digest,
+                expected_source_decision_projection_sha256=(
+                    _source_decision_prefix_projection_sha256(
+                        source_decision_diagnostics
+                    )
+                ),
                 gamma=resolved_gamma,
                 excluded_seeds=(
                     environment_seed,
@@ -1152,6 +1569,7 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
                 ),
             )
         )
+        rows = list(boundary_bound_rows)
         upgraded_payload = {
             "aggregate_rows": aggregate_rows,
             "terminal_target": terminal_target,
@@ -1254,9 +1672,15 @@ def _materialize_multi_tape_aggregate_evidence(
     valid_actions: Sequence[str],
     expected_observation_digest: str,
     expected_action_mask_digest: str,
+    expected_source_decision_projection_sha256: str,
     gamma: float,
     excluded_seeds: Sequence[int],
-) -> tuple[tuple[dict[str, object], ...], dict[str, object] | None, dict[str, int]]:
+) -> tuple[
+    tuple[dict[str, object], ...],
+    dict[str, object] | None,
+    dict[str, int],
+    tuple[dict[str, object], ...],
+]:
     """Estimate action outcomes over independently retaped exact checkpoints."""
 
     if not legacy_rows:
@@ -1316,15 +1740,9 @@ def _materialize_multi_tape_aggregate_evidence(
             )
         all_environment_seeds.append(environment_sampling_seed)
         all_policy_seeds.append(policy_sampling_seed)
-        tape_checkpoint, initial_rng = _retaped_continuation_checkpoint(
-            checkpoint_world,
-            environment_sampling_seed=environment_sampling_seed,
-            policy_sampling_seed=policy_sampling_seed,
-            focal_agent_id=focal_agent_id,
-        )
         tape_branch_id = f"{branch_id}:tape:{tape_index}"
         baseline_max = _execute_continuation(
-            tape_checkpoint,
+            checkpoint_world,
             branch_id=tape_branch_id,
             branch_tick=branch_tick,
             horizon_ticks=maximum_horizon,
@@ -1332,13 +1750,17 @@ def _materialize_multi_tape_aggregate_evidence(
             source_action=source_action,
             expected_observation_digest=expected_observation_digest,
             expected_action_mask_digest=expected_action_mask_digest,
+            expected_source_decision_projection_sha256=(
+                expected_source_decision_projection_sha256
+            ),
             forced_action=None,
             gamma=gamma,
             prefix_horizons=execution_horizons,
-            require_source_action_match=False,
+            boundary_environment_sampling_seed=environment_sampling_seed,
+            boundary_policy_sampling_seed=policy_sampling_seed,
         )
         baseline_replay_max = _execute_continuation(
-            tape_checkpoint,
+            checkpoint_world,
             branch_id=tape_branch_id,
             branch_tick=branch_tick,
             horizon_ticks=maximum_horizon,
@@ -1346,10 +1768,14 @@ def _materialize_multi_tape_aggregate_evidence(
             source_action=source_action,
             expected_observation_digest=expected_observation_digest,
             expected_action_mask_digest=expected_action_mask_digest,
+            expected_source_decision_projection_sha256=(
+                expected_source_decision_projection_sha256
+            ),
             forced_action=None,
             gamma=gamma,
             prefix_horizons=execution_horizons,
-            require_source_action_match=False,
+            boundary_environment_sampling_seed=environment_sampling_seed,
+            boundary_policy_sampling_seed=policy_sampling_seed,
         )
         tape_natural_action = _stable_action(
             baseline_max.get("natural_requested_action"),
@@ -1375,7 +1801,7 @@ def _materialize_multi_tape_aggregate_evidence(
         action_replay_max_runs: list[dict[str, object]] = []
         for action in valid_actions:
             action_max = _execute_continuation(
-                tape_checkpoint,
+                checkpoint_world,
                 branch_id=tape_branch_id,
                 branch_tick=branch_tick,
                 horizon_ticks=maximum_horizon,
@@ -1383,12 +1809,17 @@ def _materialize_multi_tape_aggregate_evidence(
                 source_action=tape_natural_action,
                 expected_observation_digest=expected_observation_digest,
                 expected_action_mask_digest=expected_action_mask_digest,
+                expected_source_decision_projection_sha256=(
+                    expected_source_decision_projection_sha256
+                ),
                 forced_action=action,
                 gamma=gamma,
                 prefix_horizons=execution_horizons,
+                boundary_environment_sampling_seed=environment_sampling_seed,
+                boundary_policy_sampling_seed=policy_sampling_seed,
             )
             action_replay_max = _execute_continuation(
-                tape_checkpoint,
+                checkpoint_world,
                 branch_id=tape_branch_id,
                 branch_tick=branch_tick,
                 horizon_ticks=maximum_horizon,
@@ -1396,9 +1827,14 @@ def _materialize_multi_tape_aggregate_evidence(
                 source_action=tape_natural_action,
                 expected_observation_digest=expected_observation_digest,
                 expected_action_mask_digest=expected_action_mask_digest,
+                expected_source_decision_projection_sha256=(
+                    expected_source_decision_projection_sha256
+                ),
                 forced_action=action,
                 gamma=gamma,
                 prefix_horizons=execution_horizons,
+                boundary_environment_sampling_seed=environment_sampling_seed,
+                boundary_policy_sampling_seed=policy_sampling_seed,
             )
             runs = _nested_runs_by_horizon(
                 action_max,
@@ -1423,7 +1859,9 @@ def _materialize_multi_tape_aggregate_evidence(
                 "behavior_digest"
             ) or baseline.get("evidence_digest") != baseline_replay.get(
                 "evidence_digest"
-            ):
+            ) or _decision_boundary_provenance(
+                baseline
+            ) != _decision_boundary_provenance(baseline_replay):
                 raise RecurrentCounterfactualBranchError(
                     f"multi-tape baseline replay mismatch at tape {tape_index} "
                     f"horizon {horizon}"
@@ -1437,10 +1875,22 @@ def _materialize_multi_tape_aggregate_evidence(
             ):
                 if run.get("behavior_digest") != replay.get(
                     "behavior_digest"
-                ) or run.get("evidence_digest") != replay.get("evidence_digest"):
+                ) or run.get("evidence_digest") != replay.get(
+                    "evidence_digest"
+                ) or _decision_boundary_provenance(
+                    run
+                ) != _decision_boundary_provenance(replay):
                     raise RecurrentCounterfactualBranchError(
                         f"multi-tape action replay mismatch for {action!r} "
                         f"at tape {tape_index} horizon {horizon}"
+                    )
+                if (
+                    action == tape_natural_action
+                    and run.get("behavior_digest") != baseline.get("behavior_digest")
+                ):
+                    raise RecurrentCounterfactualBranchError(
+                        "multi-tape source-action negative control did not "
+                        "reproduce baseline behavior"
                     )
                 action_entries.append(
                     _compact_multi_tape_action_evidence(
@@ -1453,15 +1903,14 @@ def _materialize_multi_tape_aggregate_evidence(
                 baseline,
                 replay=baseline_replay,
             )
+            boundary_provenance = _decision_boundary_provenance(baseline)
             for run in (baseline_entry, *action_entries):
-                if (
-                    run["initial_environment_rng_state_sha256"]
-                    != initial_rng["initial_environment_rng_state_sha256"]
-                    or run["initial_policy_sampling_state_sha256"]
-                    != initial_rng["initial_policy_sampling_state_sha256"]
+                if any(
+                    run[field] != boundary_provenance[field]
+                    for field in _DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS
                 ):
                     raise RecurrentCounterfactualBranchError(
-                        "forced actions within a tape did not share initial RNG state"
+                        "paired actions within a tape did not share boundary RNG state"
                     )
             tape_entries_by_horizon[horizon].append(
                 {
@@ -1470,7 +1919,7 @@ def _materialize_multi_tape_aggregate_evidence(
                     "environment_sampling_seed": environment_sampling_seed,
                     "policy_sampling_identity": policy_identity,
                     "policy_sampling_seed": policy_sampling_seed,
-                    **initial_rng,
+                    **boundary_provenance,
                     "baseline": baseline_entry,
                     "action_outcomes": action_entries,
                 }
@@ -1485,7 +1934,32 @@ def _materialize_multi_tape_aggregate_evidence(
             )
         )
 
-    first_legacy_row = legacy_rows[0]
+    first_tape = tape_entries_by_horizon[execution_horizons[0]][0]
+    source_boundary = _decision_boundary_provenance(first_tape)
+    source_pre_environment_digest = source_boundary[
+        "pre_boundary_environment_rng_state_sha256"
+    ]
+    source_pre_policy_digest = source_boundary[
+        "pre_boundary_policy_sampling_state_sha256"
+    ]
+    for horizon_entries in tape_entries_by_horizon.values():
+        for tape in horizon_entries:
+            boundary = _decision_boundary_provenance(tape)
+            if (
+                boundary["pre_boundary_environment_rng_state_sha256"]
+                != source_pre_environment_digest
+                or boundary["pre_boundary_policy_sampling_state_sha256"]
+                != source_pre_policy_digest
+            ):
+                raise RecurrentCounterfactualBranchError(
+                    "multi-tape generation did not preserve one source boundary"
+                )
+    boundary_bound_rows = _bind_branch_rows_to_source_boundary(
+        legacy_rows,
+        pre_boundary_environment_rng_state_sha256=source_pre_environment_digest,
+        pre_boundary_policy_sampling_state_sha256=source_pre_policy_digest,
+    )
+    first_legacy_row = boundary_bound_rows[0]
     aggregate_rows = tuple(
         _assemble_multi_tape_aggregate_row(
             source_row=first_legacy_row,
@@ -1535,6 +2009,7 @@ def _materialize_multi_tape_aggregate_evidence(
             "actual_continuation_tick_count": actual_continuation_tick_count,
             "maximum_continuation_tick_budget": maximum_budget,
         },
+        boundary_bound_rows,
     )
 
 
@@ -1559,12 +2034,7 @@ def _compact_multi_tape_baseline_evidence(
         "evidence_digest": run.get("evidence_digest"),
         "replay_verified": True,
         "replay_evidence_digest": replay.get("evidence_digest"),
-        "initial_environment_rng_state_sha256": run.get(
-            "initial_environment_rng_state_sha256"
-        ),
-        "initial_policy_sampling_state_sha256": run.get(
-            "initial_policy_sampling_state_sha256"
-        ),
+        **_decision_boundary_provenance(run),
     }
 
 
@@ -1593,12 +2063,7 @@ def _compact_multi_tape_action_evidence(
         "evidence_digest": run.get("evidence_digest"),
         "replay_verified": True,
         "replay_evidence_digest": replay.get("evidence_digest"),
-        "initial_environment_rng_state_sha256": run.get(
-            "initial_environment_rng_state_sha256"
-        ),
-        "initial_policy_sampling_state_sha256": run.get(
-            "initial_policy_sampling_state_sha256"
-        ),
+        **_decision_boundary_provenance(run),
     }
 
 
@@ -1658,6 +2123,96 @@ def _paired_delta_payload(
     }
 
 
+def _source_boundary_identity_payload(
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    """Project the public/digest-only source facts that identify one boundary."""
+
+    return {
+        "seed_role": metadata.get("seed_role"),
+        "environment_seed": metadata.get("environment_seed"),
+        "scenario": metadata.get("scenario"),
+        "branch_tick": metadata.get("branch_tick"),
+        "focal_agent_id": metadata.get("focal_agent_id"),
+        "source_artifact_digest": metadata.get("source_artifact_digest"),
+        "source_model_state_sha256": metadata.get("source_model_state_sha256"),
+        "policy_sampling_seed": metadata.get("policy_sampling_seed"),
+        "source_decision_index": metadata.get("source_decision_index"),
+        "source_record_digest": metadata.get("source_record_digest"),
+        "source_decision_diagnostics_digest": metadata.get(
+            "source_decision_diagnostics_digest"
+        ),
+        "source_observation_digest": metadata.get("source_observation_digest"),
+        "source_action_mask_digest": metadata.get("source_action_mask_digest"),
+        "source_sampling_state_sha256": metadata.get(
+            "source_sampling_state_sha256"
+        ),
+        "source_public_history_prefix_sha256": metadata.get(
+            "source_public_history_prefix_sha256"
+        ),
+        "source_pre_boundary_environment_rng_state_sha256": metadata.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        ),
+        "source_pre_boundary_policy_sampling_state_sha256": metadata.get(
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ),
+    }
+
+
+def _bind_branch_rows_to_source_boundary(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    pre_boundary_environment_rng_state_sha256: object,
+    pre_boundary_policy_sampling_state_sha256: object,
+) -> tuple[dict[str, object], ...]:
+    """Commit digest-only decision-boundary evidence into each source row."""
+
+    if not rows:
+        raise RecurrentCounterfactualBranchError(
+            "source-boundary binding requires at least one branch row"
+        )
+    if not _valid_sha256(pre_boundary_environment_rng_state_sha256):
+        raise RecurrentCounterfactualBranchError(
+            "source pre-boundary environment RNG-state digest is malformed"
+        )
+    if not _valid_sha256(pre_boundary_policy_sampling_state_sha256):
+        raise RecurrentCounterfactualBranchError(
+            "source pre-boundary policy RNG-state digest is malformed"
+        )
+    bound_rows: list[dict[str, object]] = []
+    for source_row in rows:
+        validate_recurrent_counterfactual_branch_row(source_row)
+        row = deepcopy(dict(source_row))
+        metadata = dict(_mapping(row.get("metadata"), field="source metadata"))
+        metadata.update(
+            {
+                "source_pre_boundary_environment_rng_state_sha256": (
+                    pre_boundary_environment_rng_state_sha256
+                ),
+                "source_pre_boundary_policy_sampling_state_sha256": (
+                    pre_boundary_policy_sampling_state_sha256
+                ),
+            }
+        )
+        metadata["source_boundary_identity_sha256"] = stable_payload_digest(
+            _source_boundary_identity_payload(metadata)
+        )
+        row["schema_version"] = (
+            RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+        )
+        row["metadata"] = metadata
+        components = dict(
+            _mapping(row.get("component_digests"), field="source component digests")
+        )
+        components["metadata"] = stable_payload_digest(metadata)
+        row["component_digests"] = components
+        row.pop("exact_digest", None)
+        row["exact_digest"] = stable_payload_digest(row)
+        validate_recurrent_counterfactual_branch_row(row)
+        bound_rows.append(row)
+    return tuple(bound_rows)
+
+
 def _assemble_multi_tape_aggregate_row(
     *,
     source_row: Mapping[str, object],
@@ -1671,6 +2226,23 @@ def _assemble_multi_tape_aggregate_row(
     excluded_seeds: Sequence[int],
 ) -> dict[str, object]:
     validate_recurrent_counterfactual_branch_row(source_row)
+    if len(excluded_seeds) != 3:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source seed exclusion must contain environment, policy, "
+            "and branch-selection seeds"
+        )
+    source_environment_seed = _required_sampling_seed(
+        excluded_seeds[0],
+        field="aggregate source environment seed",
+    )
+    source_policy_sampling_seed = _required_sampling_seed(
+        excluded_seeds[1],
+        field="aggregate source policy sampling seed",
+    )
+    source_branch_selection_seed = _required_sampling_seed(
+        excluded_seeds[2],
+        field="aggregate source branch-selection seed",
+    )
     source_metadata = _mapping(source_row.get("metadata"), field="source metadata")
     source_labels = _mapping(source_row.get("labels"), field="source labels")
     trainable_public_context = deepcopy(
@@ -1690,8 +2262,10 @@ def _assemble_multi_tape_aggregate_row(
         )
     )
     source_checkpoint_identity = {
+        "source_branch_row_exact_digest": source_row.get("exact_digest"),
         "seed_role": source_metadata.get("seed_role"),
         "environment_seed": source_metadata.get("environment_seed"),
+        "branch_selection_seed": source_branch_selection_seed,
         "scenario": source_metadata.get("scenario"),
         "branch_tick": branch_tick,
         "focal_agent_id": source_metadata.get("focal_agent_id"),
@@ -1701,18 +2275,47 @@ def _assemble_multi_tape_aggregate_row(
         "source_public_history_prefix_sha256": source_metadata.get(
             "source_public_history_prefix_sha256"
         ),
+        "source_pre_boundary_environment_rng_state_sha256": source_metadata.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        ),
+        "source_pre_boundary_policy_sampling_state_sha256": source_metadata.get(
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ),
+        "source_boundary_identity_sha256": source_metadata.get(
+            "source_boundary_identity_sha256"
+        ),
     }
     source_identity = {
+        "source_branch_row_exact_digest": source_row.get("exact_digest"),
         "source_model_state_sha256": source_metadata.get("source_model_state_sha256"),
         "source_artifact_digest": source_metadata.get("source_artifact_digest"),
-        "source_policy_sampling_seed": source_metadata.get("policy_sampling_seed"),
+        "source_environment_seed": source_environment_seed,
+        "source_policy_sampling_seed": source_policy_sampling_seed,
+        "source_branch_selection_seed": source_branch_selection_seed,
         "source_checkpoint_identity_sha256": stable_payload_digest(
             source_checkpoint_identity
+        ),
+        "source_pre_boundary_environment_rng_state_sha256": source_metadata.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        ),
+        "source_pre_boundary_policy_sampling_state_sha256": source_metadata.get(
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ),
+        "source_boundary_identity_sha256": source_metadata.get(
+            "source_boundary_identity_sha256"
         ),
         "trainable_public_context_sha256": stable_payload_digest(
             trainable_public_context
         ),
     }
+    if (
+        source_metadata.get("environment_seed") != source_environment_seed
+        or source_metadata.get("policy_sampling_seed")
+        != source_policy_sampling_seed
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate excluded source seeds drifted from source metadata"
+        )
     source_behavior = {
         "source_requested_action": source_labels.get("source_requested_action"),
         "current_public_action_mask": deepcopy(
@@ -1733,9 +2336,14 @@ def _assemble_multi_tape_aggregate_row(
         ),
         "excluded_source_seeds": list(excluded_seeds),
         "same_exact_source_checkpoint": True,
-        "environment_rng_retaped_after_source_checkpoint": True,
-        "policy_rng_retaped_after_source_checkpoint": True,
-        "common_initial_rng_state_across_actions_within_tape": True,
+        "continuation_rng_retape_boundary": (
+            RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+        ),
+        "fixed_source_prefix_through_focal_natural_draw": True,
+        "horizon_includes_branch_tick": True,
+        "same_tick_post_focal_consequences_governed_by_tape": True,
+        "policy_sampling_generator_device_type": "cpu",
+        "common_boundary_rng_state_across_actions_within_tape": True,
         "paired_baseline_and_forced_actions_share_tape": True,
         "exact_replay_required_for_baseline_and_actions": True,
         "event_aligned_common_random_numbers": False,
@@ -2382,7 +2990,7 @@ def verified_source_recurrent_state_from_branch_row(
         field="optimizer_context",
     )
     try:
-        return verified_source_recurrent_state_for_exact_artifact(
+        stored_state = verified_source_recurrent_state_for_exact_artifact(
             model,
             optimizer_context,
             artifact_digest=artifact_digest,
@@ -2391,6 +2999,29 @@ def verified_source_recurrent_state_from_branch_row(
         raise RecurrentCounterfactualBranchError(
             "stored source hidden failed exact artifact verification"
         ) from error
+    context = _mapping(
+        row.get("trainable_public_context"),
+        field="trainable_public_context",
+    )
+    prefix = _mapping(
+        context.get("public_history_prefix"),
+        field="public_history_prefix",
+    )
+    try:
+        reconstructed_state = reconstruct_current_model_hidden_from_public_prefix(
+            model,
+            prefix,
+        )
+    except RecurrentPolicyAdapterError as error:
+        raise RecurrentCounterfactualBranchError(
+            "stored source hidden public-history reconstruction failed"
+        ) from error
+    if not stored_state.equal(reconstructed_state):
+        raise RecurrentCounterfactualBranchError(
+            "stored source hidden does not exactly match its public-history "
+            "reconstruction"
+        )
+    return stored_state
 
 
 def validate_recurrent_counterfactual_branch_row(
@@ -2398,7 +3029,13 @@ def validate_recurrent_counterfactual_branch_row(
 ) -> None:
     if not isinstance(row, Mapping):
         raise RecurrentCounterfactualBranchError("branch row must be a mapping")
-    if row.get("schema_version") != RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION:
+    if set(row) != _BRANCH_ROW_FIELDS:
+        raise RecurrentCounterfactualBranchError("branch row field set drifted")
+    schema_version = row.get("schema_version")
+    if schema_version not in {
+        RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION,
+        RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
+    }:
         raise RecurrentCounterfactualBranchError("branch row schema version drifted")
     context = _mapping(
         row.get("trainable_public_context"),
@@ -2428,33 +3065,16 @@ def validate_recurrent_counterfactual_branch_row(
         context.get("current_public_observation"),
         field="current_public_observation",
     )
-    observation_values = observation.get("values")
-    if not isinstance(observation_values, list) or len(observation_values) != (
-        ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
-    ):
-        raise RecurrentCounterfactualBranchError(
-            "current public observation does not contain the safe 541 features"
-        )
-    _validate_numeric_vector(
-        observation_values,
-        expected_length=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
-        field="current public observation",
-    )
+    _validate_current_public_observation(observation)
     mask = _complete_action_mask(context.get("current_public_action_mask"))
     feedback = _mapping(
         context.get("previous_public_feedback"),
         field="previous_public_feedback",
     )
-    feedback_values = feedback.get("values")
-    if not isinstance(feedback_values, list) or len(feedback_values) != (
-        PREVIOUS_PUBLIC_FEEDBACK_SIZE
-    ):
-        raise RecurrentCounterfactualBranchError(
-            "previous public feedback vector size drifted"
-        )
-    _validate_numeric_vector(
-        feedback_values,
-        expected_length=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+    _validate_previous_public_feedback(feedback)
+    _validate_feedback_history_alignment(
+        public_history_prefix,
+        feedback,
         field="previous public feedback",
     )
 
@@ -2515,21 +3135,37 @@ def validate_recurrent_counterfactual_branch_row(
         raise RecurrentCounterfactualBranchError(
             "source recurrent state shape must have three positive dimensions"
         )
-    state_values = _flatten_numeric_tree(
+    canonical_state = _validated_float32_tensor_tree(
         optimizer_context.get("source_recurrent_state"),
+        expected_shape=state_shape,
         field="source recurrent state",
     )
-    expected_state_size = math.prod(state_shape)
-    if len(state_values) != expected_state_size:
-        raise RecurrentCounterfactualBranchError(
-            "source recurrent state does not match its declared shape"
-        )
     if not _valid_sha256(optimizer_context.get("source_recurrent_state_sha256")):
         raise RecurrentCounterfactualBranchError(
             "source recurrent state digest is malformed"
         )
+    canonical_state_bytes = bytes(
+        canonical_state.contiguous().view(uint8).reshape(-1).tolist()
+    )
+    if optimizer_context.get("source_recurrent_state_sha256") != hashlib.sha256(
+        canonical_state_bytes
+    ).hexdigest():
+        raise RecurrentCounterfactualBranchError(
+            "source recurrent state digest does not match its stored values"
+        )
+    metadata_for_limits = _mapping(row.get("metadata"), field="metadata")
+    maximum_focal_transition_count = _positive_int(
+        metadata_for_limits.get("horizon_ticks"),
+        field="metadata horizon_ticks",
+    )
 
     labels = _mapping(row.get("labels"), field="labels")
+    if set(labels) != _BRANCH_LABEL_FIELDS:
+        raise RecurrentCounterfactualBranchError("branch labels field set drifted")
+    _finite_float(
+        labels.get("source_policy_value"),
+        field="labels source policy value",
+    )
     source_action = _stable_action(
         labels.get("source_requested_action"),
         field="labels.source_requested_action",
@@ -2554,6 +3190,27 @@ def validate_recurrent_counterfactual_branch_row(
     outcomes = labels.get("action_outcomes")
     if not isinstance(outcomes, list) or not outcomes:
         raise RecurrentCounterfactualBranchError("action outcomes cannot be empty")
+    baseline = _mapping(labels.get("baseline"), field="labels.baseline")
+    if set(baseline) != _COMPACT_BRANCH_BASELINE_FIELDS:
+        raise RecurrentCounterfactualBranchError(
+            "branch baseline label field set drifted"
+        )
+    _validate_compact_branch_outcome(
+        baseline,
+        field="branch baseline",
+        maximum_transition_count=maximum_focal_transition_count,
+    )
+    baseline_first_transition = _mapping(
+        baseline.get("first_transition"),
+        field="branch baseline first transition",
+    )
+    if (
+        baseline_first_transition.get("requested_action") != source_action
+        or baseline_first_transition.get("observation_action_valid") is not True
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "branch baseline did not execute its public-mask-valid source action"
+        )
     expected_actions = [action for action in ACTION_NAMES if mask[action] is True]
     observed_actions = [
         _stable_action(
@@ -2574,7 +3231,10 @@ def validate_recurrent_counterfactual_branch_row(
         raise RecurrentCounterfactualBranchError(
             "all-valid-action coverage proof is absent"
         )
-    if labels.get("valid_action_count") != len(expected_actions):
+    if _positive_int(
+        labels.get("valid_action_count"),
+        field="labels valid action count",
+    ) != len(expected_actions):
         raise RecurrentCounterfactualBranchError(
             "valid action count does not match the public mask"
         )
@@ -2602,6 +3262,10 @@ def validate_recurrent_counterfactual_branch_row(
     verify_replay = contract.get("exact_replay_required") is True
     for outcome in outcomes:
         parsed = _mapping(outcome, field="action outcome")
+        if set(parsed) != _COMPACT_BRANCH_ACTION_FIELDS:
+            raise RecurrentCounterfactualBranchError(
+                "branch action label field set drifted"
+            )
         action = _stable_action(parsed.get("action"), field="action outcome action")
         if parsed.get("natural_requested_action") != source_action:
             raise RecurrentCounterfactualBranchError(
@@ -2611,6 +3275,42 @@ def validate_recurrent_counterfactual_branch_row(
             parsed.get("first_transition"),
             field="action outcome first transition",
         )
+        _validate_compact_branch_outcome(
+            parsed,
+            field=f"branch action {action}",
+            maximum_transition_count=maximum_focal_transition_count,
+        )
+        paired = _mapping(
+            parsed.get("paired_vs_baseline"),
+            field="branch paired delta",
+        )
+        _validate_paired_delta_payload(paired, field="branch paired delta")
+        parsed_terminal = _mapping(
+            parsed.get("focal_terminal"),
+            field="branch action focal terminal",
+        )
+        baseline_terminal = _mapping(
+            baseline.get("focal_terminal"),
+            field="branch baseline focal terminal",
+        )
+        expected_paired = {
+            "focal_discounted_return_delta": _round(
+                float(parsed["focal_discounted_return"])
+                - float(baseline["focal_discounted_return"])
+            ),
+            "focal_terminal_alive_delta": int(parsed_terminal["alive"] is True)
+            - int(baseline_terminal["alive"] is True),
+            "population_alive_delta": int(parsed["population_alive"])
+            - int(baseline["population_alive"]),
+            "births_during_horizon_delta": int(parsed["births_during_horizon"])
+            - int(baseline["births_during_horizon"]),
+            "deaths_during_horizon_delta": int(parsed["deaths_during_horizon"])
+            - int(baseline["deaths_during_horizon"]),
+        }
+        if dict(paired) != expected_paired:
+            raise RecurrentCounterfactualBranchError(
+                "branch paired delta does not match its baseline"
+            )
         if first_transition.get("requested_action") != action:
             raise RecurrentCounterfactualBranchError(
                 "action branch did not request its enumerated action"
@@ -2619,18 +3319,25 @@ def validate_recurrent_counterfactual_branch_row(
             raise RecurrentCounterfactualBranchError(
                 "action branch was not valid in the tick-start public mask"
             )
-        if parsed.get("intervention_count") != 1:
+        if _positive_int(
+            parsed.get("intervention_count"),
+            field="action outcome intervention count",
+        ) != 1:
             raise RecurrentCounterfactualBranchError(
                 "every action outcome must contain exactly one intervention"
             )
-        if parsed.get("heuristic_action_source_count") != 0:
-            raise RecurrentCounterfactualBranchError(
-                "counterfactual continuation used a heuristic action source"
-            )
-        if parsed.get("unsupported_requested_action_count") != 0:
-            raise RecurrentCounterfactualBranchError(
-                "counterfactual continuation requested an unsupported action"
-            )
+        for field in (
+            "heuristic_action_source_count",
+            "unsupported_requested_action_count",
+            "unexpected_action_source_count",
+        ):
+            if _nonnegative_int(
+                parsed.get(field),
+                field=f"action outcome {field}",
+            ) != 0:
+                raise RecurrentCounterfactualBranchError(
+                    "counterfactual continuation used an unsupported action source"
+                )
         focal_transition_count = _positive_int(
             parsed.get("focal_transition_count"),
             field="action outcome focal transition count",
@@ -2665,15 +3372,40 @@ def validate_recurrent_counterfactual_branch_row(
             raise RecurrentCounterfactualBranchError(
                 "counterfactual replay evidence digest does not match"
             )
-    baseline = _mapping(labels.get("baseline"), field="labels.baseline")
     source_outcome = next(
         _mapping(outcome, field="source action outcome")
         for outcome in outcomes
         if _mapping(outcome, field="action outcome").get("action") == source_action
     )
-    if source_outcome.get("behavior_digest") != baseline.get("behavior_digest"):
+    negative_control_fields = (
+        "first_transition",
+        "focal_transition_count",
+        "focal_policy_decision_count",
+        "focal_passive_transition_count",
+        "focal_discounted_return",
+        "focal_terminal",
+        "population_alive",
+        "births_during_horizon",
+        "deaths_during_horizon",
+        "behavior_digest",
+    )
+    if any(
+        source_outcome.get(field) != baseline.get(field)
+        for field in negative_control_fields
+    ) or dict(
+        _mapping(
+            source_outcome.get("paired_vs_baseline"),
+            field="source action paired delta",
+        )
+    ) != {
+        "focal_discounted_return_delta": 0.0,
+        "focal_terminal_alive_delta": 0,
+        "population_alive_delta": 0,
+        "births_during_horizon_delta": 0,
+        "deaths_during_horizon_delta": 0,
+    }:
         raise RecurrentCounterfactualBranchError(
-            "source-action behavior digest does not match the baseline"
+            "source-action negative control does not exactly match the baseline"
         )
     if contract.get("focal_return_record_policy") != (
         "all_focal_trajectory_records_including_passive_terminal"
@@ -2682,17 +3414,27 @@ def validate_recurrent_counterfactual_branch_row(
             "counterfactual focal-return record policy drifted"
         )
 
-    metadata = _mapping(row.get("metadata"), field="metadata")
-    if set(metadata) != _METADATA_KEYS:
+    metadata = metadata_for_limits
+    expected_metadata_keys = (
+        _BOUNDARY_SOURCE_METADATA_KEYS
+        if schema_version
+        == RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+        else _METADATA_KEYS
+    )
+    if set(metadata) != expected_metadata_keys:
         raise RecurrentCounterfactualBranchError("metadata field set drifted")
     role = str(metadata.get("seed_role", ""))
     seed = _positive_int(metadata.get("environment_seed"), field="environment_seed")
     _validated_seed_role(role, seed)
-    expected_allowed_roles = (
-        RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        if role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        else RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES
+    expected_contract = _counterfactual_contract(
+        verify_replay=verify_replay,
+        seed_role=role,
     )
+    if stable_payload_digest(contract) != stable_payload_digest(expected_contract):
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual branch protocol contract drifted"
+        )
+    expected_allowed_roles = _counterfactual_seed_role_cohort(role)
     if contract.get("allowed_seed_roles") != list(expected_allowed_roles):
         raise RecurrentCounterfactualBranchError(
             "counterfactual allowed seed-role cohort drifted"
@@ -2701,8 +3443,50 @@ def validate_recurrent_counterfactual_branch_row(
         raise RecurrentCounterfactualBranchError(
             "private world checkpoint cannot be serialized in a branch row"
         )
+    if schema_version == RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION:
+        if not _valid_sha256(
+            metadata.get("source_pre_boundary_environment_rng_state_sha256")
+        ) or not _valid_sha256(
+            metadata.get("source_pre_boundary_policy_sampling_state_sha256")
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "boundary-bound source row has malformed pre-boundary RNG evidence"
+            )
+        if metadata.get("source_boundary_identity_sha256") != stable_payload_digest(
+            _source_boundary_identity_payload(metadata)
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "boundary-bound source row identity digest drifted"
+            )
     if metadata.get("scenario") not in RECURRENT_COUNTERFACTUAL_SCENARIOS:
         raise RecurrentCounterfactualBranchError("metadata scenario is unsupported")
+    branch_tick = _nonnegative_int(
+        metadata.get("branch_tick"),
+        field="metadata branch_tick",
+    )
+    focal_agent_id = _positive_int(
+        metadata.get("focal_agent_id"),
+        field="metadata focal_agent_id",
+    )
+    _unit_interval(metadata.get("gamma"), field="metadata gamma")
+    _nonnegative_int(
+        metadata.get("source_decision_index"),
+        field="metadata source_decision_index",
+    )
+    for digest_field in (
+        "source_record_digest",
+        "source_decision_diagnostics_digest",
+        "source_observation_digest",
+        "source_action_mask_digest",
+    ):
+        if not _valid_sha256(metadata.get(digest_field)):
+            raise RecurrentCounterfactualBranchError(
+                f"metadata {digest_field} is malformed"
+            )
+    if metadata.get("source_action_mask_digest") != stable_payload_digest(mask):
+        raise RecurrentCounterfactualBranchError(
+            "metadata source action-mask digest drifted from public context"
+        )
     if not _valid_sha256(metadata.get("branch_protocol_digest")):
         raise RecurrentCounterfactualBranchError("branch protocol digest is malformed")
     if metadata.get("source_artifact_digest") != optimizer_context.get(
@@ -2727,6 +3511,26 @@ def validate_recurrent_counterfactual_branch_row(
         metadata.get("policy_sampling_seed"),
         field="metadata policy_sampling_seed",
     )
+    expected_action_selection = (
+        PUBLIC_RECURRENT_ARGMAX_SELECTION
+        if policy_sampling_seed is None
+        else PUBLIC_RECURRENT_SAMPLED_SELECTION
+    )
+    if metadata.get("source_action_selection") != expected_action_selection:
+        raise RecurrentCounterfactualBranchError(
+            "metadata source action-selection contract drifted"
+        )
+    source_sampling_state_sha256 = metadata.get("source_sampling_state_sha256")
+    if (
+        policy_sampling_seed is None
+        and source_sampling_state_sha256 is not None
+    ) or (
+        policy_sampling_seed is not None
+        and not _valid_sha256(source_sampling_state_sha256)
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "metadata source sampling-state digest drifted"
+        )
     horizon_ticks = _positive_int(
         metadata.get("horizon_ticks"),
         field="metadata horizon_ticks",
@@ -2756,11 +3560,25 @@ def validate_recurrent_counterfactual_branch_row(
         raise RecurrentCounterfactualBranchError(
             "continuation policy model digest drifted"
         )
-    if continuation.get("continuation_policy_sampling_seed") != (policy_sampling_seed):
+    continuation_policy_sampling_seed = _optional_sampling_seed(
+        continuation.get("continuation_policy_sampling_seed"),
+        field="continuation policy sampling seed",
+    )
+    if continuation_policy_sampling_seed != policy_sampling_seed:
         raise RecurrentCounterfactualBranchError(
             "continuation policy sampling seed drifted"
         )
-    if continuation.get("branch_horizon_ticks") != horizon_ticks:
+    if continuation.get("continuation_policy_action_selection") != (
+        expected_action_selection
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "continuation policy action-selection contract drifted"
+        )
+    continuation_horizon_ticks = _positive_int(
+        continuation.get("branch_horizon_ticks"),
+        field="continuation branch horizon",
+    )
+    if continuation_horizon_ticks != horizon_ticks:
         raise RecurrentCounterfactualBranchError("continuation branch horizon drifted")
     repeat_count = _positive_int(
         continuation.get("exact_replay_repeat_count_per_action"),
@@ -2771,11 +3589,22 @@ def validate_recurrent_counterfactual_branch_row(
         raise RecurrentCounterfactualBranchError(
             "continuation exact replay repeat count drifted"
         )
-    if continuation.get("repeat_indices") != list(range(repeat_count)):
+    repeat_indices = continuation.get("repeat_indices")
+    if not isinstance(repeat_indices, list) or [
+        _nonnegative_int(index, field="continuation repeat index")
+        for index in repeat_indices
+    ] != list(range(repeat_count)):
         raise RecurrentCounterfactualBranchError("continuation repeat indices drifted")
-    if continuation.get("repeat_policy_sampling_seeds") != [
-        policy_sampling_seed for _ in range(repeat_count)
-    ]:
+    repeat_policy_sampling_seeds = continuation.get(
+        "repeat_policy_sampling_seeds"
+    )
+    if not isinstance(repeat_policy_sampling_seeds, list) or [
+        _optional_sampling_seed(
+            seed,
+            field="continuation repeat policy sampling seed",
+        )
+        for seed in repeat_policy_sampling_seeds
+    ] != [policy_sampling_seed for _ in range(repeat_count)]:
         raise RecurrentCounterfactualBranchError(
             "continuation repeat policy-sampling seeds drifted"
         )
@@ -2800,8 +3629,37 @@ def validate_recurrent_counterfactual_branch_row(
             raise RecurrentCounterfactualBranchError(
                 f"continuation provenance field {field!r} must be true"
             )
-    if not _valid_sha256(metadata.get("branch_identity_digest")):
-        raise RecurrentCounterfactualBranchError("branch identity digest is malformed")
+    if (
+        metadata.get("baseline_behavior_digest") != baseline.get("behavior_digest")
+        or metadata.get("baseline_evidence_digest") != baseline.get("evidence_digest")
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "metadata baseline evidence digest drifted from labels"
+        )
+    expected_branch_identity = stable_payload_digest(
+        {
+            "protocol_digest": metadata.get("branch_protocol_digest"),
+            "artifact_digest": metadata.get("source_artifact_digest"),
+            "model_state_sha256": metadata.get("source_model_state_sha256"),
+            "seed_role": role,
+            "environment_seed": seed,
+            "policy_sampling_seed": policy_sampling_seed,
+            "scenario": metadata.get("scenario"),
+            "branch_tick": branch_tick,
+            "horizon_ticks": horizon_ticks,
+            "exact_replay_repeat_count_per_action": repeat_count,
+            "focal_agent_id": focal_agent_id,
+            "source_record_digest": metadata.get("source_record_digest"),
+            "source_recurrent_state_sha256": optimizer_context.get(
+                "source_recurrent_state_sha256"
+            ),
+            "source_sampling_state_sha256": source_sampling_state_sha256,
+            "source_public_history_prefix_sha256": public_history_prefix_sha256,
+            "continuation_provenance_digest": continuation_digest,
+        }
+    )
+    if metadata.get("branch_identity_digest") != expected_branch_identity:
+        raise RecurrentCounterfactualBranchError("branch identity digest drifted")
     components = _mapping(row.get("component_digests"), field="component_digests")
     expected_components = {
         "contract": stable_payload_digest(contract),
@@ -2843,6 +3701,27 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError(
             "counterfactual aggregate row must be a mapping"
         )
+    expected_row_fields = {
+        "schema_version",
+        "target",
+        "trainable_public_context",
+        "optimizer_context",
+        "source_identity",
+        "source_behavior",
+        "tape_contract",
+        "tape_provenance",
+        "aggregate",
+        "component_digests",
+        "training_ran",
+        "runtime_artifact_created",
+        "runtime_action_selection_changed",
+        "promotion_authorized",
+        "exact_digest",
+    }
+    if set(row) != expected_row_fields:
+        raise RecurrentCounterfactualBranchError(
+            "counterfactual aggregate field set drifted"
+        )
     if row.get("schema_version") != RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION:
         raise RecurrentCounterfactualBranchError(
             "counterfactual aggregate schema version drifted"
@@ -2862,11 +3741,19 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError("aggregate target kind drifted")
     branch_tick = _nonnegative_int(target.get("branch_tick"), field="branch tick")
     horizon_ticks = _positive_int(target.get("horizon_ticks"), field="horizon")
-    if target.get("target_world_tick") != branch_tick + horizon_ticks:
+    target_world_tick = _positive_int(
+        target.get("target_world_tick"),
+        field="aggregate target world tick",
+    )
+    if target_world_tick != branch_tick + horizon_ticks:
         raise RecurrentCounterfactualBranchError("aggregate target tick drifted")
     terminal_target = target.get("absolute_terminal_target_world_tick")
     if terminal_target is not None:
         terminal_target = _positive_int(terminal_target, field="terminal target tick")
+        if target_world_tick > terminal_target:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate target cannot extend beyond its absolute terminal tick"
+            )
     is_terminal = target.get("is_absolute_terminal_target")
     if type(is_terminal) is not bool or is_terminal != (
         target_kind == "absolute_terminal_world_tick"
@@ -2874,7 +3761,7 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError(
             "aggregate absolute terminal flag drifted"
         )
-    if is_terminal and target.get("target_world_tick") != terminal_target:
+    if is_terminal and target_world_tick != terminal_target:
         raise RecurrentCounterfactualBranchError(
             "absolute terminal aggregate does not end at its target tick"
         )
@@ -2907,29 +3794,16 @@ def validate_recurrent_counterfactual_aggregate_row(
         context.get("current_public_observation"),
         field="aggregate public observation",
     )
-    observation_values = observation.get("values")
-    if not isinstance(observation_values, list):
-        raise RecurrentCounterfactualBranchError(
-            "aggregate public observation values must be a list"
-        )
-    _validate_numeric_vector(
-        observation_values,
-        expected_length=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
-        field="aggregate public observation",
-    )
+    _validate_current_public_observation(observation)
     mask = _complete_action_mask(context.get("current_public_action_mask"))
     feedback = _mapping(
         context.get("previous_public_feedback"),
         field="aggregate previous public feedback",
     )
-    feedback_values = feedback.get("values")
-    if not isinstance(feedback_values, list):
-        raise RecurrentCounterfactualBranchError(
-            "aggregate previous public feedback values must be a list"
-        )
-    _validate_numeric_vector(
-        feedback_values,
-        expected_length=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+    _validate_previous_public_feedback(feedback)
+    _validate_feedback_history_alignment(
+        prefix,
+        feedback,
         field="aggregate previous public feedback",
     )
 
@@ -2945,6 +3819,8 @@ def validate_recurrent_counterfactual_aggregate_row(
         optimizer.get("derived_from_public_history") is not True
         or optimizer.get("source_artifact_match_required") is not True
         or optimizer.get("runtime_environment_input") is not False
+        or optimizer.get("stored_state_usage")
+        != "exact_source_artifact_verification_only"
         or optimizer.get("current_model_state_policy")
         != "reconstruct_from_trainable_public_history_prefix"
     ):
@@ -2957,16 +3833,54 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError(
             "aggregate optimizer public-history digest drifted"
         )
+    _nonempty_string(
+        optimizer.get("source_artifact_digest"),
+        field="aggregate optimizer source artifact digest",
+    )
+    if not _valid_sha256(optimizer.get("source_model_state_sha256")):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer source model-state digest is malformed"
+        )
+    optimizer_state_shape = optimizer.get("source_recurrent_state_shape")
+    if (
+        not isinstance(optimizer_state_shape, list)
+        or len(optimizer_state_shape) != 3
+        or any(
+            isinstance(size, bool) or not isinstance(size, int) or size <= 0
+            for size in optimizer_state_shape
+        )
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer recurrent state shape drifted"
+        )
+    optimizer_state = _validated_float32_tensor_tree(
+        optimizer.get("source_recurrent_state"),
+        expected_shape=optimizer_state_shape,
+        field="aggregate optimizer recurrent state",
+    )
+    optimizer_state_sha256 = hashlib.sha256(
+        bytes(optimizer_state.contiguous().view(uint8).reshape(-1).tolist())
+    ).hexdigest()
+    if optimizer.get("source_recurrent_state_sha256") != optimizer_state_sha256:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate optimizer recurrent state digest drifted"
+        )
 
     source_identity = _mapping(
         row.get("source_identity"),
         field="aggregate source identity",
     )
     if set(source_identity) != {
+        "source_branch_row_exact_digest",
         "source_model_state_sha256",
         "source_artifact_digest",
+        "source_environment_seed",
         "source_policy_sampling_seed",
+        "source_branch_selection_seed",
         "source_checkpoint_identity_sha256",
+        "source_pre_boundary_environment_rng_state_sha256",
+        "source_pre_boundary_policy_sampling_state_sha256",
+        "source_boundary_identity_sha256",
         "trainable_public_context_sha256",
     }:
         raise RecurrentCounterfactualBranchError(
@@ -2976,6 +3890,10 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError(
             "aggregate source model-state digest is malformed"
         )
+    if not _valid_sha256(source_identity.get("source_branch_row_exact_digest")):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate source branch-row digest is malformed"
+        )
     _nonempty_string(
         source_identity.get("source_artifact_digest"),
         field="aggregate source artifact digest",
@@ -2983,6 +3901,14 @@ def validate_recurrent_counterfactual_aggregate_row(
     _required_sampling_seed(
         source_identity.get("source_policy_sampling_seed"),
         field="aggregate source policy sampling seed",
+    )
+    _required_sampling_seed(
+        source_identity.get("source_environment_seed"),
+        field="aggregate source environment seed",
+    )
+    _required_sampling_seed(
+        source_identity.get("source_branch_selection_seed"),
+        field="aggregate source branch-selection seed",
     )
     if (
         source_identity.get("source_model_state_sha256")
@@ -2992,6 +3918,15 @@ def validate_recurrent_counterfactual_aggregate_row(
         or source_identity.get("trainable_public_context_sha256")
         != stable_payload_digest(context)
         or not _valid_sha256(source_identity.get("source_checkpoint_identity_sha256"))
+        or not _valid_sha256(
+            source_identity.get(
+                "source_pre_boundary_environment_rng_state_sha256"
+            )
+        )
+        or not _valid_sha256(
+            source_identity.get("source_pre_boundary_policy_sampling_state_sha256")
+        )
+        or not _valid_sha256(source_identity.get("source_boundary_identity_sha256"))
     ):
         raise RecurrentCounterfactualBranchError(
             "aggregate source identity does not match its exact public source"
@@ -3046,9 +3981,12 @@ def validate_recurrent_counterfactual_aggregate_row(
         "policy_seed_namespace",
         "excluded_source_seeds",
         "same_exact_source_checkpoint",
-        "environment_rng_retaped_after_source_checkpoint",
-        "policy_rng_retaped_after_source_checkpoint",
-        "common_initial_rng_state_across_actions_within_tape",
+        "continuation_rng_retape_boundary",
+        "fixed_source_prefix_through_focal_natural_draw",
+        "horizon_includes_branch_tick",
+        "same_tick_post_focal_consequences_governed_by_tape",
+        "policy_sampling_generator_device_type",
+        "common_boundary_rng_state_across_actions_within_tape",
         "paired_baseline_and_forced_actions_share_tape",
         "exact_replay_required_for_baseline_and_actions",
         "event_aligned_common_random_numbers",
@@ -3073,11 +4011,23 @@ def validate_recurrent_counterfactual_aggregate_row(
         raise RecurrentCounterfactualBranchError(
             "aggregate continuation seed namespace drifted"
         )
+    if (
+        tape_contract.get("continuation_rng_retape_boundary")
+        != RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation RNG retape boundary drifted"
+        )
+    if tape_contract.get("policy_sampling_generator_device_type") != "cpu":
+        raise RecurrentCounterfactualBranchError(
+            "aggregate continuation policy sampling device drifted"
+        )
     for field in (
         "same_exact_source_checkpoint",
-        "environment_rng_retaped_after_source_checkpoint",
-        "policy_rng_retaped_after_source_checkpoint",
-        "common_initial_rng_state_across_actions_within_tape",
+        "fixed_source_prefix_through_focal_natural_draw",
+        "horizon_includes_branch_tick",
+        "same_tick_post_focal_consequences_governed_by_tape",
+        "common_boundary_rng_state_across_actions_within_tape",
         "paired_baseline_and_forced_actions_share_tape",
         "exact_replay_required_for_baseline_and_actions",
         "sequential_rng_event_reassignment_after_divergence_possible",
@@ -3102,9 +4052,18 @@ def validate_recurrent_counterfactual_aggregate_row(
         _required_sampling_seed(seed, field="excluded source seed")
         for seed in excluded_raw
     }
-    if len(excluded_seeds) != len(excluded_raw):
+    expected_excluded_seeds = [
+        source_identity["source_environment_seed"],
+        source_identity["source_policy_sampling_seed"],
+        source_identity["source_branch_selection_seed"],
+    ]
+    if (
+        len(excluded_seeds) != len(excluded_raw)
+        or excluded_raw != expected_excluded_seeds
+    ):
         raise RecurrentCounterfactualBranchError(
-            "aggregate excluded source seeds must be unique"
+            "aggregate excluded source seeds must be unique, ordered, and "
+            "source-complete"
         )
 
     tape_provenance = row.get("tape_provenance")
@@ -3114,9 +4073,19 @@ def validate_recurrent_counterfactual_aggregate_row(
         )
     expected_actions = [action for action in ACTION_NAMES if mask[action] is True]
     observed_tape_seeds: set[int] = set()
+    source_pre_boundary_digests: tuple[object, object] | None = None
+    observed_post_boundary_environment_digests: set[object] = set()
+    observed_post_boundary_policy_digests: set[object] = set()
     for expected_index, raw_tape in enumerate(tape_provenance):
         tape = _mapping(raw_tape, field="aggregate tape provenance")
-        if tape.get("tape_index") != expected_index:
+        if set(tape) != _MULTI_TAPE_PROVENANCE_FIELDS:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape provenance field set drifted"
+            )
+        if _nonnegative_int(
+            tape.get("tape_index"),
+            field="aggregate tape index",
+        ) != expected_index:
             raise RecurrentCounterfactualBranchError(
                 "aggregate tape indices must be contiguous and ordered"
             )
@@ -3160,21 +4129,55 @@ def validate_recurrent_counterfactual_aggregate_row(
                 "aggregate tape seeds are not independent and source-disjoint"
             )
         observed_tape_seeds.update((environment_seed, policy_seed))
-        initial_environment_digest = tape.get("initial_environment_rng_state_sha256")
-        initial_policy_digest = tape.get("initial_policy_sampling_state_sha256")
-        if not _valid_sha256(initial_environment_digest) or not _valid_sha256(
-            initial_policy_digest
+        boundary_provenance = _decision_boundary_provenance(tape)
+        current_pre_boundary_digests = (
+            boundary_provenance["pre_boundary_environment_rng_state_sha256"],
+            boundary_provenance["pre_boundary_policy_sampling_state_sha256"],
+        )
+        if current_pre_boundary_digests != (
+            source_identity[
+                "source_pre_boundary_environment_rng_state_sha256"
+            ],
+            source_identity["source_pre_boundary_policy_sampling_state_sha256"],
         ):
             raise RecurrentCounterfactualBranchError(
-                "aggregate initial tape RNG digest is malformed"
+                "aggregate tape pre-boundary RNG state drifted from its "
+                "boundary-bound source row"
             )
+        if source_pre_boundary_digests is None:
+            source_pre_boundary_digests = current_pre_boundary_digests
+        elif current_pre_boundary_digests != source_pre_boundary_digests:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tapes did not preserve one fixed source prefix"
+            )
+        post_environment_digest = boundary_provenance[
+            "post_boundary_environment_rng_state_sha256"
+        ]
+        post_policy_digest = boundary_provenance[
+            "post_boundary_policy_sampling_state_sha256"
+        ]
+        if post_environment_digest != _seeded_environment_rng_state_sha256(
+            environment_seed
+        ) or post_policy_digest != _seeded_policy_sampling_state_sha256(policy_seed):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate post-boundary RNG state does not match its tape seed"
+            )
+        if (
+            post_environment_digest in observed_post_boundary_environment_digests
+            or post_policy_digest in observed_post_boundary_policy_digests
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate continuation tapes reused post-boundary RNG state"
+            )
+        observed_post_boundary_environment_digests.add(post_environment_digest)
+        observed_post_boundary_policy_digests.add(post_policy_digest)
         baseline = _mapping(tape.get("baseline"), field="aggregate tape baseline")
         _validate_compact_multi_tape_outcome(
             baseline,
             action=None,
             baseline=None,
-            initial_environment_digest=initial_environment_digest,
-            initial_policy_digest=initial_policy_digest,
+            boundary_provenance=boundary_provenance,
+            maximum_transition_count=horizon_ticks,
         )
         outcomes = _action_outcome_sequence(tape)
         observed_actions = [
@@ -3192,6 +4195,10 @@ def validate_recurrent_counterfactual_aggregate_row(
             baseline.get("natural_requested_action"),
             field="aggregate baseline natural action",
         )
+        if tape_natural_action != source_action:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate tape natural action drifted from source behavior"
+            )
         for action, outcome in zip(expected_actions, outcomes, strict=True):
             parsed = _mapping(outcome, field="aggregate tape action")
             if parsed.get("natural_requested_action") != tape_natural_action:
@@ -3202,11 +4209,48 @@ def validate_recurrent_counterfactual_aggregate_row(
                 parsed,
                 action=action,
                 baseline=baseline,
-                initial_environment_digest=initial_environment_digest,
-                initial_policy_digest=initial_policy_digest,
+                boundary_provenance=boundary_provenance,
+                maximum_transition_count=horizon_ticks,
             )
+            if action == source_action:
+                negative_control_fields = (
+                    "natural_requested_action",
+                    "focal_discounted_return",
+                    "focal_terminal_alive",
+                    "population_alive",
+                    "births_during_horizon",
+                    "deaths_during_horizon",
+                    "first_transition",
+                    "unsupported_requested_action_count",
+                    "heuristic_action_source_count",
+                    "unexpected_action_source_count",
+                    "behavior_digest",
+                )
+                paired = _mapping(
+                    parsed.get("paired_vs_baseline"),
+                    field="aggregate source-action paired delta",
+                )
+                if any(
+                    parsed.get(field) != baseline.get(field)
+                    for field in negative_control_fields
+                ) or dict(paired) != {
+                    "focal_discounted_return_delta": 0.0,
+                    "focal_terminal_alive_delta": 0,
+                    "population_alive_delta": 0,
+                    "births_during_horizon_delta": 0,
+                    "deaths_during_horizon_delta": 0,
+                }:
+                    raise RecurrentCounterfactualBranchError(
+                        "aggregate source-action negative control did not "
+                        "exactly reproduce its baseline"
+                    )
 
     aggregate = _mapping(row.get("aggregate"), field="aggregate statistics")
+    _validate_multi_tape_aggregate_payload(
+        aggregate,
+        tape_count=tape_count,
+        expected_actions=expected_actions,
+    )
     uncertainty_penalty = _finite_float(
         aggregate.get("uncertainty_penalty"),
         field="aggregate uncertainty penalty",
@@ -3261,28 +4305,66 @@ def _validate_compact_multi_tape_outcome(
     *,
     action: str | None,
     baseline: Mapping[str, object] | None,
-    initial_environment_digest: object,
-    initial_policy_digest: object,
+    boundary_provenance: Mapping[str, object],
+    maximum_transition_count: int,
 ) -> None:
-    for field in (
-        "focal_discounted_return",
-        "population_alive",
-        "births_during_horizon",
-        "deaths_during_horizon",
-    ):
-        _finite_float(outcome.get(field), field=f"aggregate outcome {field}")
-    if type(outcome.get("focal_terminal_alive")) is not bool:
+    expected_fields = (
+        _COMPACT_MULTI_TAPE_BASELINE_FIELDS
+        if action is None
+        else _COMPACT_MULTI_TAPE_ACTION_FIELDS
+    )
+    if set(outcome) != expected_fields:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate compact outcome field set drifted"
+        )
+    focal_discounted_return = _finite_float(
+        outcome.get("focal_discounted_return"),
+        field="aggregate outcome focal_discounted_return",
+    )
+    _validate_feasible_discounted_return(
+        focal_discounted_return,
+        maximum_transition_count=maximum_transition_count,
+        field="aggregate outcome focal_discounted_return",
+    )
+    population_alive = _nonnegative_int(
+        outcome.get("population_alive"),
+        field="aggregate outcome population_alive",
+    )
+    births_during_horizon = _nonnegative_int(
+        outcome.get("births_during_horizon"),
+        field="aggregate outcome births_during_horizon",
+    )
+    deaths_during_horizon = _nonnegative_int(
+        outcome.get("deaths_during_horizon"),
+        field="aggregate outcome deaths_during_horizon",
+    )
+    focal_terminal_alive = outcome.get("focal_terminal_alive")
+    if type(focal_terminal_alive) is not bool:
         raise RecurrentCounterfactualBranchError(
             "aggregate focal terminal alive must be an exact boolean"
         )
-    if (
-        outcome.get("unsupported_requested_action_count") != 0
-        or outcome.get("heuristic_action_source_count") != 0
-        or outcome.get("unexpected_action_source_count") != 0
-    ):
+    if focal_terminal_alive and population_alive == 0:
         raise RecurrentCounterfactualBranchError(
-            "aggregate continuation contains an unsupported action source"
+            "aggregate outcome cannot report a living focal agent in an "
+            "empty population"
         )
+    if not focal_terminal_alive and deaths_during_horizon == 0:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate terminal-dead focal outcome requires at least one "
+            "horizon death"
+        )
+    for field in (
+        "unsupported_requested_action_count",
+        "heuristic_action_source_count",
+        "unexpected_action_source_count",
+    ):
+        if _nonnegative_int(
+            outcome.get(field),
+            field=f"aggregate outcome {field}",
+        ) != 0:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate continuation contains an unsupported action source"
+            )
     if (
         outcome.get("replay_verified") is not True
         or outcome.get("replay_evidence_digest") != outcome.get("evidence_digest")
@@ -3292,27 +4374,42 @@ def _validate_compact_multi_tape_outcome(
         raise RecurrentCounterfactualBranchError(
             "aggregate continuation lacks exact replay evidence"
         )
-    if (
-        outcome.get("initial_environment_rng_state_sha256")
-        != initial_environment_digest
-        or outcome.get("initial_policy_sampling_state_sha256") != initial_policy_digest
-    ):
+    if _decision_boundary_provenance(outcome) != dict(boundary_provenance):
         raise RecurrentCounterfactualBranchError(
-            "aggregate continuation did not share its tape initial RNG state"
+            "aggregate continuation did not share its tape boundary RNG state"
         )
     first_transition = _mapping(
         outcome.get("first_transition"),
         field="aggregate first transition",
     )
+    _validate_compact_first_transition(first_transition)
+    if first_transition.get("reproduced") is True and births_during_horizon == 0:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first-transition reproduction requires at least one "
+            "horizon birth"
+        )
+    if first_transition.get("died") is True and focal_terminal_alive:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate outcome cannot revive a focal agent after "
+            "first-transition death"
+        )
+    if first_transition.get("died") is True and deaths_during_horizon == 0:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first-transition death requires at least one horizon death"
+        )
     if first_transition.get("observation_action_valid") is not True:
         raise RecurrentCounterfactualBranchError(
             "aggregate first transition was not public-mask valid"
         )
     if action is None:
-        _stable_action(
+        natural_action = _stable_action(
             outcome.get("natural_requested_action"),
             field="aggregate baseline natural action",
         )
+        if first_transition.get("requested_action") != natural_action:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate baseline transition drifted from its natural action"
+            )
         return
     if (
         outcome.get("action") != action
@@ -3327,6 +4424,7 @@ def _validate_compact_multi_tape_outcome(
         outcome.get("paired_vs_baseline"),
         field="aggregate paired delta",
     )
+    _validate_paired_delta_payload(paired, field="aggregate paired delta")
     expected_paired = {
         "focal_discounted_return_delta": _round(
             float(outcome["focal_discounted_return"])
@@ -3347,40 +4445,504 @@ def _validate_compact_multi_tape_outcome(
         )
 
 
-def _retaped_continuation_checkpoint(
-    checkpoint_world: SimulationWorld,
+def _validate_paired_delta_payload(
+    paired: Mapping[str, object],
     *,
-    environment_sampling_seed: int,
-    policy_sampling_seed: int,
-    focal_agent_id: int,
-) -> tuple[SimulationWorld, dict[str, object]]:
-    """Deep-copy one exact source state and replace only future RNG tapes."""
+    field: str,
+) -> None:
+    if set(paired) != set(_PAIRED_DELTA_FIELDS):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} field set drifted"
+        )
+    _finite_float(
+        paired.get("focal_discounted_return_delta"),
+        field=f"{field} focal discounted return delta",
+    )
+    for count_field in _PAIRED_DELTA_FIELDS[1:]:
+        value = paired.get(count_field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RecurrentCounterfactualBranchError(
+                f"{field} {count_field} must be an exact integer"
+            )
 
-    world = deepcopy(checkpoint_world)
-    _configure_manual_world(world)
-    world.rng.seed(environment_sampling_seed)
-    policy = world.policy
-    if not isinstance(policy, DeterministicPublicRecurrentPolicy):
+
+def _validate_multi_tape_aggregate_payload(
+    aggregate: Mapping[str, object],
+    *,
+    tape_count: int,
+    expected_actions: Sequence[str],
+) -> None:
+    if set(aggregate) != _MULTI_TAPE_AGGREGATE_FIELDS:
         raise RecurrentCounterfactualBranchError(
-            "continuation tape checkpoint lost its recurrent policy"
+            "aggregate statistics field set drifted"
         )
-    if policy._sampling_generator is None:  # noqa: SLF001 - diagnostics seam
+    if _positive_int(
+        aggregate.get("tape_count"),
+        field="aggregate statistics tape count",
+    ) != tape_count:
         raise RecurrentCounterfactualBranchError(
-            "independent policy tapes require sampled recurrent policy state"
+            "aggregate statistics tape count drifted"
         )
-    policy._sampling_generator.manual_seed(  # noqa: SLF001 - diagnostics seam
-        policy_sampling_seed
+    _finite_float(
+        aggregate.get("uncertainty_penalty"),
+        field="aggregate statistics uncertainty penalty",
     )
-    policy._sampling_seed = policy_sampling_seed  # noqa: SLF001 - diagnostics seam
-    provenance = _continuation_initial_rng_provenance(
-        world,
-        focal_agent_id=focal_agent_id,
-    )
-    if provenance["initial_policy_sampling_state_sha256"] is None:
+    if aggregate.get("uncertainty_penalized_score_policy") != (
+        "paired_focal_discounted_return_delta_mean_minus_coefficient_times_standard_error"
+    ):
         raise RecurrentCounterfactualBranchError(
-            "retaped continuation policy lacks a sampling-state digest"
+            "aggregate uncertainty-penalized score policy drifted"
         )
-    return world, provenance
+    baseline_statistics = _mapping(
+        aggregate.get("baseline_outcome_statistics"),
+        field="aggregate baseline outcome statistics",
+    )
+    if set(baseline_statistics) != _AGGREGATE_METRIC_FIELDS:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate baseline metric field set drifted"
+        )
+    for metric in _AGGREGATE_METRIC_FIELDS:
+        _validate_sample_statistics_payload(
+            _mapping(
+                baseline_statistics.get(metric),
+                field=f"aggregate baseline {metric} statistics",
+            ),
+            field=f"aggregate baseline {metric} statistics",
+        )
+    _finite_float(
+        aggregate.get("baseline_focal_survival_probability"),
+        field="aggregate baseline focal survival probability",
+    )
+    action_outcomes = aggregate.get("action_outcomes")
+    if not isinstance(action_outcomes, list):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate action outcomes must be a list"
+        )
+    observed_actions: list[str] = []
+    for raw_outcome in action_outcomes:
+        outcome = _mapping(raw_outcome, field="aggregate action statistics")
+        if set(outcome) != _MULTI_TAPE_ACTION_AGGREGATE_FIELDS:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate action statistics field set drifted"
+            )
+        action = _stable_action(
+            outcome.get("action"),
+            field="aggregate action statistics action",
+        )
+        observed_actions.append(action)
+        if _positive_int(
+            outcome.get("tape_count"),
+            field="aggregate action statistics tape count",
+        ) != tape_count:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate action statistics tape count drifted"
+            )
+        outcome_statistics = _mapping(
+            outcome.get("outcome_statistics"),
+            field="aggregate action outcome statistics",
+        )
+        if set(outcome_statistics) != _AGGREGATE_METRIC_FIELDS:
+            raise RecurrentCounterfactualBranchError(
+                "aggregate action outcome metric field set drifted"
+            )
+        for metric in _AGGREGATE_METRIC_FIELDS:
+            _validate_sample_statistics_payload(
+                _mapping(
+                    outcome_statistics.get(metric),
+                    field=f"aggregate action {action} {metric} statistics",
+                ),
+                field=f"aggregate action {action} {metric} statistics",
+            )
+        paired_statistics = _mapping(
+            outcome.get("paired_delta_statistics"),
+            field="aggregate paired-delta statistics",
+        )
+        if set(paired_statistics) != set(_PAIRED_DELTA_FIELDS):
+            raise RecurrentCounterfactualBranchError(
+                "aggregate paired-delta statistic field set drifted"
+            )
+        for metric in _PAIRED_DELTA_FIELDS:
+            _validate_sample_statistics_payload(
+                _mapping(
+                    paired_statistics.get(metric),
+                    field=f"aggregate paired-delta {metric} statistics",
+                ),
+                field=f"aggregate paired-delta {metric} statistics",
+            )
+        _finite_float(
+            outcome.get("focal_survival_probability"),
+            field=f"aggregate action {action} focal survival probability",
+        )
+        _finite_float(
+            outcome.get("uncertainty_penalized_score"),
+            field=f"aggregate action {action} uncertainty-penalized score",
+        )
+    if observed_actions != list(expected_actions):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate action statistics do not cover valid actions in stable order"
+        )
+
+
+def _validate_sample_statistics_payload(
+    statistics: Mapping[str, object],
+    *,
+    field: str,
+) -> None:
+    if set(statistics) != _SAMPLE_STATISTIC_FIELDS:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} field set drifted"
+        )
+    for statistic in _SAMPLE_STATISTIC_FIELDS:
+        _finite_float(
+            statistics.get(statistic),
+            field=f"{field} {statistic}",
+        )
+
+
+def _validate_compact_first_transition(
+    first_transition: Mapping[str, object],
+) -> None:
+    if set(first_transition) != _COMPACT_FIRST_TRANSITION_FIELDS:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition field set drifted"
+        )
+    requested_action = _stable_action(
+        first_transition.get("requested_action"),
+        field="aggregate first transition requested action",
+    )
+    resolved_action = _stable_action(
+        first_transition.get("resolved_action"),
+        field="aggregate first transition resolved action",
+    )
+    boolean_fields = (
+        "observation_action_valid",
+        "resolution_action_valid",
+        "same_tick_resolution_mask_drift",
+        "expected_same_tick_occupancy_drift",
+        "moved",
+        "reproduced",
+        "died",
+        "after_alive",
+    )
+    for field in boolean_fields:
+        if type(first_transition.get(field)) is not bool:
+            raise RecurrentCounterfactualBranchError(
+                f"aggregate first transition {field!r} must be an exact boolean"
+            )
+    observation_valid = first_transition["observation_action_valid"]
+    resolution_valid = first_transition["resolution_action_valid"]
+    same_tick_drift = first_transition["same_tick_resolution_mask_drift"]
+    invalid_reason = first_transition.get("invalid_reason")
+    if invalid_reason is not None and (
+        not isinstance(invalid_reason, str) or not invalid_reason.strip()
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition invalid reason is malformed"
+        )
+    if same_tick_drift != (observation_valid and not resolution_valid):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition resolution-mask drift is incoherent"
+        )
+    expected_occupancy_drift = (
+        requested_action.startswith("move_")
+        and observation_valid
+        and not resolution_valid
+        and invalid_reason == "not_in_resolution_action_mask"
+    )
+    if (
+        first_transition["expected_same_tick_occupancy_drift"]
+        != expected_occupancy_drift
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition occupancy-drift classification is incoherent"
+        )
+    if resolution_valid:
+        if invalid_reason is not None:
+            raise RecurrentCounterfactualBranchError(
+                "valid aggregate first transition cannot carry an invalid reason"
+            )
+        if resolved_action != requested_action:
+            raise RecurrentCounterfactualBranchError(
+                "valid aggregate first transition must resolve its requested action"
+            )
+    elif (
+        invalid_reason != "not_in_resolution_action_mask"
+        or resolved_action != "stay"
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "resolution-invalid aggregate first transition must fail closed to stay "
+            "with the canonical resolution-mask reason"
+        )
+    expected_moved = resolution_valid and resolved_action.startswith("move_")
+    if first_transition["moved"] != expected_moved:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition movement flags are incoherent"
+        )
+    if first_transition["died"] != (not first_transition["after_alive"]):
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition death and alive flags are incoherent"
+        )
+    reward_total = _finite_float(
+        first_transition.get("reward_total"),
+        field="aggregate first transition reward total",
+    )
+    if not REWARD_TOTAL_BOUNDS[0] <= reward_total <= REWARD_TOTAL_BOUNDS[1]:
+        raise RecurrentCounterfactualBranchError(
+            "aggregate first transition reward total is outside canonical bounds"
+        )
+    for field in (
+        "after_energy_ratio",
+        "after_hydration_ratio",
+        "after_health_ratio",
+    ):
+        value = first_transition.get(field)
+        if first_transition["after_alive"]:
+            _nonnegative_float(
+                value,
+                field=f"aggregate first transition {field}",
+            )
+            continue
+        if value is None:
+            continue
+        _finite_float(value, field=f"aggregate first transition {field}")
+
+
+def _validate_compact_branch_outcome(
+    outcome: Mapping[str, object],
+    *,
+    field: str,
+    maximum_transition_count: int,
+) -> None:
+    first_transition = _mapping(
+        outcome.get("first_transition"),
+        field=f"{field} first transition",
+    )
+    _validate_compact_first_transition(first_transition)
+    transition_count = _positive_int(
+        outcome.get("focal_transition_count"),
+        field=f"{field} focal transition count",
+    )
+    policy_count = _positive_int(
+        outcome.get("focal_policy_decision_count"),
+        field=f"{field} focal policy decision count",
+    )
+    passive_count = _nonnegative_int(
+        outcome.get("focal_passive_transition_count"),
+        field=f"{field} focal passive transition count",
+    )
+    if transition_count != policy_count + passive_count:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} focal transition counts are inconsistent"
+        )
+    if transition_count > maximum_transition_count:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} focal transition count cannot exceed its horizon"
+        )
+    focal_discounted_return = _finite_float(
+        outcome.get("focal_discounted_return"),
+        field=f"{field} focal discounted return",
+    )
+    _validate_feasible_discounted_return(
+        focal_discounted_return,
+        maximum_transition_count=transition_count,
+        field=f"{field} focal discounted return",
+    )
+    terminal = _mapping(
+        outcome.get("focal_terminal"),
+        field=f"{field} focal terminal",
+    )
+    _validate_compact_focal_terminal(terminal, field=f"{field} focal terminal")
+    if passive_count > 1:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} can contain at most one passive terminal transition"
+        )
+    if passive_count == 1 and terminal.get("alive") is True:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} passive focal transition requires terminal death"
+        )
+    population_alive = _nonnegative_int(
+        outcome.get("population_alive"),
+        field=f"{field} population_alive",
+    )
+    births_during_horizon = _nonnegative_int(
+        outcome.get("births_during_horizon"),
+        field=f"{field} births_during_horizon",
+    )
+    deaths_during_horizon = _nonnegative_int(
+        outcome.get("deaths_during_horizon"),
+        field=f"{field} deaths_during_horizon",
+    )
+    if first_transition.get("reproduced") is True and births_during_horizon == 0:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} first-transition reproduction requires at least one "
+            "horizon birth"
+        )
+    if first_transition.get("died") is True and terminal.get("alive") is True:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} cannot revive a focal agent after first-transition death"
+        )
+    if first_transition.get("died") is True:
+        if deaths_during_horizon == 0:
+            raise RecurrentCounterfactualBranchError(
+                f"{field} first-transition death requires at least one horizon death"
+            )
+        if transition_count != 1 or policy_count != 1 or passive_count != 0:
+            raise RecurrentCounterfactualBranchError(
+                f"{field} first-transition death must terminate focal transitions"
+            )
+    if terminal.get("alive") is True and population_alive == 0:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} cannot report a living focal agent in an empty population"
+        )
+    if terminal.get("alive") is False and deaths_during_horizon == 0:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} terminal-dead focal outcome requires at least one "
+            "horizon death"
+        )
+    if not _valid_sha256(outcome.get("behavior_digest")) or not _valid_sha256(
+        outcome.get("evidence_digest")
+    ):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} behavior or evidence digest is malformed"
+        )
+
+
+def _validate_compact_focal_terminal(
+    terminal: Mapping[str, object],
+    *,
+    field: str,
+) -> None:
+    if set(terminal) != {
+        "alive",
+        "energy_ratio",
+        "hydration_ratio",
+        "health_ratio",
+    }:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} field set drifted"
+        )
+    alive = terminal.get("alive")
+    if type(alive) is not bool:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} alive must be an exact boolean"
+        )
+    ratio_fields = ("energy_ratio", "hydration_ratio", "health_ratio")
+    if alive:
+        for ratio_field in ratio_fields:
+            _nonnegative_float(
+                terminal.get(ratio_field),
+                field=f"{field} {ratio_field}",
+            )
+    elif any(terminal.get(ratio_field) is not None for ratio_field in ratio_fields):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} dead-state ratios must be null"
+        )
+
+
+def _validate_current_public_observation(
+    observation: Mapping[str, object],
+) -> None:
+    if set(observation) != {"schema_version", "policy", "values", "shape"}:
+        raise RecurrentCounterfactualBranchError(
+            "current public observation field set drifted"
+        )
+    if (
+        observation.get("schema_version") != ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+        or observation.get("policy") != ECOLOGICAL_POLICY_INPUT_POLICY
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "current public observation contract drifted"
+        )
+    _validate_exact_vector_shape(
+        observation.get("shape"),
+        expected_size=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        field="current public observation shape",
+    )
+    values = observation.get("values")
+    if not isinstance(values, list):
+        raise RecurrentCounterfactualBranchError(
+            "current public observation values must be a list"
+        )
+    _validate_bounded_numeric_vector(
+        values,
+        expected_length=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        field="current public observation",
+        minimum=-1.0,
+        maximum=1.0,
+    )
+
+
+def _validate_previous_public_feedback(
+    feedback: Mapping[str, object],
+) -> None:
+    if set(feedback) != {"schema_version", "shape", "values"}:
+        raise RecurrentCounterfactualBranchError(
+            "previous public feedback field set drifted"
+        )
+    if (
+        feedback.get("schema_version") != PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "previous public feedback contract drifted"
+        )
+    _validate_exact_vector_shape(
+        feedback.get("shape"),
+        expected_size=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+        field="previous public feedback shape",
+    )
+    values = feedback.get("values")
+    if not isinstance(values, list):
+        raise RecurrentCounterfactualBranchError(
+            "previous public feedback values must be a list"
+        )
+    _validate_bounded_numeric_vector(
+        values,
+        expected_length=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+        field="previous public feedback",
+        minimum=-1.0,
+        maximum=1.0,
+    )
+    try:
+        validate_previous_feedback_tensor(
+            tensor(values, dtype=float64),
+            leading_shape=(),
+        )
+    except RecurrentContextError as error:
+        raise RecurrentCounterfactualBranchError(
+            "previous public feedback violates its semantic contract"
+        ) from error
+
+
+def _validate_feedback_history_alignment(
+    prefix: Mapping[str, object],
+    feedback: Mapping[str, object],
+    *,
+    field: str,
+) -> None:
+    if prefix.get("record_count") != 0:
+        return
+    values = feedback.get("values")
+    if not isinstance(values, list):
+        raise AssertionError("validated previous feedback values became invalid")
+    if any(float(value) != 0.0 for value in values):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} must be all zero when the public history is empty"
+        )
+
+
+def _validate_feasible_discounted_return(
+    value: float,
+    *,
+    maximum_transition_count: int,
+    field: str,
+) -> None:
+    lower = float(REWARD_TOTAL_BOUNDS[0]) * maximum_transition_count
+    upper = float(REWARD_TOTAL_BOUNDS[1]) * maximum_transition_count
+    tolerance = 1.0e-9 * max(1.0, abs(lower), abs(upper))
+    if value < lower - tolerance or value > upper + tolerance:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} is outside feasible reward bounds"
+        )
 
 
 def _continuation_initial_rng_provenance(
@@ -3389,7 +4951,13 @@ def _continuation_initial_rng_provenance(
     focal_agent_id: int,
 ) -> dict[str, object]:
     policy = world.policy
-    if isinstance(policy, OneShotRecurrentCounterfactualPolicy):
+    if isinstance(
+        policy,
+        (
+            OneShotRecurrentCounterfactualPolicy,
+            _DecisionBoundaryRetapedRecurrentCounterfactualPolicy,
+        ),
+    ):
         policy = policy.delegate
     if not isinstance(policy, DeterministicPublicRecurrentPolicy):
         raise RecurrentCounterfactualBranchError(
@@ -3404,6 +4972,90 @@ def _continuation_initial_rng_provenance(
     }
 
 
+def _policy_sampling_state_sha256(
+    policy: DeterministicPublicRecurrentPolicy,
+) -> str:
+    sampling_generator = policy._sampling_generator  # noqa: SLF001 - diagnostics seam
+    if sampling_generator is None:
+        raise RecurrentCounterfactualBranchError(
+            "continuation policy lacks a sampling generator"
+        )
+    state = sampling_generator.get_state().detach().cpu()
+    digest = hashlib.sha256()
+    digest.update(str(tuple(state.shape)).encode("ascii"))
+    digest.update(bytes(state.tolist()))
+    return digest.hexdigest()
+
+
+def _seeded_environment_rng_state_sha256(seed: int) -> str:
+    generator = random.Random()
+    generator.seed(seed)
+    return stable_payload_digest(generator.getstate())
+
+
+def _seeded_policy_sampling_state_sha256(seed: int) -> str:
+    generator = Generator(device="cpu")
+    generator.manual_seed(seed)
+    state = generator.get_state().detach().cpu()
+    digest = hashlib.sha256()
+    digest.update(str(tuple(state.shape)).encode("ascii"))
+    digest.update(bytes(state.tolist()))
+    return digest.hexdigest()
+
+
+def _decision_boundary_provenance(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    boundary = value.get("continuation_rng_retape_boundary")
+    if boundary != RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY:
+        raise RecurrentCounterfactualBranchError(
+            "continuation RNG retape boundary drifted"
+        )
+    result: dict[str, object] = {
+        "continuation_rng_retape_boundary": boundary,
+    }
+    for field in _DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS:
+        digest = value.get(field)
+        if not _valid_sha256(digest):
+            raise RecurrentCounterfactualBranchError(
+                f"decision-boundary provenance field {field!r} is malformed"
+            )
+        result[field] = digest
+    for field in _DECISION_BOUNDARY_PROVENANCE_BOOLEAN_FIELDS:
+        if value.get(field) is not True:
+            raise RecurrentCounterfactualBranchError(
+                f"decision-boundary provenance field {field!r} must be true"
+            )
+        result[field] = True
+    return result
+
+
+def _source_decision_prefix_projection_sha256(
+    diagnostics: Mapping[str, object],
+) -> str:
+    """Bind the entire learner decision at the fixed causal prefix.
+
+    The override diagnostics add intervention-only fields, so compare the
+    common source-decision projection that must be identical for the natural
+    baseline and every forced branch before continuation RNG retaping.
+    """
+
+    missing = [
+        field
+        for field in _SOURCE_DECISION_PREFIX_PROJECTION_FIELDS
+        if field not in diagnostics
+    ]
+    if missing:
+        raise RecurrentCounterfactualBranchError(
+            "source decision projection is missing required diagnostics"
+        )
+    projection = {
+        field: deepcopy(diagnostics[field])
+        for field in _SOURCE_DECISION_PREFIX_PROJECTION_FIELDS
+    }
+    return stable_payload_digest(projection)
+
+
 def _execute_continuation(
     checkpoint_world: SimulationWorld,
     *,
@@ -3414,10 +5066,13 @@ def _execute_continuation(
     source_action: str,
     expected_observation_digest: str,
     expected_action_mask_digest: str,
+    expected_source_decision_projection_sha256: str | None = None,
     forced_action: str | None,
     gamma: float,
     prefix_horizons: Sequence[int] | None = None,
     require_source_action_match: bool = True,
+    boundary_environment_sampling_seed: int | None = None,
+    boundary_policy_sampling_seed: int | None = None,
 ) -> dict[str, object]:
     world = deepcopy(checkpoint_world)
     _configure_manual_world(world)
@@ -3427,8 +5082,48 @@ def _execute_continuation(
     )
     record_start = len(world.trajectory_records)
     diagnostics_start = len(world.policy_decision_diagnostics_records)
-    wrapper: OneShotRecurrentCounterfactualPolicy | None = None
-    if forced_action is not None:
+    wrapper: (
+        OneShotRecurrentCounterfactualPolicy
+        | _DecisionBoundaryRetapedRecurrentCounterfactualPolicy
+        | None
+    ) = None
+    boundary_retape_requested = (
+        boundary_environment_sampling_seed is not None
+        or boundary_policy_sampling_seed is not None
+    )
+    if boundary_retape_requested:
+        if (
+            boundary_environment_sampling_seed is None
+            or boundary_policy_sampling_seed is None
+            or expected_source_decision_projection_sha256 is None
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "decision-boundary retaping requires both continuation seeds "
+                "and the exact source decision projection"
+            )
+        if not isinstance(world.policy, DeterministicPublicRecurrentPolicy):
+            raise RecurrentCounterfactualBranchError(
+                "branch checkpoint lost its recurrent policy"
+            )
+        wrapper = _DecisionBoundaryRetapedRecurrentCounterfactualPolicy(
+            delegate=world.policy,
+            environment_rng=world.rng,
+            target_agent_id=focal_agent_id,
+            source_action=source_action,
+            forced_action=forced_action,
+            expected_observation_digest=expected_observation_digest,
+            expected_action_mask_digest=expected_action_mask_digest,
+            expected_source_decision_projection_sha256=(
+                expected_source_decision_projection_sha256
+            ),
+            intervention_id=(
+                f"{branch_id}:action:{forced_action or 'natural_baseline'}"
+            ),
+            environment_sampling_seed=boundary_environment_sampling_seed,
+            policy_sampling_seed=boundary_policy_sampling_seed,
+        )
+        world.policy = wrapper
+    elif forced_action is not None:
         if not isinstance(world.policy, DeterministicPublicRecurrentPolicy):
             raise RecurrentCounterfactualBranchError(
                 "branch checkpoint lost its recurrent policy"
@@ -3496,6 +5191,19 @@ def _execute_continuation(
         require_source_action_match=require_source_action_match,
     )
     result.update(initial_rng_provenance)
+    boundary_provenance: dict[str, object] | None = None
+    if isinstance(
+        wrapper,
+        _DecisionBoundaryRetapedRecurrentCounterfactualPolicy,
+    ):
+        if wrapper.used is not True or wrapper.boundary_provenance is None:
+            raise RecurrentCounterfactualBranchError(
+                "focal decision boundary was not reached exactly once"
+            )
+        boundary_provenance = _decision_boundary_provenance(
+            wrapper.boundary_provenance
+        )
+        result.update(boundary_provenance)
     if resolved_prefix_horizons:
         result["nested_prefix_runs"] = {
             str(prefix_horizon): _summarize_continuation_snapshot(
@@ -3514,6 +5222,8 @@ def _execute_continuation(
         }
         for nested in result["nested_prefix_runs"].values():
             nested.update(initial_rng_provenance)
+            if boundary_provenance is not None:
+                nested.update(boundary_provenance)
     return result
 
 
@@ -4007,11 +5717,7 @@ def _counterfactual_contract(
     verify_replay: bool,
     seed_role: str,
 ) -> dict[str, object]:
-    allowed_seed_roles = (
-        RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        if seed_role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        else RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES
-    )
+    allowed_seed_roles = _counterfactual_seed_role_cohort(seed_role)
     return {
         "schema_version": RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION,
         "diagnostics_only": True,
@@ -4107,16 +5813,29 @@ def _validated_seed_role(seed_role: object, environment_seed: object) -> str:
             "seeds or scale_train/scale_curriculum development seeds"
         )
     seed = _positive_int(environment_seed, field="environment_seed")
-    registry = (
-        SCALE_DEVELOPMENT_SEED_REGISTRY
-        if role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        else RECURRENT_SEED_REGISTRY
-    )
+    if role in RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES:
+        registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
+    elif role in RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES:
+        registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+    else:
+        registry = RECURRENT_SEED_REGISTRY
     if seed not in registry[role]:
         raise RecurrentCounterfactualBranchError(
             f"environment_seed is not registered for seed role {role!r}"
         )
     return role
+
+
+def _counterfactual_seed_role_cohort(role: str) -> tuple[str, ...]:
+    if role in RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES:
+        return RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES
+    if role in RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES:
+        return RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES
+    if role in RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES:
+        return RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES
+    raise RecurrentCounterfactualBranchError(
+        f"counterfactual seed role {role!r} has no allowed cohort"
+    )
 
 
 def _validated_scenario(value: object) -> str:
@@ -4216,6 +5935,15 @@ def _unit_interval(value: object, *, field: str) -> float:
     return parsed
 
 
+def _nonnegative_float(value: object, *, field: str) -> float:
+    parsed = _finite_float(value, field=field)
+    if parsed < 0.0:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} must be non-negative"
+        )
+    return parsed
+
+
 def _finite_float(value: object, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RecurrentCounterfactualBranchError(f"{field} must be numeric")
@@ -4245,6 +5973,45 @@ def _validate_numeric_vector(
         _finite_float(value, field=field)
 
 
+def _validate_exact_vector_shape(
+    value: object,
+    *,
+    expected_size: int,
+    field: str,
+) -> None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or isinstance(value[0], bool)
+        or not isinstance(value[0], int)
+        or value[0] != expected_size
+    ):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} must contain exactly one integer size"
+        )
+
+
+def _validate_bounded_numeric_vector(
+    values: Sequence[object],
+    *,
+    expected_length: int,
+    field: str,
+    minimum: float,
+    maximum: float,
+) -> None:
+    _validate_numeric_vector(
+        values,
+        expected_length=expected_length,
+        field=field,
+    )
+    for value in values:
+        parsed = float(value)
+        if parsed < minimum or parsed > maximum:
+            raise RecurrentCounterfactualBranchError(
+                f"{field} values must be in [{minimum}, {maximum}]"
+            )
+
+
 def _flatten_numeric_tree(value: object, *, field: str) -> list[float]:
     if isinstance(value, list):
         flattened: list[float] = []
@@ -4252,6 +6019,26 @@ def _flatten_numeric_tree(value: object, *, field: str) -> list[float]:
             flattened.extend(_flatten_numeric_tree(nested, field=field))
         return flattened
     return [_finite_float(value, field=field)]
+
+
+def _validated_float32_tensor_tree(
+    value: object,
+    *,
+    expected_shape: Sequence[int],
+    field: str,
+) -> Tensor:
+    _flatten_numeric_tree(value, field=field)
+    try:
+        parsed = tensor(value, dtype=float32)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise RecurrentCounterfactualBranchError(
+            f"{field} is not a rectangular numeric tensor"
+        ) from error
+    if list(parsed.shape) != list(expected_shape):
+        raise RecurrentCounterfactualBranchError(
+            f"{field} does not match its declared shape"
+        )
+    return parsed
 
 
 def _valid_sha256(value: object) -> bool:
@@ -4269,13 +6056,17 @@ def _round(value: float) -> float:
 __all__ = [
     "OneShotRecurrentCounterfactualPolicy",
     "RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION",
+    "RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_BRANCH_PROTOCOL_VERSION",
     "RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO",
     "RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE",
     "RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE",
+    "RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY",
     "RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES",
+    "RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES",
+    "RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_SCENARIOS",
     "RECURRENT_COUNTERFACTUAL_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_TRAINING_USE",

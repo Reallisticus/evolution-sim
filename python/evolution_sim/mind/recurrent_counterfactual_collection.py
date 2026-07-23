@@ -18,8 +18,12 @@ from evolution_sim.mind.recurrent_actor_critic import (
     RecurrentActorCriticConfig,
 )
 from evolution_sim.mind.recurrent_counterfactual_branch import (
+    RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
     RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO,
+    RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION,
     RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES,
+    RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES,
+    RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES,
     RECURRENT_COUNTERFACTUAL_SCENARIOS,
     RECURRENT_COUNTERFACTUAL_SEED_ROLES,
     RecurrentCounterfactualBranchError,
@@ -34,6 +38,7 @@ from evolution_sim.mind.recurrent_policy import (
 from evolution_sim.mind.recurrent_seed_registry import (
     RECURRENT_SEED_REGISTRY,
     SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
 )
 
 
@@ -41,7 +46,7 @@ RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION = (
     "mind_v3_recurrent_nested_counterfactual_collection_v1"
 )
 RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION = (
-    "mind_v3_recurrent_nested_counterfactual_multi_tape_collection_v2"
+    "mind_v3_recurrent_nested_counterfactual_multi_tape_collection_v3"
 )
 RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE = (
     "mind_v3_recurrent_counterfactual_source_policy_seed_v1"
@@ -53,6 +58,71 @@ RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD = "spawn"
 RECURRENT_COUNTERFACTUAL_COLLECTION_TORCH_THREADS = 1
 MAX_RECURRENT_COUNTERFACTUAL_COLLECTION_WORKERS = 64
 MAX_RECURRENT_COUNTERFACTUAL_SEED = 2**63 - 1
+
+_SELECTION_BASE_FIELDS = {
+    "requested_branch_ticks",
+    "selected_branch_tick",
+    "fallback_index",
+    "eligible_candidate_count",
+    "candidate_list_digest",
+    "selected_candidate_index",
+    "selected_focal_agent_id",
+    "selection_policy",
+    "outcome_or_future_data_used",
+}
+_SELECTION_MULTI_TAPE_FIELDS = {
+    "eligible_branch_ticks",
+    "eligible_branch_tick_count",
+    "selected_eligible_tick_index",
+}
+_SELECTION_ROTATION_FIELDS = {
+    "requested_branch_tick_stratum_index",
+    "branch_tick_strata_traversal",
+    "selected_branch_tick_stratum_index",
+}
+_PREFIX_PROOF_FIELDS = {
+    "schema_version",
+    "horizons",
+    "stream_count",
+    "streams",
+    "all_shorter_streams_are_exact_max_stream_prefixes",
+    "raw_private_world_state_serialized",
+}
+_PREFIX_STREAM_FIELDS = {
+    "horizons",
+    "exact_prefix",
+}
+_PREFIX_HORIZON_FIELDS = {
+    "behavior_digest",
+    "evidence_digest",
+    "executed_tick_count",
+    "causal_record_digest_sequence",
+    "policy_record_digest_sequence",
+    "diagnostics_digest_sequence",
+}
+_COMPUTE_FIELDS = {
+    "source_tick_executions",
+    "selected_continuation_checkpoint_count",
+    "valid_action_count",
+    "horizon_count",
+    "action_horizon_target_count",
+    "max_horizon_continuation_count",
+    "exact_replay_continuation_count",
+    "maximum_horizon_ticks",
+    "actual_continuation_tick_count",
+    "maximum_continuation_tick_budget",
+    "independent_horizon_tick_budget",
+    "nested_tick_budget_saved",
+}
+_MULTI_TAPE_COMPUTE_FIELDS = {
+    "continuation_tape_count",
+    "continuation_count_per_tape",
+    "max_horizon_continuation_count",
+    "exact_replay_continuation_count",
+    "maximum_horizon_ticks",
+    "actual_continuation_tick_count",
+    "maximum_continuation_tick_budget",
+}
 
 
 _WORKER_MODEL: PublicRecurrentActorCritic | None = None
@@ -104,12 +174,26 @@ class RecurrentCounterfactualCollectionTask:
             )
         if self.scenario not in RECURRENT_COUNTERFACTUAL_SCENARIOS:
             raise RecurrentCounterfactualCollectionError("scenario is unsupported")
-        scale_role = self.seed_role in RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES
-        expected_role = (
-            ("scale_train" if scale_role else "train")
-            if self.scenario == RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO
-            else ("scale_curriculum" if scale_role else "curriculum")
-        )
+        scale_v1_role = self.seed_role in RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES
+        scale_v2_role = self.seed_role in RECURRENT_COUNTERFACTUAL_SCALE_V2_SEED_ROLES
+        if scale_v2_role:
+            expected_role = (
+                "scale_v2_train"
+                if self.scenario == RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO
+                else "scale_v2_curriculum"
+            )
+        elif scale_v1_role:
+            expected_role = (
+                "scale_train"
+                if self.scenario == RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO
+                else "scale_curriculum"
+            )
+        else:
+            expected_role = (
+                "train"
+                if self.scenario == RECURRENT_COUNTERFACTUAL_BROAD_SCENARIO
+                else "curriculum"
+            )
         if self.seed_role != expected_role:
             raise RecurrentCounterfactualCollectionError(
                 "broad tasks require train seeds and fixture tasks require "
@@ -119,9 +203,12 @@ class RecurrentCounterfactualCollectionTask:
             self.environment_seed,
             field="environment_seed",
         )
-        registry = (
-            SCALE_DEVELOPMENT_SEED_REGISTRY if scale_role else RECURRENT_SEED_REGISTRY
-        )
+        if scale_v2_role:
+            registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
+        elif scale_v1_role:
+            registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+        else:
+            registry = RECURRENT_SEED_REGISTRY
         if environment_seed not in registry[self.seed_role]:
             raise RecurrentCounterfactualCollectionError(
                 "environment_seed is not registered for its training role"
@@ -417,6 +504,21 @@ def validate_recurrent_counterfactual_collection_result(
         raise RecurrentCounterfactualCollectionError(
             "result must be a RecurrentCounterfactualCollectionResult"
         )
+    if not isinstance(result.config, RecurrentCounterfactualCollectionConfig):
+        raise RecurrentCounterfactualCollectionError(
+            "collection config type drifted"
+        )
+    normalized_config = RecurrentCounterfactualCollectionConfig(
+        horizons=result.config.horizons,
+        gamma=result.config.gamma,
+        continuation_tape_count=result.config.continuation_tape_count,
+        terminal_target_world_tick=result.config.terminal_target_world_tick,
+        uncertainty_penalty=result.config.uncertainty_penalty,
+    )
+    if normalized_config != result.config:
+        raise RecurrentCounterfactualCollectionError(
+            "collection config failed exact normalization"
+        )
     if result.contract_version != _collection_contract_version(result.config):
         raise RecurrentCounterfactualCollectionError(
             "collection contract version drifted"
@@ -443,8 +545,33 @@ def validate_recurrent_counterfactual_collection_result(
         raise RecurrentCounterfactualCollectionError(
             "collection result must contain bundles"
         )
+    normalized_tasks: list[RecurrentCounterfactualCollectionTask] = []
+    for bundle in result.bundles:
+        task = bundle.task
+        if not isinstance(task, RecurrentCounterfactualCollectionTask):
+            raise RecurrentCounterfactualCollectionError(
+                "collection bundle task type drifted"
+            )
+        normalized_task = RecurrentCounterfactualCollectionTask(
+            task_id=task.task_id,
+            seed_role=task.seed_role,
+            scenario=task.scenario,
+            environment_seed=task.environment_seed,
+            branch_tick_candidates=task.branch_tick_candidates,
+            source_policy_sampling_identity=task.source_policy_sampling_identity,
+            branch_selection_identity=task.branch_selection_identity,
+            source_policy_sampling_seed=task.source_policy_sampling_seed,
+            branch_selection_seed=task.branch_selection_seed,
+            branch_tick_stratum_index=task.branch_tick_stratum_index,
+        )
+        if normalized_task != task:
+            raise RecurrentCounterfactualCollectionError(
+                "collection task failed exact normalization"
+            )
+        normalized_tasks.append(normalized_task)
+    validated_tasks = _validated_tasks(tuple(normalized_tasks))
     _validate_task_selection_modes(
-        tuple(bundle.task for bundle in result.bundles),
+        validated_tasks,
         config=result.config,
     )
     task_ids: set[str] = set()
@@ -460,20 +587,40 @@ def validate_recurrent_counterfactual_collection_result(
                 "collection bundle task ids must be unique"
             )
         task_ids.add(bundle.task.task_id)
-    if result.aggregate_compute != _aggregate_compute(result.bundles):
+    expected_aggregate_compute = _aggregate_compute(result.bundles)
+    if set(result.aggregate_compute) != set(expected_aggregate_compute):
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate compute field set drifted"
+        )
+    parsed_aggregate_compute = {
+        field: _nonnegative_int(
+            result.aggregate_compute.get(field),
+            field=f"aggregate compute {field}",
+        )
+        for field in expected_aggregate_compute
+    }
+    if parsed_aggregate_compute != expected_aggregate_compute:
         raise RecurrentCounterfactualCollectionError(
             "aggregate compute diagnostics drifted"
         )
     if result.workers_requested != _worker_count(result.workers_requested):
         raise RecurrentCounterfactualCollectionError("workers_requested drifted")
-    if result.workers_resolved != min(
+    workers_resolved = _positive_int(
+        result.workers_resolved,
+        field="workers_resolved",
+    )
+    if workers_resolved != min(
         result.workers_requested,
         len(result.bundles),
     ):
         raise RecurrentCounterfactualCollectionError("workers_resolved drifted")
+    torch_threads_per_worker = _positive_int(
+        result.torch_threads_per_worker,
+        field="torch_threads_per_worker",
+    )
     if (
         result.worker_start_method != RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD
-        or result.torch_threads_per_worker
+        or torch_threads_per_worker
         != RECURRENT_COUNTERFACTUAL_COLLECTION_TORCH_THREADS
         or result.ordered_merge is not True
     ):
@@ -776,11 +923,58 @@ def _validate_bundle(
         raise RecurrentCounterfactualCollectionError(
             "bundle must be a RecurrentCounterfactualCollectionBundle"
         )
+    task = bundle.task
+    source_identity = _nonempty_trimmed_string(
+        task.source_policy_sampling_identity,
+        field="source_policy_sampling_identity",
+    )
+    selection_identity = _nonempty_trimmed_string(
+        task.branch_selection_identity,
+        field="branch_selection_identity",
+    )
+    if source_identity == selection_identity:
+        raise RecurrentCounterfactualCollectionError(
+            "source-policy and branch-selection identities must differ"
+        )
+    expected_source_seed = derive_recurrent_counterfactual_collection_seed(
+        namespace=RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE,
+        identity=source_identity,
+    )
+    expected_selection_seed = derive_recurrent_counterfactual_collection_seed(
+        namespace=RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE,
+        identity=selection_identity,
+    )
+    if (
+        _sampling_seed(
+            task.source_policy_sampling_seed,
+            field="source_policy_sampling_seed",
+        )
+        != expected_source_seed
+        or _sampling_seed(
+            task.branch_selection_seed,
+            field="branch_selection_seed",
+        )
+        != expected_selection_seed
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "collection task sampling seeds do not match their namespaced identities"
+        )
     if bundle.source_model_state_sha256 != source_model_digest:
         raise RecurrentCounterfactualCollectionError("bundle model digest drifted")
     if bundle.source_artifact_digest != artifact_digest:
         raise RecurrentCounterfactualCollectionError("bundle artifact digest drifted")
-    if bundle.horizons != config.horizons or len(bundle.rows) != len(config.horizons):
+    if not isinstance(bundle.horizons, tuple):
+        raise RecurrentCounterfactualCollectionError(
+            "bundle horizons must be a tuple"
+        )
+    parsed_bundle_horizons = tuple(
+        _positive_int(horizon, field="bundle horizon")
+        for horizon in bundle.horizons
+    )
+    if (
+        parsed_bundle_horizons != config.horizons
+        or len(bundle.rows) != len(config.horizons)
+    ):
         raise RecurrentCounterfactualCollectionError("bundle horizons drifted")
     if tuple(action for action in ACTION_NAMES if action in bundle.valid_actions) != (
         bundle.valid_actions
@@ -789,6 +983,30 @@ def _validate_bundle(
             "bundle valid actions are not in stable action order"
         )
     context_digest: str | None = None
+    source_row_metadata: dict[str, object] | None = None
+    source_row_optimizer: dict[str, object] | None = None
+    source_row_behavior: dict[str, object] | None = None
+    immutable_source_metadata_fields = (
+        "seed_role",
+        "environment_seed",
+        "scenario",
+        "branch_tick",
+        "focal_agent_id",
+        "source_artifact_digest",
+        "source_model_state_sha256",
+        "policy_sampling_seed",
+        "source_action_selection",
+        "source_decision_index",
+        "source_record_digest",
+        "source_decision_diagnostics_digest",
+        "source_observation_digest",
+        "source_action_mask_digest",
+        "source_sampling_state_sha256",
+        "source_public_history_prefix_sha256",
+        "source_pre_boundary_environment_rng_state_sha256",
+        "source_pre_boundary_policy_sampling_state_sha256",
+        "source_boundary_identity_sha256",
+    )
     for horizon, row in zip(bundle.horizons, bundle.rows, strict=True):
         try:
             validate_recurrent_counterfactual_branch_row(row)
@@ -799,8 +1017,39 @@ def _validate_bundle(
         metadata = _mapping(row.get("metadata"), field="row metadata")
         optimizer = _mapping(row.get("optimizer_context"), field="optimizer context")
         labels = _mapping(row.get("labels"), field="row labels")
+        row_behavior = {
+            "source_requested_action": labels.get("source_requested_action"),
+            "source_behavior_distribution": copy.deepcopy(
+                labels.get("source_behavior_distribution")
+            ),
+        }
+        expected_row_schema = (
+            RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+            if config.multi_tape_enabled
+            else RECURRENT_COUNTERFACTUAL_BRANCH_SCHEMA_VERSION
+        )
+        if row.get("schema_version") != expected_row_schema:
+            raise RecurrentCounterfactualCollectionError(
+                "bundle source branch-row schema drifted from collection mode"
+            )
         if metadata.get("horizon_ticks") != horizon:
             raise RecurrentCounterfactualCollectionError("row horizon drifted")
+        if metadata.get("gamma") != config.gamma:
+            raise RecurrentCounterfactualCollectionError(
+                "row return discount gamma drifted from collection config"
+            )
+        if (
+            metadata.get("seed_role") != bundle.task.seed_role
+            or metadata.get("environment_seed") != bundle.task.environment_seed
+            or metadata.get("scenario") != bundle.task.scenario
+            or metadata.get("policy_sampling_seed")
+            != bundle.task.source_policy_sampling_seed
+            or metadata.get("branch_tick")
+            != bundle.selection.get("selected_branch_tick")
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "row source identity drifted from its collection task"
+            )
         if (
             optimizer.get("source_model_state_sha256") != source_model_digest
             or optimizer.get("source_artifact_digest") != artifact_digest
@@ -819,9 +1068,26 @@ def _validate_bundle(
         )
         if context_digest is None:
             context_digest = observed_context_digest
+            source_row_metadata = dict(metadata)
+            source_row_optimizer = dict(optimizer)
+            source_row_behavior = row_behavior
         elif observed_context_digest != context_digest:
             raise RecurrentCounterfactualCollectionError(
                 "bundle horizons do not share one trainable public context"
+            )
+        elif (
+            source_row_metadata is None
+            or source_row_optimizer is None
+            or source_row_behavior is None
+            or any(
+                metadata.get(field) != source_row_metadata.get(field)
+                for field in immutable_source_metadata_fields
+            )
+            or dict(optimizer) != source_row_optimizer
+            or row_behavior != source_row_behavior
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "bundle horizons do not share one exact source identity"
             )
     if config.multi_tape_enabled:
         if (
@@ -832,6 +1098,7 @@ def _validate_bundle(
             raise RecurrentCounterfactualCollectionError(
                 "multi-tape bundle is missing aggregate evidence"
             )
+        source_tape_projection: tuple[dict[str, object], ...] | None = None
         for horizon, aggregate_row in zip(
             bundle.horizons,
             bundle.aggregate_rows,
@@ -843,6 +1110,18 @@ def _validate_bundle(
                 raise RecurrentCounterfactualCollectionError(
                     "bundle contains an invalid aggregate row"
                 ) from error
+            tape_projection = _validate_aggregate_source_linkage(
+                aggregate_row,
+                bundle=bundle,
+                source_model_digest=source_model_digest,
+                artifact_digest=artifact_digest,
+            )
+            if source_tape_projection is None:
+                source_tape_projection = tape_projection
+            elif tape_projection != source_tape_projection:
+                raise RecurrentCounterfactualCollectionError(
+                    "aggregate horizons do not share one continuation-tape identity"
+                )
             target = _mapping(
                 aggregate_row.get("target"),
                 field="aggregate row target",
@@ -850,6 +1129,8 @@ def _validate_bundle(
             if (
                 target.get("kind") != "relative_horizon"
                 or target.get("horizon_ticks") != horizon
+                or target.get("branch_tick")
+                != bundle.selection.get("selected_branch_tick")
                 or target.get("absolute_terminal_target_world_tick")
                 != config.terminal_target_world_tick
             ):
@@ -859,6 +1140,10 @@ def _validate_bundle(
             tape_contract = _mapping(
                 aggregate_row.get("tape_contract"),
                 field="aggregate tape contract",
+            )
+            source_identity = _mapping(
+                aggregate_row.get("source_identity"),
+                field="aggregate source identity",
             )
             aggregate = _mapping(
                 aggregate_row.get("aggregate"),
@@ -870,6 +1155,22 @@ def _validate_bundle(
             ):
                 raise RecurrentCounterfactualCollectionError(
                     "aggregate collection config drifted"
+                )
+            if (
+                source_identity.get("source_branch_row_exact_digest")
+                != bundle.rows[0].get("exact_digest")
+                or source_identity.get("source_environment_seed")
+                != bundle.task.environment_seed
+                or source_identity.get("source_policy_sampling_seed")
+                != bundle.task.source_policy_sampling_seed
+                or source_identity.get("source_branch_selection_seed")
+                != bundle.task.branch_selection_seed
+                or source_identity.get("source_model_state_sha256")
+                != source_model_digest
+                or source_identity.get("source_artifact_digest") != artifact_digest
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "aggregate source identity drifted from its source row or task"
                 )
             if stable_payload_digest(
                 aggregate_row.get("trainable_public_context")
@@ -893,17 +1194,54 @@ def _validate_bundle(
                 raise RecurrentCounterfactualCollectionError(
                     "bundle terminal aggregate is invalid"
                 ) from error
+            terminal_tape_projection = _validate_aggregate_source_linkage(
+                bundle.terminal_target,
+                bundle=bundle,
+                source_model_digest=source_model_digest,
+                artifact_digest=artifact_digest,
+            )
+            if (
+                source_tape_projection is None
+                or terminal_tape_projection != source_tape_projection
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "terminal aggregate continuation-tape identity drifted"
+                )
             terminal_target = _mapping(
                 bundle.terminal_target.get("target"),
                 field="terminal aggregate target",
+            )
+            terminal_source_identity = _mapping(
+                bundle.terminal_target.get("source_identity"),
+                field="terminal aggregate source identity",
             )
             if (
                 terminal_target.get("kind") != "absolute_terminal_world_tick"
                 or terminal_target.get("target_world_tick")
                 != config.terminal_target_world_tick
+                or terminal_target.get("branch_tick")
+                != bundle.selection.get("selected_branch_tick")
             ):
                 raise RecurrentCounterfactualCollectionError(
                     "bundle absolute terminal target drifted"
+                )
+            if (
+                terminal_source_identity.get("source_branch_row_exact_digest")
+                != bundle.rows[0].get("exact_digest")
+                or terminal_source_identity.get("source_environment_seed")
+                != bundle.task.environment_seed
+                or terminal_source_identity.get("source_policy_sampling_seed")
+                != bundle.task.source_policy_sampling_seed
+                or terminal_source_identity.get("source_branch_selection_seed")
+                != bundle.task.branch_selection_seed
+                or terminal_source_identity.get("source_model_state_sha256")
+                != source_model_digest
+                or terminal_source_identity.get("source_artifact_digest")
+                != artifact_digest
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "terminal aggregate source identity drifted from its source "
+                    "row or task"
                 )
     elif (
         bundle.aggregate_rows is not None
@@ -922,15 +1260,187 @@ def _validate_bundle(
         raise RecurrentCounterfactualCollectionError("bundle exact digest mismatch")
 
 
+def _validate_aggregate_source_linkage(
+    aggregate_row: Mapping[str, object],
+    *,
+    bundle: RecurrentCounterfactualCollectionBundle,
+    source_model_digest: str,
+    artifact_digest: str,
+) -> tuple[dict[str, object], ...]:
+    source_row = bundle.rows[0]
+    source_metadata = _mapping(
+        source_row.get("metadata"),
+        field="source row metadata",
+    )
+    source_context = _mapping(
+        source_row.get("trainable_public_context"),
+        field="source row public context",
+    )
+    source_optimizer = _mapping(
+        source_row.get("optimizer_context"),
+        field="source row optimizer context",
+    )
+    source_labels = _mapping(source_row.get("labels"), field="source row labels")
+    aggregate_context = _mapping(
+        aggregate_row.get("trainable_public_context"),
+        field="aggregate public context",
+    )
+    aggregate_optimizer = _mapping(
+        aggregate_row.get("optimizer_context"),
+        field="aggregate optimizer context",
+    )
+    source_identity = _mapping(
+        aggregate_row.get("source_identity"),
+        field="aggregate source identity",
+    )
+    source_behavior = _mapping(
+        aggregate_row.get("source_behavior"),
+        field="aggregate source behavior",
+    )
+    tape_contract = _mapping(
+        aggregate_row.get("tape_contract"),
+        field="aggregate tape contract",
+    )
+    expected_tape_identity = f"{bundle.task.task_id}:continuation-tapes"
+    if tape_contract.get("tape_identity") != expected_tape_identity:
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate tape identity drifted from its collection task id"
+        )
+    if dict(aggregate_context) != dict(source_context):
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate public branch context drifted from its exact source row"
+        )
+    if dict(aggregate_optimizer) != dict(source_optimizer):
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate optimizer context drifted from its exact source row"
+        )
+    expected_source_behavior = {
+        "source_requested_action": source_labels.get("source_requested_action"),
+        "current_public_action_mask": copy.deepcopy(
+            source_context.get("current_public_action_mask")
+        ),
+        "source_behavior_distribution": copy.deepcopy(
+            source_labels.get("source_behavior_distribution")
+        ),
+    }
+    if dict(source_behavior) != expected_source_behavior:
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate source behavior drifted from its exact source row"
+        )
+    expected_checkpoint_identity = {
+        "source_branch_row_exact_digest": source_row.get("exact_digest"),
+        "seed_role": source_metadata.get("seed_role"),
+        "environment_seed": source_metadata.get("environment_seed"),
+        "branch_selection_seed": bundle.task.branch_selection_seed,
+        "scenario": source_metadata.get("scenario"),
+        "branch_tick": source_metadata.get("branch_tick"),
+        "focal_agent_id": source_metadata.get("focal_agent_id"),
+        "source_record_digest": source_metadata.get("source_record_digest"),
+        "source_observation_digest": source_metadata.get(
+            "source_observation_digest"
+        ),
+        "source_action_mask_digest": source_metadata.get(
+            "source_action_mask_digest"
+        ),
+        "source_public_history_prefix_sha256": source_metadata.get(
+            "source_public_history_prefix_sha256"
+        ),
+        "source_pre_boundary_environment_rng_state_sha256": source_metadata.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        ),
+        "source_pre_boundary_policy_sampling_state_sha256": source_metadata.get(
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ),
+        "source_boundary_identity_sha256": source_metadata.get(
+            "source_boundary_identity_sha256"
+        ),
+    }
+    if (
+        source_identity.get("source_branch_row_exact_digest")
+        != source_row.get("exact_digest")
+        or source_identity.get("source_environment_seed")
+        != bundle.task.environment_seed
+        or source_identity.get("source_policy_sampling_seed")
+        != bundle.task.source_policy_sampling_seed
+        or source_identity.get("source_branch_selection_seed")
+        != bundle.task.branch_selection_seed
+        or source_identity.get("source_model_state_sha256") != source_model_digest
+        or source_identity.get("source_artifact_digest") != artifact_digest
+        or source_identity.get("source_checkpoint_identity_sha256")
+        != stable_payload_digest(expected_checkpoint_identity)
+        or source_identity.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        )
+        != source_metadata.get(
+            "source_pre_boundary_environment_rng_state_sha256"
+        )
+        or source_identity.get("source_pre_boundary_policy_sampling_state_sha256")
+        != source_metadata.get(
+            "source_pre_boundary_policy_sampling_state_sha256"
+        )
+        or source_identity.get("source_boundary_identity_sha256")
+        != source_metadata.get("source_boundary_identity_sha256")
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate source identity drifted from its boundary-bound source row "
+            "or collection task"
+        )
+    raw_tapes = aggregate_row.get("tape_provenance")
+    if not isinstance(raw_tapes, list):
+        raise RecurrentCounterfactualCollectionError(
+            "aggregate tape provenance must be a list"
+        )
+    projection_fields = (
+        "tape_index",
+        "environment_sampling_identity",
+        "environment_sampling_seed",
+        "policy_sampling_identity",
+        "policy_sampling_seed",
+        "continuation_rng_retape_boundary",
+        "pre_boundary_environment_rng_state_sha256",
+        "pre_boundary_policy_sampling_state_sha256",
+        "post_boundary_environment_rng_state_sha256",
+        "post_boundary_policy_sampling_state_sha256",
+        "boundary_reached",
+        "source_natural_action_match",
+        "fixed_source_prefix_verified",
+    )
+    return tuple(
+        {
+            field: _mapping(tape, field="aggregate tape provenance").get(field)
+            for field in projection_fields
+        }
+        for tape in raw_tapes
+    )
+
+
 def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None:
     selection = bundle.selection
-    if selection.get("requested_branch_ticks") != list(
-        bundle.task.branch_tick_candidates
+    expected_fields = set(_SELECTION_BASE_FIELDS)
+    if bundle.aggregate_rows is not None:
+        expected_fields.update(_SELECTION_MULTI_TAPE_FIELDS)
+    if bundle.task.branch_tick_stratum_index is not None:
+        expected_fields.update(_SELECTION_ROTATION_FIELDS)
+    if set(selection) != expected_fields:
+        raise RecurrentCounterfactualCollectionError(
+            "bundle selection field set drifted"
+        )
+    requested_ticks = selection.get("requested_branch_ticks")
+    if (
+        not isinstance(requested_ticks, list)
+        or tuple(
+            _nonnegative_int(tick, field="requested branch tick")
+            for tick in requested_ticks
+        )
+        != bundle.task.branch_tick_candidates
     ):
         raise RecurrentCounterfactualCollectionError(
             "bundle branch tick request drifted"
         )
-    selected_tick = selection.get("selected_branch_tick")
+    selected_tick = _nonnegative_int(
+        selection.get("selected_branch_tick"),
+        field="selected branch tick",
+    )
     if selected_tick not in bundle.task.branch_tick_candidates:
         raise RecurrentCounterfactualCollectionError(
             "selected branch tick is outside the task candidates"
@@ -981,16 +1491,34 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
                 "legacy selection contains scale-only tick strata"
             )
     else:
-        eligible_ticks = selection.get("eligible_branch_ticks")
+        raw_eligible_ticks = selection.get("eligible_branch_ticks")
         if (
-            not isinstance(eligible_ticks, list)
-            or not eligible_ticks
-            or any(
+            not isinstance(raw_eligible_ticks, list)
+            or not raw_eligible_ticks
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "eligible branch tick strata drifted"
+            )
+        eligible_ticks = [
+            _nonnegative_int(tick, field="eligible branch tick")
+            for tick in raw_eligible_ticks
+        ]
+        eligible_tick_count = _positive_int(
+            selection.get("eligible_branch_tick_count"),
+            field="eligible branch tick count",
+        )
+        selected_eligible_tick_index = _nonnegative_int(
+            selection.get("selected_eligible_tick_index"),
+            field="selected eligible tick index",
+        )
+        if (
+            any(
                 tick not in bundle.task.branch_tick_candidates
                 for tick in eligible_ticks
             )
             or len(set(eligible_ticks)) != len(eligible_ticks)
-            or selection.get("eligible_branch_tick_count") != len(eligible_ticks)
+            or eligible_tick_count != len(eligible_ticks)
+            or selected_eligible_tick_index >= eligible_tick_count
         ):
             raise RecurrentCounterfactualCollectionError(
                 "eligible branch tick strata drifted"
@@ -1004,18 +1532,9 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
                 raise RecurrentCounterfactualCollectionError(
                     "scale selection policy drifted"
                 )
-            unexpected_rotation_fields = {
-                "requested_branch_tick_stratum_index",
-                "branch_tick_strata_traversal",
-                "selected_branch_tick_stratum_index",
-            } & set(selection)
-            if unexpected_rotation_fields:
-                raise RecurrentCounterfactualCollectionError(
-                    "uniform tick selection contains rotation-only fields"
-                )
             expected_tick_index = selection_rng.randrange(len(eligible_ticks))
             if (
-                selection.get("selected_eligible_tick_index") != expected_tick_index
+                selected_eligible_tick_index != expected_tick_index
                 or eligible_ticks[expected_tick_index] != selected_tick
             ):
                 raise RecurrentCounterfactualCollectionError(
@@ -1035,13 +1554,28 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
                 for offset in range(len(candidates))
             )
             expected_tick = next(tick for tick in traversal if tick in eligible_ticks)
+            requested_stratum_index = _nonnegative_int(
+                selection.get("requested_branch_tick_stratum_index"),
+                field="requested branch tick stratum index",
+            )
+            raw_traversal = selection.get("branch_tick_strata_traversal")
+            if not isinstance(raw_traversal, list):
+                raise RecurrentCounterfactualCollectionError(
+                    "deterministic branch-tick stratum rotation drifted"
+                )
+            parsed_traversal = tuple(
+                _nonnegative_int(tick, field="branch tick strata traversal")
+                for tick in raw_traversal
+            )
+            selected_stratum_index = _nonnegative_int(
+                selection.get("selected_branch_tick_stratum_index"),
+                field="selected branch tick stratum index",
+            )
             if (
-                selection.get("requested_branch_tick_stratum_index") != stratum_index
-                or selection.get("branch_tick_strata_traversal") != list(traversal)
-                or selection.get("selected_branch_tick_stratum_index")
-                != candidates.index(expected_tick)
-                or selection.get("selected_eligible_tick_index")
-                != eligible_ticks.index(expected_tick)
+                requested_stratum_index != stratum_index
+                or parsed_traversal != traversal
+                or selected_stratum_index != candidates.index(expected_tick)
+                or selected_eligible_tick_index != eligible_ticks.index(expected_tick)
                 or selected_tick != expected_tick
             ):
                 raise RecurrentCounterfactualCollectionError(
@@ -1058,7 +1592,11 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
             "branch selection used forbidden outcome/future data"
         )
     first_metadata = _mapping(bundle.rows[0].get("metadata"), field="row metadata")
-    if selection.get("selected_focal_agent_id") != first_metadata.get(
+    selected_focal_agent_id = _positive_int(
+        selection.get("selected_focal_agent_id"),
+        field="selected focal agent id",
+    )
+    if selected_focal_agent_id != first_metadata.get(
         "focal_agent_id"
     ) or selected_tick != first_metadata.get("branch_tick"):
         raise RecurrentCounterfactualCollectionError(
@@ -1068,9 +1606,26 @@ def _validate_selection(bundle: RecurrentCounterfactualCollectionBundle) -> None
 
 def _validate_prefix_proof(bundle: RecurrentCounterfactualCollectionBundle) -> None:
     proof = bundle.prefix_proof
+    if set(proof) != _PREFIX_PROOF_FIELDS:
+        raise RecurrentCounterfactualCollectionError(
+            "nested prefix proof field set drifted"
+        )
+    raw_horizons = proof.get("horizons")
+    if not isinstance(raw_horizons, list):
+        raise RecurrentCounterfactualCollectionError(
+            "nested prefix proof horizons drifted"
+        )
+    parsed_horizons = tuple(
+        _positive_int(horizon, field="prefix proof horizon")
+        for horizon in raw_horizons
+    )
+    stream_count = _positive_int(
+        proof.get("stream_count"),
+        field="prefix proof stream count",
+    )
     if (
         proof.get("schema_version") != "mind_v3_recurrent_nested_prefix_proof_v1"
-        or proof.get("horizons") != list(bundle.horizons)
+        or parsed_horizons != bundle.horizons
         or proof.get("all_shorter_streams_are_exact_max_stream_prefixes") is not True
         or proof.get("raw_private_world_state_serialized") is not False
     ):
@@ -1083,12 +1638,16 @@ def _validate_prefix_proof(bundle: RecurrentCounterfactualCollectionBundle) -> N
         for kind in ("action", "replay")
         for action in bundle.valid_actions
     }
-    if set(streams) != expected_streams or proof.get("stream_count") != len(streams):
+    if set(streams) != expected_streams or stream_count != len(streams):
         raise RecurrentCounterfactualCollectionError(
             "nested prefix proof stream set drifted"
         )
     for stream_name, raw_stream in streams.items():
         stream = _mapping(raw_stream, field="prefix stream")
+        if set(stream) != _PREFIX_STREAM_FIELDS:
+            raise RecurrentCounterfactualCollectionError(
+                "prefix stream field set drifted"
+            )
         if stream.get("exact_prefix") is not True:
             raise RecurrentCounterfactualCollectionError(
                 "prefix stream lacks exact-prefix proof"
@@ -1102,11 +1661,38 @@ def _validate_prefix_proof(bundle: RecurrentCounterfactualCollectionBundle) -> N
             by_horizon[str(bundle.horizons[-1])],
             field="maximum prefix proof",
         )
+        previous_executed_tick_count = 0
+        previous_sequence_length = 0
         for horizon_index, horizon in enumerate(bundle.horizons):
             current = _mapping(
                 by_horizon[str(horizon)],
                 field="horizon prefix proof",
             )
+            if set(current) != _PREFIX_HORIZON_FIELDS:
+                raise RecurrentCounterfactualCollectionError(
+                    "horizon prefix proof field set drifted"
+                )
+            _sha256(
+                current.get("behavior_digest"),
+                field="prefix behavior digest",
+            )
+            _sha256(
+                current.get("evidence_digest"),
+                field="prefix evidence digest",
+            )
+            executed_tick_count = _positive_int(
+                current.get("executed_tick_count"),
+                field="prefix executed tick count",
+            )
+            if (
+                executed_tick_count > horizon
+                or executed_tick_count < previous_executed_tick_count
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "prefix executed tick count drifted from its bounded "
+                    "nondecreasing horizon contract"
+                )
+            previous_executed_tick_count = executed_tick_count
             for sequence_field in (
                 "causal_record_digest_sequence",
                 "policy_record_digest_sequence",
@@ -1144,6 +1730,17 @@ def _validate_prefix_proof(bundle: RecurrentCounterfactualCollectionBundle) -> N
                 raise RecurrentCounterfactualCollectionError(
                     "causal, policy, and diagnostic prefix lengths disagree"
                 )
+            sequence_length = next(iter(sequence_lengths))
+            if (
+                sequence_length <= 0
+                or sequence_length < executed_tick_count
+                or sequence_length < previous_sequence_length
+            ):
+                raise RecurrentCounterfactualCollectionError(
+                    "prefix record sequence length violates its positive "
+                    "nondecreasing executed-tick contract"
+                )
+            previous_sequence_length = sequence_length
             row = bundle.rows[horizon_index]
             labels = _mapping(row.get("labels"), field="row labels")
             if stream_name == "baseline":
@@ -1202,6 +1799,10 @@ def _validate_prefix_proof(bundle: RecurrentCounterfactualCollectionBundle) -> N
 
 def _validate_compute(bundle: RecurrentCounterfactualCollectionBundle) -> None:
     compute = bundle.compute
+    if set(compute) != _COMPUTE_FIELDS:
+        raise RecurrentCounterfactualCollectionError(
+            "compute diagnostic field set drifted"
+        )
     action_count = len(bundle.valid_actions)
     horizon_count = len(bundle.horizons)
     continuation_count = 1 + 2 * action_count
@@ -1221,7 +1822,11 @@ def _validate_compute(bundle: RecurrentCounterfactualCollectionBundle) -> None:
         "nested_tick_budget_saved": independent_budget - maximum_budget,
     }
     for field, expected_value in expected.items():
-        if compute.get(field) != expected_value:
+        actual_value = _nonnegative_int(
+            compute.get(field),
+            field=f"compute diagnostic {field}",
+        )
+        if actual_value != expected_value:
             raise RecurrentCounterfactualCollectionError(
                 f"compute diagnostic {field!r} drifted"
             )
@@ -1229,12 +1834,45 @@ def _validate_compute(bundle: RecurrentCounterfactualCollectionBundle) -> None:
         compute.get("actual_continuation_tick_count"),
         field="actual continuation tick count",
     )
-    if actual > maximum_budget:
-        raise RecurrentCounterfactualCollectionError(
-            "actual continuation ticks exceed the exact maximum budget"
+    proof = _mapping(bundle.prefix_proof, field="compute prefix proof")
+    streams = _mapping(proof.get("streams"), field="compute prefix streams")
+    expected_actual = 0
+    for raw_stream in streams.values():
+        stream = _mapping(raw_stream, field="compute prefix stream")
+        by_horizon = _mapping(
+            stream.get("horizons"),
+            field="compute prefix horizons",
         )
-    _positive_int(compute.get("source_tick_executions"), field="source ticks")
+        maximum = _mapping(
+            by_horizon.get(str(maximum_horizon)),
+            field="compute maximum-horizon prefix",
+        )
+        expected_actual += _positive_int(
+            maximum.get("executed_tick_count"),
+            field="compute maximum-horizon executed tick count",
+        )
+    if actual != expected_actual:
+        raise RecurrentCounterfactualCollectionError(
+            "actual continuation ticks drifted from prefix evidence"
+        )
+    source_ticks = _positive_int(
+        compute.get("source_tick_executions"),
+        field="source ticks",
+    )
+    selected_tick = _nonnegative_int(
+        bundle.selection.get("selected_branch_tick"),
+        field="selected branch tick",
+    )
+    maximum_candidate_tick = max(bundle.task.branch_tick_candidates)
+    if not selected_tick + 1 <= source_ticks <= maximum_candidate_tick + 1:
+        raise RecurrentCounterfactualCollectionError(
+            "source ticks drifted from the selected/candidate branch interval"
+        )
     if bundle.multi_tape_compute is not None:
+        if set(bundle.multi_tape_compute) != _MULTI_TAPE_COMPUTE_FIELDS:
+            raise RecurrentCounterfactualCollectionError(
+                "multi-tape compute diagnostic field set drifted"
+            )
         if bundle.aggregate_rows is None:
             raise RecurrentCounterfactualCollectionError(
                 "multi-tape compute lacks aggregate rows"
@@ -1274,17 +1912,25 @@ def _validate_compute(bundle: RecurrentCounterfactualCollectionBundle) -> None:
             ),
         }
         for field, expected_value in multi_expected.items():
-            if bundle.multi_tape_compute.get(field) != expected_value:
+            actual_value = _nonnegative_int(
+                bundle.multi_tape_compute.get(field),
+                field=f"multi-tape compute diagnostic {field}",
+            )
+            if actual_value != expected_value:
                 raise RecurrentCounterfactualCollectionError(
                     f"multi-tape compute diagnostic {field!r} drifted"
                 )
-        multi_actual = _nonnegative_int(
+        multi_actual = _positive_int(
             bundle.multi_tape_compute.get("actual_continuation_tick_count"),
             field="multi-tape actual continuation ticks",
         )
-        if multi_actual > multi_expected["maximum_continuation_tick_budget"]:
+        if (
+            multi_actual
+            < multi_expected["max_horizon_continuation_count"]
+            or multi_actual > multi_expected["maximum_continuation_tick_budget"]
+        ):
             raise RecurrentCounterfactualCollectionError(
-                "multi-tape actual continuation ticks exceed budget"
+                "multi-tape actual continuation ticks are outside executable bounds"
             )
 
 

@@ -20,12 +20,22 @@ from evolution_sim.mind.recurrent_seed_registry import (
     SCALE_DEVELOPMENT_SEED_ROLE_COUNTS,
     SCALE_DEVELOPMENT_SEED_ROLE_POLICIES,
     SCALE_DEVELOPMENT_UNAVAILABLE_ROLES,
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_EXPECTED_LEARNER_SEEDS,
+    SCALE_DEVELOPMENT_V2_GENERATED_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_NAMESPACE,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+    SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS,
+    SCALE_DEVELOPMENT_V2_SEED_ROLE_POLICIES,
+    SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES,
     SEED_REGISTRY_NAMESPACE,
     SEED_ROLE_COUNTS,
     SEED_ROLE_POLICIES,
     SeedRegistryError,
     build_recurrent_seed_registry,
     build_scale_development_seed_registry,
+    build_scale_development_v2_seed_registry,
     canonical_seed_registry_json,
     canonical_seed_registry_payload,
     recurrent_seed_registry_contract,
@@ -33,7 +43,12 @@ from evolution_sim.mind.recurrent_seed_registry import (
     scale_development_seed_registry_json,
     scale_development_seed_registry_payload,
     scale_development_seeds_for_role,
+    scale_development_v2_seed_registry_contract,
+    scale_development_v2_seed_registry_json,
+    scale_development_v2_seed_registry_payload,
+    scale_development_v2_seeds_for_role,
     validate_scale_development_seed_registry,
+    validate_scale_development_v2_seed_registry,
     validate_recurrent_seed_registry,
 )
 
@@ -233,6 +248,134 @@ class RecurrentSeedRegistryTests(unittest.TestCase):
             sort_keys=True,
             allow_nan=False,
         )
+
+    def test_scale_v2_registry_is_versioned_pinned_and_has_fresh_learners(
+        self,
+    ) -> None:
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+            "mind_v3_public_recurrent_scale_development_seed_registry_v2",
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY_NAMESPACE,
+            "evolution-sim|mind-v3-public-recurrent-ppo|"
+            "scale-development-seed-registry-v2|2026-07-23",
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                scale_development_v2_seed_registry_json()
+            ).hexdigest(),
+            SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_GENERATED_SHA256,
+            "1531a9e782dc414ae43c37346a45d581cb00a29a8348e0bd902c106166ba5ee7",
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"],
+            SCALE_DEVELOPMENT_V2_EXPECTED_LEARNER_SEEDS,
+        )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_EXPECTED_LEARNER_SEEDS,
+            (
+                1_505_354_251,
+                1_916_254_251,
+                870_080_605,
+                699_185_506,
+                58_022_765,
+                2_067_239_703,
+                1_485_353_601,
+                2_083_034_500,
+            ),
+        )
+
+    def test_scale_v2_roles_have_exact_counts_and_are_globally_disjoint(
+        self,
+    ) -> None:
+        scale_v2 = scale_development_v2_seed_registry_payload()
+        prior = (
+            *canonical_seed_registry_payload().values(),
+            *scale_development_seed_registry_payload().values(),
+        )
+        prior_flat = {seed for seeds in prior for seed in seeds}
+        scale_v2_flat = [
+            seed for seeds in scale_v2.values() for seed in seeds
+        ]
+
+        self.assertEqual(
+            {role: len(seeds) for role, seeds in scale_v2.items()},
+            dict(SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS),
+        )
+        self.assertEqual(len(scale_v2_flat), 776)
+        self.assertEqual(len(scale_v2_flat), len(set(scale_v2_flat)))
+        self.assertTrue(set(scale_v2_flat).isdisjoint(prior_flat))
+        self.assertTrue(
+            all(1 <= seed <= 2_147_483_647 for seed in scale_v2_flat)
+        )
+        for role in (
+            "scale_v2_curriculum",
+            "scale_v2_train",
+            "scale_v2_selection",
+        ):
+            self.assertEqual(
+                SCALE_DEVELOPMENT_V2_SEED_ROLE_POLICIES[role].axis,
+                "environment",
+            )
+        self.assertEqual(
+            SCALE_DEVELOPMENT_V2_SEED_ROLE_POLICIES["scale_v2_learner"].axis,
+            "learner",
+        )
+
+    def test_scale_v2_contract_seals_holdouts_and_rejects_prior_registry_seeds(
+        self,
+    ) -> None:
+        contract = scale_development_v2_seed_registry_contract()
+        self.assertEqual(
+            contract["canonical_sha256"],
+            SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        )
+        self.assertEqual(
+            set(contract["unavailable_roles"]),
+            set(SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES),
+        )
+        self.assertEqual(
+            contract["disjoint_from_registry_sha256"],
+            [
+                CANONICAL_SEED_REGISTRY_SHA256,
+                SCALE_DEVELOPMENT_CANONICAL_SHA256,
+            ],
+        )
+        for role in SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES:
+            unavailable = contract["unavailable_roles"][role]
+            self.assertIs(unavailable["available"], False)
+            self.assertIs(unavailable["seed_values_included"], False)
+            with self.assertRaisesRegex(SeedRegistryError, "forbidden"):
+                scale_development_v2_seeds_for_role(role)
+
+        self.assertEqual(
+            scale_development_v2_seeds_for_role("scale_v2_train"),
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"],
+        )
+        with self.assertRaisesRegex(SeedRegistryError, "unknown"):
+            scale_development_v2_seeds_for_role("scale_train")
+
+        canonical = build_scale_development_v2_seed_registry()
+        validate_scale_development_v2_seed_registry(canonical)
+        for prior_seed in (
+            RECURRENT_SEED_REGISTRY["train"][0],
+            SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"][0],
+        ):
+            substituted = build_scale_development_v2_seed_registry()
+            substituted["scale_v2_train"][0] = prior_seed
+            with self.assertRaisesRegex(SeedRegistryError, "not canonical"):
+                validate_scale_development_v2_seed_registry(substituted)
+
+        first = build_scale_development_v2_seed_registry()
+        second = build_scale_development_v2_seed_registry()
+        first["scale_v2_train"][0] = -1
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, scale_development_v2_seed_registry_payload())
+        json.dumps(contract, sort_keys=True, allow_nan=False)
 
 
 if __name__ == "__main__":

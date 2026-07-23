@@ -689,7 +689,9 @@ seed/fixture/private-state input, or hardcoded learner action. Integrity repairs
 make whole PPO/auxiliary updates atomic, schedules single-use and role-clean,
 exact rows one-use/replay/model bound, shuffled labels public-context keyed,
 and validation/lockbox access fail closed. Branch labels remain one exact
-rollout on one sequential RNG tape, not expected causal effects.
+rollout on one sequential RNG tape, not expected causal effects; that statement
+describes the historical development canaries, not the later scale-v2
+multi-tape contract.
 
 The first shuffled run failed after `594.68` seconds and created no report
 because passive trajectory rows correctly lacked decision diagnostics while the
@@ -762,6 +764,40 @@ A local extraction compared byte-for-byte with all originals, and `rclone check`
 reported `0` differences and `2` matching files for the archive and its
 SHA256 sidecar. Evidence durability does not create a retained policy artifact
 or authorize runtime, validation, lockbox, promotion, or campaign-slice use.
+
+The first preregistered recurrent-IPPO scale campaign ran from exact source
+commit `1dce222c9ed4425f73881182c07c51412e81a831` and is now closed as
+terminal-incomplete negative evidence. Scale v1 durably produced `376/384`
+optimizer updates, `23/24` reports and CPU-reloadable frozen artifacts, and
+`92/96` exact CPU evaluations. The missing arm,
+`scale-v1-learner-1782198429-exact_counterfactual_auxiliary`, failed closed
+because continuation RNG was retaped before the focal turn and could kill the
+focal agent before its natural policy draw and action. That violated the paired
+exact-branch boundary. No aggregate report exists, so the partial matrix
+authorizes no acceptance, runtime integration, validation, lockbox access,
+promotion, or gate relaxation. The exact-source evidence is durable in
+`20260723T071132Z-recurrent-scale-1dce222c9ed4-incomplete-fail-closed.tar.zst`
+with archive SHA256
+`1c8111b61083d7d8df7fa83cb8d018207234b582be183233eeb391e8dc2eb1ca`;
+draft PR `#27` records the factual closeout.
+
+The current successor source is scale v2. This source revision contains no
+training or acceptance result; live campaign status belongs to the external
+content-addressed output, not to source documentation. Its repaired exact-branch
+contract replays the source checkpoint, all pre-focal turns, and the focal
+natural policy draw under source RNG, verifies the complete source decision
+projection, then retapes environment and policy continuation RNG at
+`after_focal_natural_policy_draw_before_action_resolution_v1`. It uses a fresh
+scale-v2 development seed registry disjoint from the base and scale-v1
+registries, exact v5 source rows, strict persisted-report schemas, pinned
+NVIDIA/runtime/topology provenance, and an output-root process lock, while
+validation and lockbox roles remain unavailable. Aggregation must freshly
+reload every frozen artifact on CPU, rerun both preregistered evaluation modes,
+and exactly reproduce the persisted outcomes and replay manifest before an arm
+is accepted. Every GPU campaign must use a
+committed, pushed, clean exact-SHA detached checkout and keep all launcher
+session, checkout, venv, protocol, preflight, log, run, and output names
+explicitly `scale-v2`; never resume a scale-v1 checkpoint under the v2 contract.
 
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,

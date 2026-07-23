@@ -66,7 +66,9 @@ if torch is not None:
         _candidate_sampling_seeds,
         _candidate_sampling_analysis,
         _paired_deltas,
+        _run_outcome_evidence_sha256,
     )
+    from evolution_sim.mind.evaluation_helpers import round_float
     from evolution_sim.mind.recurrent_experiment import (
         RECURRENT_EXPERIMENT_CONTRACT_VERSION,
     )
@@ -562,6 +564,9 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
         candidate_runs = policies["public_recurrent"]["runs"]
         control_runs = policies["mind_v3_linear"]["runs"]
         control_runs[0]["terminal_alive"] += 1
+        control_runs[0]["outcome_evidence_sha256"] = (
+            _run_outcome_evidence_sha256(control_runs[0])
+        )
         policies["mind_v3_linear"]["aggregate"] = _aggregate_runs(control_runs)
         by_seed = {run["seed"]: run for run in control_runs}
         context["paired_deltas"]["candidate_minus_mind_v3_linear"] = _paired_deltas(
@@ -1293,6 +1298,9 @@ def _evaluation_context(
                     "seed": seed,
                     "policy_sampling_seed": sampling_seed,
                     "digest": candidate["replay_digest"],
+                    "outcome_evidence_sha256": candidate[
+                        "outcome_evidence_sha256"
+                    ],
                     "passed": True,
                 }
             )
@@ -1380,13 +1388,14 @@ def _run(
         "policy_id_counts": policy_id_counts,
         "eat_requested_count": 3,
         "eat_without_positive_resource_gain_count": 1,
-        "eat_without_positive_resource_gain_share": 1.0 / 3.0,
+        "eat_without_positive_resource_gain_share": round_float(1.0 / 3.0),
         "learned_masked_distribution": distribution,
     }
     run["behavior_digest"] = stable_payload_digest({"run": run})
     run["replay_digest"] = stable_payload_digest(
         {"run": run, "arm_specific_policy_label": label}
     )
+    run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(run)
     return run
 
 

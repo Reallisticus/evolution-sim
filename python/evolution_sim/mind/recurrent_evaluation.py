@@ -52,6 +52,8 @@ from evolution_sim.mind.recurrent_seed_registry import (
     RECURRENT_SEED_REGISTRY,
     SCALE_DEVELOPMENT_CANONICAL_SHA256,
     SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
 )
 from evolution_sim.mind.v3_policy import MindV3EvolutionPolicy
 
@@ -76,11 +78,13 @@ UNPINNED_NONCANDIDATE_DIGEST_PREFIX = "unpinned-noncandidate-development-canary:
 RECURRENT_EVALUATION_DEVELOPMENT_SEED_ROLE = "development"
 RECURRENT_EVALUATION_SELECTION_SEED_ROLE = "selection"
 RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE = "scale_selection"
+RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE = "scale_v2_selection"
 RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE = "candidate"
 RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE = "lockbox"
 _EVALUATION_SEED_ROLE_TO_REGISTRY_ROLE = {
     RECURRENT_EVALUATION_SELECTION_SEED_ROLE: "selection",
     RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE: "scale_selection",
+    RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE: "scale_v2_selection",
     RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE: "validation",
     RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE: "lockbox",
 }
@@ -96,6 +100,12 @@ _SCALE_TRAINING_SEEDS = frozenset(
     for role in _SCALE_TRAINING_SEED_ROLES
     for seed in SCALE_DEVELOPMENT_SEED_REGISTRY[role]
 )
+_SCALE_V2_TRAINING_SEED_ROLES = ("scale_v2_train", "scale_v2_curriculum")
+_SCALE_V2_TRAINING_SEEDS = frozenset(
+    seed
+    for role in _SCALE_V2_TRAINING_SEED_ROLES
+    for seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY[role]
+)
 _POLICY_KEYS = ("public_recurrent", "mind_v3_linear", "masked_random")
 _DISTRIBUTION_METRICS = (
     "entropy",
@@ -105,6 +115,52 @@ _DISTRIBUTION_METRICS = (
     "top_two_probability_margin",
     "eat_probability",
 )
+_RUN_OUTCOME_EVIDENCE_SCHEMA_VERSION = (
+    "mind_public_recurrent_evaluation_run_outcome_evidence_v1"
+)
+_RUN_FIELDS = {
+    "context",
+    "seed",
+    "policy_sampling_seed",
+    "horizon_ticks",
+    "ticks_executed",
+    "terminal_alive",
+    "births",
+    "deaths",
+    "reward_total",
+    "reward_component_totals",
+    "trajectory_record_count",
+    "policy_decision_record_count",
+    "passive_trajectory_record_count",
+    "requested_action_counts",
+    "dominant_requested_action",
+    "dominant_requested_action_count",
+    "dominant_requested_action_share",
+    "unsupported_requested_action_count",
+    "heuristic_action_source_count",
+    "action_source_counts",
+    "policy_id_counts",
+    "eat_requested_count",
+    "eat_without_positive_resource_gain_count",
+    "eat_without_positive_resource_gain_share",
+    "learned_masked_distribution",
+    "behavior_digest",
+    "replay_digest",
+    "outcome_evidence_sha256",
+}
+_RUN_DIGEST_FIELDS = {
+    "behavior_digest",
+    "replay_digest",
+    "outcome_evidence_sha256",
+}
+_LEARNED_DISTRIBUTION_SUMMARY_FIELDS = {
+    "decision_count",
+    "metric_observation_counts",
+    "metric_means",
+    "metric_minima",
+    "metric_maxima",
+    "mean_action_probabilities",
+}
 _AMBIGUOUS_V3_TERMINAL_FIELDS = frozenset(
     {
         "carrion_fixture_terminal_survivor_count",
@@ -170,6 +226,7 @@ class RecurrentEvaluationSeedPlan:
                 RECURRENT_SEED_REGISTRY["validation"],
                 RECURRENT_SEED_REGISTRY["lockbox"],
                 SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"],
+                SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"],
             )
             reserved_overlap = sorted(
                 holdout
@@ -185,11 +242,12 @@ class RecurrentEvaluationSeedPlan:
                     "validation, or lockbox seeds; declare the canonical role"
                 )
         else:
-            expected = (
-                SCALE_DEVELOPMENT_SEED_REGISTRY[registry_role]
-                if role == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
-                else RECURRENT_SEED_REGISTRY[registry_role]
-            )
+            if role == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE:
+                expected = SCALE_DEVELOPMENT_SEED_REGISTRY[registry_role]
+            elif role == RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE:
+                expected = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[registry_role]
+            else:
+                expected = RECURRENT_SEED_REGISTRY[registry_role]
             if (
                 broad != fixture
                 or not _is_canonical_ordered_subset(broad, expected)
@@ -429,6 +487,7 @@ def evaluate_frozen_recurrent_policy_artifact(
     if resolved_registry_digest not in {
         CANONICAL_SEED_REGISTRY_SHA256,
         SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
     }:
         raise RecurrentEvaluationError("unsupported frozen artifact seed registry")
     if (
@@ -438,6 +497,14 @@ def evaluate_frozen_recurrent_policy_artifact(
     ):
         raise RecurrentEvaluationError(
             "scale selection evaluation requires the scale seed registry"
+        )
+    if (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
+        and resolved_registry_digest != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
+    ):
+        raise RecurrentEvaluationError(
+            "scale-v2 selection evaluation requires the scale-v2 seed registry"
         )
     artifact_source_commit = provenance.get("source_commit")
     artifact_source_manifest = provenance.get("source_manifest_sha256")
@@ -1033,6 +1100,9 @@ def _evaluate_environment_task(
                 "seed": task.seed,
                 "policy_sampling_seed": sampling_seed,
                 "digest": candidate["replay_digest"],
+                "outcome_evidence_sha256": candidate[
+                    "outcome_evidence_sha256"
+                ],
                 "passed": True,
             }
         )
@@ -1377,6 +1447,7 @@ def _run_policy_world(
         _artifact_independent_behavior_payload(full_behavior_payload)
     )
     run["replay_digest"] = _canonical_sha256(full_behavior_payload)
+    run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(run)
     _validate_run(run)
     return run
 
@@ -1989,84 +2060,400 @@ def _paired_deltas(
     }
 
 
+def _run_outcome_evidence_sha256(run: Mapping[str, object]) -> str:
+    """Bind every persisted run outcome to its full-behavior replay digests."""
+
+    behavior_digest = _validated_sha256(
+        run.get("behavior_digest"),
+        field="run.behavior_digest",
+    )
+    replay_digest = _validated_sha256(
+        run.get("replay_digest"),
+        field="run.replay_digest",
+    )
+    outcome_fields = _RUN_FIELDS - _RUN_DIGEST_FIELDS
+    missing = sorted(field for field in outcome_fields if field not in run)
+    if missing:
+        raise RecurrentEvaluationError(
+            f"run outcome evidence fields are missing: {missing!r}"
+        )
+    projection = {
+        field: run[field]
+        for field in sorted(outcome_fields)
+    }
+    return _canonical_sha256(
+        {
+            "schema_version": _RUN_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+            "behavior_digest": behavior_digest,
+            "replay_digest": replay_digest,
+            "outcome": projection,
+        }
+    )
+
+
+def _validated_named_counts(
+    value: Mapping[str, object],
+    *,
+    field: str,
+) -> dict[str, int]:
+    raw_names = tuple(value)
+    if any(
+        not isinstance(raw_name, str)
+        or not raw_name
+        or raw_name != raw_name.strip()
+        for raw_name in raw_names
+    ):
+        raise RecurrentEvaluationError(
+            f"{field} keys must be non-empty trimmed strings"
+        )
+    if raw_names != tuple(sorted(raw_names)):
+        raise RecurrentEvaluationError(f"{field} keys are not in canonical order")
+    parsed: dict[str, int] = {}
+    for raw_name, raw_count in value.items():
+        parsed[raw_name] = _nonnegative_int(
+            raw_count,
+            field=f"{field}.{raw_name}",
+        )
+    return parsed
+
+
+def _validate_learned_distribution_summary(
+    distribution: Mapping[str, object],
+) -> None:
+    _require_exact_fields(
+        distribution,
+        _LEARNED_DISTRIBUTION_SUMMARY_FIELDS,
+        field="learned_masked_distribution",
+    )
+    decision_count = _nonnegative_int(
+        distribution.get("decision_count"),
+        field="learned_masked_distribution.decision_count",
+    )
+    observation_counts = _required_mapping(
+        distribution.get("metric_observation_counts"),
+        field="learned_masked_distribution.metric_observation_counts",
+    )
+    means = _required_mapping(
+        distribution.get("metric_means"),
+        field="learned_masked_distribution.metric_means",
+    )
+    minima = _required_mapping(
+        distribution.get("metric_minima"),
+        field="learned_masked_distribution.metric_minima",
+    )
+    maxima = _required_mapping(
+        distribution.get("metric_maxima"),
+        field="learned_masked_distribution.metric_maxima",
+    )
+    expected_metrics = set(_DISTRIBUTION_METRICS)
+    for name, values in (
+        ("metric_observation_counts", observation_counts),
+        ("metric_means", means),
+        ("metric_minima", minima),
+        ("metric_maxima", maxima),
+    ):
+        _require_exact_fields(
+            values,
+            expected_metrics,
+            field=f"learned_masked_distribution.{name}",
+        )
+    for metric in _DISTRIBUTION_METRICS:
+        count = _nonnegative_int(
+            observation_counts.get(metric),
+            field=f"learned_masked_distribution.metric_observation_counts.{metric}",
+        )
+        if count > decision_count:
+            raise RecurrentEvaluationError(
+                "learned-distribution metric count exceeds decision count"
+            )
+        metric_values = (
+            means.get(metric),
+            minima.get(metric),
+            maxima.get(metric),
+        )
+        if count == 0:
+            if metric_values != (None, None, None):
+                raise RecurrentEvaluationError(
+                    "unobserved learned-distribution metric must serialize null "
+                    "summary values"
+                )
+            continue
+        parsed_mean, parsed_minimum, parsed_maximum = (
+            _finite_number(
+                value,
+                field=f"learned_masked_distribution.{name}.{metric}",
+            )
+            for name, value in zip(
+                ("metric_means", "metric_minima", "metric_maxima"),
+                metric_values,
+                strict=True,
+            )
+        )
+        if not parsed_minimum <= parsed_mean <= parsed_maximum:
+            raise RecurrentEvaluationError(
+                "learned-distribution metric summary bounds are inconsistent"
+            )
+    mean_action_probabilities = _required_mapping(
+        distribution.get("mean_action_probabilities"),
+        field="learned_masked_distribution.mean_action_probabilities",
+    )
+    _require_exact_fields(
+        mean_action_probabilities,
+        set(ACTION_NAMES),
+        field="learned_masked_distribution.mean_action_probabilities",
+    )
+    if decision_count == 0:
+        if any(
+            mean_action_probabilities.get(action) is not None
+            for action in ACTION_NAMES
+        ):
+            raise RecurrentEvaluationError(
+                "zero-decision learned distribution must have null action means"
+            )
+        return
+    action_means = tuple(
+        _finite_number(
+            mean_action_probabilities.get(action),
+            field=(
+                "learned_masked_distribution.mean_action_probabilities."
+                f"{action}"
+            ),
+        )
+        for action in ACTION_NAMES
+    )
+    if any(not 0.0 <= value <= 1.0 for value in action_means) or not math.isclose(
+        math.fsum(action_means),
+        1.0,
+        rel_tol=0.0,
+        # Per-action means are intentionally serialized at four decimal
+        # places, so the aggregate normalization tolerance must include the
+        # worst-case sum of those independent rounding errors.
+        abs_tol=(len(ACTION_NAMES) * 5.0e-5) + 1.0e-9,
+    ):
+        raise RecurrentEvaluationError(
+            "learned-distribution mean action probabilities are invalid"
+        )
+
+
 def _validate_run(run: Mapping[str, object]) -> None:
-    _validated_sha256(run.get("behavior_digest"), field="run.behavior_digest")
-    _validated_sha256(run.get("replay_digest"), field="run.replay_digest")
+    _require_exact_fields(run, _RUN_FIELDS, field="run")
+    behavior_digest = _validated_sha256(
+        run.get("behavior_digest"),
+        field="run.behavior_digest",
+    )
+    replay_digest = _validated_sha256(
+        run.get("replay_digest"),
+        field="run.replay_digest",
+    )
+    outcome_evidence_sha256 = _validated_sha256(
+        run.get("outcome_evidence_sha256"),
+        field="run.outcome_evidence_sha256",
+    )
+    context = run.get("context")
+    if not isinstance(context, str) or not context or context != context.strip():
+        raise RecurrentEvaluationError("run.context must be a non-empty trimmed string")
+    _validated_seed(run.get("seed"), field="run.seed")
+    _validated_optional_sampling_seed(
+        run.get("policy_sampling_seed"),
+        field="run.policy_sampling_seed",
+    )
     if run.get("horizon_ticks") != RECURRENT_EVALUATION_TICKS:
         raise RecurrentEvaluationError("run horizon is not the exact 120-tick contract")
-    ticks_executed = int(run.get("ticks_executed", 0))
+    ticks_executed = _nonnegative_int(
+        run.get("ticks_executed"),
+        field="ticks_executed",
+    )
     if not 1 <= ticks_executed <= RECURRENT_EVALUATION_TICKS:
         raise RecurrentEvaluationError("ticks_executed is outside the world horizon")
     _nonnegative_int(run.get("terminal_alive"), field="terminal_alive")
+    _nonnegative_int(run.get("births"), field="births")
+    _nonnegative_int(run.get("deaths"), field="deaths")
+    _finite_number(run.get("reward_total"), field="reward_total")
     counts = _required_mapping(
         run.get("requested_action_counts"),
         field="requested_action_counts",
     )
-    if any(action not in ACTION_NAMES for action in counts):
+    if any(not isinstance(action, str) or action not in ACTION_NAMES for action in counts):
         raise RecurrentEvaluationError("run contains an action outside the contract")
-    trajectory_record_count = int(run.get("trajectory_record_count", -1))
-    policy_decision_record_count = int(run.get("policy_decision_record_count", -1))
-    passive_trajectory_record_count = int(
-        run.get("passive_trajectory_record_count", -1)
+    if tuple(counts) != tuple(sorted(counts)):
+        raise RecurrentEvaluationError(
+            "run requested-action counts are not in canonical key order"
+        )
+    parsed_counts = {
+        str(action): _nonnegative_int(
+            count,
+            field=f"requested_action_counts.{action}",
+        )
+        for action, count in counts.items()
+    }
+    trajectory_record_count = _nonnegative_int(
+        run.get("trajectory_record_count"),
+        field="trajectory_record_count",
+    )
+    policy_decision_record_count = _nonnegative_int(
+        run.get("policy_decision_record_count"),
+        field="policy_decision_record_count",
+    )
+    passive_trajectory_record_count = _nonnegative_int(
+        run.get("passive_trajectory_record_count"),
+        field="passive_trajectory_record_count",
     )
     if (
-        policy_decision_record_count < 0
-        or passive_trajectory_record_count < 0
-        or policy_decision_record_count + passive_trajectory_record_count
+        policy_decision_record_count + passive_trajectory_record_count
         != trajectory_record_count
     ):
         raise RecurrentEvaluationError(
             "policy-decision and passive counts do not cover trajectory"
         )
-    if sum(int(value) for value in counts.values()) != policy_decision_record_count:
+    if sum(parsed_counts.values()) != policy_decision_record_count:
         raise RecurrentEvaluationError(
             "action distribution does not cover policy decisions"
+        )
+    expected_dominant = dominant_action_summary(parsed_counts)
+    dominant_action = run.get("dominant_requested_action")
+    if dominant_action is not None and (
+        not isinstance(dominant_action, str) or dominant_action not in ACTION_NAMES
+    ):
+        raise RecurrentEvaluationError(
+            "run dominant requested action is outside the contract"
+        )
+    dominant_count = _nonnegative_int(
+        run.get("dominant_requested_action_count"),
+        field="dominant_requested_action_count",
+    )
+    dominant_share = _finite_number(
+        run.get("dominant_requested_action_share"),
+        field="dominant_requested_action_share",
+    )
+    if (
+        dominant_action != expected_dominant["action"]
+        or dominant_count != expected_dominant["count"]
+        or dominant_share != expected_dominant["share"]
+    ):
+        raise RecurrentEvaluationError(
+            "run dominant requested-action summary differs from action counts"
         )
     action_source_counts = _required_mapping(
         run.get("action_source_counts"),
         field="action_source_counts",
     )
+    parsed_action_source_counts = _validated_named_counts(
+        action_source_counts,
+        field="action_source_counts",
+    )
     if (
-        sum(int(value) for value in action_source_counts.values())
-        != trajectory_record_count
+        sum(parsed_action_source_counts.values()) != trajectory_record_count
     ):
         raise RecurrentEvaluationError(
             "action-source distribution does not cover trajectory"
         )
-    if int(action_source_counts.get("passive", 0)) != passive_trajectory_record_count:
+    if (
+        parsed_action_source_counts.get("passive", 0)
+        != passive_trajectory_record_count
+    ):
         raise RecurrentEvaluationError(
             "passive action-source count differs from passive trajectory count"
         )
-    if int(run.get("unsupported_requested_action_count", -1)) != 0:
+    unsupported_requested_action_count = _nonnegative_int(
+        run.get("unsupported_requested_action_count"),
+        field="unsupported_requested_action_count",
+    )
+    if unsupported_requested_action_count != 0:
         raise RecurrentEvaluationError("evaluation requested an unsupported action")
-    if int(run.get("heuristic_action_source_count", -1)) != 0:
+    heuristic_action_source_count = _nonnegative_int(
+        run.get("heuristic_action_source_count"),
+        field="heuristic_action_source_count",
+    )
+    if heuristic_action_source_count != 0:
         raise RecurrentEvaluationError("evaluation used a heuristic action source")
+    expected_heuristic_count = sum(
+        count
+        for source, count in parsed_action_source_counts.items()
+        if "heuristic" in source
+    )
+    if heuristic_action_source_count != expected_heuristic_count:
+        raise RecurrentEvaluationError(
+            "heuristic action-source count differs from source distribution"
+        )
+    policy_id_counts = _required_mapping(
+        run.get("policy_id_counts"),
+        field="policy_id_counts",
+    )
+    parsed_policy_id_counts = _validated_named_counts(
+        policy_id_counts,
+        field="policy_id_counts",
+    )
+    if sum(parsed_policy_id_counts.values()) != trajectory_record_count:
+        raise RecurrentEvaluationError(
+            "policy-id distribution does not cover trajectory"
+        )
     reward_components = _required_mapping(
         run.get("reward_component_totals"),
         field="reward_component_totals",
     )
     if set(reward_components) != set(REWARD_COMPONENT_BOUNDS):
         raise RecurrentEvaluationError("run reward component totals drifted")
-    if int(run.get("eat_requested_count", -1)) != int(counts.get("eat", 0)):
+    for component in REWARD_COMPONENT_BOUNDS:
+        _finite_number(
+            reward_components.get(component),
+            field=f"reward_component_totals.{component}",
+        )
+    eat_requested_count = _nonnegative_int(
+        run.get("eat_requested_count"),
+        field="eat_requested_count",
+    )
+    if eat_requested_count != parsed_counts.get("eat", 0):
         raise RecurrentEvaluationError("run eat-request count drifted")
-    eat_without_gain = int(run.get("eat_without_positive_resource_gain_count", -1))
-    if not 0 <= eat_without_gain <= int(run.get("eat_requested_count", -1)):
+    eat_without_gain = _nonnegative_int(
+        run.get("eat_without_positive_resource_gain_count"),
+        field="eat_without_positive_resource_gain_count",
+    )
+    if eat_without_gain > eat_requested_count:
         raise RecurrentEvaluationError(
             "run eat-without-resource-gain count is inconsistent"
+        )
+    expected_eat_without_gain_share = (
+        round_float(eat_without_gain / eat_requested_count)
+        if eat_requested_count
+        else None
+    )
+    observed_eat_without_gain_share = run.get(
+        "eat_without_positive_resource_gain_share"
+    )
+    if observed_eat_without_gain_share is not None:
+        observed_eat_without_gain_share = _finite_number(
+            observed_eat_without_gain_share,
+            field="eat_without_positive_resource_gain_share",
+        )
+    if (
+        observed_eat_without_gain_share
+        != expected_eat_without_gain_share
+    ):
+        raise RecurrentEvaluationError(
+            "run eat-without-resource-gain share differs from its counts"
         )
     distribution = _required_mapping(
         run.get("learned_masked_distribution"),
         field="learned_masked_distribution",
     )
-    recurrent_records = int(
-        _required_mapping(
-            run.get("policy_id_counts"),
-            field="policy_id_counts",
-        ).get(PUBLIC_RECURRENT_POLICY_ID, 0)
+    _validate_learned_distribution_summary(distribution)
+    recurrent_records = parsed_policy_id_counts.get(
+        PUBLIC_RECURRENT_POLICY_ID,
+        0,
     )
-    if int(distribution.get("decision_count", -1)) != recurrent_records:
+    if distribution.get("decision_count") != recurrent_records:
         raise RecurrentEvaluationError(
             "learned-distribution count differs from recurrent policy records"
+        )
+    if _run_outcome_evidence_sha256(
+        {
+            **dict(run),
+            "behavior_digest": behavior_digest,
+            "replay_digest": replay_digest,
+        }
+    ) != outcome_evidence_sha256:
+        raise RecurrentEvaluationError(
+            "run outcome fields are detached from behavior/replay evidence"
         )
 
 
@@ -2406,6 +2793,11 @@ def _training_seed_set_for_plan(
         == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
     ):
         return _SCALE_TRAINING_SEEDS
+    if (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
+    ):
+        return _SCALE_V2_TRAINING_SEEDS
     return _CANONICAL_TRAINING_SEEDS
 
 
@@ -2427,6 +2819,19 @@ def _artifact_training_seed_contract(
             _SCALE_TRAINING_SEED_ROLES,
             SCALE_DEVELOPMENT_SEED_REGISTRY,
             "mind_public_recurrent_training_seed_evidence_v2",
+        )
+    if registry_digest == SCALE_DEVELOPMENT_V2_CANONICAL_SHA256:
+        if (
+            seed_plan.environment_seed_role
+            != RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
+        ):
+            raise RecurrentEvaluationError(
+                "scale-v2 artifact requires an explicit scale-v2 selection seed plan"
+            )
+        return (
+            _SCALE_V2_TRAINING_SEED_ROLES,
+            SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+            "mind_public_recurrent_training_seed_evidence_v3",
         )
     if registry_digest != CANONICAL_SEED_REGISTRY_SHA256:
         raise RecurrentEvaluationError("artifact training seed registry is unsupported")
@@ -2640,21 +3045,26 @@ def _validate_artifact_training_seed_evidence(
     *,
     seed_plan: RecurrentEvaluationSeedPlan,
 ) -> None:
-    scale_contract = (
+    scale_v1_contract = (
         seed_plan.environment_seed_role
         == RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
     )
-    expected_schema = (
-        "mind_public_recurrent_training_seed_evidence_v2"
-        if scale_contract
-        else "mind_public_recurrent_training_seed_evidence_v1"
+    scale_v2_contract = (
+        seed_plan.environment_seed_role
+        == RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
     )
-    expected_roles = (
-        _SCALE_TRAINING_SEED_ROLES if scale_contract else _CANONICAL_TRAINING_SEED_ROLES
-    )
-    expected_registry = (
-        SCALE_DEVELOPMENT_SEED_REGISTRY if scale_contract else RECURRENT_SEED_REGISTRY
-    )
+    if scale_v2_contract:
+        expected_schema = "mind_public_recurrent_training_seed_evidence_v3"
+        expected_roles = _SCALE_V2_TRAINING_SEED_ROLES
+        expected_registry = SCALE_DEVELOPMENT_V2_SEED_REGISTRY
+    elif scale_v1_contract:
+        expected_schema = "mind_public_recurrent_training_seed_evidence_v2"
+        expected_roles = _SCALE_TRAINING_SEED_ROLES
+        expected_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
+    else:
+        expected_schema = "mind_public_recurrent_training_seed_evidence_v1"
+        expected_roles = _CANONICAL_TRAINING_SEED_ROLES
+        expected_registry = RECURRENT_SEED_REGISTRY
     if (
         evidence.get("schema_version") != expected_schema
         or evidence.get("evidence_source") != "artifact.provenance.data_metadata"
@@ -2929,6 +3339,7 @@ def _expected_replay_checks_from_context(
             "seed": run["seed"],
             "policy_sampling_seed": run["policy_sampling_seed"],
             "digest": run["replay_digest"],
+            "outcome_evidence_sha256": run["outcome_evidence_sha256"],
             "passed": True,
         }
         for value in runs
@@ -3402,6 +3813,20 @@ def _required_mapping(value: object, *, field: str) -> Mapping[str, object]:
     return value
 
 
+def _require_exact_fields(
+    value: Mapping[str, object],
+    expected: set[str],
+    *,
+    field: str,
+) -> None:
+    observed = set(value)
+    if observed != expected:
+        raise RecurrentEvaluationError(
+            f"{field} field set drifted: expected={sorted(expected)!r} "
+            f"observed={sorted(observed)!r}"
+        )
+
+
 def _required_sequence(value: object, *, field: str) -> Sequence[object]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise RecurrentEvaluationError(f"{field} must be a sequence")
@@ -3449,6 +3874,8 @@ __all__ = [
     "MASKED_RANDOM_POLICY_VERSION",
     "RECURRENT_EVALUATION_EXECUTION_SCHEMA_VERSION",
     "RECURRENT_EVALUATION_RUNTIME_SCHEMA_VERSION",
+    "RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE",
+    "RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE",
     "RECURRENT_EVALUATION_SCHEMA_VERSION",
     "RECURRENT_EVALUATION_TICKS",
     "UNPINNED_NONCANDIDATE_DIGEST_PREFIX",

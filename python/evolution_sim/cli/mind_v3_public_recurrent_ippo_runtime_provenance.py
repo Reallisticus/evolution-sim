@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Capture or verify the non-secret content-addressed runtime "
-            "contract for the recurrent-IPPO scale campaign."
+            "contract for the recurrent-IPPO scale-v2 campaign."
         )
     )
     parser.add_argument("--preregistration", type=Path, required=True)
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
 
     print(
-        "recurrent_scale_runtime_provenance_"
+        "recurrent_scale_v2_runtime_provenance_"
         f"{operation} digest={observed['exact_digest']} output={args.output}"
     )
     return 0

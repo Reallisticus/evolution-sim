@@ -23,9 +23,11 @@ from evolution_sim.mind.recurrent_actor_critic import (
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
     PreviousPublicFeedbackInput,
     PublicRecurrentActorCritic,
+    RecurrentContextError,
     public_policy_tensor_from_observation_input,
     previous_public_feedback_tensor,
     strict_action_mask_tensor,
+    validate_previous_feedback_tensor,
 )
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_POLICY,
@@ -118,7 +120,13 @@ def validate_public_recurrent_history_prefix(
         raise RecurrentPolicyAdapterError(
             "public history prefix records must be a list"
         )
-    if prefix.get("record_count") != len(records):
+    record_count = prefix.get("record_count")
+    if (
+        isinstance(record_count, bool)
+        or not isinstance(record_count, int)
+        or record_count < 0
+        or record_count != len(records)
+    ):
         raise RecurrentPolicyAdapterError(
             "public history prefix record count does not match records"
         )
@@ -742,11 +750,16 @@ def validate_public_recurrent_distribution_diagnostics(
         raise RecurrentPolicyAdapterError(
             "learned masked distribution has no valid actions"
         )
-    if value.get("valid_action_count") != len(valid_actions):
+    valid_action_count = _positive_int(
+        value.get("valid_action_count"),
+        field="learned masked distribution valid-action count",
+    )
+    if valid_action_count != len(valid_actions):
         raise RecurrentPolicyAdapterError(
             "learned masked distribution valid-action count drifted"
         )
     parsed_probabilities: dict[str, float] = {}
+    parsed_valid_logits: dict[str, float] = {}
     for action in ACTION_NAMES:
         probability = _finite_float(
             probabilities[action],
@@ -758,7 +771,10 @@ def validate_public_recurrent_distribution_diagnostics(
             )
         parsed_probabilities[action] = probability
         if parsed_mask[action]:
-            _finite_float(logits[action], field=f"learned masked logit {action}")
+            parsed_valid_logits[action] = _finite_float(
+                logits[action],
+                field=f"learned masked logit {action}",
+            )
         elif logits[action] is not None or probability != 0.0:
             raise RecurrentPolicyAdapterError(
                 "invalid action must have null masked logit and zero probability"
@@ -771,6 +787,19 @@ def validate_public_recurrent_distribution_diagnostics(
     ):
         raise RecurrentPolicyAdapterError(
             "learned masked probabilities do not sum to one"
+        )
+    maximum_logit = max(parsed_valid_logits.values())
+    softmax_weights = {
+        action: math.exp(parsed_valid_logits[action] - maximum_logit)
+        for action in valid_actions
+    }
+    softmax_denominator = math.fsum(softmax_weights.values())
+    for action in valid_actions:
+        _require_close(
+            parsed_probabilities[action],
+            softmax_weights[action] / softmax_denominator,
+            field=f"learned probability {action} from masked logits",
+            tolerance=2.0e-7,
         )
     selected_action = _action_name(
         value.get("selected_action"),
@@ -819,6 +848,18 @@ def validate_public_recurrent_distribution_diagnostics(
     entropy = _finite_float(value.get("entropy"), field="learned entropy")
     if entropy < 0.0 or entropy > math.log(len(valid_actions)) + 1.0e-6:
         raise RecurrentPolicyAdapterError("learned entropy is outside mask bounds")
+    expected_entropy = -math.fsum(
+        probability * math.log(probability)
+        for action in valid_actions
+        for probability in (parsed_probabilities[action],)
+        if probability > 0.0
+    )
+    _require_close(
+        entropy,
+        expected_entropy,
+        field="learned entropy from probabilities",
+        tolerance=2.0e-7,
+    )
     expected_eligible = len(valid_actions) > 1
     if value.get("normalized_entropy_eligible") is not expected_eligible:
         raise RecurrentPolicyAdapterError(
@@ -870,7 +911,12 @@ def _learned_masked_distribution_diagnostics(
         valid_indices,
         key=lambda index: (-serialized_probabilities[index], index),
     )
-    entropy = float(selection.entropy[0].item())
+    entropy = -math.fsum(
+        probability * math.log(probability)
+        for index in valid_indices
+        for probability in (serialized_probabilities[index],)
+        if probability > 0.0
+    )
     normalized_entropy = (
         entropy / math.log(len(valid_indices)) if len(valid_indices) > 1 else None
     )
@@ -932,8 +978,11 @@ def _validate_public_observation_payload(
         raise RecurrentPolicyAdapterError(f"{field} schema drifted")
     if value.get("policy") != ECOLOGICAL_POLICY_INPUT_POLICY:
         raise RecurrentPolicyAdapterError(f"{field} policy drifted")
-    if value.get("shape") != [ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE]:
-        raise RecurrentPolicyAdapterError(f"{field} shape drifted")
+    _validate_exact_vector_shape(
+        value.get("shape"),
+        expected_size=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        field=f"{field} shape",
+    )
     values = value.get("values")
     if not isinstance(values, list) or len(values) != (
         ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
@@ -978,14 +1027,26 @@ def _validate_public_feedback_payload(
         raise RecurrentPolicyAdapterError(f"{field} field set drifted")
     if value.get("schema_version") != PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION:
         raise RecurrentPolicyAdapterError(f"{field} schema drifted")
-    if value.get("shape") != [PREVIOUS_PUBLIC_FEEDBACK_SIZE]:
-        raise RecurrentPolicyAdapterError(f"{field} shape drifted")
+    _validate_exact_vector_shape(
+        value.get("shape"),
+        expected_size=PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+        field=f"{field} shape",
+    )
     values = value.get("values")
     if not isinstance(values, list) or len(values) != PREVIOUS_PUBLIC_FEEDBACK_SIZE:
         raise RecurrentPolicyAdapterError(f"{field} values have the wrong size")
     parsed = tuple(_finite_float(item, field=f"{field} value") for item in values)
     if any(item < -1.0 or item > 1.0 for item in parsed):
         raise RecurrentPolicyAdapterError(f"{field} values must be in [-1, 1]")
+    try:
+        validate_previous_feedback_tensor(
+            torch.tensor(parsed, dtype=torch.float64),
+            leading_shape=(),
+        )
+    except RecurrentContextError as error:
+        raise RecurrentPolicyAdapterError(
+            f"{field} violates the previous-feedback semantic contract"
+        ) from error
     return parsed
 
 
@@ -1112,6 +1173,24 @@ def _exact_bool(value: object, *, field: str) -> bool:
     if type(value) is not bool:
         raise RecurrentPolicyAdapterError(f"{field} must be an exact boolean")
     return value
+
+
+def _validate_exact_vector_shape(
+    value: object,
+    *,
+    expected_size: int,
+    field: str,
+) -> None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or isinstance(value[0], bool)
+        or not isinstance(value[0], int)
+        or value[0] != expected_size
+    ):
+        raise RecurrentPolicyAdapterError(
+            f"{field} must contain exactly one integer size"
+        )
 
 
 def _finite_float(value: object, *, field: str) -> float:

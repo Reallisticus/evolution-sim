@@ -1145,8 +1145,13 @@ def _with_synthetic_returns(
 ) -> dict[str, object]:
     row = deepcopy(source)
     outcomes = row["labels"]["action_outcomes"]
+    source_action = row["labels"]["source_requested_action"]
     for ordinal, outcome in enumerate(outcomes):
         outcome["focal_discounted_return"] = float(ordinal) * multiplier
+        if outcome["action"] == source_action:
+            row["labels"]["baseline"]["focal_discounted_return"] = (
+                outcome["focal_discounted_return"]
+            )
     _refresh_label_and_row_digests(row)
     return row
 
@@ -1158,13 +1163,50 @@ def _with_synthetic_terminal_state(
 ) -> dict[str, object]:
     row = deepcopy(source)
     outcomes = row["labels"]["action_outcomes"]
+    source_action = row["labels"]["source_requested_action"]
     for outcome in outcomes:
-        outcome["focal_terminal"]["alive"] = alive
+        terminal = outcome["focal_terminal"]
+        terminal["alive"] = alive
+        for field in ("energy_ratio", "hydration_ratio", "health_ratio"):
+            if alive:
+                if terminal[field] is None:
+                    terminal[field] = 1.0
+            else:
+                terminal[field] = None
+        if not alive:
+            outcome["deaths_during_horizon"] = max(
+                1,
+                outcome["deaths_during_horizon"],
+            )
+        if outcome["action"] == source_action:
+            row["labels"]["baseline"]["focal_terminal"] = deepcopy(terminal)
+            row["labels"]["baseline"]["deaths_during_horizon"] = outcome[
+                "deaths_during_horizon"
+            ]
     _refresh_label_and_row_digests(row)
     return row
 
 
 def _refresh_label_and_row_digests(row: dict[str, object]) -> None:
+    baseline = row["labels"]["baseline"]
+    baseline_terminal = baseline["focal_terminal"]
+    for outcome in row["labels"]["action_outcomes"]:
+        terminal = outcome["focal_terminal"]
+        outcome["paired_vs_baseline"] = {
+            "focal_discounted_return_delta": round(
+                float(outcome["focal_discounted_return"])
+                - float(baseline["focal_discounted_return"]),
+                12,
+            ),
+            "focal_terminal_alive_delta": int(terminal["alive"] is True)
+            - int(baseline_terminal["alive"] is True),
+            "population_alive_delta": int(outcome["population_alive"])
+            - int(baseline["population_alive"]),
+            "births_during_horizon_delta": int(outcome["births_during_horizon"])
+            - int(baseline["births_during_horizon"]),
+            "deaths_during_horizon_delta": int(outcome["deaths_during_horizon"])
+            - int(baseline["deaths_during_horizon"]),
+        }
     row["component_digests"]["labels"] = stable_payload_digest(row["labels"])
     without_exact = dict(row)
     without_exact.pop("exact_digest", None)

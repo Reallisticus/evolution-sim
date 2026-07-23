@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+import copy
 from dataclasses import asdict
 import hashlib
 import json
@@ -21,6 +22,7 @@ from evolution_sim.mind.recurrent_artifact import (
     save_recurrent_training_crash_checkpoint,
 )
 from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION,
     RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_DISABLED,
     RECURRENT_COUNTERFACTUAL_TARGET_PERMUTATION_VALID_ACTIONS,
     RECURRENT_COUNTERFACTUAL_VALUE_TARGET_DISABLED,
@@ -28,7 +30,13 @@ from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
     RecurrentCounterfactualAuxiliaryConfig,
     RecurrentCounterfactualAuxiliaryStepConfig,
 )
+from evolution_sim.mind.recurrent_counterfactual_branch import (
+    RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION,
+    RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY,
+)
 from evolution_sim.mind.recurrent_counterfactual_collection import (
+    RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
     RecurrentCounterfactualCollectionConfig,
 )
 from evolution_sim.mind.recurrent_counterfactual_comparison import (
@@ -43,7 +51,7 @@ from evolution_sim.mind.recurrent_evaluation import (
     validate_recurrent_evaluation_report,
 )
 from evolution_sim.mind.recurrent_experiment import (
-    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+    RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
     RecurrentCounterfactualExperimentConfig,
     RecurrentExperimentRunner,
     RecurrentTrainingUpdateResult,
@@ -64,6 +72,8 @@ from evolution_sim.mind.recurrent_scale_campaign import (
     RECURRENT_SCALE_ARM_REPORT_SCHEMA_VERSION,
     RECURRENT_SCALE_ARMS,
     RECURRENT_SCALE_CAMPAIGN_ANALYSIS_SCHEMA_VERSION,
+    RECURRENT_SCALE_CAMPAIGN_POLICY,
+    RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION,
     RECURRENT_SCALE_POLICY_SAMPLING_STREAM_COUNT,
     RECURRENT_SCALE_ROLLOUT_TICKS,
     RECURRENT_SCALE_SELECTION_SEED_COUNT,
@@ -79,13 +89,17 @@ from evolution_sim.mind.recurrent_scale_campaign import (
     write_atomic_json,
 )
 from evolution_sim.mind.recurrent_seed_registry import (
-    SCALE_DEVELOPMENT_CANONICAL_SHA256,
-    SCALE_DEVELOPMENT_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
+    SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
 )
 
 
 RECURRENT_SCALE_UPDATE_RECORD_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_scale_update_record_v1"
+    "mind_v3_public_recurrent_ippo_scale_update_record_v2"
+)
+RECURRENT_SCALE_RUN_CONTRACT_VERSION = (
+    "mind_v3_public_recurrent_ippo_scale_run_contract_v2"
 )
 RECURRENT_SCALE_FULL_WORLD_VERIFICATION_RUNNER = (
     "evolution_sim.mind.recurrent_evaluation"
@@ -94,6 +108,125 @@ _ACTION_SELECTION_MODES = (
     PUBLIC_RECURRENT_ARGMAX_SELECTION,
     PUBLIC_RECURRENT_SAMPLED_SELECTION,
 )
+_SCALE_ARM_REPORT_FIELDS = {
+    "schema_version",
+    "run_id",
+    "preregistration_digest",
+    "source",
+    "runtime_provenance",
+    "learner_seed",
+    "learner_seed_role",
+    "arm",
+    "configuration",
+    "training",
+    "artifact",
+    "evaluations",
+    "elapsed_seconds",
+    "lifecycle",
+    "exact_digest",
+}
+_SCALE_ARM_SOURCE_FIELDS = {
+    "commit",
+    "manifest_sha256",
+    "clean_tree_verified_before_training",
+    "source_stable_through_completion",
+}
+_SCALE_ARM_TRAINING_FIELDS = {
+    "completed_updates",
+    "worlds",
+    "agent_transitions",
+    "update_record_digests",
+    "update_journals",
+    "environment_seed_provenance",
+    "treatment_delivery",
+    "checkpoint",
+}
+_SCALE_ARM_ARTIFACT_FIELDS = {
+    "path",
+    "artifact_sha256",
+    "file",
+    "runtime_provenance_digest",
+    "runtime_policy_eligible",
+    "full_world_replay_manifest",
+}
+_SCALE_ARM_EVALUATION_FIELDS = {
+    "sampling_stream_id",
+    "selection_seed_plan_sha256",
+    "modes",
+}
+_SCALE_ARM_MODE_EVIDENCE_FIELDS = {
+    "in_memory_report",
+    "artifact_cpu_report",
+    "exact_cpu_outcome_replay_match",
+    "candidate_outcome_summary",
+}
+_SCALE_ARM_LIFECYCLE_FIELDS = {
+    "development_only",
+    "campaign_slice_consumed",
+    "runtime_artifact_created",
+    "runtime_action_selection_changed",
+    "runtime_integration_authorized",
+    "promotion_authorized",
+    "validation_seeds_accessed",
+    "lockbox_seeds_accessed",
+    "gate_relaxation_authorized",
+}
+_FILE_REFERENCE_FIELDS = {"path", "sha256", "byte_length"}
+_TRAINING_SEED_PROVENANCE_FIELDS = {
+    "schema_version",
+    "seed_registry_contract",
+    "environment_seed_roles",
+    "environment_seeds_by_role",
+    "observed_environment_seed_count",
+    "validation_seed_count",
+    "lockbox_seed_count",
+}
+_FULL_WORLD_REPLAY_MANIFEST_FIELDS = {
+    "schema_version",
+    "manifest_sha256",
+    "replay_engine_contract_sha256",
+    "environment_seed_registry_sha256",
+    "environment_seed_roles",
+    "scenario_names",
+    "tick_horizons",
+    "world_count",
+    "replay_verified_world_count",
+    "policy_sampling_stream_count",
+    "all_replays_exact",
+    "verification_runner",
+    "verification_runner_sha256",
+}
+_CANDIDATE_OUTCOME_SUMMARY_FIELDS = {
+    "evaluation_contract",
+    "seed_plan_digest",
+    "contexts",
+}
+_CANDIDATE_CONTEXT_FIELDS = {"context", "runs", "linear_runs"}
+_CANDIDATE_RUN_FIELDS = {
+    "context",
+    "seed",
+    "policy_sampling_seed",
+    "behavior_digest",
+    "horizon_ticks",
+    "ticks_executed",
+    "terminal_alive",
+    "births",
+    "deaths",
+    "reward_total",
+    "reward_component_totals",
+    "trajectory_record_count",
+    "policy_decision_record_count",
+    "requested_action_counts",
+    "dominant_requested_action",
+    "dominant_requested_action_count",
+    "dominant_requested_action_share",
+    "unsupported_requested_action_count",
+    "heuristic_action_source_count",
+    "eat_requested_count",
+    "eat_without_positive_resource_gain_count",
+    "eat_without_positive_resource_gain_share",
+    "learned_masked_distribution",
+}
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -201,7 +334,7 @@ def build_scale_run_components(
             training.get("rollout_ticks"), field="rollout_ticks"
         ),
         scenarios=_text_sequence(training.get("scenarios"), field="scenarios"),
-        seed_registry_contract=RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
+        seed_registry_contract=RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
         scale_learner_seed=learner_seed,
     )
     return model_config, ppo_config, counterfactual_config, schedule
@@ -218,7 +351,31 @@ def _scale_run_contract(
     schedule: Sequence[Sequence[object]],
 ) -> dict[str, object]:
     contract: dict[str, object] = {
+        "schema_version": RECURRENT_SCALE_RUN_CONTRACT_VERSION,
         "preregistration_digest": preregistration["exact_digest"],
+        "preregistration_schema_version": (
+            RECURRENT_SCALE_CAMPAIGN_PREREGISTRATION_SCHEMA_VERSION
+        ),
+        "campaign_policy": RECURRENT_SCALE_CAMPAIGN_POLICY,
+        "seed_registry_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+        "seed_registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        "counterfactual_evidence_contract": {
+            "collection_contract_version": (
+                RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION
+            ),
+            "source_branch_row_schema_version": (
+                RECURRENT_COUNTERFACTUAL_BOUNDARY_SOURCE_BRANCH_SCHEMA_VERSION
+            ),
+            "aggregate_row_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_SCHEMA_VERSION
+            ),
+            "aggregate_auxiliary_schema_version": (
+                RECURRENT_COUNTERFACTUAL_AGGREGATE_AUXILIARY_SCHEMA_VERSION
+            ),
+            "continuation_rng_retape_boundary": (
+                RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY
+            ),
+        },
         "run_id": recurrent_scale_arm_run_id(
             learner_seed=learner_seed,
             arm=arm,
@@ -423,7 +580,7 @@ def run_recurrent_scale_arm(
             checkpoint_source.get("source_commit") != source_commit
             or checkpoint_source.get("source_manifest_sha256") != source_manifest_sha256
             or checkpoint_source.get("seed_registry_digest")
-            != SCALE_DEVELOPMENT_CANONICAL_SHA256
+            != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
             or checkpoint_config.get("training_config") != run_contract
             or progress.get("run_id") != run_id
             or progress.get("learner_seed") != learner_seed
@@ -438,12 +595,19 @@ def run_recurrent_scale_arm(
             raise RecurrentScaleCampaignError(
                 "checkpoint progress exceeds the preregistered schedule"
             )
+        _verify_resume_update_prefix(
+            run_directory=run_directory,
+            schedule=schedule,
+            run_id=run_id,
+            arm=arm,
+            completed_updates=completed_updates,
+        )
         loaded_rng_state = _mapping(
             loaded.rng_state,
             field="checkpoint.rng_state",
         )
         if (
-            loaded_rng_state.get("scale_runtime_provenance_digest")
+            loaded_rng_state.get("scale_v2_runtime_provenance_digest")
             != runtime_provenance_digest
         ):
             raise RecurrentScaleCampaignError(
@@ -456,8 +620,8 @@ def run_recurrent_scale_arm(
             completed_updates=completed_updates,
         )
         elapsed_seconds_before_resume = _float(
-            loaded_rng_state.get("scale_campaign_elapsed_seconds"),
-            field="checkpoint.scale_campaign_elapsed_seconds",
+            loaded_rng_state.get("scale_v2_campaign_elapsed_seconds"),
+            field="checkpoint.scale_v2_campaign_elapsed_seconds",
         )
         if elapsed_seconds_before_resume < 0.0:
             raise RecurrentScaleCampaignError(
@@ -487,11 +651,11 @@ def run_recurrent_scale_arm(
                 field="runner checkpoint rng_state",
             )
         )
-        checkpoint_rng_state["scale_campaign_elapsed_seconds"] = round(
+        checkpoint_rng_state["scale_v2_campaign_elapsed_seconds"] = round(
             elapsed_seconds_before_resume + time.perf_counter() - started,
             6,
         )
-        checkpoint_rng_state["scale_runtime_provenance_digest"] = (
+        checkpoint_rng_state["scale_v2_runtime_provenance_digest"] = (
             runtime_provenance_digest
         )
         save_recurrent_training_crash_checkpoint(
@@ -501,7 +665,7 @@ def run_recurrent_scale_arm(
             rng_state=checkpoint_rng_state,
             optimizer_type="torch.optim.Adam",
             training_config=run_contract,
-            seed_registry_digest=SCALE_DEVELOPMENT_CANONICAL_SHA256,
+            seed_registry_digest=SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
             source_commit=source_commit,
             source_manifest_sha256=source_manifest_sha256,
             learner_seed=learner_seed,
@@ -549,7 +713,7 @@ def run_recurrent_scale_arm(
                 UNPINNED_NONCANDIDATE_DIGEST_PREFIX
                 + stable_payload_digest(
                     {
-                        "policy": "scale_full_world_manifest_source_v1",
+                        "policy": "scale_full_world_manifest_source_v2",
                         "preregistration_digest": preregistration_digest,
                         "run_id": run_id,
                         "selection_mode": mode,
@@ -576,7 +740,7 @@ def run_recurrent_scale_arm(
         runner.model,
         training_config=asdict(ppo_config),
         experiment_config=run_contract,
-        seed_registry_digest=SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        seed_registry_digest=SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
         source_commit=source_commit,
         source_manifest_sha256=source_manifest_sha256,
         data_metadata={
@@ -599,7 +763,7 @@ def run_recurrent_scale_arm(
             ),
         },
         run_metadata={
-            "purpose": "preregistered_scale_development_arm",
+            "purpose": "preregistered_scale_v2_development_arm",
             "preregistration_digest": preregistration_digest,
             "run_id": run_id,
             "arm": arm,
@@ -620,7 +784,7 @@ def run_recurrent_scale_arm(
             seed_plan=seed_plan,
             expected_source_commit=source_commit,
             expected_source_manifest_sha256=source_manifest_sha256,
-            expected_seed_registry_digest=SCALE_DEVELOPMENT_CANONICAL_SHA256,
+            expected_seed_registry_digest=SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
             fixture_names=("carrion_only",),
             candidate_action_selection=mode,
             candidate_sampling_seed_count=(
@@ -668,7 +832,7 @@ def run_recurrent_scale_arm(
             "file": runtime_provenance_reference,
         },
         "learner_seed": learner_seed,
-        "learner_seed_role": "scale_learner",
+        "learner_seed_role": "scale_v2_learner",
         "arm": arm,
         "configuration": run_contract,
         "training": {
@@ -731,6 +895,11 @@ def validate_recurrent_scale_arm_report(
     preregistration: Mapping[str, object],
 ) -> None:
     validate_recurrent_scale_campaign_preregistration(preregistration)
+    _require_exact_fields(
+        report,
+        _SCALE_ARM_REPORT_FIELDS,
+        field="scale arm report",
+    )
     if report.get("schema_version") != RECURRENT_SCALE_ARM_REPORT_SCHEMA_VERSION:
         raise RecurrentScaleCampaignError("scale arm report schema drifted")
     exact_digest = _sha256(report.get("exact_digest"), field="report.exact_digest")
@@ -748,9 +917,10 @@ def validate_recurrent_scale_arm_report(
     )
     if report.get("run_id") != expected_run_id:
         raise RecurrentScaleCampaignError("scale arm run identity drifted")
-    if report.get("learner_seed_role") != "scale_learner":
+    if report.get("learner_seed_role") != "scale_v2_learner":
         raise RecurrentScaleCampaignError("scale learner seed role drifted")
     source = _mapping(report.get("source"), field="source")
+    _require_exact_fields(source, _SCALE_ARM_SOURCE_FIELDS, field="source")
     preregistered_source = _mapping(
         preregistration.get("source"), field="preregistration.source"
     )
@@ -763,6 +933,11 @@ def validate_recurrent_scale_arm_report(
         raise RecurrentScaleCampaignError("scale arm source evidence drifted")
     runtime_evidence = _mapping(
         report.get("runtime_provenance"),
+        field="runtime_provenance",
+    )
+    _require_exact_fields(
+        runtime_evidence,
+        {"payload", "file"},
         field="runtime_provenance",
     )
     runtime_payload = _mapping(
@@ -825,6 +1000,11 @@ def validate_recurrent_scale_arm_report(
             "scale arm executable configuration or schedule drifted"
         )
     training = _mapping(report.get("training"), field="training")
+    _require_exact_fields(
+        training,
+        _SCALE_ARM_TRAINING_FIELDS,
+        field="training",
+    )
     if (
         training.get("completed_updates") != RECURRENT_SCALE_UPDATE_COUNT
         or training.get("worlds")
@@ -862,6 +1042,15 @@ def validate_recurrent_scale_arm_report(
             field=f"training.update_journals[{index}]",
         )
     expected_seed_provenance = _scale_training_seed_provenance(schedule)
+    observed_seed_provenance = _mapping(
+        training.get("environment_seed_provenance"),
+        field="training.environment_seed_provenance",
+    )
+    _require_exact_fields(
+        observed_seed_provenance,
+        _TRAINING_SEED_PROVENANCE_FIELDS,
+        field="training.environment_seed_provenance",
+    )
     if training.get("environment_seed_provenance") != expected_seed_provenance:
         raise RecurrentScaleCampaignError("scale arm training seed provenance drifted")
     _validate_file_reference_contract(
@@ -872,6 +1061,18 @@ def validate_recurrent_scale_arm_report(
         training.get("treatment_delivery"), field="training.treatment_delivery"
     )
     if arm == BASE_ARM:
+        _require_exact_fields(
+            delivery,
+            {
+                "treatment_expected",
+                "attempted_update_count",
+                "accepted_update_count",
+                "parameter_delta_l2_sum",
+                "all_transactions_within_kl_bounds",
+                "meets_preregistered_delivery_floor",
+            },
+            field="training.treatment_delivery",
+        )
         if (
             delivery.get("treatment_expected") is not False
             or delivery.get("attempted_update_count") != 0
@@ -880,6 +1081,20 @@ def validate_recurrent_scale_arm_report(
         ):
             raise RecurrentScaleCampaignError("base treatment-delivery proof drifted")
     else:
+        _require_exact_fields(
+            delivery,
+            {
+                "treatment_expected",
+                "attempted_update_count",
+                "accepted_update_count",
+                "accepted_update_count_min",
+                "parameter_delta_l2_sum",
+                "parameter_delta_l2_sum_min_exclusive",
+                "all_transactions_within_kl_bounds",
+                "meets_preregistered_delivery_floor",
+            },
+            field="training.treatment_delivery",
+        )
         accepted_update_count = _nonnegative_int(
             delivery.get("accepted_update_count"), field="accepted_update_count"
         )
@@ -903,6 +1118,11 @@ def validate_recurrent_scale_arm_report(
                 "treatment-delivery proof is internally inconsistent"
             )
     artifact = _mapping(report.get("artifact"), field="artifact")
+    _require_exact_fields(
+        artifact,
+        _SCALE_ARM_ARTIFACT_FIELDS,
+        field="artifact",
+    )
     _text(artifact.get("path"), field="artifact.path")
     _sha256(artifact.get("artifact_sha256"), field="artifact.artifact_sha256")
     _validate_file_reference_contract(
@@ -922,6 +1142,11 @@ def validate_recurrent_scale_arm_report(
         )
     )
     evaluations = _mapping(report.get("evaluations"), field="evaluations")
+    _require_exact_fields(
+        evaluations,
+        _SCALE_ARM_EVALUATION_FIELDS,
+        field="evaluations",
+    )
     expected_sampling_stream_id = _scale_sampling_stream_id(
         _sha256(
             preregistration.get("exact_digest"),
@@ -942,6 +1167,11 @@ def validate_recurrent_scale_arm_report(
         raise RecurrentScaleCampaignError("scale arm evaluation modes drifted")
     for mode in _ACTION_SELECTION_MODES:
         evidence = _mapping(modes.get(mode), field=f"evaluations.modes.{mode}")
+        _require_exact_fields(
+            evidence,
+            _SCALE_ARM_MODE_EVIDENCE_FIELDS,
+            field=f"evaluations.modes.{mode}",
+        )
         if evidence.get("exact_cpu_outcome_replay_match") is not True:
             raise RecurrentScaleCampaignError("CPU artifact replay was not exact")
         _validate_file_reference_contract(
@@ -969,6 +1199,11 @@ def validate_recurrent_scale_arm_report(
             expected_environment_seeds=tuple(expected_seed_plan.broad_seeds),
         )
     lifecycle = _mapping(report.get("lifecycle"), field="lifecycle")
+    _require_exact_fields(
+        lifecycle,
+        _SCALE_ARM_LIFECYCLE_FIELDS,
+        field="lifecycle",
+    )
     if (
         lifecycle.get("development_only") is not True
         or lifecycle.get("campaign_slice_consumed") is not True
@@ -991,6 +1226,7 @@ def _validate_file_reference_contract(
     *,
     field: str,
 ) -> None:
+    _require_exact_fields(reference, _FILE_REFERENCE_FIELDS, field=field)
     _text(reference.get("path"), field=f"{field}.path")
     _sha256(reference.get("sha256"), field=f"{field}.sha256")
     _positive_int(reference.get("byte_length"), field=f"{field}.byte_length")
@@ -999,6 +1235,11 @@ def _validate_file_reference_contract(
 def _validate_full_world_replay_manifest(
     manifest: Mapping[str, object],
 ) -> None:
+    _require_exact_fields(
+        manifest,
+        _FULL_WORLD_REPLAY_MANIFEST_FIELDS,
+        field="full_world_replay_manifest",
+    )
     expected_world_count = (
         RECURRENT_SCALE_SELECTION_SEED_COUNT
         * (1 + RECURRENT_SCALE_POLICY_SAMPLING_STREAM_COUNT)
@@ -1007,8 +1248,8 @@ def _validate_full_world_replay_manifest(
     if (
         manifest.get("schema_version") != FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION
         or manifest.get("environment_seed_registry_sha256")
-        != SCALE_DEVELOPMENT_CANONICAL_SHA256
-        or manifest.get("environment_seed_roles") != ["scale_selection"]
+        != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
+        or manifest.get("environment_seed_roles") != ["scale_v2_selection"]
         or manifest.get("scenario_names") != ["broad", "carrion_only"]
         or manifest.get("tick_horizons") != [RECURRENT_SCALE_ROLLOUT_TICKS]
         or manifest.get("world_count") != expected_world_count
@@ -1044,6 +1285,11 @@ def _validate_candidate_outcome_summary_contract(
     expected_seed_plan_digest: str,
     expected_environment_seeds: tuple[int, ...],
 ) -> None:
+    _require_exact_fields(
+        summary,
+        _CANDIDATE_OUTCOME_SUMMARY_FIELDS,
+        field="candidate outcome summary",
+    )
     contract = _mapping(
         summary.get("evaluation_contract"), field="summary.evaluation_contract"
     )
@@ -1132,6 +1378,11 @@ def _validate_candidate_outcome_summary_contract(
         raise RecurrentScaleCampaignError("candidate summary contexts are duplicated")
     for context_name in ("broad_default", "fixture:carrion_only"):
         context = parsed_contexts[context_name]
+        _require_exact_fields(
+            context,
+            _CANDIDATE_CONTEXT_FIELDS,
+            field=f"candidate context {context_name}",
+        )
         candidate_runs = _validated_context_runs_by_identity(
             context,
             run_field="runs",
@@ -1169,6 +1420,11 @@ def _validated_context_runs_by_identity(
     result: dict[tuple[int, int | None], Mapping[str, object]] = {}
     for raw_run in raw_runs:
         run = _mapping(raw_run, field=f"candidate summary {run_field}[]")
+        _require_exact_fields(
+            run,
+            _CANDIDATE_RUN_FIELDS,
+            field=f"candidate summary {run_field}[]",
+        )
         if run.get("context") != expected_context:
             raise RecurrentScaleCampaignError(
                 f"candidate summary {run_field} context drifted"
@@ -1234,7 +1490,9 @@ def analyze_recurrent_scale_campaign(
     """Reconcile all 24 cells and apply only the preregistered development gates."""
 
     validate_recurrent_scale_campaign_preregistration(preregistration)
-    expected_seeds = tuple(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"])
+    expected_seeds = tuple(
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
+    )
     expected_cells = {
         (seed, arm) for seed in expected_seeds for arm in RECURRENT_SCALE_ARMS
     }
@@ -1488,6 +1746,11 @@ def analyze_recurrent_scale_campaign(
                     runtime_payload.get("device"), field="runtime_provenance.device"
                 )
             ),
+            "nvidia_sha256": stable_payload_digest(
+                _mapping(
+                    runtime_payload.get("nvidia"), field="runtime_provenance.nvidia"
+                )
+            ),
             "workers_sha256": stable_payload_digest(
                 _mapping(
                     runtime_payload.get("workers"), field="runtime_provenance.workers"
@@ -1526,6 +1789,32 @@ def analyze_recurrent_scale_campaign(
     }
     analysis["exact_digest"] = stable_payload_digest(analysis)
     return analysis
+
+
+def validate_recurrent_scale_campaign_analysis(
+    analysis: Mapping[str, object],
+    *,
+    preregistration: Mapping[str, object],
+    reports: Sequence[Mapping[str, object]],
+) -> None:
+    """Recompute the complete 24-cell analysis and require byte-level equality."""
+
+    if not isinstance(analysis, Mapping):
+        raise RecurrentScaleCampaignError("scale analysis must be a mapping")
+    if analysis.get("schema_version") != RECURRENT_SCALE_CAMPAIGN_ANALYSIS_SCHEMA_VERSION:
+        raise RecurrentScaleCampaignError("scale analysis schema drifted")
+    payload = copy.deepcopy(dict(analysis))
+    supplied_digest = _sha256(
+        payload.pop("exact_digest", None),
+        field="analysis.exact_digest",
+    )
+    if stable_payload_digest(payload) != supplied_digest:
+        raise RecurrentScaleCampaignError("scale analysis exact digest mismatched")
+    expected = analyze_recurrent_scale_campaign(preregistration, reports)
+    if dict(analysis) != expected:
+        raise RecurrentScaleCampaignError(
+            "scale analysis differs from exact recomputation over verified reports"
+        )
 
 
 def recurrent_candidate_outcome_summary(
@@ -1602,7 +1891,7 @@ def _counterfactual_config(
     permutation_seed = (
         _derived_63_bit_seed(
             {
-                "policy": "scale_counterfactual_label_permutation_master_v1",
+                "policy": "scale_counterfactual_label_permutation_master_v2",
                 "preregistration_digest": preregistration["exact_digest"],
                 "learner_seed": learner_seed,
             }
@@ -1846,6 +2135,94 @@ def _load_update_record(path: Path, *, index: int) -> dict[str, object]:
     return record
 
 
+def _verify_resume_update_prefix(
+    *,
+    run_directory: Path,
+    schedule: Sequence[Sequence[object]],
+    run_id: str,
+    arm: str,
+    completed_updates: int,
+) -> None:
+    """Require every checkpoint-committed update and raw evidence byte prefix."""
+
+    for index in range(completed_updates):
+        record = _load_update_record(
+            run_directory / "updates" / f"update-{index:04d}.json",
+            index=index,
+        )
+        if record.get("run_id") != run_id or record.get("tasks") != [
+            asdict(task) for task in schedule[index]
+        ]:
+            raise RecurrentScaleCampaignError(
+                "checkpoint update-journal prefix drifted from its run schedule"
+            )
+        collection = record.get("counterfactual_collection")
+        if arm == BASE_ARM:
+            if collection is not None:
+                raise RecurrentScaleCampaignError(
+                    "base checkpoint prefix unexpectedly contains collection evidence"
+                )
+            continue
+        collection_payload = _mapping(
+            collection,
+            field=f"updates[{index}].counterfactual_collection",
+        )
+        raw_reference = _mapping(
+            collection_payload.get("raw_evidence"),
+            field=f"updates[{index}].counterfactual_collection.raw_evidence",
+        )
+        raw_path = (
+            run_directory / "evidence" / f"update-{index:04d}-collection.json"
+        )
+        _verify_file_reference(raw_reference, expected_path=raw_path)
+        raw_collection = load_strict_json(raw_path)
+        raw_unsigned = dict(raw_collection)
+        raw_digest = _sha256(
+            raw_unsigned.pop("exact_digest", None),
+            field="resume raw collection exact_digest",
+        )
+        if stable_payload_digest(raw_unsigned) != raw_digest:
+            raise RecurrentScaleCampaignError(
+                "checkpoint raw counterfactual evidence digest mismatched"
+            )
+        raw_bundles = raw_collection.get("bundles")
+        if not isinstance(raw_bundles, list) or not raw_bundles:
+            raise RecurrentScaleCampaignError(
+                "checkpoint raw counterfactual evidence has no bundles"
+            )
+        raw_projection = {
+            "contract_version": raw_collection.get("contract_version"),
+            "source_model_state_sha256": raw_collection.get(
+                "source_model_state_sha256"
+            ),
+            "source_artifact_digest": raw_collection.get("source_artifact_digest"),
+            "config": raw_collection.get("config"),
+            "bundle_exact_digests": [
+                _mapping(bundle, field="resume raw collection bundle").get(
+                    "exact_digest"
+                )
+                for bundle in raw_bundles
+            ],
+            "aggregate_compute": raw_collection.get("aggregate_compute"),
+        }
+        if {
+            key: collection_payload.get(key) for key in raw_projection
+        } != raw_projection:
+            raise RecurrentScaleCampaignError(
+                "checkpoint update journal detached from raw collection bytes"
+            )
+        auxiliary = _mapping(
+            record.get("counterfactual_auxiliary"),
+            field=f"updates[{index}].counterfactual_auxiliary",
+        )
+        if collection_payload.get("source_model_state_sha256") != auxiliary.get(
+            "pre_model_state_sha256"
+        ):
+            raise RecurrentScaleCampaignError(
+                "checkpoint collection and auxiliary model provenance drifted"
+            )
+
+
 def _full_world_replay_manifest(
     evaluations: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
@@ -1874,8 +2251,8 @@ def _full_world_replay_manifest(
             {"checks": checks, "contracts": contracts}
         ),
         "replay_engine_contract_sha256": stable_payload_digest(contracts),
-        "environment_seed_registry_sha256": SCALE_DEVELOPMENT_CANONICAL_SHA256,
-        "environment_seed_roles": ["scale_selection"],
+        "environment_seed_registry_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        "environment_seed_roles": ["scale_v2_selection"],
         "scenario_names": ["broad", "carrion_only"],
         "tick_horizons": [RECURRENT_SCALE_ROLLOUT_TICKS],
         "world_count": len(checks),
@@ -2125,12 +2502,18 @@ def _linear_runs_by_seed(
 def _scale_training_seed_provenance(
     schedule: Sequence[Sequence[object]],
 ) -> dict[str, object]:
-    by_role: dict[str, set[int]] = {"scale_train": set(), "scale_curriculum": set()}
+    by_role: dict[str, set[int]] = {
+        "scale_v2_train": set(),
+        "scale_v2_curriculum": set(),
+    }
     for update in schedule:
         for task in update:
             role = getattr(task, "seed_role", None)
             seed = getattr(task, "environment_seed", None)
-            if role not in by_role or seed not in SCALE_DEVELOPMENT_SEED_REGISTRY[role]:
+            if (
+                role not in by_role
+                or seed not in SCALE_DEVELOPMENT_V2_SEED_REGISTRY[role]
+            ):
                 raise RecurrentScaleCampaignError(
                     "scale schedule seed provenance drifted"
                 )
@@ -2138,15 +2521,17 @@ def _scale_training_seed_provenance(
     ordered = {
         role: [
             seed
-            for seed in SCALE_DEVELOPMENT_SEED_REGISTRY[role]
+            for seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY[role]
             if seed in by_role[role]
         ]
-        for role in ("scale_train", "scale_curriculum")
+        for role in ("scale_v2_train", "scale_v2_curriculum")
     }
     return {
-        "schema_version": "mind_public_recurrent_scale_training_seed_provenance_v1",
-        "seed_registry_contract": RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
-        "environment_seed_roles": ["scale_train", "scale_curriculum"],
+        "schema_version": "mind_public_recurrent_scale_training_seed_provenance_v2",
+        "seed_registry_contract": (
+            RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+        ),
+        "environment_seed_roles": ["scale_v2_train", "scale_v2_curriculum"],
         "environment_seeds_by_role": ordered,
         "observed_environment_seed_count": sum(
             len(values) for values in ordered.values()
@@ -2351,7 +2736,7 @@ def _scale_sampling_stream_id(
     *,
     learner_seed: int,
 ) -> str:
-    return f"scale-v1-arm-independent:{preregistration_digest}:learner-{learner_seed}"
+    return f"scale-v2-arm-independent:{preregistration_digest}:learner-{learner_seed}"
 
 
 def _derived_63_bit_seed(payload: Mapping[str, object]) -> int:
@@ -2419,7 +2804,10 @@ def _verify_completed_report_evidence(
         checkpoint.rng_state,
         field="checkpoint.rng_state",
     )
-    if checkpoint_rng_state.get("scale_runtime_provenance_digest") != runtime_digest:
+    if (
+        checkpoint_rng_state.get("scale_v2_runtime_provenance_digest")
+        != runtime_digest
+    ):
         raise RecurrentScaleCampaignError(
             "completed checkpoint runtime provenance digest mismatched"
         )
@@ -2437,7 +2825,7 @@ def _verify_completed_report_evidence(
         or checkpoint_source.get("source_manifest_sha256")
         != report_source.get("manifest_sha256")
         or checkpoint_source.get("seed_registry_digest")
-        != SCALE_DEVELOPMENT_CANONICAL_SHA256
+        != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
         or checkpoint_configuration.get("model_config")
         != report_configuration.get("model")
         or checkpoint_configuration.get("training_config") != report_configuration
@@ -2491,7 +2879,7 @@ def _verify_completed_report_evidence(
         or artifact_provenance.get("experiment_config") != report_configuration
         or artifact_provenance.get("training_config") != report_configuration.get("ppo")
         or artifact_provenance.get("seed_registry_digest")
-        != SCALE_DEVELOPMENT_CANONICAL_SHA256
+        != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
         or artifact_provenance.get("learner_seed") != report.get("learner_seed")
         or artifact_run_metadata.get("preregistration_digest")
         != preregistration.get("exact_digest")
@@ -2529,6 +2917,11 @@ def _verify_completed_report_evidence(
         raise RecurrentScaleCampaignError(
             "completed full-world replay manifest detached from evaluation bytes"
         )
+    _verify_fresh_artifact_cpu_evidence(
+        report,
+        run_directory=run_directory,
+        preregistration=preregistration,
+    )
     update_digests = training.get("update_record_digests")
     update_journals = training.get("update_journals")
     if (
@@ -2771,6 +3164,118 @@ def _verify_completed_evaluation_evidence(
     return _full_world_replay_manifest(in_memory_evaluations)
 
 
+def _verify_fresh_artifact_cpu_evidence(
+    report: Mapping[str, object],
+    *,
+    run_directory: Path,
+    preregistration: Mapping[str, object],
+) -> dict[str, object]:
+    """Rerun the frozen artifact on CPU before accepting persisted arm evidence.
+
+    File hashes and self-consistent report digests cannot establish that a
+    coherently rewritten outcome still came from the frozen parameters. This
+    read-only replay is therefore part of completed-arm verification, including
+    aggregation, and compares fresh outcome summaries and replay manifests.
+    """
+
+    learner_seed = _positive_int(
+        report.get("learner_seed"),
+        field="learner_seed",
+    )
+    preregistration_digest = _sha256(
+        preregistration.get("exact_digest"),
+        field="preregistration.exact_digest",
+    )
+    expected_sampling_stream_id = _scale_sampling_stream_id(
+        preregistration_digest,
+        learner_seed=learner_seed,
+    )
+    evaluations = _mapping(report.get("evaluations"), field="evaluations")
+    if evaluations.get("sampling_stream_id") != expected_sampling_stream_id:
+        raise RecurrentScaleCampaignError(
+            "fresh CPU artifact replay sampling stream drifted"
+        )
+    seed_plan = recurrent_scale_selection_seed_plan()
+    if evaluations.get("selection_seed_plan_sha256") != seed_plan.digest:
+        raise RecurrentScaleCampaignError(
+            "fresh CPU artifact replay seed plan drifted"
+        )
+    source = _mapping(report.get("source"), field="source")
+    runtime_payload = _mapping(
+        _mapping(
+            report.get("runtime_provenance"),
+            field="runtime_provenance",
+        ).get("payload"),
+        field="runtime_provenance.payload",
+    )
+    runtime_workers = _mapping(
+        runtime_payload.get("workers"),
+        field="runtime_provenance.workers",
+    )
+    evaluation_workers = _positive_int(
+        runtime_workers.get("evaluation_workers"),
+        field="runtime_provenance.workers.evaluation_workers",
+    )
+    modes = _mapping(evaluations.get("modes"), field="evaluations.modes")
+    artifact_path = run_directory / "frozen-policy.json"
+    fresh_evaluations: dict[str, Mapping[str, object]] = {}
+    persisted_evaluations: dict[str, Mapping[str, object]] = {}
+    for mode in _ACTION_SELECTION_MODES:
+        persisted_path = (
+            run_directory / "evaluations" / f"artifact-cpu-{mode}.json"
+        )
+        persisted = load_strict_json(persisted_path)
+        validate_recurrent_evaluation_report(persisted)
+        fresh = evaluate_frozen_recurrent_policy_artifact(
+            artifact_path,
+            seed_plan=seed_plan,
+            expected_source_commit=_text(
+                source.get("commit"),
+                field="source.commit",
+            ),
+            expected_source_manifest_sha256=_sha256(
+                source.get("manifest_sha256"),
+                field="source.manifest_sha256",
+            ),
+            expected_seed_registry_digest=SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+            fixture_names=("carrion_only",),
+            candidate_action_selection=mode,
+            candidate_sampling_seed_count=(
+                1
+                if mode == PUBLIC_RECURRENT_ARGMAX_SELECTION
+                else RECURRENT_SCALE_POLICY_SAMPLING_STREAM_COUNT
+            ),
+            candidate_sampling_stream_id=expected_sampling_stream_id,
+            evaluation_workers=evaluation_workers,
+        )
+        validate_recurrent_evaluation_report(fresh)
+        reported_summary = _mapping(
+            _mapping(
+                modes.get(mode),
+                field=f"evaluations.modes.{mode}",
+            ).get("candidate_outcome_summary"),
+            field=f"evaluations.modes.{mode}.candidate_outcome_summary",
+        )
+        fresh_summary = recurrent_candidate_outcome_summary(fresh)
+        persisted_summary = recurrent_candidate_outcome_summary(persisted)
+        if not (
+            fresh_summary == persisted_summary == dict(reported_summary)
+        ):
+            raise RecurrentScaleCampaignError(
+                "fresh CPU artifact reevaluation differs from persisted artifact "
+                f"outcomes for {mode}"
+            )
+        fresh_evaluations[mode] = fresh
+        persisted_evaluations[mode] = persisted
+    fresh_manifest = _full_world_replay_manifest(fresh_evaluations)
+    persisted_manifest = _full_world_replay_manifest(persisted_evaluations)
+    if fresh_manifest != persisted_manifest:
+        raise RecurrentScaleCampaignError(
+            "fresh CPU artifact replay manifest differs from persisted replay evidence"
+        )
+    return fresh_manifest
+
+
 def _verify_file_reference(
     reference: Mapping[str, object],
     *,
@@ -2808,10 +3313,18 @@ def load_scale_arm_reports(
     runtime_provenance_path: str | Path,
 ) -> tuple[dict[str, object], ...]:
     validate_recurrent_scale_campaign_preregistration(preregistration)
+    source = _mapping(preregistration.get("source"), field="source")
+    _require_exact_clean_source(
+        source_commit=_text(source.get("commit"), field="source.commit"),
+        source_manifest_sha256=_sha256(
+            source.get("manifest_sha256"),
+            field="source.manifest_sha256",
+        ),
+    )
     reports: list[dict[str, object]] = []
     root = Path(output_root)
     runtime_path = Path(runtime_provenance_path)
-    for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]:
+    for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]:
         for arm in RECURRENT_SCALE_ARMS:
             run_id = recurrent_scale_arm_run_id(learner_seed=learner_seed, arm=arm)
             run_directory = root / run_id
@@ -2828,6 +3341,16 @@ def load_scale_arm_reports(
             )
             reports.append(report)
     return tuple(reports)
+
+
+def _require_exact_fields(
+    value: Mapping[str, object],
+    expected: set[str],
+    *,
+    field: str,
+) -> None:
+    if set(value) != expected:
+        raise RecurrentScaleCampaignError(f"{field} field set drifted")
 
 
 def _mapping(value: object, *, field: str) -> Mapping[str, object]:
@@ -2894,11 +3417,13 @@ def _exact_bool(value: object, *, field: str) -> bool:
 
 __all__ = [
     "RECURRENT_SCALE_FULL_WORLD_VERIFICATION_RUNNER",
+    "RECURRENT_SCALE_RUN_CONTRACT_VERSION",
     "RECURRENT_SCALE_UPDATE_RECORD_SCHEMA_VERSION",
     "analyze_recurrent_scale_campaign",
     "build_scale_run_components",
     "load_scale_arm_reports",
     "recurrent_candidate_outcome_summary",
     "run_recurrent_scale_arm",
+    "validate_recurrent_scale_campaign_analysis",
     "validate_recurrent_scale_arm_report",
 ]

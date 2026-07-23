@@ -2334,10 +2334,12 @@ def _normalized_before_evaluation(
     for check_value in _sequence(replay.get("checks"), field="before.replay.checks"):
         check = _mapping(check_value, field="before.replay.check")
         check["digest"] = "<ARM_REPLAY_DIGEST>"  # type: ignore[index]
+        check["outcome_evidence_sha256"] = "<ARM_OUTCOME_EVIDENCE>"  # type: ignore[index]
     for context in _evaluation_contexts(normalized, field="before").values():
         policies = _mapping(context.get("policies"), field="before.policies")
         for run in _policy_runs(policies, policy="public_recurrent"):
             run["replay_digest"] = "<ARM_REPLAY_DIGEST>"  # type: ignore[index]
+            run["outcome_evidence_sha256"] = "<ARM_OUTCOME_EVIDENCE>"  # type: ignore[index]
     return normalized
 
 

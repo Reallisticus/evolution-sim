@@ -114,8 +114,30 @@ class PreviousPublicFeedbackInput:
             self.resolution_action_valid or self.moved or reward_total != 0.0
         ):
             raise RecurrentContextError("birth/reset feedback must be entirely zero")
-        if self.moved and not self.resolution_action_valid:
-            raise RecurrentContextError("moved feedback requires a valid resolution")
+        if self.requested_action_id is not None:
+            if (
+                self.resolution_action_valid
+                and self.resolved_action_id != self.requested_action_id
+            ):
+                raise RecurrentContextError(
+                    "valid feedback must resolve the requested action"
+                )
+            if (
+                not self.resolution_action_valid
+                and self.resolved_action_id != ACTION_INDEX["stay"]
+            ):
+                raise RecurrentContextError(
+                    "invalid feedback must fail closed to stay"
+                )
+            resolved_action = ACTION_NAMES[self.resolved_action_id]
+            expected_moved = (
+                self.resolution_action_valid
+                and resolved_action.startswith("move_")
+            )
+            if self.moved != expected_moved:
+                raise RecurrentContextError(
+                    "moved feedback must exactly match a valid resolved movement"
+                )
 
     @classmethod
     def zero(cls) -> PreviousPublicFeedbackInput:
@@ -412,6 +434,27 @@ def validate_previous_feedback_tensor(
         raise RecurrentContextError(
             "requested and resolved action availability must match"
         )
+    present = requested_count == 1.0
+    resolution_is_valid = resolution_valid == 1.0
+    same_action = (requested == resolved).all(dim=-1)
+    if not bool((~present | ~resolution_is_valid | same_action).all().item()):
+        raise RecurrentContextError(
+            "valid feedback must resolve the requested action"
+        )
+    resolved_stay = resolved[..., ACTION_INDEX["stay"]] == 1.0
+    if not bool(
+        (~present | resolution_is_valid | resolved_stay).all().item()
+    ):
+        raise RecurrentContextError("invalid feedback must fail closed to stay")
+    resolved_move = torch.zeros_like(resolution_is_valid)
+    for action_index, action in enumerate(ACTION_NAMES):
+        if action.startswith("move_"):
+            resolved_move |= resolved[..., action_index] == 1.0
+    expected_moved = present & resolution_is_valid & resolved_move
+    if not bool(((moved == 1.0) == expected_moved).all().item()):
+        raise RecurrentContextError(
+            "moved feedback must exactly match a valid resolved movement"
+        )
     normalized_lower = REWARD_TOTAL_BOUNDS[0] / _REWARD_NORMALIZATION_SCALE
     normalized_upper = REWARD_TOTAL_BOUNDS[1] / _REWARD_NORMALIZATION_SCALE
     if not bool(
@@ -431,8 +474,6 @@ def validate_previous_feedback_tensor(
     )
     if not bool((~absent | absent_scalars_are_zero).all().item()):
         raise RecurrentContextError("birth/reset feedback must be entirely zero")
-    if not bool(((moved == 0.0) | (resolution_valid == 1.0)).all().item()):
-        raise RecurrentContextError("moved feedback requires a valid resolution")
 
 
 def seeded_torch_generator(

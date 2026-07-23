@@ -17,6 +17,7 @@ from evolution_sim.mind.recurrent_scale_execution import (
     analyze_recurrent_scale_campaign,
     load_scale_arm_reports,
     run_recurrent_scale_arm,
+    validate_recurrent_scale_campaign_analysis,
 )
 
 
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Preregister, execute, and reconcile the pinned multi-learner "
-            "three-arm recurrent-IPPO scale campaign."
+            "three-arm recurrent-IPPO scale-v2 campaign."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -76,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_atomic_json(args.output, preregistration)
         print(
-            "recurrent_scale_preregistered "
+            "recurrent_scale_v2_preregistered "
             f"digest={preregistration['exact_digest']} output={args.output}"
         )
         return 0
@@ -97,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
         )
         print(
-            "recurrent_scale_arm_complete "
+            "recurrent_scale_v2_arm_complete "
             f"run_id={report['run_id']} digest={report['exact_digest']}"
         )
         return 0
@@ -109,10 +110,22 @@ def main(argv: list[str] | None = None) -> int:
             runtime_provenance_path=args.runtime_provenance,
         )
         analysis = analyze_recurrent_scale_campaign(preregistration, reports)
+        validate_recurrent_scale_campaign_analysis(
+            analysis,
+            preregistration=preregistration,
+            reports=reports,
+        )
         write_atomic_json(args.output, analysis)
+        persisted_analysis = load_strict_json(args.output)
+        validate_recurrent_scale_campaign_analysis(
+            persisted_analysis,
+            preregistration=preregistration,
+            reports=reports,
+        )
         print(
-            "recurrent_scale_campaign_analyzed "
-            f"accepted={analysis['accepted']} digest={analysis['exact_digest']}"
+            "recurrent_scale_v2_campaign_analyzed "
+            f"accepted={persisted_analysis['accepted']} "
+            f"digest={persisted_analysis['exact_digest']}"
         )
         return 0
     raise AssertionError("argparse accepted an unknown command")

@@ -71,6 +71,41 @@ SCALE_DEVELOPMENT_EXPECTED_LEARNER_SEEDS: tuple[int, ...] = (
     1_782_198_429,
 )
 
+# The first scale campaign consumed every v1 development role.  Replacement
+# campaigns therefore use a third namespace with distinct role names so v1
+# reports and artifacts remain replay-valid while new code cannot silently
+# reuse any learner, optimization, or selection seed.
+SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION = (
+    "mind_v3_public_recurrent_scale_development_seed_registry_v2"
+)
+SCALE_DEVELOPMENT_V2_SEED_REGISTRY_NAMESPACE = (
+    "evolution-sim|mind-v3-public-recurrent-ppo|"
+    "scale-development-seed-registry-v2|2026-07-23"
+)
+SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS: tuple[tuple[str, int], ...] = (
+    ("scale_v2_curriculum", 128),
+    ("scale_v2_train", 512),
+    ("scale_v2_selection", 128),
+    ("scale_v2_learner", 8),
+)
+SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES: tuple[str, ...] = (
+    "validation",
+    "lockbox",
+)
+SCALE_DEVELOPMENT_V2_CANONICAL_SHA256 = (
+    "1531a9e782dc414ae43c37346a45d581cb00a29a8348e0bd902c106166ba5ee7"
+)
+SCALE_DEVELOPMENT_V2_EXPECTED_LEARNER_SEEDS: tuple[int, ...] = (
+    1_505_354_251,
+    1_916_254_251,
+    870_080_605,
+    699_185_506,
+    58_022_765,
+    2_067_239_703,
+    1_485_353_601,
+    2_083_034_500,
+)
+
 
 class SeedRegistryError(ValueError):
     pass
@@ -177,6 +212,41 @@ SCALE_DEVELOPMENT_SEED_ROLE_POLICIES: Mapping[str, SeedRolePolicy] = MappingProx
             access_policy="reusable_for_independent_scale_replication",
         ),
     }
+)
+
+SCALE_DEVELOPMENT_V2_SEED_ROLE_POLICIES: Mapping[str, SeedRolePolicy] = (
+    MappingProxyType(
+        {
+            "scale_v2_curriculum": SeedRolePolicy(
+                axis="environment",
+                lifecycle="scale_v2_optimization_curriculum",
+                may_tune_configuration=True,
+                promotion_evidence=False,
+                access_policy="reusable_for_scale_v2_training_only",
+            ),
+            "scale_v2_train": SeedRolePolicy(
+                axis="environment",
+                lifecycle="scale_v2_optimization_training",
+                may_tune_configuration=True,
+                promotion_evidence=False,
+                access_policy="reusable_for_scale_v2_training_only",
+            ),
+            "scale_v2_selection": SeedRolePolicy(
+                axis="environment",
+                lifecycle="scale_v2_development_selection",
+                may_tune_configuration=True,
+                promotion_evidence=False,
+                access_policy="reusable_for_preregistered_scale_v2_selection",
+            ),
+            "scale_v2_learner": SeedRolePolicy(
+                axis="learner",
+                lifecycle="scale_v2_learner_development",
+                may_tune_configuration=True,
+                promotion_evidence=False,
+                access_policy="reusable_for_independent_scale_v2_replication",
+            ),
+        }
+    )
 )
 
 
@@ -327,6 +397,89 @@ def validate_scale_development_seed_registry(
         )
 
 
+def build_scale_development_v2_seed_registry() -> dict[str, list[int]]:
+    """Build fresh scale-v2 seeds disjoint from base and scale-v1 roles."""
+
+    existing = build_recurrent_seed_registry()
+    scale_v1 = build_scale_development_seed_registry()
+    seen = {
+        seed
+        for registry in (existing, scale_v1)
+        for seeds in registry.values()
+        for seed in seeds
+    }
+    registry: dict[str, list[int]] = {}
+    for role, count in SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS:
+        seeds: list[int] = []
+        index = 0
+        while len(seeds) < count:
+            material = (
+                f"{SCALE_DEVELOPMENT_V2_SEED_REGISTRY_NAMESPACE}|"
+                f"{role}|{index:04d}"
+            ).encode("utf-8")
+            digest = hashlib.sha256(material).digest()
+            candidate = 1 + (int.from_bytes(digest[:8], "big") % (MAX_SEED - 1))
+            index += 1
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            seeds.append(candidate)
+        registry[role] = seeds
+    return registry
+
+
+def validate_scale_development_v2_seed_registry(
+    registry: Mapping[str, Sequence[int]],
+) -> None:
+    """Fail closed on v2 drift, overlap, or sealed-role exposure."""
+
+    expected = build_scale_development_v2_seed_registry()
+    if set(registry) != set(expected):
+        raise SeedRegistryError(
+            "scale-v2 development seed registry roles do not match the contract"
+        )
+    if set(registry).intersection(SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES):
+        raise SeedRegistryError(
+            "scale-v2 development registry must not expose validation or lockbox seeds"
+        )
+
+    flattened: list[int] = []
+    for role, expected_seeds in expected.items():
+        actual_seeds = list(registry[role])
+        if actual_seeds != expected_seeds:
+            raise SeedRegistryError(
+                f"scale-v2 development seed registry role {role!r} is not canonical"
+            )
+        if any(
+            isinstance(seed, bool) or not isinstance(seed, int) for seed in actual_seeds
+        ):
+            raise SeedRegistryError(
+                f"scale-v2 development seed registry role {role!r} "
+                "contains non-integers"
+            )
+        if any(seed < 1 or seed > MAX_SEED for seed in actual_seeds):
+            raise SeedRegistryError(
+                f"scale-v2 development seed registry role {role!r} is out of range"
+            )
+        flattened.extend(actual_seeds)
+
+    if len(flattened) != len(set(flattened)):
+        raise SeedRegistryError("scale-v2 development seed registry roles overlap")
+    prior = {
+        seed
+        for registry in (
+            build_recurrent_seed_registry(),
+            build_scale_development_seed_registry(),
+        )
+        for seeds in registry.values()
+        for seed in seeds
+    }
+    if not set(flattened).isdisjoint(prior):
+        raise SeedRegistryError(
+            "scale-v2 development seeds overlap a prior recurrent registry"
+        )
+
+
 def scale_development_seed_registry_payload() -> dict[str, list[int]]:
     return {
         role: list(seeds) for role, seeds in SCALE_DEVELOPMENT_SEED_REGISTRY.items()
@@ -385,6 +538,70 @@ def scale_development_seed_registry_contract() -> dict[str, object]:
     }
 
 
+def scale_development_v2_seed_registry_payload() -> dict[str, list[int]]:
+    return {
+        role: list(seeds)
+        for role, seeds in SCALE_DEVELOPMENT_V2_SEED_REGISTRY.items()
+    }
+
+
+def scale_development_v2_seed_registry_json() -> bytes:
+    return json.dumps(
+        scale_development_v2_seed_registry_payload(),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def scale_development_v2_seeds_for_role(role: str) -> tuple[int, ...]:
+    """Return one opt-in scale-v2 role; sealed roles remain unavailable."""
+
+    if not isinstance(role, str) or not role or role != role.strip():
+        raise SeedRegistryError("scale-v2 development seed role must be trimmed text")
+    if role in SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES:
+        raise SeedRegistryError(
+            f"scale-v2 development access to sealed role {role!r} is forbidden"
+        )
+    try:
+        return SCALE_DEVELOPMENT_V2_SEED_REGISTRY[role]
+    except KeyError as exc:
+        raise SeedRegistryError(
+            f"unknown scale-v2 development seed role: {role!r}"
+        ) from exc
+
+
+def scale_development_v2_seed_registry_contract() -> dict[str, object]:
+    """Describe v2 roles without materializing validation/lockbox seeds."""
+
+    return {
+        "schema_version": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_VERSION,
+        "namespace": SCALE_DEVELOPMENT_V2_SEED_REGISTRY_NAMESPACE,
+        "generator": (
+            "sha256_first_8_bytes_mod_int32_disjoint_from_base_and_scale_v1"
+        ),
+        "canonical_sha256": SCALE_DEVELOPMENT_V2_CANONICAL_SHA256,
+        "disjoint_from_registry_sha256": [
+            CANONICAL_SEED_REGISTRY_SHA256,
+            SCALE_DEVELOPMENT_CANONICAL_SHA256,
+        ],
+        "role_order": list(dict(SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS)),
+        "role_counts": dict(SCALE_DEVELOPMENT_V2_SEED_ROLE_COUNTS),
+        "policies": {
+            role: asdict(policy)
+            for role, policy in SCALE_DEVELOPMENT_V2_SEED_ROLE_POLICIES.items()
+        },
+        "seeds": scale_development_v2_seed_registry_payload(),
+        "unavailable_roles": {
+            role: {
+                "available": False,
+                "seed_values_included": False,
+                "reason": "separately_sealed_not_available_to_scale_v2_development",
+            }
+            for role in SCALE_DEVELOPMENT_V2_UNAVAILABLE_ROLES
+        },
+    }
+
+
 _BUILT_REGISTRY = build_recurrent_seed_registry()
 validate_recurrent_seed_registry(_BUILT_REGISTRY)
 RECURRENT_SEED_REGISTRY: Mapping[str, tuple[int, ...]] = MappingProxyType(
@@ -428,3 +645,35 @@ if SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"] != (
     SCALE_DEVELOPMENT_EXPECTED_LEARNER_SEEDS
 ):
     raise RuntimeError("scale-development learner seed values changed")
+
+_BUILT_SCALE_DEVELOPMENT_V2_REGISTRY = (
+    build_scale_development_v2_seed_registry()
+)
+validate_scale_development_v2_seed_registry(
+    _BUILT_SCALE_DEVELOPMENT_V2_REGISTRY
+)
+SCALE_DEVELOPMENT_V2_SEED_REGISTRY: Mapping[str, tuple[int, ...]] = (
+    MappingProxyType(
+        {
+            role: tuple(seeds)
+            for role, seeds in _BUILT_SCALE_DEVELOPMENT_V2_REGISTRY.items()
+        }
+    )
+)
+SCALE_DEVELOPMENT_V2_GENERATED_SHA256 = hashlib.sha256(
+    json.dumps(
+        _BUILT_SCALE_DEVELOPMENT_V2_REGISTRY,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+if (
+    SCALE_DEVELOPMENT_V2_GENERATED_SHA256
+    != SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
+):
+    raise RuntimeError("generated scale-v2 development seed registry digest changed")
+if SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"] != (
+    SCALE_DEVELOPMENT_V2_EXPECTED_LEARNER_SEEDS
+):
+    raise RuntimeError("scale-v2 development learner seed values changed")

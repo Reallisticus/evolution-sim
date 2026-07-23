@@ -606,6 +606,41 @@ evidence from one learner initialization and repeated crossed seed/stream cells,
 not a campaign slice, runtime artifact, validation/lockbox result, or promotion
 result. The campaign budget remains 3/10.
 
+The first preregistered recurrent-IPPO scale campaign then ran from exact source
+commit `1dce222c9ed4425f73881182c07c51412e81a831`. Scale v1 is closed as
+terminal-incomplete negative evidence: it durably produced `376/384` optimizer
+updates, `23/24` arm reports and CPU-reloadable frozen artifacts, and `92/96`
+exact CPU evaluations. The missing arm was
+`scale-v1-learner-1782198429-exact_counterfactual_auxiliary`. Its exact branch
+collector retaped continuation RNG before the focal turn, so a retaped
+pre-focal event could kill the focal agent before its natural policy draw and
+action. That violates the paired intervention boundary and correctly failed
+closed. No aggregate report exists, and the incomplete matrix authorizes no
+acceptance, runtime integration, validation, lockbox access, promotion, or gate
+relaxation. The source-bound evidence is durable in
+`20260723T071132Z-recurrent-scale-1dce222c9ed4-incomplete-fail-closed.tar.zst`
+with archive SHA256
+`1c8111b61083d7d8df7fa83cb8d018207234b582be183233eeb391e8dc2eb1ca`;
+draft PR `#27` preserves the factual closeout.
+
+The next campaign source is scale v2. This source revision contains no campaign
+result; live status is an external exact-SHA output fact. Its repaired branch
+contract replays the source checkpoint, all pre-focal turns, and the focal
+natural policy draw under source RNG, verifies the full source-decision
+projection, then retapes environment and policy continuation RNG at
+`after_focal_natural_policy_draw_before_action_resolution_v1`. This preserves
+the factual decision state while still randomizing post-decision consequences
+for paired baseline/forced-action estimation. Scale v2 also uses fresh
+development curriculum, training, selection, and learner seeds that are
+disjoint from the base and scale-v1 registries; validation and lockbox roles
+remain sealed. Its v5 source rows, persisted arm reports, NVIDIA/runtime/topology
+provenance, exact CPU replay evidence, and checkpoint prefix are fail-closed,
+and its launcher holds an output-root process lock. All durable paths are
+explicitly `scale-v2` namespaced so no v1 checkpoint or output can be silently
+resumed. Before aggregation accepts a completed arm, a fresh read-only CPU
+reload reruns both preregistered evaluation modes and must exactly reproduce
+the persisted outcomes and replay manifest.
+
 Carrion transition-row campaign charter: after support expansion, if a v178
 transition-row dataset passes the default support thresholds, has explicit
 source-report and dataset digest pins, and all source, schema, leakage,

@@ -47,18 +47,22 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_scale_execution import (
         RECURRENT_SCALE_FULL_WORLD_VERIFICATION_RUNNER,
+        RECURRENT_SCALE_RUN_CONTRACT_VERSION,
         _scale_policy_sampling_seeds,
         _scale_run_contract,
         _scale_sampling_stream_id,
         _scale_training_seed_provenance,
         _verify_completed_evaluation_evidence,
+        _verify_fresh_artifact_cpu_evidence,
         analyze_recurrent_scale_campaign,
         build_scale_run_components,
         load_scale_arm_reports,
+        recurrent_candidate_outcome_summary,
+        validate_recurrent_scale_campaign_analysis,
         validate_recurrent_scale_arm_report,
     )
     from evolution_sim.mind.recurrent_seed_registry import (
-        SCALE_DEVELOPMENT_SEED_REGISTRY,
+        SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
     )
 
 
@@ -87,6 +91,14 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             "total_memory_bytes": 12 * 1024**3,
             "multiprocessor_count": 56,
         }
+        self.runtime_provenance["nvidia"] = {
+            "required": True,
+            "driver_version": "595.58.03",
+            "cuda_driver_api_version": "13.2",
+            "cuda_driver_api_version_raw": 13020,
+            "cuda_runtime_api_version": "13.0",
+            "cuda_runtime_api_version_raw": 13000,
+        }
         self.runtime_provenance["exact_digest"] = stable_payload_digest(
             {
                 key: value
@@ -101,7 +113,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
         }
 
     def test_base_components_use_full_scale_schedule_and_roles(self) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         model, ppo, counterfactual, schedule = build_scale_run_components(
             self.preregistration,
             learner_seed=learner_seed,
@@ -115,14 +127,14 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
         self.assertEqual(sum(len(update) for update in schedule), 256)
         self.assertEqual(
             {task.seed_role for update in schedule for task in update},
-            {"scale_train", "scale_curriculum"},
+            {"scale_v2_train", "scale_v2_curriculum"},
         )
 
     def test_scale_components_pair_arms_within_learner_not_across_learners(
         self,
     ) -> None:
-        first_learner, second_learner = SCALE_DEVELOPMENT_SEED_REGISTRY[
-            "scale_learner"
+        first_learner, second_learner = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
+            "scale_v2_learner"
         ][:2]
         schedules = []
         for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM):
@@ -160,7 +172,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_exact_components_bind_multi_tape_terminal_aggregate_treatment(
         self,
     ) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         _model, _ppo, counterfactual, schedule = build_scale_run_components(
             self.preregistration,
             learner_seed=learner_seed,
@@ -176,7 +188,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
         self.assertEqual(len(schedule), 16)
 
     def test_all_scale_run_contracts_are_exact_json_round_trips(self) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM):
             with self.subTest(arm=arm):
                 model, ppo, counterfactual, schedule = build_scale_run_components(
@@ -199,6 +211,27 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 )
 
                 self.assertEqual(reloaded, contract)
+                self.assertEqual(
+                    contract["schema_version"],
+                    RECURRENT_SCALE_RUN_CONTRACT_VERSION,
+                )
+                self.assertEqual(
+                    contract["seed_registry_sha256"],
+                    self.preregistration["seed_contract"]["registry_sha256"],  # type: ignore[index]
+                )
+                self.assertEqual(
+                    contract["counterfactual_evidence_contract"],
+                    {
+                        key: self.preregistration["counterfactual"][key]  # type: ignore[index]
+                        for key in (
+                            "collection_contract_version",
+                            "source_branch_row_schema_version",
+                            "aggregate_row_schema_version",
+                            "aggregate_auxiliary_schema_version",
+                            "continuation_rng_retape_boundary",
+                        )
+                    },
+                )
                 if arm != BASE_ARM:
                     self.assertIsInstance(
                         contract["counterfactual"]["collection"]["horizons"],  # type: ignore[index]
@@ -208,7 +241,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_treatment_checkpoint_training_config_survives_write_load_for_resume(
         self,
     ) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         with tempfile.TemporaryDirectory() as tmpdir:
             for arm in (EXACT_ARM, SHUFFLED_ARM):
                 with self.subTest(arm=arm):
@@ -264,7 +297,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                     )
 
     def test_written_treatment_reports_reload_and_validate(self) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         with tempfile.TemporaryDirectory() as tmpdir:
             for arm in (EXACT_ARM, SHUFFLED_ARM):
                 with self.subTest(arm=arm):
@@ -282,7 +315,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_complete_paired_matrix_passes_declared_synthetic_outcomes(self) -> None:
         reports = [
             self._report(learner_seed=learner_seed, arm=arm)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
             for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
         ]
         analysis = analyze_recurrent_scale_campaign(
@@ -301,13 +334,33 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             self.assertEqual(stable_payload_digest(unsigned), exact_digest)
         self.assertTrue(analysis["accepted"])
         self.assertTrue(all(analysis["gates"].values()))
+        validate_recurrent_scale_campaign_analysis(
+            analysis,
+            preregistration=self.preregistration,
+            reports=reports,
+        )
+        tampered_analysis = copy.deepcopy(analysis)
+        tampered_analysis["accepted"] = False
+        tampered_analysis["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in tampered_analysis.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "exact recomputation"):
+            validate_recurrent_scale_campaign_analysis(
+                tampered_analysis,
+                preregistration=self.preregistration,
+                reports=reports,
+            )
 
     def test_analysis_digest_binds_report_artifact_and_evaluation_evidence(
         self,
     ) -> None:
         reports = [
             self._report(learner_seed=learner_seed, arm=arm)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
             for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
         ]
         original = analyze_recurrent_scale_campaign(self.preregistration, reports)
@@ -331,7 +384,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_campaign_rejects_mixed_runtime_provenance(self) -> None:
         reports = [
             self._report(learner_seed=learner_seed, arm=arm)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
             for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
         ]
         target = reports[0]
@@ -349,8 +402,14 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             analyze_recurrent_scale_campaign(self.preregistration, reports)
 
     def test_report_contract_tampering_fails_closed(self) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         mutations = {
+            "undeclared top-level field": lambda report: report.__setitem__(
+                "undeclared_private_world_state", {"forbidden": True}
+            ),
+            "undeclared source field": lambda report: report["source"].__setitem__(  # type: ignore[union-attr]
+                "unvalidated_extension", {"forbidden": True}
+            ),
             "source": lambda report: report["source"].__setitem__(  # type: ignore[union-attr]
                 "manifest_sha256", "c" * 64
             ),
@@ -410,7 +469,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             with self.subTest(name=name):
                 reports = [
                     self._report(learner_seed=learner_seed, arm=arm)
-                    for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+                    for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
                     for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
                 ]
                 exact_report = reports[1]
@@ -426,7 +485,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_duplicate_cell_fails_closed(self) -> None:
         reports = [
             self._report(learner_seed=learner_seed, arm=arm)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
             for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
         ]
         reports[-1] = copy.deepcopy(reports[0])
@@ -436,7 +495,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_exact_regression_against_fixed_linear_control_fails_gate(self) -> None:
         reports = [
             self._report(learner_seed=learner_seed, arm=arm)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
             for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM)
         ]
         for report in reports:
@@ -467,7 +526,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             runtime_path = root / "runtime-provenance.json"
             write_atomic_json(runtime_path, self.runtime_provenance)
             runtime_reference = self._actual_file_reference(runtime_path)
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]:
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]:
                 for arm in (BASE_ARM, EXACT_ARM, SHUFFLED_ARM):
                     report = self._report(learner_seed=learner_seed, arm=arm)
                     report["runtime_provenance"]["file"] = runtime_reference  # type: ignore[index]
@@ -477,12 +536,60 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                         report,
                     )
 
-            with self.assertRaisesRegex(ValueError, "evidence file is missing"):
+            with (
+                patch(
+                    "evolution_sim.mind.recurrent_scale_execution."
+                    "_require_exact_clean_source"
+                ),
+                self.assertRaisesRegex(ValueError, "evidence file is missing"),
+            ):
                 load_scale_arm_reports(
                     self.preregistration,
                     output_root=root,
                     runtime_provenance_path=runtime_path,
                 )
+
+    def test_aggregate_loader_requires_current_exact_clean_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime_path = root / "runtime.json"
+            cases = (
+                (
+                    ("c" * 40, True),
+                    {"aggregate_sha256": "b" * 64},
+                    "Git HEAD",
+                ),
+                (
+                    ("a" * 40, False),
+                    {"aggregate_sha256": "b" * 64},
+                    "clean",
+                ),
+                (
+                    ("a" * 40, True),
+                    {"aggregate_sha256": "c" * 64},
+                    "manifest",
+                ),
+            )
+            for git_state, manifest, error in cases:
+                with (
+                    self.subTest(error=error),
+                    patch(
+                        "evolution_sim.mind.recurrent_scale_execution."
+                        "_git_source_state",
+                        return_value=git_state,
+                    ),
+                    patch(
+                        "evolution_sim.mind.recurrent_scale_execution."
+                        "source_file_hash_manifest",
+                        return_value=manifest,
+                    ),
+                    self.assertRaisesRegex(ValueError, error),
+                ):
+                    load_scale_arm_reports(
+                        self.preregistration,
+                        output_root=root,
+                        runtime_provenance_path=runtime_path,
+                    )
 
     def test_aggregate_loader_rejects_report_summary_detached_from_evaluation_bytes(
         self,
@@ -492,11 +599,11 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
             runtime_path = root / "runtime-provenance.json"
             write_atomic_json(runtime_path, self.runtime_provenance)
             runtime_reference = self._actual_file_reference(runtime_path)
-            first_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+            first_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
             first_arm = RECURRENT_SCALE_ARMS[0]
             first_report: dict[str, object] | None = None
             first_run_directory: Path | None = None
-            for learner_seed in SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"]:
+            for learner_seed in SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]:
                 for arm in RECURRENT_SCALE_ARMS:
                     report = self._report(learner_seed=learner_seed, arm=arm)
                     report["runtime_provenance"]["file"] = runtime_reference  # type: ignore[index]
@@ -569,7 +676,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                     "parameters_sha256": "c" * 64,
                 },
                 rng_state={
-                    "scale_runtime_provenance_digest": self.runtime_provenance[
+                    "scale_v2_runtime_provenance_digest": self.runtime_provenance[
                         "exact_digest"
                     ]
                 },
@@ -627,6 +734,10 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                     "evolution_sim.mind.recurrent_scale_execution."
                     "validate_recurrent_evaluation_report"
                 ),
+                patch(
+                    "evolution_sim.mind.recurrent_scale_execution."
+                    "_require_exact_clean_source"
+                ),
                 self.assertRaisesRegex(ValueError, "summary detached"),
             ):
                 load_scale_arm_reports(
@@ -638,7 +749,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
     def test_completed_evaluation_evidence_rejects_byte_tamper_and_detached_summary(
         self,
     ) -> None:
-        learner_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_learner"][0]
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
         for failure_mode in (
             "tampered bytes",
             "detached summary",
@@ -721,6 +832,165 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                         run_directory=run_directory,
                     )
 
+    def test_authoritative_verification_freshly_reruns_both_cpu_artifact_modes(
+        self,
+    ) -> None:
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
+        report = self._report(learner_seed=learner_seed, arm=EXACT_ARM)
+        with tempfile.TemporaryDirectory() as temporary:
+            run_directory = Path(temporary)
+            persisted_by_mode: dict[str, dict[str, object]] = {}
+            original_bytes: dict[str, bytes] = {}
+            modes = report["evaluations"]["modes"]  # type: ignore[index]
+            for mode, evidence in modes.items():  # type: ignore[union-attr]
+                evaluation = self._evaluation_from_summary(
+                    evidence["candidate_outcome_summary"]
+                )
+                evidence["candidate_outcome_summary"] = (
+                    recurrent_candidate_outcome_summary(evaluation)
+                )
+                evaluation["artifact"] = {
+                    "path": str(run_directory / "frozen-policy.json"),
+                    "artifact_sha256": report["artifact"][  # type: ignore[index]
+                        "artifact_sha256"
+                    ],
+                }
+                persisted_by_mode[mode] = evaluation
+                path = (
+                    run_directory / "evaluations" / f"artifact-cpu-{mode}.json"
+                )
+                write_atomic_json(path, evaluation)
+                original_bytes[mode] = path.read_bytes()
+
+            calls: list[tuple[Path, dict[str, object]]] = []
+
+            def fresh_evaluation(
+                artifact_path: str | Path,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                calls.append((Path(artifact_path), dict(kwargs)))
+                mode = str(kwargs["candidate_action_selection"])
+                return copy.deepcopy(persisted_by_mode[mode])
+
+            with (
+                patch(
+                    "evolution_sim.mind.recurrent_scale_execution."
+                    "evaluate_frozen_recurrent_policy_artifact",
+                    side_effect=fresh_evaluation,
+                ),
+                patch(
+                    "evolution_sim.mind.recurrent_scale_execution."
+                    "validate_recurrent_evaluation_report"
+                ),
+            ):
+                manifest = _verify_fresh_artifact_cpu_evidence(
+                    report,
+                    run_directory=run_directory,
+                    preregistration=self.preregistration,
+                )
+
+            self.assertEqual(
+                [call[1]["candidate_action_selection"] for call in calls],
+                [
+                    PUBLIC_RECURRENT_ARGMAX_SELECTION,
+                    PUBLIC_RECURRENT_SAMPLED_SELECTION,
+                ],
+            )
+            self.assertTrue(
+                all(
+                    call[0] == run_directory / "frozen-policy.json"
+                    and call[1]["fixture_names"] == ("carrion_only",)
+                    and call[1]["candidate_sampling_stream_id"]
+                    == report["evaluations"]["sampling_stream_id"]  # type: ignore[index]
+                    and call[1]["evaluation_workers"] == 1
+                    for call in calls
+                )
+            )
+            self.assertEqual(calls[0][1]["candidate_sampling_seed_count"], 1)
+            self.assertEqual(calls[1][1]["candidate_sampling_seed_count"], 4)
+            self.assertTrue(manifest["all_replays_exact"])
+            for mode in persisted_by_mode:
+                path = (
+                    run_directory / "evaluations" / f"artifact-cpu-{mode}.json"
+                )
+                self.assertEqual(path.read_bytes(), original_bytes[mode])
+
+    def test_fresh_cpu_artifact_reevaluation_rejects_outcome_and_replay_drift(
+        self,
+    ) -> None:
+        learner_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0]
+        for failure_mode in ("outcome", "replay"):
+            with (
+                self.subTest(failure_mode=failure_mode),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                run_directory = Path(temporary)
+                report = self._report(learner_seed=learner_seed, arm=EXACT_ARM)
+                persisted_by_mode: dict[str, dict[str, object]] = {}
+                modes = report["evaluations"]["modes"]  # type: ignore[index]
+                for mode, evidence in modes.items():  # type: ignore[union-attr]
+                    evaluation = self._evaluation_from_summary(
+                        evidence["candidate_outcome_summary"]
+                    )
+                    evidence["candidate_outcome_summary"] = (
+                        recurrent_candidate_outcome_summary(evaluation)
+                    )
+                    evaluation["artifact"] = {
+                        "path": str(run_directory / "frozen-policy.json"),
+                        "artifact_sha256": report["artifact"][  # type: ignore[index]
+                            "artifact_sha256"
+                        ],
+                    }
+                    persisted_by_mode[mode] = evaluation
+                    write_atomic_json(
+                        (
+                            run_directory
+                            / "evaluations"
+                            / f"artifact-cpu-{mode}.json"
+                        ),
+                        evaluation,
+                    )
+
+                def divergent_evaluation(
+                    _artifact_path: str | Path,
+                    **kwargs: object,
+                ) -> dict[str, object]:
+                    mode = str(kwargs["candidate_action_selection"])
+                    fresh = copy.deepcopy(persisted_by_mode[mode])
+                    if mode == PUBLIC_RECURRENT_ARGMAX_SELECTION:
+                        if failure_mode == "outcome":
+                            fresh["broad"]["policies"]["public_recurrent"]["runs"][0][  # type: ignore[index]
+                                "terminal_alive"
+                            ] += 1
+                        else:
+                            fresh["replay_verification"]["checks"][0]["digest"] = (  # type: ignore[index]
+                                "f" * 64
+                            )
+                    return fresh
+
+                expected_error = (
+                    "persisted artifact outcomes"
+                    if failure_mode == "outcome"
+                    else "replay manifest differs"
+                )
+                with (
+                    patch(
+                        "evolution_sim.mind.recurrent_scale_execution."
+                        "evaluate_frozen_recurrent_policy_artifact",
+                        side_effect=divergent_evaluation,
+                    ),
+                    patch(
+                        "evolution_sim.mind.recurrent_scale_execution."
+                        "validate_recurrent_evaluation_report"
+                    ),
+                    self.assertRaisesRegex(ValueError, expected_error),
+                ):
+                    _verify_fresh_artifact_cpu_evidence(
+                        report,
+                        run_directory=run_directory,
+                        preregistration=self.preregistration,
+                    )
+
     def _report(self, *, learner_seed: int, arm: str) -> dict[str, object]:
         run_id = recurrent_scale_arm_run_id(learner_seed=learner_seed, arm=arm)
         alive = 1 if arm == EXACT_ARM else 0
@@ -767,6 +1037,21 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 PUBLIC_RECURRENT_SAMPLED_SELECTION,
             )
         }
+        treatment_delivery = {
+            "treatment_expected": arm != BASE_ARM,
+            "attempted_update_count": 0 if arm == BASE_ARM else 16,
+            "accepted_update_count": 0 if arm == BASE_ARM else 16,
+            "parameter_delta_l2_sum": 0.0 if arm == BASE_ARM else 1.0,
+            "all_transactions_within_kl_bounds": True,
+            "meets_preregistered_delivery_floor": True,
+        }
+        if arm != BASE_ARM:
+            treatment_delivery.update(
+                {
+                    "accepted_update_count_min": 12,
+                    "parameter_delta_l2_sum_min_exclusive": 0.0,
+                }
+            )
         report: dict[str, object] = {
             "schema_version": RECURRENT_SCALE_ARM_REPORT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -784,7 +1069,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 "file": dict(self.runtime_provenance_reference),
             },
             "learner_seed": learner_seed,
-            "learner_seed_role": "scale_learner",
+            "learner_seed_role": "scale_v2_learner",
             "arm": arm,
             "configuration": configuration,
             "training": {
@@ -805,14 +1090,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 "environment_seed_provenance": _scale_training_seed_provenance(
                     schedule
                 ),
-                "treatment_delivery": {
-                    "treatment_expected": arm != BASE_ARM,
-                    "attempted_update_count": 0 if arm == BASE_ARM else 16,
-                    "accepted_update_count": 0 if arm == BASE_ARM else 16,
-                    "parameter_delta_l2_sum": 0.0 if arm == BASE_ARM else 1.0,
-                    "all_transactions_within_kl_bounds": True,
-                    "meets_preregistered_delivery_floor": True,
-                },
+                "treatment_delivery": treatment_delivery,
                 "checkpoint": self._file_reference(
                     run_id=run_id,
                     label="training-checkpoint",
@@ -840,7 +1118,7 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                     "environment_seed_registry_sha256": self.preregistration[
                         "seed_contract"
                     ]["registry_sha256"],  # type: ignore[index]
-                    "environment_seed_roles": ["scale_selection"],
+                    "environment_seed_roles": ["scale_v2_selection"],
                     "scenario_names": ["broad", "carrion_only"],
                     "tick_horizons": [120],
                     "world_count": 80,
@@ -897,8 +1175,15 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 common = {
                     "seed": seed,
                     "policy_sampling_seed": stream_seed,
+                    "horizon_ticks": 120,
+                    "ticks_executed": 120,
                     "terminal_alive": alive,
                     "births": births,
+                    "deaths": 0,
+                    "reward_total": 0.0,
+                    "reward_component_totals": {},
+                    "trajectory_record_count": 1,
+                    "policy_decision_record_count": 1,
                     "requested_action_counts": {
                         "stay": 2,
                         "move_n": 2,
@@ -906,9 +1191,15 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                         "eat": 2,
                         "drink": 2,
                     },
+                    "dominant_requested_action": "stay",
+                    "dominant_requested_action_count": 2,
                     "dominant_requested_action_share": 0.2,
                     "heuristic_action_source_count": 0,
                     "unsupported_requested_action_count": 0,
+                    "eat_requested_count": 2,
+                    "eat_without_positive_resource_gain_count": 0,
+                    "eat_without_positive_resource_gain_share": 0.0,
+                    "learned_masked_distribution": {},
                 }
                 broad_runs.append(
                     {
@@ -939,8 +1230,25 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 "context": "broad_default",
                 "seed": seed,
                 "policy_sampling_seed": None,
+                "horizon_ticks": 120,
+                "ticks_executed": 120,
                 "terminal_alive": 0,
                 "births": 1,
+                "deaths": 0,
+                "reward_total": 0.0,
+                "reward_component_totals": {},
+                "trajectory_record_count": 1,
+                "policy_decision_record_count": 1,
+                "requested_action_counts": {"stay": 1},
+                "dominant_requested_action": "stay",
+                "dominant_requested_action_count": 1,
+                "dominant_requested_action_share": 1.0,
+                "unsupported_requested_action_count": 0,
+                "heuristic_action_source_count": 0,
+                "eat_requested_count": 0,
+                "eat_without_positive_resource_gain_count": 0,
+                "eat_without_positive_resource_gain_share": 0.0,
+                "learned_masked_distribution": {},
                 "behavior_digest": stable_payload_digest(
                     {"context": "broad_default", "linear_seed": seed}
                 ),
@@ -952,8 +1260,25 @@ class RecurrentScaleExecutionTests(unittest.TestCase):
                 "context": "fixture:carrion_only",
                 "seed": seed,
                 "policy_sampling_seed": None,
+                "horizon_ticks": 120,
+                "ticks_executed": 120,
                 "terminal_alive": 0,
                 "births": 1,
+                "deaths": 0,
+                "reward_total": 0.0,
+                "reward_component_totals": {},
+                "trajectory_record_count": 1,
+                "policy_decision_record_count": 1,
+                "requested_action_counts": {"stay": 1},
+                "dominant_requested_action": "stay",
+                "dominant_requested_action_count": 1,
+                "dominant_requested_action_share": 1.0,
+                "unsupported_requested_action_count": 0,
+                "heuristic_action_source_count": 0,
+                "eat_requested_count": 0,
+                "eat_without_positive_resource_gain_count": 0,
+                "eat_without_positive_resource_gain_share": 0.0,
+                "learned_masked_distribution": {},
                 "behavior_digest": stable_payload_digest(
                     {"context": "fixture:carrion_only", "linear_seed": seed}
                 ),

@@ -191,6 +191,29 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         invalid_movement[0, 0, ACTION_COUNT] = 1.0
         invalid_movement[0, 0, -2] = 1.0
         cases.append(invalid_movement)
+        valid_mismatch = self._feedback(time_steps=1, batch_size=1)
+        valid_mismatch[0, 0, ACTION_NAMES.index("stay")] = 1.0
+        valid_mismatch[
+            0,
+            0,
+            ACTION_COUNT + ACTION_NAMES.index("eat"),
+        ] = 1.0
+        valid_mismatch[0, 0, -3] = 1.0
+        cases.append(valid_mismatch)
+        invalid_nonstay = self._feedback(time_steps=1, batch_size=1)
+        invalid_nonstay[0, 0, ACTION_NAMES.index("eat")] = 1.0
+        invalid_nonstay[
+            0,
+            0,
+            ACTION_COUNT + ACTION_NAMES.index("eat"),
+        ] = 1.0
+        cases.append(invalid_nonstay)
+        valid_move_not_moved = self._feedback(time_steps=1, batch_size=1)
+        move_index = ACTION_NAMES.index("move_north")
+        valid_move_not_moved[0, 0, move_index] = 1.0
+        valid_move_not_moved[0, 0, ACTION_COUNT + move_index] = 1.0
+        valid_move_not_moved[0, 0, -3] = 1.0
+        cases.append(valid_move_not_moved)
 
         for feedback in cases:
             with self.subTest(feedback=feedback):

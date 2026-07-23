@@ -84,9 +84,32 @@ class RecurrentRuntimeProvenanceTests(unittest.TestCase):
             "a" * 40,
         )
         self.assertEqual(  # type: ignore[index]
+            provenance["contract_binding"]["preregistration_schema_version"],
+            "mind_v3_public_recurrent_ippo_scale_campaign_preregistration_v2",
+        )
+        self.assertEqual(  # type: ignore[index]
+            provenance["contract_binding"]["seed_registry_sha256"],
+            "1531a9e782dc414ae43c37346a45d581cb00a29a8348e0bd902c106166ba5ee7",
+        )
+        self.assertEqual(  # type: ignore[index]
+            provenance["contract_binding"]["counterfactual_rng_retape_boundary"],
+            "after_focal_natural_policy_draw_before_action_resolution_v1",
+        )
+        self.assertEqual(  # type: ignore[index]
+            provenance["contract_binding"][
+                "counterfactual_source_branch_schema_version"
+            ],
+            "mind_v3_recurrent_counterfactual_boundary_source_branch_row_v5",
+        )
+        self.assertEqual(  # type: ignore[index]
             provenance["workers"]["counterfactual_workers"],
             12,
         )
+        self.assertEqual(  # type: ignore[index]
+            provenance["workers"]["concurrent_cuda_arm_processes"],
+            3,
+        )
+        self.assertFalse(provenance["nvidia"]["required"])  # type: ignore[index]
         self.assertEqual(  # type: ignore[index]
             provenance["dependency_freeze"]["package_count"],
             3,
@@ -139,6 +162,21 @@ class RecurrentRuntimeProvenanceTests(unittest.TestCase):
             "field set drifted",
         ):
             validate_recurrent_scale_runtime_provenance(unexpected)
+
+        stale_v1_binding = copy.deepcopy(provenance)
+        stale_v1_binding["contract_binding"]["seed_registry_sha256"] = "0" * 64  # type: ignore[index]
+        stale_v1_binding["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in stale_v1_binding.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            RecurrentRuntimeProvenanceError,
+            "v2 campaign contract binding drifted",
+        ):
+            validate_recurrent_scale_runtime_provenance(stale_v1_binding)
 
     def test_dependency_freeze_rejects_conflicting_duplicate_versions(self) -> None:
         with self.assertRaisesRegex(

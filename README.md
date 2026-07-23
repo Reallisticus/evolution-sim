@@ -234,20 +234,47 @@ The bounded v31 pure-Python direct artifact and later residual/support-scorer
 families are recorded as non-promotable diagnostics, not as active promotion
 routes.
 
-The current trainable research path is a preregistered, development-only
-recurrent-IPPO scale campaign. It crosses eight fresh learner seeds with base,
-exact multi-tape counterfactual, and shuffled-label arms (`6,144` PPO worlds),
-uses eight common-random-number continuation tapes per exact branch, and writes
-crash checkpoints plus exact CPU-reloadable frozen artifacts. Generate the
-pinned protocol, execute individual resumable cells, and reconcile all `24`
-reports with:
+The first preregistered recurrent-IPPO scale campaign, scale v1 at exact source
+commit `1dce222c9ed4425f73881182c07c51412e81a831`, is closed as
+terminal-incomplete negative evidence, not as a completed study. It durably
+reached `376/384` optimizer updates, `23/24` arm reports and frozen artifacts,
+and `92/96` exact CPU evaluations. The missing cell,
+`scale-v1-learner-1782198429-exact_counterfactual_auxiliary`, failed closed
+because its continuation RNG was retaped before the focal turn; a tape could
+therefore kill the focal agent before its policy draw and action, violating the
+paired exact-branch contract. No aggregate analysis was written and no
+acceptance, runtime, validation, lockbox, or promotion claim is authorized.
+The source-bound evidence is preserved in
+`20260723T071132Z-recurrent-scale-1dce222c9ed4-incomplete-fail-closed.tar.zst`
+with archive SHA256
+`1c8111b61083d7d8df7fa83cb8d018207234b582be183233eeb391e8dc2eb1ca`;
+draft PR `#27` records the factual closeout.
+
+The development-only successor source is scale v2. This source revision carries
+no campaign result; live status is recorded in its exact-SHA external output.
+It preserves the source checkpoint, pre-focal prefix, and focal natural policy
+draw, verifies the full common source-decision projection, then retapes
+environment and policy continuation RNG at
+`after_focal_natural_policy_draw_before_action_resolution_v1`. It also uses a
+fresh scale-v2 development seed registry that is disjoint from the base and
+scale-v1 registries. The preregistered plan crosses eight new learner seeds with
+base, exact multi-tape counterfactual, and shuffled-label arms (`6,144` PPO
+worlds), uses eight common-random-number continuation tapes per exact branch,
+and writes crash checkpoints plus exact CPU-reloadable frozen artifacts. Its
+persisted source rows and arm reports are exact-schema validated, runtime
+provenance includes the actual NVIDIA stack and three-arm topology, and the
+launcher holds an output-root process lock. Completed arms are accepted for
+aggregation only after a fresh read-only CPU reload reruns both preregistered
+evaluation modes and exactly reproduces the persisted outcomes and replay
+manifest. Generate its pinned protocol,
+execute individual resumable cells, and reconcile all `24` reports with:
 
 ```bash
 SOURCE_COMMIT="$(git rev-parse HEAD)"
-PREREG=output/mind/recurrent-scale/preregistration.json
-RUNTIME=output/mind/recurrent-scale/runtime-provenance.json
+PREREG=output/mind/recurrent-scale-v2/scale-v2-preregistration.json
+RUNTIME=output/mind/recurrent-scale-v2/scale-v2-runtime-provenance.json
 
-npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- preregister \
+npm run sim:mind:v3:public-recurrent-ippo-scale-v2-campaign -- preregister \
   --source-commit "$SOURCE_COMMIT" \
   --output "$PREREG"
 
@@ -264,33 +291,33 @@ PYTHONPATH=python python3 -m \
   --counterfactual-workers 8 \
   --evaluation-workers 8
 
-npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- run-arm \
+npm run sim:mind:v3:public-recurrent-ippo-scale-v2-campaign -- run-arm \
   --preregistration "$PREREG" \
   --expected-preregistration-digest "$PREREG_DIGEST" \
-  --learner-seed 1171366450 \
+  --learner-seed 1505354251 \
   --arm base_recurrent_ppo \
-  --output-root output/mind/recurrent-scale/runs \
+  --output-root output/mind/recurrent-scale-v2/scale-v2-runs \
   --runtime-provenance "$RUNTIME" \
   --rollout-workers 8 \
   --counterfactual-workers 8 \
   --evaluation-workers 8 \
   --device cuda:0
 
-npm run sim:mind:v3:public-recurrent-ippo-scale-campaign -- aggregate \
+npm run sim:mind:v3:public-recurrent-ippo-scale-v2-campaign -- aggregate \
   --preregistration "$PREREG" \
-  --reports-root output/mind/recurrent-scale/runs \
+  --reports-root output/mind/recurrent-scale-v2/scale-v2-runs \
   --runtime-provenance "$RUNTIME" \
-  --output output/mind/recurrent-scale/analysis.json
+  --output output/mind/recurrent-scale-v2/scale-v2-analysis.json
 ```
 
-For the full GPU study, prefer the isolated launcher. It creates or verifies a
-detached exact-SHA checkout, a content-addressed virtual environment, and an
-external output tree; pins CUDA/Torch/dependencies/workers; runs the three
-paired arms concurrently for each learner; resumes crash checkpoints; and
-aggregates only after all 24 reports exist. Before tmux starts, it also runs a
-real exact-arm CUDA warmup, checkpoints populated Adam/RNG/auxiliary state, and
-requires the restored continuation to match the uninterrupted model and update
-evidence exactly:
+For the full GPU study, prefer the isolated scale-v2 launcher. It creates or
+verifies a detached exact-SHA scale-v2 checkout, a namespaced content-addressed
+virtual environment, and an external scale-v2 output tree; pins
+CUDA/Torch/dependencies/workers; runs the three paired arms concurrently for
+each learner; resumes crash checkpoints; and aggregates only after all `24`
+reports exist. Before tmux starts, it also runs a real exact-arm CUDA warmup,
+checkpoints populated Adam/RNG/auxiliary state, and requires the restored
+continuation to match the uninterrupted model and update evidence exactly:
 
 ```bash
 scripts/run_recurrent_scale_campaign_gpu.sh \
@@ -298,13 +325,18 @@ scripts/run_recurrent_scale_campaign_gpu.sh \
   --repository-url "$(git remote get-url origin)" \
   --workspace-parent /absolute/new-workspaces \
   --venv-parent /absolute/versioned-venvs \
-  --output-parent /absolute/recurrent-scale-runs \
+  --output-parent /absolute/recurrent-scale-v2-runs \
   --uv-command /absolute/path/to/uv
 ```
 
-The scale-selection registry is reusable development evidence; validation and
-lockbox roles are unavailable to this command. A successful development gate
-does not authorize runtime integration or promotion.
+The launcher, generated session, checkout, virtual environment, protocol,
+preflight, logs, run IDs, and outputs are all explicitly namespaced `scale-v2`
+to prevent accidental resume against v1. There is no v1 npm alias in the
+current source because its contracts have advanced; reproduce or inspect v1
+only from its exact source commit and archived evidence. The scale-v2 selection
+registry is reusable development evidence; validation and lockbox roles are
+unavailable to this command. A successful development gate would not authorize
+runtime integration or promotion.
 
 Generate the first label reports with:
 
