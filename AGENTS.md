@@ -664,6 +664,141 @@ with archive SHA256
 `rclone check` verification of `0` differences and `1` matching file. The
 campaign budget remains 3/10.
 
+The current v203 no-training evidence is
+`output/mind/mind-v3-v203-carrion-survivor-continuation-public-masked-model-capacity-harness-scaffold-20260722.json`,
+logical exact digest
+`e3a2875fb15fc64d64b8b122df42247ba377e1aa1095ad317038c946f60a6cb4`,
+file SHA256
+`c86e36302e887d222c1d880e2ddd4a7ce5d6fe2cdc144eec2de363e0f0df8271`,
+and `31` passed scaffold checks. Classification:
+`m3_carrion_survivor_continuation_v203_public_masked_model_capacity_harness_scaffold_ready_for_future_explicit_recurrent_ippo_training_no_training`.
+The original default-path report digest
+`753f0d264a18e9b38548733dfa8c6a1604fccb7b229da0241e939beb478d0065`
+is retained only as stale pre-repair provenance; it predates the required
+`reward_components` rollout field. v203 trained nothing, ran no optimizer,
+consumed no slice 4, created no artifact or dataset, changed no runtime/default
+action selection, relaxed no gate, and authorized no promotion.
+
+The development tree used for the first canaries was dirty and unpinned at
+collection time. The compatible reviewed implementation is now preserved at
+source commit `6ce1f41eab74cc28d2b61811618bc267dfb1f46d`. It has a real 604-input
+public parameter-shared GRU actor-critic and recurrent IPPO path using real
+policy-induced simulator trajectories, GAE, full-sequence TBPTT, hard current
+action masks, and per-agent recurrent state; it has no heuristic fallback,
+seed/fixture/private-state input, or hardcoded learner action. Integrity repairs
+make whole PPO/auxiliary updates atomic, schedules single-use and role-clean,
+exact rows one-use/replay/model bound, shuffled labels public-context keyed,
+and validation/lockbox access fail closed. Branch labels remain one exact
+rollout on one sequential RNG tape, not expected causal effects; that statement
+describes the historical development canaries, not the later scale-v2
+multi-tape contract.
+
+The first shuffled run failed after `594.68` seconds and created no report
+because passive trajectory rows correctly lacked decision diagnostics while the
+collector required every row to contain a mapping. The retained log is
+`output/mind/mind-v3-public-recurrent-ippo-development-cf-shuffled-1777057840.failure.log`;
+its SHA256 is
+`ec88ed22bb20ed5252b20702f949dbcebf170dd38809ff38ed0aa3b490c072fe`;
+the repair explicitly aligns passive `None` diagnostics. The integrated repaired
+recurrent/counterfactual/comparison regression set passed `183` tests in
+`128.703` seconds; this was not the repository-wide suite and its exact command
+was not persisted. The repaired three-arm reports are:
+
+- base:
+  `output/mind/mind-v3-public-recurrent-ippo-development-cf-repaired-base-1777057840.json`,
+  digest `7f5702e3c007a85d433404d7a05daf5d5c05b5433c9e32983798cdffe5928fcc`,
+  `80` worlds / `81,130` transitions;
+- exact:
+  `output/mind/mind-v3-public-recurrent-ippo-development-cf-repaired-exact-1777057840.json`,
+  digest `4bf04d4f04cb7126d5c290fbb60c27b3e0d4ef1184265d539e02c5ec5d462ca7`,
+  `80` worlds / `81,059` transitions / `32` bundles / `96` rows / `8/8`
+  auxiliary steps accepted;
+- shuffled:
+  `output/mind/mind-v3-public-recurrent-ippo-development-cf-repaired-shuffled-1777057840.json`,
+  digest `b178fc116de68290cd75152d6ff75992e77d817f3b15d6f687d26670ee7e9689`,
+  `80` worlds / `82,670` transitions / `32` bundles / `96` rows / `8/8`
+  auxiliary steps accepted.
+
+The first comparison failed closed on a `broad` versus `broad_default`
+analyzer bug. Its log is
+`output/mind/mind-v3-public-recurrent-ippo-development-cf-repaired-three-arm-comparison-1777057840.failure.log`;
+its SHA256 is
+`e6fce915fcfe82bf5fd04149773ab2cf817e45fb689dde67d7eca09574a64869`.
+Analyzer v2 repaired context normalization, dormant-base configuration handling,
+bounded float32 KL roundoff, distinct evaluator/auxiliary hash contracts, and
+analyzer-only post-training provenance. The sealed comparison is
+`output/mind/mind-v3-public-recurrent-ippo-development-cf-repaired-three-arm-comparison-1777057840.json`,
+logical digest
+`24b6883965a9d802b92a9a5368589bc4bd3f35704951179a03c13a8d51293767`,
+file SHA256
+`4f50f8ce0acda6eff9d43e9c18339814e1c3e1d8e3520a6f6a59ec4c9429626b`.
+Exact labels improved sampled broad terminal alive by `+1.5833` versus base and
+`+0.9583` versus shuffled, but carrion terminal-survival and all argmax outcome
+contrasts were `0`. This remains one-learner, repeated-cell,
+collection-time-unpinned, cross-hash-unlinked development evidence: no artifact,
+campaign slice, runtime/promotion, validation, or lockbox action is authorized.
+Next evidence
+should use multiple independent branch RNG tapes, longer/terminal-aware targets,
+stronger preregistered KL-budget utilization, and multi-learner GPU replication,
+not hardcoded actions or gate relaxation.
+
+Repository-wide validation after these repairs passed `npm run sim:test` with
+`1,831` tests in `610.594` seconds against the `900`-second fast-suite budget.
+`npm run sim:golden:quick` also verified `seed7_ticks20` at SHA256
+`ac112d0c8d5da1287852072873237a6c17bb22b8814bb79e65f6a8b2aa032ac9`
+and `seed7_ticks100` at SHA256
+`057e844f50bd6f36c4c4e0cc1c31561703fc778b3a98592fec2c0012aa82f23c`.
+Ruff check, Ruff format check over the `33` new Python source/test files,
+`compileall`, and `git diff --check` passed. These checks validated the
+collection-time local tree; source preservation does not change the reports'
+noncandidate status.
+
+All `11` v203/recurrent-IPPO reports, analyses, and retained failure logs named
+by the current ledger are durable in
+`/Users/njm/evolution-sim-p0-backups/20260722T053556Z-v203-recurrent-ippo-development-evidence.tar.zst`
+and
+`gdrive:evolution-sim-backups/archives/20260722T053556Z-v203-recurrent-ippo-development-evidence.tar.zst`.
+The archive SHA256 is
+`fd97f087ffd9d0db643da61cb06596745ea7a90dc530959858c40c206a546427`.
+A local extraction compared byte-for-byte with all originals, and `rclone check`
+reported `0` differences and `2` matching files for the archive and its
+SHA256 sidecar. Evidence durability does not create a retained policy artifact
+or authorize runtime, validation, lockbox, promotion, or campaign-slice use.
+
+The first preregistered recurrent-IPPO scale campaign ran from exact source
+commit `1dce222c9ed4425f73881182c07c51412e81a831` and is now closed as
+terminal-incomplete negative evidence. Scale v1 durably produced `376/384`
+optimizer updates, `23/24` reports and CPU-reloadable frozen artifacts, and
+`92/96` exact CPU evaluations. The missing arm,
+`scale-v1-learner-1782198429-exact_counterfactual_auxiliary`, failed closed
+because continuation RNG was retaped before the focal turn and could kill the
+focal agent before its natural policy draw and action. That violated the paired
+exact-branch boundary. No aggregate report exists, so the partial matrix
+authorizes no acceptance, runtime integration, validation, lockbox access,
+promotion, or gate relaxation. The exact-source evidence is durable in
+`20260723T071132Z-recurrent-scale-1dce222c9ed4-incomplete-fail-closed.tar.zst`
+with archive SHA256
+`1c8111b61083d7d8df7fa83cb8d018207234b582be183233eeb391e8dc2eb1ca`;
+draft PR `#27` records the factual closeout.
+
+The current successor source is scale v2. This source revision contains no
+training or acceptance result; live campaign status belongs to the external
+content-addressed output, not to source documentation. Its repaired exact-branch
+contract replays the source checkpoint, all pre-focal turns, and the focal
+natural policy draw under source RNG, verifies the complete source decision
+projection, then retapes environment and policy continuation RNG at
+`after_focal_natural_policy_draw_before_action_resolution_v1`. It uses a fresh
+scale-v2 development seed registry disjoint from the base and scale-v1
+registries, exact v5 source rows, strict persisted-report schemas, pinned
+NVIDIA/runtime/topology provenance, and an output-root process lock, while
+validation and lockbox roles remain unavailable. Aggregation must freshly
+reload every frozen artifact on CPU, rerun both preregistered evaluation modes,
+and exactly reproduce the persisted outcomes and replay manifest before an arm
+is accepted. Every GPU campaign must use a
+committed, pushed, clean exact-SHA detached checkout and keep all launcher
+session, checkout, venv, protocol, preflight, log, run, and output names
+explicitly `scale-v2`; never resume a scale-v1 checkpoint under the v2 contract.
+
 Carrion lane campaign charter: once a transition-row dataset passes the v178
 default support thresholds, has explicit source-report and dataset digest pins,
 and all source, schema, leakage, identity, action-mask, observation, and target
@@ -709,13 +844,14 @@ v196 diagnosed the new blocker as low-specificity artifact coverage collapse to
 `eat` with miss abstention, not label imbalance alone and not a default `stay`
 fallback on misses. v197 blocked that known low-specificity override collapse
 but proved exact/high-specificity coverage was still too low for blind slice-4
-training. v198 then showed the remaining high-specificity blocker is not another
-low-specificity collapse: high-specificity live keys exist but are incomplete for
-current valid actions. The next same-lane route is
-`v199_high_specificity_action_complete_contract_audit_no_training`,
-not runtime integration, not promotion, not gate relaxation, not slice-4
-training, and not another old feasibility, counterfactual, IQL, scorer, blind
-support expansion, or v180/v186 rerun. The campaign budget remains 3/10.
+training. v198-v202 then closed the table-repair lane by routing to a public
+masked model-capacity scaffold. The current dated v203 report passes that
+scaffold as no-training evidence, but does not authorize a campaign slice. The
+repaired three-arm runs were collected as unpinned, noncandidate development
+canaries and also consume no campaign slice. Their source checkpoint and
+evidence archive are now durable, but they authorize no runtime integration,
+promotion, gate relaxation, direct slice-4 training, old feasibility/IQL/scorer
+rerun, or v180/v186 rerun. The campaign budget remains 3/10.
 
 Handoff constraint: pasted strategic ledgers and thread attachments are not
 durable repo context, and a fresh coder or remote trainer may not have access to

@@ -1,5 +1,6 @@
 # Optional Mind v2 ML training stack. Simulator runtime inference does not
 # import these packages; only trainers such as --trainer torch-actor-critic-bc do.
+numpy>=2,<3
 torch>=2.10,<3
 torchrl>=0.12,<1
 tensordict>=0.12,<1
