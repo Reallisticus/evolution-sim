@@ -37,6 +37,8 @@ if torch is not None:
         RecurrentCounterfactualCollectionConfig,
         RecurrentCounterfactualCollectionTask,
         collect_recurrent_counterfactual_bundles,
+        recurrent_counterfactual_collection_result_payload,
+        validate_recurrent_counterfactual_collection_result,
     )
     from evolution_sim.mind.recurrent_counterfactual_comparison import (
         BASE_ARM,
@@ -113,11 +115,66 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
                 gamma=0.99,
             ),
         )
+        parallel_task = RecurrentCounterfactualCollectionTask(
+            task_id="comparison-test-tape-parallel",
+            seed_role="curriculum",
+            scenario="carrion_only",
+            environment_seed=RECURRENT_SEED_REGISTRY["curriculum"][0],
+            branch_tick_candidates=(0,),
+            source_policy_sampling_identity=(
+                "comparison-test-tape-parallel-source-policy"
+            ),
+            branch_selection_identity=(
+                "comparison-test-tape-parallel-branch-selection"
+            ),
+        )
+        cls.parallel_collection = collect_recurrent_counterfactual_bundles(
+            model,
+            (parallel_task,),
+            artifact_digest="d" * 64,
+            config=RecurrentCounterfactualCollectionConfig(
+                horizons=(1, 2),
+                gamma=0.99,
+                continuation_tape_count=4,
+                terminal_target_world_tick=3,
+                uncertainty_penalty=0.25,
+            ),
+            workers=2,
+        )
 
     def setUp(self) -> None:
         self.base = _causal_report(BASE_ARM, collection=self.collection)
         self.exact = _causal_report(EXACT_ARM, collection=self.collection)
         self.shuffled = _causal_report(SHUFFLED_ARM, collection=self.collection)
+
+    def test_collection_reconstruction_preserves_legacy_and_parallel_contracts(
+        self,
+    ) -> None:
+        legacy_payload = recurrent_counterfactual_collection_result_payload(
+            self.collection
+        )
+        self.assertNotIn("execution_contract_version", legacy_payload)
+        self.assertNotIn("execution_compute", legacy_payload)
+        reconstructed_legacy = comparison_module._reconstruct_collection_result(
+            legacy_payload,
+            field="legacy_collection",
+        )
+        validate_recurrent_counterfactual_collection_result(reconstructed_legacy)
+        self.assertEqual(reconstructed_legacy, self.collection)
+
+        parallel_payload = recurrent_counterfactual_collection_result_payload(
+            self.parallel_collection
+        )
+        self.assertIn("execution_contract_version", parallel_payload)
+        self.assertIn("execution_compute", parallel_payload)
+        reconstructed_parallel = comparison_module._reconstruct_collection_result(
+            parallel_payload,
+            field="parallel_collection",
+        )
+        validate_recurrent_counterfactual_collection_result(
+            reconstructed_parallel
+        )
+        self.assertEqual(reconstructed_parallel, self.parallel_collection)
 
     def test_valid_three_arm_analysis_is_stable_and_stratified(self) -> None:
         first = analyze_recurrent_counterfactual_three_arm(

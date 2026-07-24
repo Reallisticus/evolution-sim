@@ -21,6 +21,7 @@ from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
     recurrent_counterfactual_auxiliary_bundle_digest,
 )
 from evolution_sim.mind.recurrent_counterfactual_collection import (
+    RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
     RecurrentCounterfactualCollectionBundle,
     RecurrentCounterfactualCollectionConfig,
     recurrent_counterfactual_collection_config_payload,
@@ -1432,6 +1433,22 @@ def _reconstruct_collection_result(
                 field=f"{field}.config.horizons",
             ),
             gamma=_finite_number(config_payload.get("gamma"), field=f"{field}.gamma"),
+            continuation_tape_count=_positive_int(
+                config_payload.get("continuation_tape_count", 1),
+                field=f"{field}.config.continuation_tape_count",
+            ),
+            terminal_target_world_tick=(
+                None
+                if config_payload.get("terminal_target_world_tick") is None
+                else _positive_int(
+                    config_payload.get("terminal_target_world_tick"),
+                    field=f"{field}.config.terminal_target_world_tick",
+                )
+            ),
+            uncertainty_penalty=_finite_number(
+                config_payload.get("uncertainty_penalty", 0.0),
+                field=f"{field}.config.uncertainty_penalty",
+            ),
         )
         bundles = []
         for index, bundle_value in enumerate(
@@ -1472,6 +1489,17 @@ def _reconstruct_collection_result(
                 branch_selection_seed=_nonnegative_int(
                     task_payload.get("branch_selection_seed"),
                     field=f"{field}.bundles[{index}].branch_selection_seed",
+                ),
+                branch_tick_stratum_index=(
+                    None
+                    if task_payload.get("branch_tick_stratum_index") is None
+                    else _nonnegative_int(
+                        task_payload.get("branch_tick_stratum_index"),
+                        field=(
+                            f"{field}.bundles[{index}]."
+                            "branch_tick_stratum_index"
+                        ),
+                    )
                 ),
             )
             rows = tuple(
@@ -1532,8 +1560,59 @@ def _reconstruct_collection_result(
                         bundle.get("exact_digest"),
                         field=f"{field}.bundles[{index}].exact_digest",
                     ),
+                    aggregate_rows=(
+                        None
+                        if bundle.get("aggregate_rows") is None
+                        else tuple(
+                            copy.deepcopy(
+                                _mapping(
+                                    row,
+                                    field=(
+                                        f"{field}.bundles[{index}].aggregate_row"
+                                    ),
+                                )
+                            )
+                            for row in _sequence(
+                                bundle.get("aggregate_rows"),
+                                field=f"{field}.bundles[{index}].aggregate_rows",
+                            )
+                        )
+                    ),
+                    terminal_target=(
+                        None
+                        if bundle.get("terminal_target") is None
+                        else copy.deepcopy(
+                            dict(
+                                _mapping(
+                                    bundle.get("terminal_target"),
+                                    field=(
+                                        f"{field}.bundles[{index}].terminal_target"
+                                    ),
+                                )
+                            )
+                        )
+                    ),
+                    multi_tape_compute=(
+                        None
+                        if bundle.get("multi_tape_compute") is None
+                        else {
+                            str(key): _nonnegative_int(
+                                item,
+                                field=(
+                                    f"{field}.bundles[{index}].multi_tape_compute"
+                                ),
+                            )
+                            for key, item in _mapping(
+                                bundle.get("multi_tape_compute"),
+                                field=(
+                                    f"{field}.bundles[{index}].multi_tape_compute"
+                                ),
+                            ).items()
+                        }
+                    ),
                 )
             )
+        execution_compute_payload = value.get("execution_compute")
         return RecurrentCounterfactualCollectionResult(
             contract_version=str(value.get("contract_version")),
             source_model_state_sha256=_sha256(
@@ -1585,6 +1664,26 @@ def _reconstruct_collection_result(
             exact_digest=_sha256(
                 value.get("exact_digest"),
                 field=f"{field}.exact_digest",
+            ),
+            execution_contract_version=str(
+                value.get(
+                    "execution_contract_version",
+                    RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
+                )
+            ),
+            execution_compute=(
+                None
+                if execution_compute_payload is None
+                else {
+                    str(key): _nonnegative_int(
+                        item,
+                        field=f"{field}.execution_compute",
+                    )
+                    for key, item in _mapping(
+                        execution_compute_payload,
+                        field=f"{field}.execution_compute",
+                    ).items()
+                }
             ),
         )
     except (TypeError, ValueError, RecurrentCounterfactualCollectionError) as error:

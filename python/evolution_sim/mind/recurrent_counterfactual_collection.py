@@ -28,6 +28,8 @@ from evolution_sim.mind.recurrent_counterfactual_branch import (
     RECURRENT_COUNTERFACTUAL_SEED_ROLES,
     RecurrentCounterfactualBranchError,
     build_recurrent_counterfactual_nested_horizon_materialization,
+    build_recurrent_counterfactual_nested_horizon_tape_chunk_materialization,
+    merge_recurrent_counterfactual_nested_horizon_tape_chunks,
     validate_recurrent_counterfactual_aggregate_row,
     validate_recurrent_counterfactual_branch_row,
 )
@@ -48,6 +50,12 @@ RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION = (
 RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION = (
     "mind_v3_recurrent_nested_counterfactual_multi_tape_collection_v3"
 )
+RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION = (
+    "mind_v3_recurrent_counterfactual_bundle_parallel_execution_v1"
+)
+RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION = (
+    "mind_v3_recurrent_counterfactual_tape_parallel_execution_v2"
+)
 RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE = (
     "mind_v3_recurrent_counterfactual_source_policy_seed_v1"
 )
@@ -57,7 +65,22 @@ RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE = (
 RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD = "spawn"
 RECURRENT_COUNTERFACTUAL_COLLECTION_TORCH_THREADS = 1
 MAX_RECURRENT_COUNTERFACTUAL_COLLECTION_WORKERS = 64
+MIN_RECURRENT_COUNTERFACTUAL_TAPES_PER_CHUNK = 2
 MAX_RECURRENT_COUNTERFACTUAL_SEED = 2**63 - 1
+
+_TAPE_PARALLEL_EXECUTION_COMPUTE_FIELDS = {
+    "tape_chunk_work_item_count",
+    "split_bundle_count",
+    "maximum_chunks_per_bundle",
+    "source_tick_executions",
+    "canonical_source_tick_executions",
+    "duplicated_source_tick_executions",
+    "legacy_actual_continuation_tick_count",
+    "canonical_legacy_actual_continuation_tick_count",
+    "duplicated_legacy_actual_continuation_tick_count",
+    "multi_tape_actual_continuation_tick_count",
+    "total_actual_simulator_tick_executions",
+}
 
 _SELECTION_BASE_FIELDS = {
     "requested_branch_ticks",
@@ -284,6 +307,13 @@ class RecurrentCounterfactualCollectionTask:
 
 
 @dataclass(frozen=True, slots=True)
+class _RecurrentCounterfactualTapeChunkTask:
+    task_index: int
+    task: RecurrentCounterfactualCollectionTask
+    tape_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RecurrentCounterfactualCollectionConfig:
     horizons: tuple[int, ...] = (8, 32, 64)
     gamma: float = 0.99
@@ -365,6 +395,10 @@ class RecurrentCounterfactualCollectionResult:
     runtime_action_selection_changed: bool
     promotion_authorized: bool
     exact_digest: str
+    execution_contract_version: str = (
+        RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION
+    )
+    execution_compute: dict[str, int] | None = None
 
 
 def collect_recurrent_counterfactual_bundles(
@@ -397,7 +431,18 @@ def collect_recurrent_counterfactual_bundles(
             "frozen CPU source model digest drifted"
         )
 
-    if worker_count == 1 or len(task_tuple) == 1:
+    workers_resolved = _resolved_worker_count(
+        workers=worker_count,
+        task_count=len(task_tuple),
+        config=resolved_config,
+    )
+    tape_parallel_execution = _tape_parallelism_used(
+        workers=worker_count,
+        task_count=len(task_tuple),
+        config=resolved_config,
+    )
+    execution_compute: dict[str, int] | None = None
+    if worker_count == 1:
         materializations = tuple(
             _collect_one(
                 behavior_model,
@@ -406,6 +451,25 @@ def collect_recurrent_counterfactual_bundles(
                 config=resolved_config,
             )
             for task in task_tuple
+        )
+    elif tape_parallel_execution:
+        materializations, execution_compute = (
+            _collect_parallel_tape_chunks(
+                behavior_model,
+                task_tuple,
+                artifact_digest=resolved_artifact,
+                config=resolved_config,
+                workers=worker_count,
+            )
+        )
+    elif len(task_tuple) == 1:
+        materializations = (
+            _collect_one(
+                behavior_model,
+                task_tuple[0],
+                artifact_digest=resolved_artifact,
+                config=resolved_config,
+            ),
         )
     else:
         materializations = _collect_parallel(
@@ -429,6 +493,11 @@ def collect_recurrent_counterfactual_bundles(
     )
     aggregate_compute = _aggregate_compute(bundles)
     contract_version = _collection_contract_version(resolved_config)
+    execution_contract_version = (
+        RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+        if tape_parallel_execution
+        else RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION
+    )
     result_without_digest = {
         "contract_version": contract_version,
         "source_model_state_sha256": source_model_digest,
@@ -436,7 +505,7 @@ def collect_recurrent_counterfactual_bundles(
         "config": recurrent_counterfactual_collection_config_payload(resolved_config),
         "bundles": [_bundle_payload(bundle) for bundle in bundles],
         "workers_requested": worker_count,
-        "workers_resolved": min(worker_count, len(task_tuple)),
+        "workers_resolved": workers_resolved,
         "worker_start_method": RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD,
         "torch_threads_per_worker": RECURRENT_COUNTERFACTUAL_COLLECTION_TORCH_THREADS,
         "ordered_merge": True,
@@ -445,6 +514,16 @@ def collect_recurrent_counterfactual_bundles(
         "runtime_action_selection_changed": False,
         "promotion_authorized": False,
     }
+    if (
+        execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+    ):
+        if execution_compute is None:
+            raise AssertionError("tape-parallel execution compute was not recorded")
+        result_without_digest["execution_contract_version"] = (
+            execution_contract_version
+        )
+        result_without_digest["execution_compute"] = execution_compute
     result = RecurrentCounterfactualCollectionResult(
         contract_version=contract_version,
         source_model_state_sha256=source_model_digest,
@@ -452,7 +531,7 @@ def collect_recurrent_counterfactual_bundles(
         config=resolved_config,
         bundles=bundles,
         workers_requested=worker_count,
-        workers_resolved=min(worker_count, len(task_tuple)),
+        workers_resolved=workers_resolved,
         worker_start_method=RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD,
         torch_threads_per_worker=RECURRENT_COUNTERFACTUAL_COLLECTION_TORCH_THREADS,
         ordered_merge=True,
@@ -461,6 +540,8 @@ def collect_recurrent_counterfactual_bundles(
         runtime_action_selection_changed=False,
         promotion_authorized=False,
         exact_digest=stable_payload_digest(result_without_digest),
+        execution_contract_version=execution_contract_version,
+        execution_compute=execution_compute,
     )
     validate_recurrent_counterfactual_collection_result(
         result,
@@ -491,6 +572,12 @@ def recurrent_counterfactual_collection_result_payload(
         "promotion_authorized": result.promotion_authorized,
         "exact_digest": result.exact_digest,
     }
+    if (
+        result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+    ):
+        payload["execution_contract_version"] = result.execution_contract_version
+        payload["execution_compute"] = copy.deepcopy(result.execution_compute)
     return copy.deepcopy(payload)
 
 
@@ -522,6 +609,32 @@ def validate_recurrent_counterfactual_collection_result(
     if result.contract_version != _collection_contract_version(result.config):
         raise RecurrentCounterfactualCollectionError(
             "collection contract version drifted"
+        )
+    if result.execution_contract_version not in {
+        RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
+        RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION,
+    }:
+        raise RecurrentCounterfactualCollectionError(
+            "collection execution contract version drifted"
+        )
+    if (
+        result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+        and (
+            not result.config.multi_tape_enabled
+            or result.config.continuation_tape_count <= 1
+        )
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution requires multiple continuation tapes"
+        )
+    if (
+        result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION
+        and result.execution_compute is not None
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "legacy execution cannot contain tape-parallel compute"
         )
     _sha256(result.source_model_state_sha256, field="source model digest")
     _sha256(result.source_artifact_digest, field="source artifact digest")
@@ -609,11 +722,37 @@ def validate_recurrent_counterfactual_collection_result(
         result.workers_resolved,
         field="workers_resolved",
     )
-    if workers_resolved != min(
-        result.workers_requested,
-        len(result.bundles),
-    ):
+    expected_workers_resolved = (
+        _resolved_worker_count(
+            workers=result.workers_requested,
+            task_count=len(result.bundles),
+            config=result.config,
+        )
+        if result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+        else min(result.workers_requested, len(result.bundles))
+    )
+    if workers_resolved != expected_workers_resolved:
         raise RecurrentCounterfactualCollectionError("workers_resolved drifted")
+    if (
+        result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+    ):
+        if not _tape_parallelism_used(
+            workers=result.workers_requested,
+            task_count=len(result.bundles),
+            config=result.config,
+        ):
+            raise RecurrentCounterfactualCollectionError(
+                "tape-parallel execution metadata does not describe the actual path"
+            )
+        _validate_tape_parallel_execution_compute(
+            result.execution_compute,
+            tasks=validated_tasks,
+            config=result.config,
+            bundles=result.bundles,
+            workers=result.workers_requested,
+        )
     torch_threads_per_worker = _positive_int(
         result.torch_threads_per_worker,
         field="torch_threads_per_worker",
@@ -645,7 +784,7 @@ def validate_recurrent_counterfactual_collection_result(
 def _result_payload_without_validation(
     result: RecurrentCounterfactualCollectionResult,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "contract_version": result.contract_version,
         "source_model_state_sha256": result.source_model_state_sha256,
         "source_artifact_digest": result.source_artifact_digest,
@@ -662,6 +801,13 @@ def _result_payload_without_validation(
         "promotion_authorized": result.promotion_authorized,
         "exact_digest": result.exact_digest,
     }
+    if (
+        result.execution_contract_version
+        == RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION
+    ):
+        payload["execution_contract_version"] = result.execution_contract_version
+        payload["execution_compute"] = copy.deepcopy(result.execution_compute)
+    return payload
 
 
 def _collection_contract_version(
@@ -788,6 +934,245 @@ def _collect_parallel(
     return results
 
 
+def _collect_parallel_tape_chunks(
+    model: PublicRecurrentActorCritic,
+    tasks: tuple[RecurrentCounterfactualCollectionTask, ...],
+    *,
+    artifact_digest: str,
+    config: RecurrentCounterfactualCollectionConfig,
+    workers: int,
+) -> tuple[tuple[dict[str, object], ...], dict[str, int]]:
+    if not config.multi_tape_enabled or config.continuation_tape_count <= 1:
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel collection requires multiple continuation tapes"
+        )
+    work_items = _tape_chunk_work_items(
+        tasks,
+        tape_count=config.continuation_tape_count,
+        workers=workers,
+    )
+    if len(work_items) <= len(tasks):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel collection requires at least one split bundle"
+        )
+    model_state = {
+        name: tensor.detach().cpu().clone()
+        for name, tensor in model.state_dict().items()
+    }
+    context = mp.get_context(RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD)
+    try:
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(work_items)),
+            mp_context=context,
+            initializer=_initialize_worker,
+            initargs=(model.config, model_state, artifact_digest, config),
+        ) as executor:
+            chunk_materializations = tuple(
+                executor.map(_collect_tape_chunk_worker, work_items)
+            )
+    except Exception as error:
+        raise RecurrentCounterfactualCollectionError(
+            "process-parallel counterfactual tape collection failed closed"
+        ) from error
+    if len(chunk_materializations) != len(work_items):
+        raise RecurrentCounterfactualCollectionError(
+            "parallel counterfactual tape result count drifted"
+        )
+    grouped: list[list[Mapping[str, object]]] = [[] for _ in tasks]
+    for work_item, materialization in zip(
+        work_items,
+        chunk_materializations,
+        strict=True,
+    ):
+        grouped[work_item.task_index].append(materialization)
+    execution_compute = _tape_parallel_execution_compute(grouped)
+    merged: list[dict[str, object]] = []
+    for task, materializations in zip(tasks, grouped, strict=True):
+        try:
+            merged.append(
+                merge_recurrent_counterfactual_nested_horizon_tape_chunks(
+                    materializations,
+                    continuation_tape_count=config.continuation_tape_count,
+                    continuation_tape_identity=f"{task.task_id}:continuation-tapes",
+                    terminal_target_world_tick=config.terminal_target_world_tick,
+                    uncertainty_penalty=config.uncertainty_penalty,
+                )
+            )
+        except RecurrentCounterfactualBranchError as error:
+            raise RecurrentCounterfactualCollectionError(
+                f"counterfactual task {task.task_id!r} failed ordered tape merge"
+            ) from error
+    return tuple(merged), execution_compute
+
+
+def _tape_chunk_work_items(
+    tasks: tuple[RecurrentCounterfactualCollectionTask, ...],
+    *,
+    tape_count: int,
+    workers: int,
+) -> tuple[_RecurrentCounterfactualTapeChunkTask, ...]:
+    resolved_tape_count = _positive_int(tape_count, field="tape_count")
+    resolved_workers = _worker_count(workers)
+    maximum_chunks_per_task = _maximum_tape_chunks_per_task(
+        resolved_tape_count
+    )
+    target_chunk_count = min(
+        resolved_workers,
+        len(tasks) * maximum_chunks_per_task,
+    )
+    chunk_counts = [1 for _ in tasks]
+    extra_chunks = max(0, target_chunk_count - len(tasks))
+    while extra_chunks > 0:
+        progressed = False
+        for task_index in range(len(tasks)):
+            if chunk_counts[task_index] >= maximum_chunks_per_task:
+                continue
+            chunk_counts[task_index] += 1
+            extra_chunks -= 1
+            progressed = True
+            if extra_chunks == 0:
+                break
+        if not progressed:
+            raise AssertionError("tape chunk allocation could not make progress")
+    work_items: list[_RecurrentCounterfactualTapeChunkTask] = []
+    for task_index, (task, chunk_count) in enumerate(
+        zip(tasks, chunk_counts, strict=True)
+    ):
+        base_size, remainder = divmod(resolved_tape_count, chunk_count)
+        start = 0
+        for chunk_index in range(chunk_count):
+            size = base_size + int(chunk_index < remainder)
+            stop = start + size
+            work_items.append(
+                _RecurrentCounterfactualTapeChunkTask(
+                    task_index=task_index,
+                    task=task,
+                    tape_indices=tuple(range(start, stop)),
+                )
+            )
+            start = stop
+        if start != resolved_tape_count:
+            raise AssertionError("tape chunk allocation did not cover all tapes")
+        if chunk_count > 1 and any(
+            len(work_item.tape_indices)
+            < MIN_RECURRENT_COUNTERFACTUAL_TAPES_PER_CHUNK
+            for work_item in work_items
+            if work_item.task_index == task_index
+        ):
+            raise AssertionError("tape chunk allocation created an undersized chunk")
+    return tuple(work_items)
+
+
+def _maximum_tape_chunks_per_task(tape_count: int) -> int:
+    resolved_tape_count = _positive_int(tape_count, field="tape_count")
+    return max(
+        1,
+        resolved_tape_count // MIN_RECURRENT_COUNTERFACTUAL_TAPES_PER_CHUNK,
+    )
+
+
+def _tape_parallelism_used(
+    *,
+    workers: int,
+    task_count: int,
+    config: RecurrentCounterfactualCollectionConfig,
+) -> bool:
+    resolved_workers = _worker_count(workers)
+    resolved_task_count = _positive_int(task_count, field="task_count")
+    return (
+        config.multi_tape_enabled
+        and config.continuation_tape_count > 1
+        and resolved_workers > resolved_task_count
+        and _maximum_tape_chunks_per_task(config.continuation_tape_count) > 1
+    )
+
+
+def _tape_parallel_execution_compute(
+    grouped_materializations: Sequence[Sequence[Mapping[str, object]]],
+) -> dict[str, int]:
+    if not grouped_materializations or any(
+        not materializations for materializations in grouped_materializations
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution compute requires every bundle chunk group"
+        )
+    chunk_count = sum(
+        len(materializations) for materializations in grouped_materializations
+    )
+    split_bundle_count = sum(
+        int(len(materializations) > 1)
+        for materializations in grouped_materializations
+    )
+    maximum_chunks_per_bundle = max(
+        len(materializations) for materializations in grouped_materializations
+    )
+    source_tick_executions = 0
+    canonical_source_tick_executions = 0
+    legacy_actual_continuation_tick_count = 0
+    canonical_legacy_actual_continuation_tick_count = 0
+    multi_tape_actual_continuation_tick_count = 0
+    for materializations in grouped_materializations:
+        for materialization_index, materialization in enumerate(materializations):
+            compute = _mapping(
+                materialization.get("compute"),
+                field="tape chunk source compute",
+            )
+            source_ticks = _nonnegative_int(
+                compute.get("source_tick_executions"),
+                field="tape chunk source ticks",
+            )
+            legacy_ticks = _nonnegative_int(
+                compute.get("actual_continuation_tick_count"),
+                field="tape chunk legacy continuation ticks",
+            )
+            chunk = _mapping(
+                materialization.get("multi_tape_chunk"),
+                field="tape chunk evidence",
+            )
+            tape_ticks = _nonnegative_int(
+                chunk.get("actual_continuation_tick_count"),
+                field="tape chunk continuation ticks",
+            )
+            source_tick_executions += source_ticks
+            legacy_actual_continuation_tick_count += legacy_ticks
+            multi_tape_actual_continuation_tick_count += tape_ticks
+            if materialization_index == 0:
+                canonical_source_tick_executions += source_ticks
+                canonical_legacy_actual_continuation_tick_count += legacy_ticks
+    duplicated_source_tick_executions = (
+        source_tick_executions - canonical_source_tick_executions
+    )
+    duplicated_legacy_actual_continuation_tick_count = (
+        legacy_actual_continuation_tick_count
+        - canonical_legacy_actual_continuation_tick_count
+    )
+    return {
+        "tape_chunk_work_item_count": chunk_count,
+        "split_bundle_count": split_bundle_count,
+        "maximum_chunks_per_bundle": maximum_chunks_per_bundle,
+        "source_tick_executions": source_tick_executions,
+        "canonical_source_tick_executions": canonical_source_tick_executions,
+        "duplicated_source_tick_executions": duplicated_source_tick_executions,
+        "legacy_actual_continuation_tick_count": (
+            legacy_actual_continuation_tick_count
+        ),
+        "canonical_legacy_actual_continuation_tick_count": (
+            canonical_legacy_actual_continuation_tick_count
+        ),
+        "duplicated_legacy_actual_continuation_tick_count": (
+            duplicated_legacy_actual_continuation_tick_count
+        ),
+        "multi_tape_actual_continuation_tick_count": (
+            multi_tape_actual_continuation_tick_count
+        ),
+        "total_actual_simulator_tick_executions": (
+            source_tick_executions
+            + legacy_actual_continuation_tick_count
+            + multi_tape_actual_continuation_tick_count
+        ),
+    }
+
+
 def _initialize_worker(
     model_config: RecurrentActorCriticConfig,
     model_state: dict[str, torch.Tensor],
@@ -829,6 +1214,55 @@ def _collect_worker(
         artifact_digest=_WORKER_ARTIFACT_DIGEST,
         config=_WORKER_CONFIG,
     )
+
+
+def _collect_tape_chunk_worker(
+    work_item: _RecurrentCounterfactualTapeChunkTask,
+) -> dict[str, object]:
+    if (
+        _WORKER_MODEL is None
+        or _WORKER_ARTIFACT_DIGEST is None
+        or _WORKER_CONFIG is None
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "counterfactual tape worker was not initialized"
+        )
+    task = work_item.task
+    config = _WORKER_CONFIG
+    try:
+        return (
+            build_recurrent_counterfactual_nested_horizon_tape_chunk_materialization(
+                _WORKER_MODEL,
+                artifact_digest=_WORKER_ARTIFACT_DIGEST,
+                seed_role=task.seed_role,
+                environment_seed=task.environment_seed,
+                scenario=task.scenario,
+                branch_tick_candidates=task.branch_tick_candidates,
+                horizons=config.horizons,
+                source_policy_sampling_seed=_sampling_seed(
+                    task.source_policy_sampling_seed,
+                    field="source policy sampling seed",
+                ),
+                branch_selection_seed=_sampling_seed(
+                    task.branch_selection_seed,
+                    field="branch selection seed",
+                ),
+                branch_tick_stratum_index=task.branch_tick_stratum_index,
+                gamma=config.gamma,
+                continuation_tape_count=config.continuation_tape_count,
+                continuation_tape_identity=(
+                    f"{task.task_id}:continuation-tapes"
+                ),
+                continuation_tape_indices=work_item.tape_indices,
+                terminal_target_world_tick=config.terminal_target_world_tick,
+                uncertainty_penalty=config.uncertainty_penalty,
+            )
+        )
+    except RecurrentCounterfactualBranchError as error:
+        raise RecurrentCounterfactualCollectionError(
+            f"counterfactual task {task.task_id!r} tape chunk "
+            f"{work_item.tape_indices!r} failed exact collection"
+        ) from error
 
 
 def _bundle_from_materialization(
@@ -2108,6 +2542,114 @@ def _worker_count(value: object) -> int:
     return parsed
 
 
+def _resolved_worker_count(
+    *,
+    workers: int,
+    task_count: int,
+    config: RecurrentCounterfactualCollectionConfig,
+) -> int:
+    resolved_workers = _worker_count(workers)
+    resolved_task_count = _positive_int(task_count, field="task_count")
+    work_item_count = resolved_task_count
+    if _tape_parallelism_used(
+        workers=resolved_workers,
+        task_count=resolved_task_count,
+        config=config,
+    ):
+        work_item_count *= _maximum_tape_chunks_per_task(
+            config.continuation_tape_count
+        )
+    return min(resolved_workers, work_item_count)
+
+
+def _validate_tape_parallel_execution_compute(
+    value: object,
+    *,
+    tasks: tuple[RecurrentCounterfactualCollectionTask, ...],
+    config: RecurrentCounterfactualCollectionConfig,
+    bundles: tuple[RecurrentCounterfactualCollectionBundle, ...],
+    workers: int,
+) -> None:
+    compute = _mapping(value, field="tape-parallel execution compute")
+    if set(compute) != _TAPE_PARALLEL_EXECUTION_COMPUTE_FIELDS:
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution compute field set drifted"
+        )
+    parsed = {
+        field: _nonnegative_int(
+            compute.get(field),
+            field=f"tape-parallel execution compute {field}",
+        )
+        for field in _TAPE_PARALLEL_EXECUTION_COMPUTE_FIELDS
+    }
+    work_items = _tape_chunk_work_items(
+        tasks,
+        tape_count=config.continuation_tape_count,
+        workers=workers,
+    )
+    chunks_per_bundle = [
+        sum(int(work_item.task_index == task_index) for work_item in work_items)
+        for task_index in range(len(tasks))
+    ]
+    expected_canonical_source_ticks = sum(
+        int(bundle.compute["source_tick_executions"]) for bundle in bundles
+    )
+    expected_canonical_legacy_ticks = sum(
+        int(bundle.compute["actual_continuation_tick_count"])
+        for bundle in bundles
+    )
+    expected_multi_tape_ticks = sum(
+        int(
+            _mapping(
+                bundle.multi_tape_compute,
+                field="bundle multi-tape compute",
+            )["actual_continuation_tick_count"]
+        )
+        for bundle in bundles
+    )
+    expected = {
+        "tape_chunk_work_item_count": len(work_items),
+        "split_bundle_count": sum(int(count > 1) for count in chunks_per_bundle),
+        "maximum_chunks_per_bundle": max(chunks_per_bundle),
+        "canonical_source_tick_executions": expected_canonical_source_ticks,
+        "canonical_legacy_actual_continuation_tick_count": (
+            expected_canonical_legacy_ticks
+        ),
+        "multi_tape_actual_continuation_tick_count": expected_multi_tape_ticks,
+    }
+    if any(
+        parsed[field] != expected_value
+        for field, expected_value in expected.items()
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution compute does not match canonical evidence"
+        )
+    if (
+        parsed["source_tick_executions"]
+        - parsed["canonical_source_tick_executions"]
+        != parsed["duplicated_source_tick_executions"]
+        or parsed["legacy_actual_continuation_tick_count"]
+        - parsed["canonical_legacy_actual_continuation_tick_count"]
+        != parsed["duplicated_legacy_actual_continuation_tick_count"]
+        or parsed["total_actual_simulator_tick_executions"]
+        != (
+            parsed["source_tick_executions"]
+            + parsed["legacy_actual_continuation_tick_count"]
+            + parsed["multi_tape_actual_continuation_tick_count"]
+        )
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution compute arithmetic drifted"
+        )
+    if (
+        parsed["duplicated_source_tick_executions"] <= 0
+        or parsed["duplicated_legacy_actual_continuation_tick_count"] <= 0
+    ):
+        raise RecurrentCounterfactualCollectionError(
+            "tape-parallel execution must disclose duplicated source and legacy work"
+        )
+
+
 def _positive_seed(value: object, *, field: str) -> int:
     parsed = _sampling_seed(value, field=field)
     if parsed <= 0:
@@ -2181,11 +2723,14 @@ def _mapping(value: object, *, field: str) -> Mapping[str, object]:
 
 __all__ = [
     "MAX_RECURRENT_COUNTERFACTUAL_COLLECTION_WORKERS",
+    "MIN_RECURRENT_COUNTERFACTUAL_TAPES_PER_CHUNK",
     "RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_CONTRACT_VERSION",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_START_METHOD",
+    "RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION",
     "RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION",
     "RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE",
+    "RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION",
     "RecurrentCounterfactualCollectionBundle",
     "RecurrentCounterfactualCollectionConfig",
     "RecurrentCounterfactualCollectionError",

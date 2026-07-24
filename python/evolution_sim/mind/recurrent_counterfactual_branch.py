@@ -75,6 +75,9 @@ RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE = (
 RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY = (
     "after_focal_natural_policy_draw_before_action_resolution_v1"
 )
+RECURRENT_COUNTERFACTUAL_TAPE_CHUNK_SCHEMA_VERSION = (
+    "mind_v3_recurrent_counterfactual_tape_chunk_v1"
+)
 _DECISION_BOUNDARY_PROVENANCE_DIGEST_FIELDS = (
     "pre_boundary_environment_rng_state_sha256",
     "pre_boundary_policy_sampling_state_sha256",
@@ -1105,6 +1108,96 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     terminal_target_world_tick: int | None = None,
     uncertainty_penalty: float = 0.0,
 ) -> dict[str, object]:
+    return _build_recurrent_counterfactual_nested_horizon_materialization(
+        model,
+        artifact_digest=artifact_digest,
+        seed_role=seed_role,
+        environment_seed=environment_seed,
+        scenario=scenario,
+        branch_tick_candidates=branch_tick_candidates,
+        horizons=horizons,
+        source_policy_sampling_seed=source_policy_sampling_seed,
+        branch_selection_seed=branch_selection_seed,
+        branch_tick_stratum_index=branch_tick_stratum_index,
+        gamma=gamma,
+        continuation_tape_count=continuation_tape_count,
+        continuation_tape_identity=continuation_tape_identity,
+        terminal_target_world_tick=terminal_target_world_tick,
+        uncertainty_penalty=uncertainty_penalty,
+        continuation_tape_indices=None,
+        defer_multi_tape_assembly=False,
+    )
+
+
+def build_recurrent_counterfactual_nested_horizon_tape_chunk_materialization(
+    model: PublicRecurrentActorCritic,
+    *,
+    artifact_digest: str,
+    seed_role: str,
+    environment_seed: int,
+    scenario: str,
+    branch_tick_candidates: Sequence[int],
+    horizons: Sequence[int],
+    source_policy_sampling_seed: int,
+    branch_selection_seed: int,
+    continuation_tape_count: int,
+    continuation_tape_identity: str,
+    continuation_tape_indices: Sequence[int],
+    branch_tick_stratum_index: int | None = None,
+    gamma: float = 0.99,
+    terminal_target_world_tick: int | None = None,
+    uncertainty_penalty: float = 0.0,
+) -> dict[str, object]:
+    """Materialize an ephemeral, ordered subset of continuation tapes.
+
+    Tape chunks are process-transfer work products only. They contain no
+    serialized private checkpoint and cannot be consumed as aggregate evidence
+    until :func:`merge_recurrent_counterfactual_nested_horizon_tape_chunks`
+    proves complete, canonical tape coverage and assembles the normal evidence
+    rows.
+    """
+
+    return _build_recurrent_counterfactual_nested_horizon_materialization(
+        model,
+        artifact_digest=artifact_digest,
+        seed_role=seed_role,
+        environment_seed=environment_seed,
+        scenario=scenario,
+        branch_tick_candidates=branch_tick_candidates,
+        horizons=horizons,
+        source_policy_sampling_seed=source_policy_sampling_seed,
+        branch_selection_seed=branch_selection_seed,
+        branch_tick_stratum_index=branch_tick_stratum_index,
+        gamma=gamma,
+        continuation_tape_count=continuation_tape_count,
+        continuation_tape_identity=continuation_tape_identity,
+        terminal_target_world_tick=terminal_target_world_tick,
+        uncertainty_penalty=uncertainty_penalty,
+        continuation_tape_indices=continuation_tape_indices,
+        defer_multi_tape_assembly=True,
+    )
+
+
+def _build_recurrent_counterfactual_nested_horizon_materialization(
+    model: PublicRecurrentActorCritic,
+    *,
+    artifact_digest: str,
+    seed_role: str,
+    environment_seed: int,
+    scenario: str,
+    branch_tick_candidates: Sequence[int],
+    horizons: Sequence[int],
+    source_policy_sampling_seed: int,
+    branch_selection_seed: int,
+    branch_tick_stratum_index: int | None,
+    gamma: float,
+    continuation_tape_count: int,
+    continuation_tape_identity: str | None,
+    terminal_target_world_tick: int | None,
+    uncertainty_penalty: float,
+    continuation_tape_indices: Sequence[int] | None,
+    defer_multi_tape_assembly: bool,
+) -> dict[str, object]:
     """Materialize one source checkpoint and derive exact nested horizon rows.
 
     This is an engineering primitive for post-PPO diagnostics/auxiliary data.
@@ -1149,6 +1242,18 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         continuation_tape_count,
         field="continuation_tape_count",
     )
+    resolved_tape_indices = (
+        None
+        if continuation_tape_indices is None
+        else _validated_continuation_tape_indices(
+            continuation_tape_indices,
+            tape_count=resolved_tape_count,
+        )
+    )
+    if defer_multi_tape_assembly != (resolved_tape_indices is not None):
+        raise RecurrentCounterfactualBranchError(
+            "deferred multi-tape assembly requires explicit tape indices"
+        )
     resolved_tape_identity = (
         None
         if continuation_tape_identity is None
@@ -1184,6 +1289,10 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
         raise RecurrentCounterfactualBranchError(
             "multi-tape or terminal aggregate evidence requires "
             "continuation_tape_identity"
+        )
+    if defer_multi_tape_assembly and resolved_tape_identity is None:
+        raise RecurrentCounterfactualBranchError(
+            "tape chunks require continuation_tape_identity"
         )
     if not upgraded_evidence_requested and resolved_tape_count != 1:
         raise AssertionError("unreachable continuation tape configuration")
@@ -1535,13 +1644,45 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     max_horizon_continuation_count = 1 + (2 * len(valid_actions))
     upgraded_payload: dict[str, object] = {}
     if resolved_tape_identity is not None:
-        (
-            aggregate_rows,
-            terminal_target,
-            multi_tape_compute,
-            boundary_bound_rows,
-        ) = (
-            _materialize_multi_tape_aggregate_evidence(
+        if defer_multi_tape_assembly:
+            if resolved_tape_indices is None:
+                raise AssertionError("deferred tape indices were not resolved")
+            tape_chunk, boundary_bound_rows = _materialize_multi_tape_evidence_chunk(
+                checkpoint_world,
+                legacy_rows=rows,
+                tape_count=resolved_tape_count,
+                tape_indices=resolved_tape_indices,
+                tape_identity=resolved_tape_identity,
+                terminal_target_world_tick=resolved_terminal_target,
+                branch_id=branch_id,
+                branch_tick=selected_tick,
+                horizons=resolved_horizons,
+                focal_agent_id=resolved_focal_agent_id,
+                source_action=source_action,
+                valid_actions=valid_actions,
+                expected_observation_digest=source_observation_digest,
+                expected_action_mask_digest=source_action_mask_digest,
+                expected_source_decision_projection_sha256=(
+                    _source_decision_prefix_projection_sha256(
+                        source_decision_diagnostics
+                    )
+                ),
+                gamma=resolved_gamma,
+                excluded_seeds=(
+                    environment_seed,
+                    resolved_source_sampling_seed,
+                    resolved_selection_seed,
+                ),
+            )
+            rows = list(boundary_bound_rows)
+            upgraded_payload = {"multi_tape_chunk": tape_chunk}
+        else:
+            (
+                aggregate_rows,
+                terminal_target,
+                multi_tape_compute,
+                boundary_bound_rows,
+            ) = _materialize_multi_tape_aggregate_evidence(
                 checkpoint_world,
                 legacy_rows=rows,
                 tape_count=resolved_tape_count,
@@ -1568,13 +1709,12 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
                     resolved_selection_seed,
                 ),
             )
-        )
-        rows = list(boundary_bound_rows)
-        upgraded_payload = {
-            "aggregate_rows": aggregate_rows,
-            "terminal_target": terminal_target,
-            "multi_tape_compute": multi_tape_compute,
-        }
+            rows = list(boundary_bound_rows)
+            upgraded_payload = {
+                "aggregate_rows": aggregate_rows,
+                "terminal_target": terminal_target,
+                "multi_tape_compute": multi_tape_compute,
+            }
     selection_payload = {
         "requested_branch_ticks": list(resolved_branch_ticks),
         "selected_branch_tick": selected_tick,
@@ -1656,14 +1796,110 @@ def build_recurrent_counterfactual_nested_horizon_materialization(
     }
 
 
-def _materialize_multi_tape_aggregate_evidence(
+def merge_recurrent_counterfactual_nested_horizon_tape_chunks(
+    materializations: Sequence[Mapping[str, object]],
+    *,
+    continuation_tape_count: int,
+    continuation_tape_identity: str,
+    terminal_target_world_tick: int | None,
+    uncertainty_penalty: float,
+) -> dict[str, object]:
+    """Merge ephemeral tape chunks into the canonical scientific payload."""
+
+    if not materializations:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape merge requires at least one materialization"
+        )
+    first = deepcopy(dict(materializations[0]))
+    raw_first_chunk = first.pop("multi_tape_chunk", None)
+    if raw_first_chunk is None:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape materialization is missing its tape chunk"
+        )
+    chunks: list[Mapping[str, object]] = [
+        _mapping(raw_first_chunk, field="multi-tape chunk")
+    ]
+    for raw_materialization in materializations[1:]:
+        candidate = deepcopy(dict(raw_materialization))
+        raw_chunk = candidate.pop("multi_tape_chunk", None)
+        if raw_chunk is None:
+            raise RecurrentCounterfactualBranchError(
+                "multi-tape materialization is missing its tape chunk"
+            )
+        if candidate != first:
+            raise RecurrentCounterfactualBranchError(
+                "multi-tape chunks did not reproduce one exact source materialization"
+            )
+        chunks.append(_mapping(raw_chunk, field="multi-tape chunk"))
+    if any(
+        field in first
+        for field in ("aggregate_rows", "terminal_target", "multi_tape_compute")
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "deferred tape chunks cannot contain assembled aggregate evidence"
+        )
+    rows = first.get("rows")
+    selection = _mapping(first.get("selection"), field="chunk selection")
+    horizons = first.get("horizons")
+    valid_actions = first.get("valid_actions")
+    if (
+        not isinstance(rows, tuple)
+        or not isinstance(horizons, tuple)
+        or not isinstance(valid_actions, tuple)
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "tape chunk source tuple fields drifted"
+        )
+    branch_tick = _nonnegative_int(
+        selection.get("selected_branch_tick"),
+        field="selected branch tick",
+    )
+    excluded_seeds = (
+        _required_sampling_seed(
+            first.get("environment_seed"),
+            field="source environment seed",
+        ),
+        _required_sampling_seed(
+            first.get("source_policy_sampling_seed"),
+            field="source policy sampling seed",
+        ),
+        _required_sampling_seed(
+            first.get("branch_selection_seed"),
+            field="branch selection seed",
+        ),
+    )
+    aggregate_rows, terminal_target, multi_tape_compute = (
+        _assemble_multi_tape_aggregate_evidence(
+            source_rows=rows,
+            chunks=chunks,
+            tape_count=continuation_tape_count,
+            tape_identity=continuation_tape_identity,
+            terminal_target_world_tick=terminal_target_world_tick,
+            uncertainty_penalty=uncertainty_penalty,
+            branch_tick=branch_tick,
+            horizons=horizons,
+            valid_actions=valid_actions,
+            excluded_seeds=excluded_seeds,
+        )
+    )
+    first.update(
+        {
+            "aggregate_rows": aggregate_rows,
+            "terminal_target": terminal_target,
+            "multi_tape_compute": multi_tape_compute,
+        }
+    )
+    return first
+
+
+def _materialize_multi_tape_evidence_chunk(
     checkpoint_world: SimulationWorld,
     *,
     legacy_rows: Sequence[Mapping[str, object]],
     tape_count: int,
+    tape_indices: Sequence[int],
     tape_identity: str,
     terminal_target_world_tick: int | None,
-    uncertainty_penalty: float,
     branch_id: str,
     branch_tick: int,
     horizons: Sequence[int],
@@ -1676,17 +1912,19 @@ def _materialize_multi_tape_aggregate_evidence(
     gamma: float,
     excluded_seeds: Sequence[int],
 ) -> tuple[
-    tuple[dict[str, object], ...],
-    dict[str, object] | None,
-    dict[str, int],
+    dict[str, object],
     tuple[dict[str, object], ...],
 ]:
-    """Estimate action outcomes over independently retaped exact checkpoints."""
+    """Execute an ordered subset of independent retaped checkpoints."""
 
     if not legacy_rows:
         raise RecurrentCounterfactualBranchError(
             "multi-tape evidence requires legacy source rows"
         )
+    resolved_tape_indices = _validated_continuation_tape_indices(
+        tape_indices,
+        tape_count=tape_count,
+    )
     terminal_horizon = (
         None
         if terminal_target_world_tick is None
@@ -1713,7 +1951,7 @@ def _materialize_multi_tape_aggregate_evidence(
     all_policy_seeds: list[int] = []
     excluded_seed_set = set(excluded_seeds)
 
-    for tape_index in range(tape_count):
+    for tape_index in resolved_tape_indices:
         environment_identity = f"{tape_identity}:environment:{tape_index}"
         policy_identity = f"{tape_identity}:policy:{tape_index}"
         environment_sampling_seed = derive_recurrent_counterfactual_tape_seed(
@@ -1959,38 +2197,250 @@ def _materialize_multi_tape_aggregate_evidence(
         pre_boundary_environment_rng_state_sha256=source_pre_environment_digest,
         pre_boundary_policy_sampling_state_sha256=source_pre_policy_digest,
     )
-    first_legacy_row = boundary_bound_rows[0]
+    chunk_without_digest: dict[str, object] = {
+        "schema_version": RECURRENT_COUNTERFACTUAL_TAPE_CHUNK_SCHEMA_VERSION,
+        "tape_identity": tape_identity,
+        "continuation_tape_count": tape_count,
+        "tape_indices": resolved_tape_indices,
+        "execution_horizons": execution_horizons,
+        "horizon_tape_provenance": tuple(
+            {
+                "horizon_ticks": horizon,
+                "tape_provenance": tuple(tape_entries_by_horizon[horizon]),
+            }
+            for horizon in execution_horizons
+        ),
+        "actual_continuation_tick_count": actual_continuation_tick_count,
+        "maximum_horizon_ticks": maximum_horizon,
+        "source_pre_boundary_environment_rng_state_sha256": (
+            source_pre_environment_digest
+        ),
+        "source_pre_boundary_policy_sampling_state_sha256": (
+            source_pre_policy_digest
+        ),
+        "private_checkpoint_serialized": False,
+    }
+    chunk = {
+        **chunk_without_digest,
+        "exact_digest": stable_payload_digest(chunk_without_digest),
+    }
+    _validate_multi_tape_evidence_chunk(chunk)
+    return chunk, boundary_bound_rows
+
+
+def _materialize_multi_tape_aggregate_evidence(
+    checkpoint_world: SimulationWorld,
+    *,
+    legacy_rows: Sequence[Mapping[str, object]],
+    tape_count: int,
+    tape_identity: str,
+    terminal_target_world_tick: int | None,
+    uncertainty_penalty: float,
+    branch_id: str,
+    branch_tick: int,
+    horizons: Sequence[int],
+    focal_agent_id: int,
+    source_action: str,
+    valid_actions: Sequence[str],
+    expected_observation_digest: str,
+    expected_action_mask_digest: str,
+    expected_source_decision_projection_sha256: str,
+    gamma: float,
+    excluded_seeds: Sequence[int],
+) -> tuple[
+    tuple[dict[str, object], ...],
+    dict[str, object] | None,
+    dict[str, int],
+    tuple[dict[str, object], ...],
+]:
+    chunk, boundary_bound_rows = _materialize_multi_tape_evidence_chunk(
+        checkpoint_world,
+        legacy_rows=legacy_rows,
+        tape_count=tape_count,
+        tape_indices=tuple(range(tape_count)),
+        tape_identity=tape_identity,
+        terminal_target_world_tick=terminal_target_world_tick,
+        branch_id=branch_id,
+        branch_tick=branch_tick,
+        horizons=horizons,
+        focal_agent_id=focal_agent_id,
+        source_action=source_action,
+        valid_actions=valid_actions,
+        expected_observation_digest=expected_observation_digest,
+        expected_action_mask_digest=expected_action_mask_digest,
+        expected_source_decision_projection_sha256=(
+            expected_source_decision_projection_sha256
+        ),
+        gamma=gamma,
+        excluded_seeds=excluded_seeds,
+    )
+    aggregate_rows, terminal_target, multi_tape_compute = (
+        _assemble_multi_tape_aggregate_evidence(
+            source_rows=boundary_bound_rows,
+            chunks=(chunk,),
+            tape_count=tape_count,
+            tape_identity=tape_identity,
+            terminal_target_world_tick=terminal_target_world_tick,
+            uncertainty_penalty=uncertainty_penalty,
+            branch_tick=branch_tick,
+            horizons=horizons,
+            valid_actions=valid_actions,
+            excluded_seeds=excluded_seeds,
+        )
+    )
+    return (
+        aggregate_rows,
+        terminal_target,
+        multi_tape_compute,
+        boundary_bound_rows,
+    )
+
+
+def _assemble_multi_tape_aggregate_evidence(
+    *,
+    source_rows: Sequence[Mapping[str, object]],
+    chunks: Sequence[Mapping[str, object]],
+    tape_count: int,
+    tape_identity: str,
+    terminal_target_world_tick: int | None,
+    uncertainty_penalty: float,
+    branch_tick: int,
+    horizons: Sequence[int],
+    valid_actions: Sequence[str],
+    excluded_seeds: Sequence[int],
+) -> tuple[
+    tuple[dict[str, object], ...],
+    dict[str, object] | None,
+    dict[str, int],
+]:
+    if not source_rows:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape assembly requires source rows"
+        )
+    resolved_tape_count = _positive_int(tape_count, field="continuation_tape_count")
+    resolved_tape_identity = _nonempty_string(
+        tape_identity,
+        field="continuation_tape_identity",
+    )
+    resolved_horizons = _validated_nested_horizons(horizons)
+    resolved_terminal_target = (
+        None
+        if terminal_target_world_tick is None
+        else _positive_int(
+            terminal_target_world_tick,
+            field="terminal_target_world_tick",
+        )
+    )
+    terminal_horizon = (
+        None
+        if resolved_terminal_target is None
+        else resolved_terminal_target - branch_tick
+    )
+    if terminal_horizon is not None and terminal_horizon <= 0:
+        raise RecurrentCounterfactualBranchError(
+            "absolute terminal target must follow the branch state"
+        )
+    execution_horizons = tuple(
+        sorted(
+            {
+                *resolved_horizons,
+                *(() if terminal_horizon is None else (terminal_horizon,)),
+            }
+        )
+    )
+    maximum_horizon = execution_horizons[-1]
+    tape_entries_by_horizon: dict[int, list[dict[str, object]]] = {
+        horizon: [] for horizon in execution_horizons
+    }
+    observed_indices: list[int] = []
+    actual_continuation_tick_count = 0
+    source_pre_environment_digest: str | None = None
+    source_pre_policy_digest: str | None = None
+    for raw_chunk in chunks:
+        chunk = _validate_multi_tape_evidence_chunk(raw_chunk)
+        if (
+            chunk["tape_identity"] != resolved_tape_identity
+            or chunk["continuation_tape_count"] != resolved_tape_count
+            or tuple(chunk["execution_horizons"]) != execution_horizons
+            or chunk["maximum_horizon_ticks"] != maximum_horizon
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "multi-tape chunk assembly contract drifted"
+            )
+        chunk_pre_environment = chunk[
+            "source_pre_boundary_environment_rng_state_sha256"
+        ]
+        chunk_pre_policy = chunk[
+            "source_pre_boundary_policy_sampling_state_sha256"
+        ]
+        if source_pre_environment_digest is None:
+            source_pre_environment_digest = str(chunk_pre_environment)
+            source_pre_policy_digest = str(chunk_pre_policy)
+        elif (
+            chunk_pre_environment != source_pre_environment_digest
+            or chunk_pre_policy != source_pre_policy_digest
+        ):
+            raise RecurrentCounterfactualBranchError(
+                "multi-tape chunks do not share one source boundary"
+            )
+        observed_indices.extend(int(index) for index in chunk["tape_indices"])
+        actual_continuation_tick_count += int(
+            chunk["actual_continuation_tick_count"]
+        )
+        for horizon_payload in chunk["horizon_tape_provenance"]:
+            horizon = int(horizon_payload["horizon_ticks"])
+            tape_entries_by_horizon[horizon].extend(
+                deepcopy(list(horizon_payload["tape_provenance"]))
+            )
+    if tuple(sorted(observed_indices)) != tuple(range(resolved_tape_count)):
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape chunks must cover every tape index exactly once"
+        )
+    for horizon in execution_horizons:
+        tape_entries_by_horizon[horizon].sort(
+            key=lambda entry: int(entry["tape_index"])
+        )
+        if tuple(
+            int(entry["tape_index"])
+            for entry in tape_entries_by_horizon[horizon]
+        ) != tuple(range(resolved_tape_count)):
+            raise RecurrentCounterfactualBranchError(
+                "multi-tape chunk horizon coverage drifted"
+            )
+    first_source_row = source_rows[0]
     aggregate_rows = tuple(
         _assemble_multi_tape_aggregate_row(
-            source_row=first_legacy_row,
+            source_row=first_source_row,
             target_kind="relative_horizon",
             branch_tick=branch_tick,
             horizon_ticks=horizon,
-            terminal_target_world_tick=terminal_target_world_tick,
-            tape_identity=tape_identity,
+            terminal_target_world_tick=resolved_terminal_target,
+            tape_identity=resolved_tape_identity,
             tape_provenance=tape_entries_by_horizon[horizon],
             uncertainty_penalty=uncertainty_penalty,
             excluded_seeds=excluded_seeds,
         )
-        for horizon in horizons
+        for horizon in resolved_horizons
     )
     terminal_target = (
         None
         if terminal_horizon is None
         else _assemble_multi_tape_aggregate_row(
-            source_row=first_legacy_row,
+            source_row=first_source_row,
             target_kind="absolute_terminal_world_tick",
             branch_tick=branch_tick,
             horizon_ticks=terminal_horizon,
-            terminal_target_world_tick=terminal_target_world_tick,
-            tape_identity=tape_identity,
+            terminal_target_world_tick=resolved_terminal_target,
+            tape_identity=resolved_tape_identity,
             tape_provenance=tape_entries_by_horizon[terminal_horizon],
             uncertainty_penalty=uncertainty_penalty,
             excluded_seeds=excluded_seeds,
         )
     )
     continuation_count_per_tape = 2 + (2 * len(valid_actions))
-    maximum_budget = tape_count * continuation_count_per_tape * maximum_horizon
+    maximum_budget = (
+        resolved_tape_count * continuation_count_per_tape * maximum_horizon
+    )
     if actual_continuation_tick_count > maximum_budget:
         raise RecurrentCounterfactualBranchError(
             "multi-tape continuation execution exceeded its maximum budget"
@@ -1999,18 +2449,183 @@ def _materialize_multi_tape_aggregate_evidence(
         aggregate_rows,
         terminal_target,
         {
-            "continuation_tape_count": tape_count,
+            "continuation_tape_count": resolved_tape_count,
             "continuation_count_per_tape": continuation_count_per_tape,
             "max_horizon_continuation_count": (
-                tape_count * continuation_count_per_tape
+                resolved_tape_count * continuation_count_per_tape
             ),
-            "exact_replay_continuation_count": (tape_count * (1 + len(valid_actions))),
+            "exact_replay_continuation_count": (
+                resolved_tape_count * (1 + len(valid_actions))
+            ),
             "maximum_horizon_ticks": maximum_horizon,
             "actual_continuation_tick_count": actual_continuation_tick_count,
             "maximum_continuation_tick_budget": maximum_budget,
         },
-        boundary_bound_rows,
     )
+
+
+def _validate_multi_tape_evidence_chunk(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    chunk = dict(_mapping(value, field="multi-tape evidence chunk"))
+    expected_fields = {
+        "schema_version",
+        "tape_identity",
+        "continuation_tape_count",
+        "tape_indices",
+        "execution_horizons",
+        "horizon_tape_provenance",
+        "actual_continuation_tick_count",
+        "maximum_horizon_ticks",
+        "source_pre_boundary_environment_rng_state_sha256",
+        "source_pre_boundary_policy_sampling_state_sha256",
+        "private_checkpoint_serialized",
+        "exact_digest",
+    }
+    if set(chunk) != expected_fields:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape evidence chunk field set drifted"
+        )
+    if (
+        chunk.get("schema_version")
+        != RECURRENT_COUNTERFACTUAL_TAPE_CHUNK_SCHEMA_VERSION
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape evidence chunk schema drifted"
+        )
+    tape_identity = _nonempty_string(
+        chunk.get("tape_identity"),
+        field="chunk tape identity",
+    )
+    tape_count = _positive_int(
+        chunk.get("continuation_tape_count"),
+        field="chunk continuation tape count",
+    )
+    raw_indices = chunk.get("tape_indices")
+    if not isinstance(raw_indices, tuple):
+        raise RecurrentCounterfactualBranchError(
+            "chunk tape indices must be a tuple"
+        )
+    tape_indices = _validated_continuation_tape_indices(
+        raw_indices,
+        tape_count=tape_count,
+    )
+    raw_horizons = chunk.get("execution_horizons")
+    if not isinstance(raw_horizons, tuple):
+        raise RecurrentCounterfactualBranchError(
+            "chunk execution horizons must be a tuple"
+        )
+    execution_horizons = _validated_nested_horizons(raw_horizons)
+    if _positive_int(
+        chunk.get("maximum_horizon_ticks"),
+        field="chunk maximum horizon",
+    ) != execution_horizons[-1]:
+        raise RecurrentCounterfactualBranchError(
+            "chunk maximum horizon drifted"
+        )
+    _positive_int(
+        chunk.get("actual_continuation_tick_count"),
+        field="chunk actual continuation tick count",
+    )
+    pre_environment = chunk.get(
+        "source_pre_boundary_environment_rng_state_sha256"
+    )
+    pre_policy = chunk.get("source_pre_boundary_policy_sampling_state_sha256")
+    if not _valid_sha256(pre_environment) or not _valid_sha256(pre_policy):
+        raise RecurrentCounterfactualBranchError(
+            "chunk source boundary RNG-state digest is malformed"
+        )
+    if chunk.get("private_checkpoint_serialized") is not False:
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape evidence chunks cannot serialize private checkpoints"
+        )
+    raw_horizon_payloads = chunk.get("horizon_tape_provenance")
+    if not isinstance(raw_horizon_payloads, tuple) or len(
+        raw_horizon_payloads
+    ) != len(execution_horizons):
+        raise RecurrentCounterfactualBranchError(
+            "chunk horizon provenance count drifted"
+        )
+    for expected_horizon, raw_horizon_payload in zip(
+        execution_horizons,
+        raw_horizon_payloads,
+        strict=True,
+    ):
+        horizon_payload = _mapping(
+            raw_horizon_payload,
+            field="chunk horizon provenance",
+        )
+        if set(horizon_payload) != {"horizon_ticks", "tape_provenance"}:
+            raise RecurrentCounterfactualBranchError(
+                "chunk horizon provenance field set drifted"
+            )
+        if horizon_payload.get("horizon_ticks") != expected_horizon:
+            raise RecurrentCounterfactualBranchError(
+                "chunk horizon provenance order drifted"
+            )
+        tape_provenance = horizon_payload.get("tape_provenance")
+        if not isinstance(tape_provenance, tuple) or len(
+            tape_provenance
+        ) != len(tape_indices):
+            raise RecurrentCounterfactualBranchError(
+                "chunk tape provenance count drifted"
+            )
+        for expected_index, raw_tape in zip(
+            tape_indices,
+            tape_provenance,
+            strict=True,
+        ):
+            tape = _mapping(raw_tape, field="chunk tape provenance")
+            if set(tape) != _MULTI_TAPE_PROVENANCE_FIELDS:
+                raise RecurrentCounterfactualBranchError(
+                    "chunk tape provenance field set drifted"
+                )
+            if tape.get("tape_index") != expected_index:
+                raise RecurrentCounterfactualBranchError(
+                    "chunk tape provenance index drifted"
+                )
+            environment_identity = f"{tape_identity}:environment:{expected_index}"
+            policy_identity = f"{tape_identity}:policy:{expected_index}"
+            if (
+                tape.get("environment_sampling_identity") != environment_identity
+                or tape.get("policy_sampling_identity") != policy_identity
+                or tape.get("environment_sampling_seed")
+                != derive_recurrent_counterfactual_tape_seed(
+                    namespace=(
+                        RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE
+                    ),
+                    identity=environment_identity,
+                )
+                or tape.get("policy_sampling_seed")
+                != derive_recurrent_counterfactual_tape_seed(
+                    namespace=(
+                        RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE
+                    ),
+                    identity=policy_identity,
+                )
+            ):
+                raise RecurrentCounterfactualBranchError(
+                    "chunk tape seed provenance drifted"
+                )
+            boundary = _decision_boundary_provenance(tape)
+            if (
+                boundary["pre_boundary_environment_rng_state_sha256"]
+                != pre_environment
+                or boundary["pre_boundary_policy_sampling_state_sha256"]
+                != pre_policy
+            ):
+                raise RecurrentCounterfactualBranchError(
+                    "chunk tape source boundary drifted"
+                )
+    exact_digest = chunk.pop("exact_digest")
+    if not _valid_sha256(exact_digest) or exact_digest != stable_payload_digest(
+        chunk
+    ):
+        raise RecurrentCounterfactualBranchError(
+            "multi-tape evidence chunk exact digest mismatch"
+        )
+    chunk["exact_digest"] = exact_digest
+    return chunk
 
 
 def _compact_multi_tape_baseline_evidence(
@@ -5920,6 +6535,34 @@ def _nonnegative_int(value: object, *, field: str) -> int:
     return value
 
 
+def _validated_continuation_tape_indices(
+    values: Sequence[int],
+    *,
+    tape_count: int,
+) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise RecurrentCounterfactualBranchError(
+            "continuation tape indices must be a sequence"
+        )
+    resolved = tuple(
+        _nonnegative_int(value, field="continuation tape index")
+        for value in values
+    )
+    if not resolved:
+        raise RecurrentCounterfactualBranchError(
+            "continuation tape indices cannot be empty"
+        )
+    if resolved != tuple(sorted(set(resolved))):
+        raise RecurrentCounterfactualBranchError(
+            "continuation tape indices must be unique and ordered"
+        )
+    if resolved[-1] >= _positive_int(tape_count, field="continuation_tape_count"):
+        raise RecurrentCounterfactualBranchError(
+            "continuation tape index exceeds the configured tape count"
+        )
+    return resolved
+
+
 def _nonempty_string(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise RecurrentCounterfactualBranchError(
@@ -6063,6 +6706,7 @@ __all__ = [
     "RECURRENT_COUNTERFACTUAL_CONTINUATION_ENVIRONMENT_TAPE_SEED_NAMESPACE",
     "RECURRENT_COUNTERFACTUAL_CONTINUATION_POLICY_TAPE_SEED_NAMESPACE",
     "RECURRENT_COUNTERFACTUAL_CONTINUATION_RNG_RETAPE_BOUNDARY",
+    "RECURRENT_COUNTERFACTUAL_TAPE_CHUNK_SCHEMA_VERSION",
     "RECURRENT_COUNTERFACTUAL_LEGACY_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_SCALE_SEED_ROLES",
     "RECURRENT_COUNTERFACTUAL_SCALE_V1_SEED_ROLES",
@@ -6073,7 +6717,9 @@ __all__ = [
     "RecurrentCounterfactualBranchError",
     "build_recurrent_counterfactual_branch_row",
     "build_recurrent_counterfactual_nested_horizon_materialization",
+    "build_recurrent_counterfactual_nested_horizon_tape_chunk_materialization",
     "derive_recurrent_counterfactual_tape_seed",
+    "merge_recurrent_counterfactual_nested_horizon_tape_chunks",
     "reconstruct_current_model_hidden_from_branch_row",
     "validate_recurrent_counterfactual_aggregate_row",
     "validate_recurrent_counterfactual_branch_row",
