@@ -4,8 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from evolution_sim.env.contracts import VIEWER_AGENT_ENCODING
-from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
+from evolution_sim.env.contracts import (
+    SUMMARY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+    VIEWER_AGENT_ENCODING,
+)
+from evolution_sim.env.runtime.action_contract import (
+    ACTION_CONTRACT_VERSION,
+    action_contract,
+)
 from evolution_sim.env.runtime.mating import (
     ASEXUAL_REPRODUCTION_MODE,
     REPRODUCTIVE_STAGE_ORDER,
@@ -17,20 +24,35 @@ from evolution_sim.env.runtime.observations import (
     OBSERVATION_INPUT_VALUE_RANGE,
     OBSERVATION_INPUT_VECTOR_SIZE,
     OBSERVATION_SCHEMA_VERSION,
+    PATCH_CELL_COUNT,
+    PATCH_FIELDS,
+    PATCH_INPUT_FIELDS,
+    SELF_FIELDS,
+    SELF_INPUT_FIELDS,
     OBSERVATION_STORAGE_DTYPE,
     OBSERVATION_STORAGE_ENCODING,
     REPRODUCTIVE_EXPRESSION_VOCAB,
+    TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
 )
 from evolution_sim.env.runtime.reproduction import (
     REPRODUCTION_EVENT_SCHEMA_VERSION,
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,
 )
-from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION, signal_contract
+from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_AGGREGATE_PROJECTION,
+    SIGNAL_CONTRACT_VERSION,
+    TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION,
+    TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+    signal_contract,
+)
 from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
     REWARD_SCHEMA_VERSION,
     TRAJECTORY_RECORD_FIELDS,
     TRAJECTORY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+    reward_contract,
 )
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.reporting_contracts import BIOTIC_FIELD_NAMES
@@ -93,6 +115,11 @@ REQUIRED_SIGNAL_OUTCOME_FIELDS: tuple[str, ...] = (
     "decay_rate",
     "energy_cost",
     "invalid_reason",
+)
+REWARD_RECORD_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "components",
+    "total",
 )
 VIEWER_EMPTY_LABELS: dict[str, str] = {
     "missing": "-",
@@ -173,19 +200,67 @@ VIEWER_DISPLAY_LABELS: dict[str, dict[str, str]] = {
 
 def viewer_contract_payload() -> dict[str, Any]:
     signal_payload = signal_contract()
+    action_payload = action_contract()
+    communication_action_keys = set(action_payload["communication"]["action_keys"])
+    action_specs = action_payload["actions"]
+    communication_action_spec = next(
+        spec for spec in action_specs if spec["key"] in communication_action_keys
+    )
     return {
         "REQUIRED_AGENT_FIELDS": list(VIEWER_AGENT_ENCODING),
+        "SUMMARY_SCHEMA_VERSION": SUMMARY_SCHEMA_VERSION,
+        "TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION": (
+            TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION
+        ),
         "TRAJECTORY_SCHEMA_VERSION": TRAJECTORY_SCHEMA_VERSION,
+        "TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION": (
+            TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION
+        ),
         "OBSERVATION_SCHEMA_VERSION": OBSERVATION_SCHEMA_VERSION,
+        "TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION": (
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+        ),
         "OBSERVATION_ENCODER_VERSION": OBSERVATION_ENCODER_VERSION,
+        "TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION": (
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+        ),
         "OBSERVATION_INPUT_DECODED_DTYPE": OBSERVATION_INPUT_DTYPE,
         "OBSERVATION_INPUT_STORAGE_DTYPE": OBSERVATION_STORAGE_DTYPE,
         "OBSERVATION_INPUT_STORAGE_ENCODING": OBSERVATION_STORAGE_ENCODING,
         "OBSERVATION_INPUT_VECTOR_SIZE": OBSERVATION_INPUT_VECTOR_SIZE,
         "OBSERVATION_INPUT_VALUE_RANGE": list(OBSERVATION_INPUT_VALUE_RANGE),
+        "PATCH_CELL_COUNT": PATCH_CELL_COUNT,
+        "OBSERVATION_SELF_FIELDS": list(SELF_FIELDS),
+        "OBSERVATION_PATCH_FIELDS": list(PATCH_FIELDS),
+        "OBSERVATION_SELF_INPUT_FIELDS": list(SELF_INPUT_FIELDS),
+        "OBSERVATION_PATCH_INPUT_FIELDS": list(PATCH_INPUT_FIELDS),
         "POLICY_INTERFACE_VERSION": POLICY_INTERFACE_VERSION,
         "ACTION_CONTRACT_VERSION": ACTION_CONTRACT_VERSION,
+        "ACTION_CONTRACT_FIELDS": list(action_payload),
+        "ACTION_COMMUNICATION_FIELDS": list(action_payload["communication"]),
+        "ACTION_SPEC_FIELDS": list(communication_action_spec),
+        "ACTION_NON_COMMUNICATION_SPECS": [
+            spec
+            for spec in action_specs
+            if spec["key"] not in communication_action_keys
+        ],
+        "ACTION_COMMUNICATION_SPEC_FIXED_FIELDS": {
+            field: value
+            for field, value in communication_action_spec.items()
+            if field not in {"action_id", "key", "active", "debug_label"}
+        },
+        "ACTION_POLICY_ID_ENCODING": action_payload["policy_id_encoding"],
+        "ACTION_DEBUG_KEY_ENCODING": action_payload["debug_key_encoding"],
+        "ACTION_MATE_ACTION_KEY": action_payload["mate_action_key"],
+        "ACTION_COMMUNICATION_MEANING": action_payload["communication"]["meaning"],
         "SIGNAL_CONTRACT_VERSION": SIGNAL_CONTRACT_VERSION,
+        "TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION": (
+            TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION
+        ),
+        "TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION": (
+            TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION
+        ),
+        "COMMUNICATION_AGGREGATE_PROJECTION": COMMUNICATION_AGGREGATE_PROJECTION,
         "REPRODUCTIVE_GROUP_CONTRACT_VERSION": (
             REPRODUCTIVE_GROUP_CONTRACT_VERSION
         ),
@@ -193,6 +268,8 @@ def viewer_contract_payload() -> dict[str, Any]:
             GENOME_RECOMBINATION_CONTRACT_VERSION
         ),
         "REWARD_SCHEMA_VERSION": REWARD_SCHEMA_VERSION,
+        "REWARD_CONTRACT": reward_contract(),
+        "REWARD_RECORD_FIELDS": list(REWARD_RECORD_FIELDS),
         "ACTION_OUTCOME_SCHEMA_VERSION": ACTION_OUTCOME_SCHEMA_VERSION,
         "REPRODUCTION_EVENT_SCHEMA_VERSION": REPRODUCTION_EVENT_SCHEMA_VERSION,
         "ASEXUAL_REPRODUCTION_MODE": ASEXUAL_REPRODUCTION_MODE,

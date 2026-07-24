@@ -446,7 +446,14 @@ for reproduction, and made benchmark reports explicitly distinguish complete
 runs from partial failure reports. The `mate` action remains reserved and
 masked; Stage 1 is biology-gated, not policy-driven. Communication signal slots
 remain opaque and disabled by default, with an opt-in trait-gated emission path
-covered by tests; the default heuristic still never emits communication tokens.
+covered by tests. When that path is enabled, token identities are exposed only
+as distinct numeric spatial channels; the simulator assigns no meaning or
+reward to any token, and the legacy aggregate communication field remains
+available. The default heuristic still never emits communication tokens.
+Default-disabled runs retain the existing observation shape and replay
+contracts; token-aware runs use explicit versioned signal, observation,
+encoder, trajectory, and summary contracts, so fixed-size legacy recurrent
+artifacts fail closed instead of silently dropping or padding token channels.
 
 ## Test
 

@@ -23,8 +23,13 @@ from evolution_sim.env.runtime.mating import (
     Z_EXPRESSION,
 )
 from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_AGGREGATE_PROJECTION,
     COMMUNICATION_SIGNAL_FIELD,
     REPRODUCTIVE_SIGNAL_FIELD,
+    SIGNAL_FIELD_NAMES,
+    communication_signal_emission_enabled,
+    communication_token_field_names,
+    parse_communication_token_field_name,
     signal_contract,
 )
 from evolution_sim.env.runtime.state import (
@@ -36,6 +41,10 @@ from evolution_sim.env.runtime.state import (
 
 OBSERVATION_SCHEMA_VERSION = "mind_observation_v3"
 OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2"
+TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v4"
+TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION = (
+    "mind_observation_encoder_v3"
+)
 OBSERVATION_INPUT_DTYPE = "float32"
 OBSERVATION_STORAGE_DTYPE = "int16"
 OBSERVATION_STORAGE_ENCODING = "zlib_base64_little_endian_int16"
@@ -212,6 +221,29 @@ OBSERVATION_INPUT_VECTOR_SIZE = len(SELF_INPUT_FIELDS) + (
 )
 
 
+def observation_schema_version(signal_config: Any | None = None) -> str:
+    if (
+        signal_config is not None
+        and communication_signal_emission_enabled(signal_config)
+    ):
+        return TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+    return OBSERVATION_SCHEMA_VERSION
+
+
+def observation_encoder_version(signal_config: Any | None = None) -> str:
+    if (
+        signal_config is not None
+        and communication_signal_emission_enabled(signal_config)
+    ):
+        return TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+    return OBSERVATION_ENCODER_VERSION
+
+
+def observation_input_vector_size(signal_config: Any | None = None) -> int:
+    token_count = len(communication_token_field_names(signal_config))
+    return OBSERVATION_INPUT_VECTOR_SIZE + token_count * (1 + PATCH_CELL_COUNT)
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationContext:
     width: int
@@ -240,13 +272,17 @@ class ObservationContext:
 
 
 def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
-    return {
-        "schema_version": OBSERVATION_SCHEMA_VERSION,
+    token_fields = communication_token_field_names(signal_config)
+    schema_version = observation_schema_version(signal_config)
+    encoder_version = observation_encoder_version(signal_config)
+    vector_size = observation_input_vector_size(signal_config)
+    contract: dict[str, object] = {
+        "schema_version": schema_version,
         "local_patch_radius": LOCAL_PATCH_RADIUS,
         "metadata_fields": list(METADATA_FIELDS),
         "metadata_policy_excluded": True,
-        "self_fields": list(SELF_FIELDS),
-        "patch_fields": list(PATCH_FIELDS),
+        "self_fields": [*SELF_FIELDS, *token_fields],
+        "patch_fields": [*PATCH_FIELDS, *token_fields],
         "navigation_radius": NAVIGATION_RADIUS,
         "navigation_targets": list(NAVIGATION_TARGETS),
         "navigation_fields": list(NAVIGATION_FIELDS),
@@ -263,14 +299,14 @@ def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
         "policy_input": {
             "semantic_role": "raw_encoded_observation_tensor",
             "compatibility_role": "historical_policy_input_key_compatibility",
-            "encoder_version": OBSERVATION_ENCODER_VERSION,
+            "encoder_version": encoder_version,
             "decoded_dtype": OBSERVATION_INPUT_DTYPE,
             "storage_dtype": OBSERVATION_STORAGE_DTYPE,
             "storage_encoding": OBSERVATION_STORAGE_ENCODING,
-            "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+            "shape": [vector_size],
             "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
-            "self_input_fields": list(SELF_INPUT_FIELDS),
-            "patch_input_fields": list(PATCH_INPUT_FIELDS),
+            "self_input_fields": [*SELF_INPUT_FIELDS, *token_fields],
+            "patch_input_fields": [*PATCH_INPUT_FIELDS, *token_fields],
             "patch_cell_count": PATCH_CELL_COUNT,
             "patch_order": "row_major_dy_then_dx_centered",
             "navigation_input_fields": list(NAVIGATION_INPUT_FIELDS),
@@ -296,6 +332,18 @@ def observation_contract(signal_config: Any | None = None) -> dict[str, object]:
         },
         "privileged_world_state": False,
     }
+    if token_fields:
+        contract["communication_token_channels"] = {
+            "policy_visible": True,
+            "spatial": True,
+            "field_order": list(token_fields),
+            "token_order": list(range(len(token_fields))),
+            "simulator_assigned_meanings": False,
+            "profile_provenance_policy_visible": False,
+            "aggregate_communication_field_retained": True,
+            "aggregate_projection": COMMUNICATION_AGGREGATE_PROJECTION,
+        }
+    return contract
 
 
 def _resolve_observation_context(
@@ -325,44 +373,56 @@ def build_observation(
     tile = context.grid[agent.y][agent.x]
     hazard_type, hazard_level = context.hazard_at(agent.x, agent.y)
     signal_state = context.signal_state
+    token_fields = _signal_state_communication_token_fields(signal_state)
+    self_state: dict[str, object] = {
+        "energy_ratio": _round(context.energy_ratio(agent)),
+        "hydration_ratio": _round(context.hydration_ratio(agent)),
+        "health_ratio": _round(context.health_ratio(agent)),
+        "injury_load": _round(agent.injury_load),
+        "age_norm": _round(agent.age / max(context.max_age, 1)),
+        "reproduction_ready": bool(context.is_reproduction_ready(agent)),
+        "matched_diet_ratio": _round(
+            context.matched_diet_ratio(agent, profile)
+        ),
+        "trophic_role": profile.role,
+        "meat_mode": profile.meat_mode,
+        "season": str(climate_state["season"]),
+        "water_access_reason": context.water_access_reason(agent.x, agent.y),
+        "hydrology_support_code": context.hydrology_support_code(agent.x, agent.y),
+        "refuge_score": _round(context.refuge_score(agent.x, agent.y)),
+        "hazard_type": hazard_type,
+        "hazard_level": _round(hazard_level),
+        "tile_vegetation": _round(tile.vegetation),
+        "tile_recovery_debt": _round(tile.recovery_debt),
+        "reproductive_stage": agent.reproductive_stage,
+        "reproductive_expression": agent.reproductive_expression,
+        "sexual_reproduction_unlocked": agent.reproductive_stage != "stage0_asexual",
+        REPRODUCTIVE_SIGNAL_FIELD: _round(
+            signal_state.reproductive_signal[agent.y][agent.x]
+        ),
+        COMMUNICATION_SIGNAL_FIELD: _round(
+            signal_state.communication_signal[agent.y][agent.x]
+        ),
+        "mind_inheritance_available": bool(
+            agent.mind_inheritance_metadata.get("inherited_state", False)
+        ),
+    }
+    self_state.update(
+        {
+            field_name: _round(signal_state.field(field_name)[agent.y][agent.x])
+            for field_name in token_fields
+        }
+    )
     return {
-        "schema_version": OBSERVATION_SCHEMA_VERSION,
+        "schema_version": (
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+            if token_fields
+            else OBSERVATION_SCHEMA_VERSION
+        ),
         "metadata": {
             "agent_id": agent.agent_id,
         },
-        "self": {
-            "energy_ratio": _round(context.energy_ratio(agent)),
-            "hydration_ratio": _round(context.hydration_ratio(agent)),
-            "health_ratio": _round(context.health_ratio(agent)),
-            "injury_load": _round(agent.injury_load),
-            "age_norm": _round(agent.age / max(context.max_age, 1)),
-            "reproduction_ready": bool(context.is_reproduction_ready(agent)),
-            "matched_diet_ratio": _round(
-                context.matched_diet_ratio(agent, profile)
-            ),
-            "trophic_role": profile.role,
-            "meat_mode": profile.meat_mode,
-            "season": str(climate_state["season"]),
-            "water_access_reason": context.water_access_reason(agent.x, agent.y),
-            "hydrology_support_code": context.hydrology_support_code(agent.x, agent.y),
-            "refuge_score": _round(context.refuge_score(agent.x, agent.y)),
-            "hazard_type": hazard_type,
-            "hazard_level": _round(hazard_level),
-            "tile_vegetation": _round(tile.vegetation),
-            "tile_recovery_debt": _round(tile.recovery_debt),
-            "reproductive_stage": agent.reproductive_stage,
-            "reproductive_expression": agent.reproductive_expression,
-            "sexual_reproduction_unlocked": agent.reproductive_stage != "stage0_asexual",
-            REPRODUCTIVE_SIGNAL_FIELD: _round(
-                signal_state.reproductive_signal[agent.y][agent.x]
-            ),
-            COMMUNICATION_SIGNAL_FIELD: _round(
-                signal_state.communication_signal[agent.y][agent.x]
-            ),
-            "mind_inheritance_available": bool(
-                agent.mind_inheritance_metadata.get("inherited_state", False)
-            ),
-        },
+        "self": self_state,
         "local_patch": [
             _patch_cell(context, agent, dx, dy)
             for dy in range(-LOCAL_PATCH_RADIUS, LOCAL_PATCH_RADIUS + 1)
@@ -378,28 +438,101 @@ def observation_digest(observation: dict[str, object]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _observation_communication_token_fields(
+    observation: dict[str, object],
+) -> tuple[str, ...]:
+    self_state = observation.get("self")
+    patch = observation.get("local_patch")
+    if not isinstance(self_state, dict):
+        raise ValueError("observation self section must be a mapping")
+    if not isinstance(patch, list) or len(patch) != PATCH_CELL_COUNT:
+        raise ValueError(
+            f"observation local_patch must contain {PATCH_CELL_COUNT} cells"
+        )
+    token_fields_by_id: dict[int, str] = {}
+    for field_name in self_state:
+        token_id = parse_communication_token_field_name(str(field_name))
+        if token_id is not None:
+            token_fields_by_id[token_id] = str(field_name)
+    token_fields = tuple(
+        token_fields_by_id[token_id] for token_id in sorted(token_fields_by_id)
+    )
+    if token_fields and tuple(sorted(token_fields_by_id)) != tuple(
+        range(len(token_fields))
+    ):
+        raise ValueError(
+            "communication token observation fields must use contiguous token ids"
+        )
+    expected_fields = set(token_fields)
+    for cell in patch:
+        if not isinstance(cell, dict):
+            raise ValueError("observation local_patch cells must be mappings")
+        cell_token_fields = {
+            str(field_name)
+            for field_name in cell
+            if parse_communication_token_field_name(str(field_name)) is not None
+        }
+        if cell_token_fields != expected_fields:
+            raise ValueError(
+                "communication token observation fields must match across "
+                "self and local_patch"
+            )
+    return token_fields
+
+
 def encode_observation_input(observation: dict[str, object]) -> dict[str, object]:
     """Encode the policy-visible observation as a compact, versioned tensor payload."""
-    if observation.get("schema_version") != OBSERVATION_SCHEMA_VERSION:
+    schema_version = observation.get("schema_version")
+    if schema_version not in {
+        OBSERVATION_SCHEMA_VERSION,
+        TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    }:
         raise ValueError("observation schema_version is missing or stale")
-    values = _observation_input_values(observation)
-    if len(values) != OBSERVATION_INPUT_VECTOR_SIZE:
+    token_fields = _observation_communication_token_fields(observation)
+    if schema_version == OBSERVATION_SCHEMA_VERSION and token_fields:
+        raise ValueError(
+            "mind_observation_v3 cannot contain communication token channels"
+        )
+    if (
+        schema_version == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+        and not token_fields
+    ):
+        raise ValueError(
+            "mind_observation_v4 requires communication token channels"
+        )
+    expected_size = (
+        OBSERVATION_INPUT_VECTOR_SIZE
+        + len(token_fields) * (1 + PATCH_CELL_COUNT)
+    )
+    values = _observation_input_values(
+        observation,
+        communication_token_fields=token_fields,
+    )
+    if len(values) != expected_size:
         raise ValueError(
             f"encoded observation has {len(values)} values; expected "
-            f"{OBSERVATION_INPUT_VECTOR_SIZE}"
+            f"{expected_size}"
         )
     packed = _pack_quantized_values(values)
     data = base64.b64encode(zlib.compress(packed, level=6)).decode("ascii")
-    return {
-        "schema_version": OBSERVATION_SCHEMA_VERSION,
-        "encoder_version": OBSERVATION_ENCODER_VERSION,
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
+        "encoder_version": (
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+            if token_fields
+            else OBSERVATION_ENCODER_VERSION
+        ),
         "decoded_dtype": OBSERVATION_INPUT_DTYPE,
         "storage_dtype": OBSERVATION_STORAGE_DTYPE,
         "storage_encoding": OBSERVATION_STORAGE_ENCODING,
-        "shape": [OBSERVATION_INPUT_VECTOR_SIZE],
+        "shape": [expected_size],
         "value_range": list(OBSERVATION_INPUT_VALUE_RANGE),
         "data": data,
     }
+    if token_fields:
+        payload["communication_token_count"] = len(token_fields)
+        payload["communication_token_field_order"] = list(token_fields)
+    return payload
 
 
 def decode_observation_input(payload: dict[str, object]) -> list[float]:
@@ -445,8 +578,9 @@ def _patch_cell(
 ) -> dict[str, object]:
     x = agent.x + dx
     y = agent.y + dy
+    token_fields = _signal_state_communication_token_fields(context.signal_state)
     if not context.in_bounds(x, y):
-        return {
+        cell: dict[str, object] = {
             "dx": dx,
             "dy": dy,
             "in_bounds": False,
@@ -468,6 +602,8 @@ def _patch_cell(
             REPRODUCTIVE_SIGNAL_FIELD: 0.0,
             COMMUNICATION_SIGNAL_FIELD: 0.0,
         }
+        cell.update({field_name: 0.0 for field_name in token_fields})
+        return cell
 
     tile = context.grid[y][x]
     occupant = "none"
@@ -480,7 +616,7 @@ def _patch_cell(
     hazard_type, hazard_level = context.hazard_at(x, y)
     biotic_state = context.biotic_state
     signal_state = context.signal_state
-    return {
+    cell = {
         "dx": dx,
         "dy": dy,
         "in_bounds": True,
@@ -504,6 +640,24 @@ def _patch_cell(
         REPRODUCTIVE_SIGNAL_FIELD: _round(signal_state.reproductive_signal[y][x]),
         COMMUNICATION_SIGNAL_FIELD: _round(signal_state.communication_signal[y][x]),
     }
+    cell.update(
+        {
+            field_name: _round(signal_state.field(field_name)[y][x])
+            for field_name in token_fields
+        }
+    )
+    return cell
+
+
+def _signal_state_communication_token_fields(
+    signal_state: Any,
+) -> tuple[str, ...]:
+    field_names = getattr(signal_state, "field_names", None)
+    if not callable(field_names):
+        return ()
+    return tuple(
+        name for name in field_names() if name not in SIGNAL_FIELD_NAMES
+    )
 
 
 def _navigation_targets(
@@ -729,7 +883,11 @@ def _round(value: float) -> float:
     return round(float(value), 4)
 
 
-def _observation_input_values(observation: dict[str, object]) -> list[float]:
+def _observation_input_values(
+    observation: dict[str, object],
+    *,
+    communication_token_fields: tuple[str, ...] = (),
+) -> list[float]:
     self_state = observation.get("self")
     patch = observation.get("local_patch")
     navigation = observation.get("navigation")
@@ -741,11 +899,19 @@ def _observation_input_values(observation: dict[str, object]) -> list[float]:
         )
     if not isinstance(navigation, dict):
         raise ValueError("observation navigation section must be a mapping")
-    values = _self_input_values(self_state)
+    values = _self_input_values(
+        self_state,
+        communication_token_fields=communication_token_fields,
+    )
     for cell in patch:
         if not isinstance(cell, dict):
             raise ValueError("observation local_patch cells must be mappings")
-        values.extend(_patch_input_values(cell))
+        values.extend(
+            _patch_input_values(
+                cell,
+                communication_token_fields=communication_token_fields,
+            )
+        )
     for target in NAVIGATION_TARGETS:
         payload = navigation.get(target)
         if not isinstance(payload, dict):
@@ -755,9 +921,13 @@ def _observation_input_values(observation: dict[str, object]) -> list[float]:
     return values
 
 
-def _self_input_values(self_state: dict[str, object]) -> list[float]:
+def _self_input_values(
+    self_state: dict[str, object],
+    *,
+    communication_token_fields: tuple[str, ...] = (),
+) -> list[float]:
     support_values = _hydrology_support_values(self_state["hydrology_support_code"])
-    return [
+    values = [
         _unit_value(self_state["energy_ratio"]),
         _unit_value(self_state["hydration_ratio"]),
         _unit_value(self_state["health_ratio"]),
@@ -785,10 +955,19 @@ def _self_input_values(self_state: dict[str, object]) -> list[float]:
         _nonnegative_signal_value(self_state[COMMUNICATION_SIGNAL_FIELD]),
         _bool_value(self_state["mind_inheritance_available"]),
     ]
+    values.extend(
+        _nonnegative_signal_value(self_state[field_name])
+        for field_name in communication_token_fields
+    )
+    return values
 
 
-def _patch_input_values(cell: dict[str, object]) -> list[float]:
-    return [
+def _patch_input_values(
+    cell: dict[str, object],
+    *,
+    communication_token_fields: tuple[str, ...] = (),
+) -> list[float]:
+    values = [
         _offset_value(cell["dx"]),
         _offset_value(cell["dy"]),
         _bool_value(cell["in_bounds"]),
@@ -810,6 +989,11 @@ def _patch_input_values(cell: dict[str, object]) -> list[float]:
         _nonnegative_signal_value(cell[REPRODUCTIVE_SIGNAL_FIELD]),
         _nonnegative_signal_value(cell[COMMUNICATION_SIGNAL_FIELD]),
     ]
+    values.extend(
+        _nonnegative_signal_value(cell[field_name])
+        for field_name in communication_token_fields
+    )
+    return values
 
 
 def _navigation_input_values(payload: dict[str, object]) -> list[float]:
@@ -836,9 +1020,45 @@ def _pack_quantized_values(values: list[float]) -> bytes:
 
 
 def _validate_observation_input_header(payload: dict[str, object]) -> None:
-    if payload.get("schema_version") != OBSERVATION_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        OBSERVATION_SCHEMA_VERSION,
+        TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    }:
         raise ValueError("observation input schema_version is missing or stale")
-    if payload.get("encoder_version") != OBSERVATION_ENCODER_VERSION:
+    token_count = 0
+    expected_encoder_version = OBSERVATION_ENCODER_VERSION
+    if schema_version == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION:
+        token_count_value = payload.get("communication_token_count")
+        if (
+            isinstance(token_count_value, bool)
+            or not isinstance(token_count_value, int)
+            or token_count_value <= 0
+        ):
+            raise ValueError(
+                "observation input communication_token_count is missing or stale"
+            )
+        token_count = token_count_value
+        expected_fields = [
+            f"{COMMUNICATION_SIGNAL_FIELD}_token_{token_id}"
+            for token_id in range(token_count)
+        ]
+        if payload.get("communication_token_field_order") != expected_fields:
+            raise ValueError(
+                "observation input communication_token_field_order is missing "
+                "or stale"
+            )
+        expected_encoder_version = (
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+        )
+    elif (
+        "communication_token_count" in payload
+        or "communication_token_field_order" in payload
+    ):
+        raise ValueError(
+            "mind_observation_v3 input cannot declare communication token channels"
+        )
+    if payload.get("encoder_version") != expected_encoder_version:
         raise ValueError("observation input encoder_version is missing or stale")
     if payload.get("decoded_dtype") != OBSERVATION_INPUT_DTYPE:
         raise ValueError("observation input decoded_dtype is missing or stale")
@@ -849,7 +1069,11 @@ def _validate_observation_input_header(payload: dict[str, object]) -> None:
     if payload.get("value_range") != list(OBSERVATION_INPUT_VALUE_RANGE):
         raise ValueError("observation input value_range is missing or stale")
     shape = payload.get("shape")
-    if shape != [OBSERVATION_INPUT_VECTOR_SIZE]:
+    expected_size = (
+        OBSERVATION_INPUT_VECTOR_SIZE
+        + token_count * (1 + PATCH_CELL_COUNT)
+    )
+    if shape != [expected_size]:
         raise ValueError("observation input shape is missing or stale")
 
 

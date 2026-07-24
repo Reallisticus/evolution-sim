@@ -1,6 +1,26 @@
 from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
+from evolution_sim.env.contracts import (
+    SUMMARY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+)
+from evolution_sim.env.runtime.observations import (
+    TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+)
+from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_AGGREGATE_PROJECTION,
+    TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+    parse_communication_token_field_name,
+)
+from evolution_sim.env.runtime.trajectory import (
+    TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+)
+from evolution_sim.mind.policy_inputs import (
+    PolicyInputError,
+    ecological_policy_input_values,
+)
 
 
 class RuntimeSignalContractTests(RuntimeContractTestHelpers):
@@ -605,14 +625,308 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertEqual(len(world.communication_signal_emissions), 1)
         self.assertEqual(world.tick_signal_totals["communication_emissions"], 1.0)
         self.assertEqual(world.run_signal_totals["communication_emissions"], 1.0)
-        self.assertEqual(event["field_name"], "communication_signal")
+        self.assertEqual(event["field_name"], "communication_signal_token_1")
         self.assertEqual(event["source_agent_id"], agent.agent_id)
         self.assertEqual(event["token_id"], 1)
         self.assertEqual(event["profile_index"], 1)
         self.assertFalse(event["policy_visible"])
         self.assertGreater(signal_state.communication_signal[agent.y][agent.x], 0.0)
+        self.assertEqual(len(signal_state.communication_token_signals), 4)
+        self.assertEqual(
+            signal_state.communication_token_signals[0][agent.y][agent.x],
+            0.0,
+        )
+        self.assertGreater(
+            signal_state.communication_token_signals[1][agent.y][agent.x],
+            0.0,
+        )
         self.assertEqual(signal_state.reproductive_signal[agent.y][agent.x], 0.0)
         self.assertGreater(observation["self"]["communication_signal"], 0.0)
+        self.assertEqual(
+            observation["self"]["communication_signal_token_0"],
+            0.0,
+        )
+        self.assertGreater(
+            observation["self"]["communication_signal_token_1"],
+            0.0,
+        )
+
+    def test_opaque_communication_tokens_have_distinct_public_spatial_channels(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=2,
+            communication_profiles_per_token=1,
+            communication_signal_radius=0,
+            communication_signal_duration_ticks=3,
+            communication_signal_base_intensity=0.2,
+            communication_signal_trait_intensity_bonus=0.3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        token_0_source = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            lineage_id=1,
+            genome=genome,
+        )
+        token_1_source = self._place_ready_agent(
+            world,
+            x=3,
+            y=2,
+            lineage_id=2,
+            genome=genome,
+        )
+
+        for agent, action in (
+            (token_0_source, "signal_0_profile_0"),
+            (token_1_source, "signal_1_profile_0"),
+        ):
+            mask = build_action_mask(world._action_mask_context(agent))
+            _, outcome = world._resolve_action_with_outcome(
+                agent,
+                action,
+                observation_action_mask=mask,
+                resolution_action_mask=mask,
+            )
+            self.assertTrue(outcome["signal"]["emitted"])
+
+        state = world._current_signal_state()
+        observation = build_observation(
+            world,
+            token_0_source,
+            observation_context=world._observation_context(token_0_source),
+        )
+        encoded = encode_observation_input(observation)
+        decoded = decode_observation_input(encoded)
+        contract = observation_contract(signal_config)
+        policy_input = contract["policy_input"]
+        self_fields = policy_input["self_input_fields"]
+        patch_fields = policy_input["patch_input_fields"]
+        token_1_patch_index = 2 * 5 + 4
+        token_1_value_index = (
+            len(self_fields)
+            + token_1_patch_index * len(patch_fields)
+            + patch_fields.index("communication_signal_token_1")
+        )
+
+        self.assertGreater(state.communication_signal[2][1], 0.0)
+        self.assertGreater(state.communication_signal[2][3], 0.0)
+        self.assertGreater(state.field("communication_signal_token_0")[2][1], 0.0)
+        self.assertEqual(state.field("communication_signal_token_0")[2][3], 0.0)
+        self.assertEqual(state.field("communication_signal_token_1")[2][1], 0.0)
+        self.assertGreater(state.field("communication_signal_token_1")[2][3], 0.0)
+        self.assertGreater(
+            observation["self"]["communication_signal_token_0"],
+            0.0,
+        )
+        self.assertEqual(
+            observation["self"]["communication_signal_token_1"],
+            0.0,
+        )
+        token_1_patch = next(
+            cell
+            for cell in observation["local_patch"]
+            if cell["dx"] == 2 and cell["dy"] == 0
+        )
+        self.assertEqual(token_1_patch["communication_signal_token_0"], 0.0)
+        self.assertGreater(token_1_patch["communication_signal_token_1"], 0.0)
+        self.assertEqual(
+            observation["schema_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            encoded["encoder_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+        )
+        self.assertEqual(encoded["communication_token_count"], 2)
+        self.assertEqual(
+            encoded["communication_token_field_order"],
+            [
+                "communication_signal_token_0",
+                "communication_signal_token_1",
+            ],
+        )
+        self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE + 52])
+        self.assertGreater(decoded[token_1_value_index], 0.0)
+        with self.assertRaisesRegex(
+            PolicyInputError,
+            "unexpected vector size",
+        ):
+            ecological_policy_input_values(encoded)
+
+    def test_token_observation_encoder_rejects_noncanonical_field_aliases(
+        self,
+    ) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_token_count=2,
+                    communication_profiles_per_token=1,
+                ),
+            )
+        )
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+        observation["self"]["communication_signal_token_00"] = observation[
+            "self"
+        ].pop("communication_signal_token_0")
+        for cell in observation["local_patch"]:
+            cell["communication_signal_token_00"] = cell.pop(
+                "communication_signal_token_0"
+            )
+
+        self.assertIsNone(
+            parse_communication_token_field_name(
+                "communication_signal_token_00"
+            )
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ):
+            encode_observation_input(observation)
+
+    def test_tokenized_signal_contracts_are_versioned_without_default_drift(
+        self,
+    ) -> None:
+        default_result = SimulationWorld(WorldConfig(seed=7, max_ticks=2)).run()
+        default_signal_contract = default_result.viewer["trajectory"][
+            "observation_contract"
+        ]["signal_contract"]
+        default_signal_fields = default_result.viewer["frames"][0]["signal_fields"]
+        default_record = default_result.viewer["trajectory"]["records"][0]
+
+        self.assertEqual(
+            default_result.summary["summary_schema_version"],
+            SUMMARY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_result.viewer["trajectory"]["schema_version"],
+            TRAJECTORY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_result.viewer["trajectory"]["observation_schema_version"],
+            OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_signal_contract["schema_version"],
+            SIGNAL_CONTRACT_VERSION,
+        )
+        self.assertNotIn(
+            "communication_token_observation",
+            default_signal_contract,
+        )
+        self.assertEqual(
+            set(default_signal_fields),
+            {"reproductive_signal", "communication_signal"},
+        )
+        self.assertEqual(
+            default_record["observation_input"]["shape"],
+            [OBSERVATION_INPUT_VECTOR_SIZE],
+        )
+
+        enabled_config = WorldConfig(
+            seed=7,
+            max_ticks=2,
+            signals=SignalConfig(
+                communication_signal_emission_enabled=True,
+                communication_token_count=2,
+                communication_profiles_per_token=1,
+            ),
+        )
+        first = SimulationWorld(enabled_config).run()
+        second = SimulationWorld(copy.deepcopy(enabled_config)).run()
+        trajectory = first.viewer["trajectory"]
+        tokenized_signal_contract = trajectory["observation_contract"][
+            "signal_contract"
+        ]
+        token_fields = {
+            "communication_signal_token_0",
+            "communication_signal_token_1",
+        }
+
+        self.assertEqual(first.summary, second.summary)
+        self.assertEqual(first.events, second.events)
+        self.assertEqual(first.viewer, second.viewer)
+        self.assertEqual(
+            first.summary["summary_schema_version"],
+            TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            trajectory["schema_version"],
+            TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            trajectory["observation_schema_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["schema_version"],
+            TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+        )
+        self.assertFalse(
+            tokenized_signal_contract[
+                "communication_tokens_have_simulator_assigned_meaning"
+            ]
+        )
+        self.assertTrue(
+            tokenized_signal_contract["communication_token_observation"][
+                "policy_visible"
+            ]
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "aggregation"
+            ],
+            COMMUNICATION_AGGREGATE_PROJECTION,
+        )
+        self.assertEqual(
+            trajectory["observation_contract"]["communication_token_channels"][
+                "aggregate_projection"
+            ],
+            COMMUNICATION_AGGREGATE_PROJECTION,
+        )
+        self.assertEqual(
+            set(first.viewer["frames"][0]["signal_fields"]),
+            {
+                "reproductive_signal",
+                "communication_signal",
+                *token_fields,
+            },
+        )
+        self.assertTrue(
+            token_fields.issubset(
+                set(first.summary["signal_field_stats_at_end"])
+            )
+        )
+        self.assertTrue(
+            token_fields.issubset(
+                set(first.viewer["analytics"]["signal_fields"])
+            )
+        )
+        self.assertNotIn(
+            "communication_signal",
+            trajectory["reward_contract"]["component_bounds"],
+        )
 
     def test_signal_contract_declares_debug_only_profile_provenance(self) -> None:
         signal_config = SignalConfig(

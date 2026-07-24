@@ -238,7 +238,19 @@ surface. An opt-in `communication_signal_emission_enabled` path can unmask
 trait-gated opaque signal actions and emit numeric communication fields with
 debug-only provenance; the default Foundation config keeps communication
 emission disabled, the token/profile counts are explicitly bounded, and the
-default heuristic never emits communication tokens.
+default heuristic never emits communication tokens. Enabled tokens now diffuse
+into separately observable public spatial channels in stable token-id order,
+while the aggregate communication field is retained for compatibility. No
+token receives simulator-assigned semantics or reward. The token-aware path has
+explicitly versioned signal, observation/encoder, trajectory, and summary
+contracts; default-disabled runs retain the prior observation size and contract
+versions, and fixed-size legacy recurrent artifacts reject the expanded input
+rather than silently padding or truncating it. Enabling token observations in a
+trainable or promoted controller therefore requires one coordinated migration:
+the signal config, observation and encoder versions, recurrent input shape,
+artifact manifest, replay writer/reader, validators, and viewer must all bind
+the same ordered token count. A partial migration fails closed; token-aware
+records are never projected into a legacy learner input.
 
 ## Genome Structure
 
@@ -626,8 +638,10 @@ X/Y/Z and hybridization slices:
    expose the field. Communication tokens remain reserved and opaque.
 7. Communication substrate with trait-gated opaque emission. Implemented as an
    opt-in config path: communication actions remain disabled by default, but can
-   be unmasked by `SignalConfig` plus agent signal-emission traits and emit
-   opaque numeric fields without simulator-assigned token meanings.
+   be unmasked by `SignalConfig` plus agent signal-emission traits. Each enabled
+   token emits into a distinct public numeric spatial channel, with the legacy
+   aggregate field retained, and without simulator-assigned token meanings or
+   reward.
 8. Proto-role and X/Y/Z stage system. Initial scaffold implemented:
    high-threshold reproductive genome capabilities classify Stage 2 proto-role
    expression and Stage 3 X/Y/Z expression, update reproductive group stages,
