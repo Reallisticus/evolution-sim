@@ -140,7 +140,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", default="1,8")
     parser.add_argument("--tasks", type=int, default=2)
     parser.add_argument("--tapes", type=int, default=8)
-    parser.add_argument("--horizons", default="8,32,64")
+    parser.add_argument("--horizons", default="16,48")
     parser.add_argument("--branch-ticks", default="16,40,64,72")
     parser.add_argument("--terminal-target-tick", type=int, default=120)
     parser.add_argument("--encoder-size", type=int, default=192)
@@ -170,6 +170,11 @@ def main() -> None:
             raise SystemExit(f"{field} must be positive")
     if args.model_seed < 0:
         raise SystemExit("model-seed must be nonnegative")
+    if max(branch_ticks) + max(horizons) > args.terminal_target_tick:
+        raise SystemExit(
+            "largest branch tick plus largest relative horizon must not exceed "
+            "terminal-target-tick"
+        )
 
     torch.set_num_threads(1)
     model = PublicRecurrentActorCritic(
