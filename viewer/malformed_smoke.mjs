@@ -1,6 +1,23 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
-import { REQUIRED_AGENT_FIELDS } from "./contracts.generated.mjs";
+import { zlibSync } from "./vendor/fflate-0.8.3.mjs";
+import {
+  ACTION_COMMUNICATION_MEANING,
+  ACTION_COMMUNICATION_SPEC_FIXED_FIELDS,
+  ACTION_DEBUG_KEY_ENCODING,
+  ACTION_MATE_ACTION_KEY,
+  ACTION_NON_COMMUNICATION_SPECS,
+  ACTION_POLICY_ID_ENCODING,
+  OBSERVATION_INPUT_VECTOR_SIZE,
+  OBSERVATION_PATCH_FIELDS,
+  OBSERVATION_PATCH_INPUT_FIELDS,
+  OBSERVATION_SELF_FIELDS,
+  OBSERVATION_SELF_INPUT_FIELDS,
+  PATCH_CELL_COUNT,
+  REQUIRED_AGENT_FIELDS,
+  REWARD_CONTRACT,
+  SUMMARY_SCHEMA_VERSION,
+} from "./contracts.generated.mjs";
 import { ensureViewerServer, stopViewerServer } from "./smoke_server.mjs";
 
 const outputDir = "output/playwright/malformed-replays";
@@ -330,6 +347,7 @@ function validPayload() {
     events: [],
     summary: {
       run_id: "malformed-smoke",
+      summary_schema_version: SUMMARY_SCHEMA_VERSION,
       ticks_executed: 1,
     },
     viewer: {
@@ -364,11 +382,11 @@ function validPayload() {
         genome_recombination_contract: {
           schema_version: "genome_recombination_contract_v1",
         },
-        reward_contract: {
-          schema_version: "mind_reward_v1",
-        },
+        reward_contract: JSON.parse(JSON.stringify(REWARD_CONTRACT)),
         observation_contract: {
           schema_version: "mind_observation_v3",
+          self_fields: [...OBSERVATION_SELF_FIELDS],
+          patch_fields: [...OBSERVATION_PATCH_FIELDS],
           policy_input: observationPolicyInput(),
           action_names: actionNames(),
           action_contract: actionContract(),
@@ -401,7 +419,7 @@ function validPayload() {
               schema_version: "mind_action_outcome_v2",
               signal: signalOutcome(),
             },
-            reward: { schema_version: "mind_reward_v1" },
+            reward: reward(),
           },
         ],
       },
@@ -416,9 +434,9 @@ function observationInput() {
     decoded_dtype: "float32",
     storage_dtype: "int16",
     storage_encoding: "zlib_base64_little_endian_int16",
-    shape: [542],
+    shape: [OBSERVATION_INPUT_VECTOR_SIZE],
     value_range: [-1, 1],
-    data: "smoke",
+    data: compressedZeroInt16(OBSERVATION_INPUT_VECTOR_SIZE),
   };
 }
 
@@ -428,8 +446,30 @@ function observationPolicyInput() {
     decoded_dtype: "float32",
     storage_dtype: "int16",
     storage_encoding: "zlib_base64_little_endian_int16",
-    shape: [542],
+    shape: [OBSERVATION_INPUT_VECTOR_SIZE],
     value_range: [-1, 1],
+    self_input_fields: [...OBSERVATION_SELF_INPUT_FIELDS],
+    patch_input_fields: [...OBSERVATION_PATCH_INPUT_FIELDS],
+    patch_cell_count: PATCH_CELL_COUNT,
+  };
+}
+
+function compressedZeroInt16(size) {
+  const bytes = new Uint8Array(size * Int16Array.BYTES_PER_ELEMENT);
+  return Buffer.from(zlibSync(bytes)).toString("base64");
+}
+
+function reward() {
+  const components = Object.fromEntries(
+    Object.keys(REWARD_CONTRACT.component_bounds).map((component) => [
+      component,
+      component === "survival_continuation" ? 0.02 : 0,
+    ]),
+  );
+  return {
+    schema_version: "mind_reward_v1",
+    components,
+    total: 0.02,
   };
 }
 
@@ -541,9 +581,11 @@ function signalEmissionFields() {
 function signalContract() {
   return {
     schema_version: "foundation_signal_contract_v2",
+    fields: ["reproductive_signal", "communication_signal"],
     signal_substrate_enabled: true,
     reproductive_signal_emission_enabled: true,
     communication_signal_emission_enabled: false,
+    communication_tokens_have_simulator_assigned_meaning: false,
     profile_metadata_policy_visible: false,
     emission_debug_metadata_fields: signalEmissionFields(),
     communication_token_count: 4,
@@ -568,42 +610,41 @@ function signalOutcome() {
 
 function actionContract() {
   const communicationActions = communicationActionKeys();
+  const communicationSpecs = communicationActions.map((key, index) => ({
+    action_id: ACTION_NON_COMMUNICATION_SPECS.length + index,
+    key,
+    ...ACTION_COMMUNICATION_SPEC_FIXED_FIELDS,
+    active: false,
+    debug_label: key,
+  }));
+  const actions = [
+    ...ACTION_NON_COMMUNICATION_SPECS.map((spec) => ({ ...spec })),
+    ...communicationSpecs,
+  ];
   return {
     schema_version: "mind_action_contract_v1",
-    active_action_keys: [
-      "stay",
-      "eat",
-      "drink",
-      "move_north",
-      "move_south",
-      "move_east",
-      "move_west",
-      "attack_north",
-      "attack_south",
-      "attack_east",
-      "attack_west",
-    ],
+    policy_id_encoding: ACTION_POLICY_ID_ENCODING,
+    debug_key_encoding: ACTION_DEBUG_KEY_ENCODING,
+    active_action_keys: actions
+      .filter((spec) => spec.active)
+      .map((spec) => spec.key),
+    reserved_action_keys: actions
+      .filter((spec) => spec.reserved)
+      .map((spec) => spec.key),
+    mate_action_key: ACTION_MATE_ACTION_KEY,
     communication: {
       token_count: 4,
       profiles_per_token: 2,
       action_keys: communicationActions,
       emission_enabled: false,
+      meaning: ACTION_COMMUNICATION_MEANING,
     },
-    reserved_action_keys: ["mate", ...communicationActions],
+    actions,
   };
 }
 
 function actionNames() {
-  const movementActions = ["move_north", "move_south", "move_east", "move_west"];
-  return [
-    "stay",
-    "eat",
-    "drink",
-    ...movementActions,
-    ...movementActions.map((action) => action.replace("move_", "attack_")),
-    "mate",
-    ...communicationActionKeys(),
-  ];
+  return actionContract().actions.map((spec) => spec.key);
 }
 
 function communicationActionKeys() {
@@ -621,7 +662,9 @@ function reservedProfiles() {
   for (let tokenIndex = 0; tokenIndex < 4; tokenIndex += 1) {
     for (let profileIndex = 0; profileIndex < 2; profileIndex += 1) {
       profiles.push({
+        profile_id: `communication_token_${tokenIndex}_profile_${profileIndex}`,
         field_name: "communication_signal",
+        source_kind: "reserved_opaque_communication",
         token_id: tokenIndex,
         profile_index: profileIndex,
         policy_visible: false,

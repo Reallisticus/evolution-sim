@@ -1,6 +1,21 @@
 from __future__ import annotations
 
+from typing import Any
+
 SUMMARY_SCHEMA_VERSION = "foundation_summary_v1"
+TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION = "foundation_summary_v2"
+
+
+def summary_schema_version(signal_config: Any | None = None) -> str:
+    if signal_config is None:
+        return SUMMARY_SCHEMA_VERSION
+    from evolution_sim.env.runtime.signals import (
+        communication_signal_emission_enabled,
+    )
+
+    if communication_signal_emission_enabled(signal_config):
+        return TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION
+    return SUMMARY_SCHEMA_VERSION
 
 REPLAY_TOP_LEVEL_KEYS: tuple[str, ...] = (
     "run_id",

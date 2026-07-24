@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
+import json
 import unittest
 from unittest.mock import patch
 
@@ -29,8 +30,10 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_counterfactual_collection import (
         RECURRENT_COUNTERFACTUAL_BRANCH_SELECTION_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
         RECURRENT_COUNTERFACTUAL_MULTI_TAPE_COLLECTION_CONTRACT_VERSION,
         RECURRENT_COUNTERFACTUAL_SOURCE_SAMPLING_SEED_NAMESPACE,
+        RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION,
         RecurrentCounterfactualCollectionConfig,
         RecurrentCounterfactualCollectionError,
         RecurrentCounterfactualCollectionTask,
@@ -1231,6 +1234,199 @@ class RecurrentCounterfactualCollectionTests(unittest.TestCase):
             "source branch-row schema",
         ):
             validate_recurrent_counterfactual_collection_result(v4_source_tampered)
+
+    def test_eight_workers_parallelize_two_eight_tape_bundles_exactly(
+        self,
+    ) -> None:
+        curriculum_seed = SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"][0]
+        tasks = tuple(
+            RecurrentCounterfactualCollectionTask(
+                task_id=f"scale-tape-parallel-{index}",
+                seed_role="scale_curriculum",
+                scenario="carrion_only",
+                environment_seed=curriculum_seed,
+                branch_tick_candidates=(0,),
+                source_policy_sampling_identity=(
+                    f"scale-tape-parallel-{index}:source"
+                ),
+                branch_selection_identity=(
+                    f"scale-tape-parallel-{index}:selection"
+                ),
+                branch_tick_stratum_index=0,
+            )
+            for index in range(2)
+        )
+        config = RecurrentCounterfactualCollectionConfig(
+            horizons=(1, 2),
+            gamma=0.99,
+            continuation_tape_count=8,
+            terminal_target_world_tick=3,
+            uncertainty_penalty=0.25,
+        )
+        sequential = collect_recurrent_counterfactual_bundles(
+            self.model,
+            tasks,
+            artifact_digest=self.artifact_digest,
+            config=config,
+            workers=1,
+        )
+        parallel = collect_recurrent_counterfactual_bundles(
+            self.model,
+            tasks,
+            artifact_digest=self.artifact_digest,
+            config=config,
+            workers=8,
+        )
+
+        work_items = collection_module._tape_chunk_work_items(
+            tasks,
+            tape_count=8,
+            workers=8,
+        )
+        self.assertEqual(len(work_items), 8)
+        self.assertGreater(len(work_items), len(tasks))
+        self.assertEqual(parallel.workers_requested, 8)
+        self.assertEqual(parallel.workers_resolved, 8)
+        self.assertEqual(sequential.workers_resolved, 1)
+        self.assertEqual(
+            parallel.execution_contract_version,
+            RECURRENT_COUNTERFACTUAL_TAPE_PARALLEL_EXECUTION_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            sequential.execution_contract_version,
+            RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
+        )
+        self.assertIsNone(sequential.execution_compute)
+        self.assertNotIn(
+            "execution_contract_version",
+            recurrent_counterfactual_collection_result_payload(sequential),
+        )
+        self.assertNotIn(
+            "execution_compute",
+            recurrent_counterfactual_collection_result_payload(sequential),
+        )
+        self.assertIsNotNone(parallel.execution_compute)
+        assert parallel.execution_compute is not None
+        self.assertEqual(
+            parallel.execution_compute["tape_chunk_work_item_count"],
+            len(work_items),
+        )
+        self.assertEqual(
+            parallel.execution_compute["split_bundle_count"],
+            len(tasks),
+        )
+        self.assertEqual(
+            parallel.execution_compute["maximum_chunks_per_bundle"],
+            4,
+        )
+        self.assertGreater(
+            parallel.execution_compute["duplicated_source_tick_executions"],
+            0,
+        )
+        self.assertGreater(
+            parallel.execution_compute[
+                "duplicated_legacy_actual_continuation_tick_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            parallel.execution_compute["total_actual_simulator_tick_executions"],
+            (
+                parallel.execution_compute["source_tick_executions"]
+                + parallel.execution_compute[
+                    "legacy_actual_continuation_tick_count"
+                ]
+                + parallel.execution_compute[
+                    "multi_tape_actual_continuation_tick_count"
+                ]
+            ),
+        )
+        sequential_bytes = tuple(
+            json.dumps(
+                collection_module._bundle_payload(bundle),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            for bundle in sequential.bundles
+        )
+        parallel_bytes = tuple(
+            json.dumps(
+                collection_module._bundle_payload(bundle),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            for bundle in parallel.bundles
+        )
+        self.assertEqual(parallel_bytes, sequential_bytes)
+        self.assertEqual(
+            tuple(bundle.exact_digest for bundle in parallel.bundles),
+            tuple(bundle.exact_digest for bundle in sequential.bundles),
+        )
+        self.assertEqual(parallel.aggregate_compute, sequential.aggregate_compute)
+        self.assertNotEqual(parallel.exact_digest, sequential.exact_digest)
+        validate_recurrent_counterfactual_collection_result(
+            parallel,
+            model=self.model,
+            artifact_digest=self.artifact_digest,
+        )
+        execution_compute_tampered = deepcopy(parallel)
+        assert execution_compute_tampered.execution_compute is not None
+        execution_compute_tampered.execution_compute[
+            "duplicated_source_tick_executions"
+        ] += 1
+        self._rehash_bundle_and_result(execution_compute_tampered)
+        with self.assertRaisesRegex(
+            RecurrentCounterfactualCollectionError,
+            "execution compute arithmetic",
+        ):
+            validate_recurrent_counterfactual_collection_result(
+                execution_compute_tampered
+            )
+
+        legacy = deepcopy(parallel)
+        object.__setattr__(
+            legacy,
+            "execution_contract_version",
+            RECURRENT_COUNTERFACTUAL_LEGACY_EXECUTION_CONTRACT_VERSION,
+        )
+        object.__setattr__(legacy, "execution_compute", None)
+        object.__setattr__(legacy, "workers_resolved", len(tasks))
+        legacy_payload = collection_module._result_payload_without_validation(legacy)
+        legacy_payload.pop("exact_digest")
+        object.__setattr__(
+            legacy,
+            "exact_digest",
+            stable_payload_digest(legacy_payload),
+        )
+        validate_recurrent_counterfactual_collection_result(legacy)
+        self.assertNotIn(
+            "execution_contract_version",
+            recurrent_counterfactual_collection_result_payload(legacy),
+        )
+
+        conservative_single_bundle = collection_module._tape_chunk_work_items(
+            tasks[:1],
+            tape_count=8,
+            workers=8,
+        )
+        self.assertEqual(len(conservative_single_bundle), 4)
+        self.assertTrue(
+            all(
+                len(work_item.tape_indices)
+                >= collection_module.MIN_RECURRENT_COUNTERFACTUAL_TAPES_PER_CHUNK
+                for work_item in conservative_single_bundle
+            )
+        )
+        self.assertFalse(
+            collection_module._tape_parallelism_used(
+                workers=8,
+                task_count=1,
+                config=RecurrentCounterfactualCollectionConfig(
+                    horizons=(1, 2),
+                    continuation_tape_count=2,
+                ),
+            )
+        )
 
     def test_scale_multi_tape_collection_rejects_implicit_tick_strata(self) -> None:
         task = RecurrentCounterfactualCollectionTask(
