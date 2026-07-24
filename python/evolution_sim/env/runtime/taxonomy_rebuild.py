@@ -249,7 +249,7 @@ def build_replay_analytics(
                 ]
                 for metric in ("avg", "max", "active_tiles")
             }
-            for field_name in SIGNAL_FIELD_NAMES
+            for field_name in _reported_signal_field_names(frames)
         },
         "signal_flow": {
             "reproductive_emissions": [
@@ -386,6 +386,18 @@ def build_replay_analytics(
             ],
         },
     }
+
+
+def _reported_signal_field_names(
+    frames: list[dict[str, object]],
+) -> tuple[str, ...]:
+    if not frames:
+        return SIGNAL_FIELD_NAMES
+    first_stats = frames[0].get("signal_field_stats")
+    if not isinstance(first_stats, dict):
+        return SIGNAL_FIELD_NAMES
+    names = tuple(str(name) for name in first_stats)
+    return names or SIGNAL_FIELD_NAMES
 
 
 def rebuild_taxonomy_summary_and_analytics(

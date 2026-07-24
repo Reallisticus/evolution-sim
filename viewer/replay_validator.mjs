@@ -1,7 +1,19 @@
+import { unzlibSync } from "./vendor/fflate-0.8.3.mjs";
+
 import {
+  ACTION_COMMUNICATION_FIELDS,
+  ACTION_COMMUNICATION_MEANING,
+  ACTION_COMMUNICATION_SPEC_FIXED_FIELDS,
   ACTION_CONTRACT_VERSION,
+  ACTION_CONTRACT_FIELDS,
+  ACTION_DEBUG_KEY_ENCODING,
+  ACTION_MATE_ACTION_KEY,
+  ACTION_NON_COMMUNICATION_SPECS,
   ACTION_OUTCOME_SCHEMA_VERSION,
+  ACTION_POLICY_ID_ENCODING,
+  ACTION_SPEC_FIELDS,
   ASEXUAL_REPRODUCTION_MODE,
+  COMMUNICATION_AGGREGATE_PROJECTION,
   GENOME_RECOMBINATION_CONTRACT_VERSION,
   OBSERVATION_ENCODER_VERSION,
   OBSERVATION_INPUT_DECODED_DTYPE,
@@ -9,7 +21,12 @@ import {
   OBSERVATION_INPUT_STORAGE_ENCODING,
   OBSERVATION_INPUT_VALUE_RANGE,
   OBSERVATION_INPUT_VECTOR_SIZE,
+  OBSERVATION_PATCH_FIELDS,
+  OBSERVATION_PATCH_INPUT_FIELDS,
   OBSERVATION_SCHEMA_VERSION,
+  OBSERVATION_SELF_FIELDS,
+  OBSERVATION_SELF_INPUT_FIELDS,
+  PATCH_CELL_COUNT,
   POLICY_INTERFACE_VERSION,
   REPRODUCTION_EVENT_SCHEMA_VERSION,
   REPRODUCTIVE_EXPRESSIONS,
@@ -25,9 +42,18 @@ import {
   REQUIRED_SIGNAL_FIELDS,
   REQUIRED_SIGNAL_OUTCOME_FIELDS,
   REQUIRED_TRAJECTORY_RECORD_FIELDS,
+  REWARD_CONTRACT,
+  REWARD_RECORD_FIELDS,
   REWARD_SCHEMA_VERSION,
   SEXUAL_REPRODUCTION_MODE,
   SIGNAL_CONTRACT_VERSION,
+  SUMMARY_SCHEMA_VERSION,
+  TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+  TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+  TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+  TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION,
+  TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+  TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
   TRAJECTORY_SCHEMA_VERSION,
 } from "./contracts.generated.mjs";
 
@@ -41,7 +67,8 @@ export function validateReplayPayload(payload) {
   const { summary, viewer } = payload;
   const map = validateMap(viewer.map);
   validateAgentEncoding(viewer.agent_encoding);
-  validateTrajectory(viewer.trajectory);
+  const trajectoryContract = validateTrajectory(viewer.trajectory);
+  validateSummaryContract(summary, trajectoryContract.tokenizedCommunication);
   validateCatalogs(viewer, viewer.trajectory, payload.events);
   validateFrames(
     viewer.frames,
@@ -574,16 +601,41 @@ function stageRank(stage) {
   return index >= 0 ? index : 0;
 }
 
+function validateSummaryContract(summary, tokenizedCommunication) {
+  validateVersion(
+    summary.summary_schema_version,
+    tokenizedCommunication
+      ? TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION
+      : SUMMARY_SCHEMA_VERSION,
+    "Replay summary.summary_schema_version",
+  );
+}
+
 function validateTrajectory(trajectory) {
   assertObject(trajectory, "Replay viewer.trajectory");
+  const tokenizedCommunication =
+    trajectory.schema_version ===
+    TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION;
+  const expectedTrajectorySchema = tokenizedCommunication
+    ? TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION
+    : TRAJECTORY_SCHEMA_VERSION;
+  const expectedObservationSchema = tokenizedCommunication
+    ? TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+    : OBSERVATION_SCHEMA_VERSION;
+  const expectedObservationEncoder = tokenizedCommunication
+    ? TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+    : OBSERVATION_ENCODER_VERSION;
+  const expectedSignalSchema = tokenizedCommunication
+    ? TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION
+    : SIGNAL_CONTRACT_VERSION;
   validateVersion(
     trajectory.schema_version,
-    TRAJECTORY_SCHEMA_VERSION,
+    expectedTrajectorySchema,
     "Replay viewer.trajectory.schema_version",
   );
   validateVersion(
     trajectory.observation_schema_version,
-    OBSERVATION_SCHEMA_VERSION,
+    expectedObservationSchema,
     "Replay viewer.trajectory.observation_schema_version",
   );
   validateVersion(
@@ -624,10 +676,22 @@ function validateTrajectory(trajectory) {
   const observationContract = trajectory.observation_contract;
   validateVersion(
     observationContract.schema_version,
-    OBSERVATION_SCHEMA_VERSION,
+    expectedObservationSchema,
     "Replay viewer.trajectory.observation_contract.schema_version",
   );
-  validateObservationPolicyInput(observationContract.policy_input);
+  const tokenFields = validateCommunicationTokenObservationContracts(
+    observationContract,
+    tokenizedCommunication,
+  );
+  const expectedObservationSize =
+    OBSERVATION_INPUT_VECTOR_SIZE +
+    tokenFields.length * (1 + PATCH_CELL_COUNT);
+  validateObservationPolicyInput(
+    observationContract.policy_input,
+    expectedObservationEncoder,
+    expectedObservationSize,
+    tokenFields,
+  );
   validateSchemaContract(
     trajectory.reproductive_group_contract,
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,
@@ -638,9 +702,8 @@ function validateTrajectory(trajectory) {
     GENOME_RECOMBINATION_CONTRACT_VERSION,
     "Replay viewer.trajectory.genome_recombination_contract",
   );
-  validateSchemaContract(
+  validateRewardContract(
     trajectory.reward_contract,
-    REWARD_SCHEMA_VERSION,
     "Replay viewer.trajectory.reward_contract",
   );
   const signalContract = trajectory.observation_contract.signal_contract;
@@ -650,11 +713,15 @@ function validateTrajectory(trajectory) {
   );
   validateVersion(
     signalContract.schema_version,
-    SIGNAL_CONTRACT_VERSION,
+    expectedSignalSchema,
     "Replay viewer.trajectory.observation_contract.signal_contract.schema_version",
   );
   validateSignalEnablementContract(signalContract);
-  validateSignalCommunicationContract(signalContract);
+  validateSignalCommunicationContract(
+    signalContract,
+    tokenizedCommunication,
+    tokenFields,
+  );
   if (signalContract.profile_metadata_policy_visible !== false) {
     throw new Error(
       "Replay signal contract must mark profile metadata as policy-hidden.",
@@ -684,11 +751,26 @@ function validateTrajectory(trajectory) {
   );
 
   for (const [index, record] of trajectory.records.entries()) {
-    validateTrajectoryRecord(record, index);
+    validateTrajectoryRecord(
+      record,
+      index,
+      expectedObservationSchema,
+      expectedObservationEncoder,
+      expectedObservationSize,
+      tokenFields,
+    );
   }
+  return { tokenizedCommunication };
 }
 
-function validateTrajectoryRecord(record, index) {
+function validateTrajectoryRecord(
+  record,
+  index,
+  expectedObservationSchema,
+  expectedObservationEncoder,
+  expectedObservationSize,
+  tokenFields,
+) {
   const path = `Replay viewer.trajectory.records[${index}]`;
   assertObject(record, path);
   for (const field of REQUIRED_TRAJECTORY_RECORD_FIELDS) {
@@ -698,12 +780,19 @@ function validateTrajectoryRecord(record, index) {
   }
   validateVersion(
     record.observation_schema,
-    OBSERVATION_SCHEMA_VERSION,
+    expectedObservationSchema,
     `${path}.observation_schema`,
   );
   assertInteger(record.tick, `${path}.tick`);
   assertInteger(record.agent_id, `${path}.agent_id`);
-  validateObservationInput(record.observation_input, `${path}.observation_input`);
+  validateObservationInput(
+    record.observation_input,
+    `${path}.observation_input`,
+    expectedObservationSchema,
+    expectedObservationEncoder,
+    expectedObservationSize,
+    tokenFields,
+  );
   assertObject(record.observation_metadata, `${path}.observation_metadata`);
   if (record.observation_metadata.agent_id !== record.agent_id) {
     throw new Error(`${path}.observation_metadata.agent_id must match record agent_id.`);
@@ -725,24 +814,26 @@ function validateTrajectoryRecord(record, index) {
   if (typeof record.outcome.signal.emitted !== "boolean") {
     throw new Error("Replay trajectory signal outcome must declare emitted.");
   }
-  assertObject(record.reward, `${path}.reward`);
-  validateVersion(
-    record.reward.schema_version,
-    REWARD_SCHEMA_VERSION,
-    `${path}.reward.schema_version`,
-  );
+  validateReward(record.reward, `${path}.reward`);
 }
 
-function validateObservationInput(observationInput, path) {
+function validateObservationInput(
+  observationInput,
+  path,
+  expectedObservationSchema,
+  expectedObservationEncoder,
+  expectedObservationSize,
+  tokenFields,
+) {
   assertObject(observationInput, path);
   validateVersion(
     observationInput.schema_version,
-    OBSERVATION_SCHEMA_VERSION,
+    expectedObservationSchema,
     `${path}.schema_version`,
   );
   validateVersion(
     observationInput.encoder_version,
-    OBSERVATION_ENCODER_VERSION,
+    expectedObservationEncoder,
     `${path}.encoder_version`,
   );
   validateVersion(
@@ -762,7 +853,7 @@ function validateObservationInput(observationInput, path) {
   );
   assertExactNumberArray(
     observationInput.shape,
-    [OBSERVATION_INPUT_VECTOR_SIZE],
+    [expectedObservationSize],
     `${path}.shape`,
   );
   assertExactNumberArray(
@@ -773,14 +864,39 @@ function validateObservationInput(observationInput, path) {
   if (typeof observationInput.data !== "string") {
     throw new Error(`${path}.data must be a string.`);
   }
+  validateObservationData(
+    observationInput.data,
+    expectedObservationSize * Int16Array.BYTES_PER_ELEMENT,
+    `${path}.data`,
+  );
+  if (tokenFields.length > 0) {
+    if (observationInput.communication_token_count !== tokenFields.length) {
+      throw new Error(`${path}.communication_token_count must match the contract.`);
+    }
+    assertExactStringArray(
+      observationInput.communication_token_field_order,
+      tokenFields,
+      `${path}.communication_token_field_order`,
+    );
+  } else if (
+    "communication_token_count" in observationInput ||
+    "communication_token_field_order" in observationInput
+  ) {
+    throw new Error(`${path} legacy schema must not declare token channels.`);
+  }
 }
 
-function validateObservationPolicyInput(policyInput) {
+function validateObservationPolicyInput(
+  policyInput,
+  expectedObservationEncoder,
+  expectedObservationSize,
+  tokenFields,
+) {
   const path = "Replay viewer.trajectory.observation_contract.policy_input";
   assertObject(policyInput, path);
   validateVersion(
     policyInput.encoder_version,
-    OBSERVATION_ENCODER_VERSION,
+    expectedObservationEncoder,
     `${path}.encoder_version`,
   );
   validateVersion(
@@ -800,7 +916,7 @@ function validateObservationPolicyInput(policyInput) {
   );
   assertExactNumberArray(
     policyInput.shape,
-    [OBSERVATION_INPUT_VECTOR_SIZE],
+    [expectedObservationSize],
     `${path}.shape`,
   );
   assertExactNumberArray(
@@ -808,9 +924,192 @@ function validateObservationPolicyInput(policyInput) {
     OBSERVATION_INPUT_VALUE_RANGE,
     `${path}.value_range`,
   );
+  if (policyInput.patch_cell_count !== PATCH_CELL_COUNT) {
+    throw new Error(`${path}.patch_cell_count must be ${PATCH_CELL_COUNT}.`);
+  }
+  assertExactStringArray(
+    policyInput.self_input_fields,
+    [...OBSERVATION_SELF_INPUT_FIELDS, ...tokenFields],
+    `${path}.self_input_fields`,
+  );
+  assertExactStringArray(
+    policyInput.patch_input_fields,
+    [...OBSERVATION_PATCH_INPUT_FIELDS, ...tokenFields],
+    `${path}.patch_input_fields`,
+  );
 }
 
-function validateSignalCommunicationContract(signalContract) {
+function validateObservationData(data, expectedByteLength, path) {
+  let compressed;
+  try {
+    compressed = decodeBase64(data);
+  } catch {
+    throw new Error(`${path} must be valid padded base64.`);
+  }
+  let decoded;
+  try {
+    decoded = unzlibSync(compressed);
+  } catch {
+    throw new Error(`${path} must contain a valid zlib stream.`);
+  }
+  if (decoded.byteLength !== expectedByteLength) {
+    throw new Error(
+      `${path} must decode to exactly ${expectedByteLength} little-endian int16 bytes.`,
+    );
+  }
+  const view = new DataView(
+    decoded.buffer,
+    decoded.byteOffset,
+    decoded.byteLength,
+  );
+  for (let offset = 0; offset < decoded.byteLength; offset += 2) {
+    view.getInt16(offset, true);
+  }
+}
+
+function decodeBase64(data) {
+  if (
+    data.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      data,
+    )
+  ) {
+    throw new Error("invalid base64");
+  }
+  if (typeof globalThis.atob === "function") {
+    const binary = globalThis.atob(data);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+  if (
+    typeof globalThis.Buffer !== "undefined" &&
+    typeof globalThis.Buffer.from === "function"
+  ) {
+    return Uint8Array.from(globalThis.Buffer.from(data, "base64"));
+  }
+  throw new Error("base64 decoder unavailable");
+}
+
+function validateCommunicationTokenObservationContracts(
+  observationContract,
+  tokenizedCommunication,
+) {
+  const path =
+    "Replay viewer.trajectory.observation_contract.communication_token_channels";
+  const tokenContract = observationContract.communication_token_channels;
+  let tokenFields = [];
+  if (!tokenizedCommunication) {
+    if (tokenContract !== undefined) {
+      throw new Error(`${path} must be absent for the legacy observation schema.`);
+    }
+  } else {
+    assertObject(tokenContract, path);
+    assertExactObjectKeys(
+      tokenContract,
+      [
+        "policy_visible",
+        "spatial",
+        "field_order",
+        "token_order",
+        "simulator_assigned_meanings",
+        "profile_provenance_policy_visible",
+        "aggregate_communication_field_retained",
+        "aggregate_projection",
+      ],
+      path,
+    );
+    assertStringArray(tokenContract.field_order, `${path}.field_order`);
+    if (tokenContract.field_order.length <= 0) {
+      throw new Error(`${path}.field_order must not be empty.`);
+    }
+    tokenFields = tokenContract.field_order.map(
+      (_, tokenId) => `communication_signal_token_${tokenId}`,
+    );
+    assertExactStringArray(
+      tokenContract.field_order,
+      tokenFields,
+      `${path}.field_order`,
+    );
+    assertExactNumberArray(
+      tokenContract.token_order,
+      tokenFields.map((_, tokenId) => tokenId),
+      `${path}.token_order`,
+    );
+    if (
+      tokenContract.policy_visible !== true ||
+      tokenContract.spatial !== true ||
+      tokenContract.simulator_assigned_meanings !== false ||
+      tokenContract.profile_provenance_policy_visible !== false ||
+      tokenContract.aggregate_communication_field_retained !== true ||
+      tokenContract.aggregate_projection !== COMMUNICATION_AGGREGATE_PROJECTION
+    ) {
+      throw new Error(
+        `${path} must declare the canonical opaque spatial token projection.`,
+      );
+    }
+  }
+  assertExactStringArray(
+    observationContract.self_fields,
+    [...OBSERVATION_SELF_FIELDS, ...tokenFields],
+    "Replay viewer.trajectory.observation_contract.self_fields",
+  );
+  assertExactStringArray(
+    observationContract.patch_fields,
+    [...OBSERVATION_PATCH_FIELDS, ...tokenFields],
+    "Replay viewer.trajectory.observation_contract.patch_fields",
+  );
+  return tokenFields;
+}
+
+function validateRewardContract(contract, path) {
+  assertExactJson(contract, REWARD_CONTRACT, path);
+}
+
+function validateReward(reward, path) {
+  assertObject(reward, path);
+  assertExactObjectKeys(reward, REWARD_RECORD_FIELDS, path);
+  validateVersion(
+    reward.schema_version,
+    REWARD_SCHEMA_VERSION,
+    `${path}.schema_version`,
+  );
+  assertObject(reward.components, `${path}.components`);
+  const componentBounds = REWARD_CONTRACT.component_bounds;
+  assertExactObjectKeys(
+    reward.components,
+    Object.keys(componentBounds),
+    `${path}.components`,
+  );
+  let componentSum = 0;
+  for (const [component, bounds] of Object.entries(componentBounds)) {
+    const value = reward.components[component];
+    assertFiniteNumber(value, `${path}.components.${component}`);
+    if (value < bounds[0] || value > bounds[1]) {
+      throw new Error(
+        `${path}.components.${component} must be within [${bounds.join(", ")}].`,
+      );
+    }
+    componentSum += value;
+  }
+  assertFiniteNumber(reward.total, `${path}.total`);
+  const totalBounds = REWARD_CONTRACT.total_bounds;
+  if (reward.total < totalBounds[0] || reward.total > totalBounds[1]) {
+    throw new Error(
+      `${path}.total must be within [${totalBounds.join(", ")}].`,
+    );
+  }
+  const expectedTotal = Number(componentSum.toFixed(4));
+  if (reward.total !== expectedTotal) {
+    throw new Error(
+      `${path}.total must equal the four-decimal component sum ${expectedTotal}.`,
+    );
+  }
+}
+
+function validateSignalCommunicationContract(
+  signalContract,
+  tokenizedCommunication,
+  tokenFields,
+) {
   assertPositiveInteger(
     signalContract.communication_token_count,
     "Replay signal contract communication_token_count",
@@ -825,6 +1124,35 @@ function validateSignalCommunicationContract(signalContract) {
   );
   const tokenCount = signalContract.communication_token_count;
   const profilesPerToken = signalContract.communication_profiles_per_token;
+  if (
+    tokenizedCommunication &&
+    signalContract.communication_token_count !== tokenFields.length
+  ) {
+    throw new Error(
+      "Replay signal contract communication_token_count must match token field order.",
+    );
+  }
+  if (
+    signalContract.communication_signal_emission_enabled !==
+    tokenizedCommunication
+  ) {
+    throw new Error(
+      "Replay signal contract communication enablement must match trajectory schema.",
+    );
+  }
+  if (
+    signalContract.communication_tokens_have_simulator_assigned_meaning !==
+    false
+  ) {
+    throw new Error(
+      "Replay signal contract communication tokens must remain simulator-opaque.",
+    );
+  }
+  assertExactStringArray(
+    signalContract.fields,
+    [...REQUIRED_SIGNAL_FIELDS, ...tokenFields],
+    "Replay signal contract fields",
+  );
   const expectedCount = tokenCount * profilesPerToken;
   if (signalContract.reserved_profiles.length !== expectedCount) {
     throw new Error(
@@ -836,7 +1164,13 @@ function validateSignalCommunicationContract(signalContract) {
     const expectedTokenId = Math.floor(index / profilesPerToken);
     const expectedProfileIndex = index % profilesPerToken;
     if (
-      profile.field_name !== "communication_signal" ||
+      profile.field_name !==
+        (tokenizedCommunication
+          ? tokenFields[expectedTokenId]
+          : "communication_signal") ||
+      profile.profile_id !==
+        `communication_token_${expectedTokenId}_profile_${expectedProfileIndex}` ||
+      profile.source_kind !== "reserved_opaque_communication" ||
       profile.token_id !== expectedTokenId ||
       profile.profile_index !== expectedProfileIndex ||
       profile.policy_visible !== false
@@ -845,6 +1179,61 @@ function validateSignalCommunicationContract(signalContract) {
         "Replay signal contract reserved communication profiles must be ordered, opaque, and policy-hidden.",
       );
     }
+  }
+  const tokenContract = signalContract.communication_token_observation;
+  if (!tokenizedCommunication) {
+    if (tokenContract !== undefined) {
+      throw new Error(
+        "Legacy signal contracts must not declare token observation channels.",
+      );
+    }
+    return;
+  }
+  assertObject(tokenContract, "Replay signal contract communication_token_observation");
+  assertExactObjectKeys(
+    tokenContract,
+    [
+      "schema_version",
+      "policy_visible",
+      "spatial",
+      "field_order",
+      "token_order",
+      "aggregate_field",
+      "aggregate_field_retained_for_compatibility",
+      "aggregation",
+      "simulator_assigned_meanings",
+      "profile_provenance_policy_visible",
+    ],
+    "Replay signal contract communication_token_observation",
+  );
+  validateVersion(
+    tokenContract.schema_version,
+    TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION,
+    "Replay signal contract communication_token_observation.schema_version",
+  );
+  assertExactStringArray(
+    tokenContract.field_order,
+    tokenFields,
+    "Replay signal contract communication_token_observation.field_order",
+  );
+  assertExactNumberArray(
+    tokenContract.token_order,
+    tokenFields.map((_, tokenId) => tokenId),
+    "Replay signal contract communication_token_observation.token_order",
+  );
+  if (
+    signalContract.communication_signal_emission_enabled !== true ||
+    tokenContract.policy_visible !== true ||
+    tokenContract.spatial !== true ||
+    tokenContract.simulator_assigned_meanings !== false ||
+    tokenContract.profile_provenance_policy_visible !== false ||
+    tokenContract.aggregate_field !== "communication_signal" ||
+    tokenContract.aggregate_field_retained_for_compatibility !== true ||
+    tokenContract.aggregation !== COMMUNICATION_AGGREGATE_PROJECTION
+  ) {
+    throw new Error(
+      "Token-aware signal contract must declare opaque public spatial token channels.",
+    );
   }
 }
 
@@ -867,12 +1256,33 @@ function validateActionSignalContract(
   observationActionNames = undefined,
 ) {
   assertObject(actionContract, path);
+  assertExactObjectKeys(actionContract, ACTION_CONTRACT_FIELDS, path);
   validateVersion(
     actionContract.schema_version,
     ACTION_CONTRACT_VERSION,
     `${path}.schema_version`,
   );
+  if (actionContract.policy_id_encoding !== ACTION_POLICY_ID_ENCODING) {
+    throw new Error(
+      `${path}.policy_id_encoding must be ${ACTION_POLICY_ID_ENCODING}.`,
+    );
+  }
+  if (actionContract.debug_key_encoding !== ACTION_DEBUG_KEY_ENCODING) {
+    throw new Error(
+      `${path}.debug_key_encoding must be ${ACTION_DEBUG_KEY_ENCODING}.`,
+    );
+  }
+  if (actionContract.mate_action_key !== ACTION_MATE_ACTION_KEY) {
+    throw new Error(
+      `${path}.mate_action_key must be ${ACTION_MATE_ACTION_KEY}.`,
+    );
+  }
   assertObject(actionContract.communication, `${path}.communication`);
+  assertExactObjectKeys(
+    actionContract.communication,
+    ACTION_COMMUNICATION_FIELDS,
+    `${path}.communication`,
+  );
   if (
     actionContract.communication.emission_enabled !==
     signalContract.communication_signal_emission_enabled
@@ -911,34 +1321,54 @@ function validateActionSignalContract(
     expectedActionKeys,
     `${path}.communication.action_keys`,
   );
-
-  const reserved = new Set(actionContract.reserved_action_keys);
-  const active = new Set(actionContract.active_action_keys);
-  for (const actionKey of expectedActionKeys) {
-    if (!reserved.has(actionKey)) {
-      throw new Error(`${path}.reserved_action_keys is missing ${actionKey}.`);
-    }
-    if (signalContract.communication_signal_emission_enabled) {
-      if (!active.has(actionKey)) {
-        throw new Error(`${path}.active_action_keys is missing active ${actionKey}.`);
-      }
-    } else if (active.has(actionKey)) {
-      throw new Error(
-        `${path}.active_action_keys must not include inactive ${actionKey}.`,
-      );
-    }
+  if (
+    actionContract.communication.meaning !== ACTION_COMMUNICATION_MEANING
+  ) {
+    throw new Error(
+      `${path}.communication.meaning must be ${ACTION_COMMUNICATION_MEANING}.`,
+    );
   }
 
+  const communicationSpecs = expectedActionKeys.map((key, index) => ({
+    action_id: ACTION_NON_COMMUNICATION_SPECS.length + index,
+    key,
+    ...ACTION_COMMUNICATION_SPEC_FIXED_FIELDS,
+    active: signalContract.communication_signal_emission_enabled,
+    debug_label: key,
+  }));
+  const expectedSpecs = [
+    ...ACTION_NON_COMMUNICATION_SPECS,
+    ...communicationSpecs,
+  ];
+  const expectedActiveKeys = expectedSpecs
+    .filter((spec) => spec.active)
+    .map((spec) => spec.key);
+  const expectedReservedKeys = expectedSpecs
+    .filter((spec) => spec.reserved)
+    .map((spec) => spec.key);
+  assertExactStringArray(
+    actionContract.active_action_keys,
+    expectedActiveKeys,
+    `${path}.active_action_keys`,
+  );
+  assertExactStringArray(
+    actionContract.reserved_action_keys,
+    expectedReservedKeys,
+    `${path}.reserved_action_keys`,
+  );
+  assertArray(actionContract.actions, `${path}.actions`);
+  for (const [index, spec] of actionContract.actions.entries()) {
+    assertObject(spec, `${path}.actions[${index}]`);
+    assertExactObjectKeys(spec, ACTION_SPEC_FIELDS, `${path}.actions[${index}]`);
+  }
+  assertExactJson(actionContract.actions, expectedSpecs, `${path}.actions`);
+
   if (observationActionNames !== undefined) {
-    assertStringArray(observationActionNames, "Replay observation action_names");
-    const actionNameSet = new Set(observationActionNames);
-    for (const actionKey of expectedActionKeys) {
-      if (!actionNameSet.has(actionKey)) {
-        throw new Error(
-          `Replay observation action_names is missing ${actionKey}.`,
-        );
-      }
-    }
+    assertExactStringArray(
+      observationActionNames,
+      expectedSpecs.map((spec) => spec.key),
+      "Replay observation action_names",
+    );
   }
 }
 
@@ -971,8 +1401,11 @@ function validateFrames(frames, map, summary, agentEncoding, trajectory, agentCa
   }
 
   let previousTick = -1;
-  const signalContractVersion =
-    trajectory.observation_contract.signal_contract.schema_version;
+  const signalContract = trajectory.observation_contract.signal_contract;
+  const signalContractVersion = signalContract.schema_version;
+  const requiredSignalFields = Array.isArray(signalContract.fields)
+    ? signalContract.fields
+    : REQUIRED_SIGNAL_FIELDS;
   const agentFieldMap = Object.fromEntries(
     agentEncoding.map((field, index) => [field, index]),
   );
@@ -1014,7 +1447,7 @@ function validateFrames(frames, map, summary, agentEncoding, trajectory, agentCa
     );
     validateNestedFieldMatrices(
       frame.signal_fields,
-      REQUIRED_SIGNAL_FIELDS,
+      requiredSignalFields,
       map,
       `Replay frame ${index}.signal_fields`,
     );
@@ -1156,6 +1589,7 @@ function assertStringArray(value, path) {
 }
 
 function assertExactStringArray(actual, expected, path) {
+  assertStringArray(actual, path);
   if (actual.length !== expected.length) {
     throw new Error(`${path} must contain ${expected.length} entries.`);
   }
@@ -1166,6 +1600,45 @@ function assertExactStringArray(actual, expected, path) {
   }
 }
 
+function assertExactObjectKeys(actual, expectedKeys, path) {
+  assertObject(actual, path);
+  const actualKeys = Object.keys(actual);
+  const expected = new Set(expectedKeys);
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key) => !expected.has(key))
+  ) {
+    throw new Error(
+      `${path} keys must be exactly [${expectedKeys.join(", ")}].`,
+    );
+  }
+}
+
+function assertExactJson(actual, expected, path) {
+  if (Array.isArray(expected)) {
+    assertArray(actual, path);
+    if (actual.length !== expected.length) {
+      throw new Error(`${path} must contain ${expected.length} entries.`);
+    }
+    for (const [index, expectedValue] of expected.entries()) {
+      assertExactJson(actual[index], expectedValue, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (expected && typeof expected === "object") {
+    assertObject(actual, path);
+    const expectedKeys = Object.keys(expected);
+    assertExactObjectKeys(actual, expectedKeys, path);
+    for (const key of expectedKeys) {
+      assertExactJson(actual[key], expected[key], `${path}.${key}`);
+    }
+    return;
+  }
+  if (actual !== expected) {
+    throw new Error(`${path} must match the canonical contract value.`);
+  }
+}
+
 function assertExactNumberArray(actual, expected, path) {
   assertArray(actual, path);
   if (
@@ -1173,6 +1646,12 @@ function assertExactNumberArray(actual, expected, path) {
     actual.some((value, index) => value !== expected[index])
   ) {
     throw new Error(`${path} must be [${expected.join(", ")}].`);
+  }
+}
+
+function assertFiniteNumber(value, path) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${path} must be a finite number.`);
   }
 }
 

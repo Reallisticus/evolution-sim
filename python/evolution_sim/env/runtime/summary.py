@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from evolution_sim.env.contracts import SUMMARY_SCHEMA_VERSION
+from evolution_sim.env.contracts import summary_schema_version
 import evolution_sim.env.runtime.capacity as runtime_capacity
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
 import evolution_sim.env.runtime.resources as runtime_resources
@@ -242,7 +242,7 @@ def build_summary(
 
     summary = {
         "run_id": world.run_id,
-        "summary_schema_version": SUMMARY_SCHEMA_VERSION,
+        "summary_schema_version": summary_schema_version(world.config.signals),
         "seed": world.config.seed,
         "ticks_executed": ticks_executed,
         "births": world.births,
