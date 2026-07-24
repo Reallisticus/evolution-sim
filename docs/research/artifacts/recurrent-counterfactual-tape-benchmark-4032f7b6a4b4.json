@@ -1,0 +1,106 @@
+{
+  "configuration": {
+    "branch_ticks": [
+      16,
+      40,
+      64,
+      72
+    ],
+    "continuation_tape_count": 8,
+    "encoder_size": 192,
+    "hidden_size": 192,
+    "horizons": [
+      16,
+      48
+    ],
+    "model_seed": 83,
+    "task_count": 2,
+    "terminal_target_tick": 120,
+    "workers": [
+      1,
+      8
+    ]
+  },
+  "runs": [
+    {
+      "aggregate_compute": {
+        "action_horizon_target_count": 24,
+        "actual_continuation_tick_count": 370,
+        "bundle_count": 2,
+        "exact_replay_continuation_count": 12,
+        "independent_horizon_tick_budget": 1664,
+        "max_horizon_continuation_count": 26,
+        "maximum_continuation_tick_budget": 1248,
+        "multi_tape_actual_continuation_tick_count": 2544,
+        "multi_tape_continuation_tape_count": 16,
+        "multi_tape_exact_replay_continuation_count": 112,
+        "multi_tape_max_horizon_continuation_count": 224,
+        "multi_tape_maximum_continuation_tick_budget": 23296,
+        "nested_tick_budget_saved": 416,
+        "selected_continuation_checkpoint_count": 2,
+        "source_tick_executions": 64
+      },
+      "elapsed_seconds": 69.433783,
+      "execution_compute": null,
+      "execution_contract_version": "mind_v3_recurrent_counterfactual_bundle_parallel_execution_v1",
+      "result_exact_digest": "77dc32cab87d16627ee699be637233d06519bfb308239518039fb5b3d9f4a6dd",
+      "scientific_bundle_digest": "6ece204747b7040a20a540292a1560423a468f2dd3198130c120082ac74f9763",
+      "speedup_vs_first_run": 1.0,
+      "workers_requested": 1,
+      "workers_resolved": 1
+    },
+    {
+      "aggregate_compute": {
+        "action_horizon_target_count": 24,
+        "actual_continuation_tick_count": 370,
+        "bundle_count": 2,
+        "exact_replay_continuation_count": 12,
+        "independent_horizon_tick_budget": 1664,
+        "max_horizon_continuation_count": 26,
+        "maximum_continuation_tick_budget": 1248,
+        "multi_tape_actual_continuation_tick_count": 2544,
+        "multi_tape_continuation_tape_count": 16,
+        "multi_tape_exact_replay_continuation_count": 112,
+        "multi_tape_max_horizon_continuation_count": 224,
+        "multi_tape_maximum_continuation_tick_budget": 23296,
+        "nested_tick_budget_saved": 416,
+        "selected_continuation_checkpoint_count": 2,
+        "source_tick_executions": 64
+      },
+      "elapsed_seconds": 17.484045,
+      "execution_compute": {
+        "canonical_legacy_actual_continuation_tick_count": 370,
+        "canonical_source_tick_executions": 64,
+        "duplicated_legacy_actual_continuation_tick_count": 1110,
+        "duplicated_source_tick_executions": 192,
+        "legacy_actual_continuation_tick_count": 1480,
+        "maximum_chunks_per_bundle": 4,
+        "multi_tape_actual_continuation_tick_count": 2544,
+        "source_tick_executions": 256,
+        "split_bundle_count": 2,
+        "tape_chunk_work_item_count": 8,
+        "total_actual_simulator_tick_executions": 4280
+      },
+      "execution_contract_version": "mind_v3_recurrent_counterfactual_tape_parallel_execution_v2",
+      "result_exact_digest": "2fa73e14106233bcce7f13c85791096abce06cd0a5d3c3b042ff130f844b44d6",
+      "scientific_bundle_digest": "6ece204747b7040a20a540292a1560423a468f2dd3198130c120082ac74f9763",
+      "speedup_vs_first_run": 3.971265,
+      "workers_requested": 8,
+      "workers_resolved": 8
+    }
+  ],
+  "runtime": {
+    "hostname": "gpu4070",
+    "logical_cpu_count": 28,
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "torch": "2.13.0+cu130"
+  },
+  "schema_version": "recurrent_counterfactual_tape_benchmark_v1",
+  "scientific_bundle_digests_match": true,
+  "source": {
+    "branch": null,
+    "commit": "4032f7b6a4b4241009967f7d41c1bca48a758ade",
+    "status_porcelain": ""
+  }
+}

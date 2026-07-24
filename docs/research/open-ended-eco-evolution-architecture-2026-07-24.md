@@ -40,13 +40,17 @@ transitions as open problems, not solved recipes
 The current scale policy is a useful proof that real PPO training, masked
 actions, recurrent state, deterministic replay, sealed evidence and independent
 evaluation can coexist. It is not yet an architecture for open-ended evolution.
-The model flattens the entire 604-value public input, projects it through one
-192-unit `tanh` layer, passes it through one 192-unit GRU, and emits one shared
-20-action policy and scalar value. Every organism therefore uses the same
-learned behavioural genome; lineages differ biologically, but the learned
-controller itself does not inherit, mutate and speciate with them. That departs
-from the repository's original Mind v3 design, in which controller state belongs
-to the agent, founders vary, and offspring inherit and mutate it.
+Its raw encoded observation has 542 values; the safe policy projection removes
+one controller-private diagnostic, then concatenates 541 ecological values, the
+20-action mask and 43 previous-public-feedback values into the 604-value learned
+input. The scale-v2 preregistration specifically projected that input through a
+192-unit `tanh` encoder and one 192-unit GRU before its 20-action and scalar-value
+heads; these are campaign dimensions, not architectural constants. Every
+organism therefore uses the same learned behavioural genome; lineages differ
+biologically, but the learned controller itself does not inherit, mutate and
+speciate with them. That departs from the repository's original Mind v3 design,
+in which controller state belongs to the agent, founders vary, and offspring
+inherit and mutate it.
 
 The implementation also explains the low GPU utilization. Rollout collection
 copies the policy to CPU workers. Each simulated organism calls the network
@@ -278,6 +282,25 @@ environment steps per second, agent decisions per second, inference batch-size
 distribution, simulator time, inference time, learner time, queue wait, CPU
 utilization and GPU utilization before any hardware purchase. No honest speedup
 factor can be promised until that profile exists.
+
+One production-shaped measurement is now available for the existing exact-fork
+path. On `gpu4070` at exact source
+`4032f7b6a4b4241009967f7d41c1bca48a758ade`, two scale-v2-shaped bundles with
+eight tapes, relative horizons `16,48`, branch strata `16,40,64,72`, terminal
+tick `120`, and the scale-v2 `192/192` model took `69.433783` seconds with one
+worker and `17.484045` seconds with eight workers: `3.971265x` faster. Both runs
+produced scientific bundle digest
+`6ece204747b7040a20a540292a1560423a468f2dd3198130c120082ac74f9763`.
+The parallel run truthfully reports `4,280` actual simulator ticks versus
+`2,978` canonical ticks (`1.437206x` work) because each process reconstructs
+the source prefix and legacy rows; it still wins substantially in wall time.
+The serialized result is
+`docs/research/artifacts/recurrent-counterfactual-tape-benchmark-4032f7b6a4b4.json`
+with SHA-256
+`7ee0f67a031ce07ade209edd1840fa1eddf96dbc97b006ea172b44f463d3c88f`.
+This result justifies CPU tape parallelism for retained exact audits. It does
+not measure the proposed batched rollout engine, does not make the GPU useful
+for the current Python simulator, and is not a scientific learning result.
 
 ## One campaign, not another diagnostic staircase
 
