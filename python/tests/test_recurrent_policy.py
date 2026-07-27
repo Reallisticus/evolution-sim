@@ -10,11 +10,14 @@ except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
 if torch is not None:
-    from evolution_sim.config.schema import WorldConfig
+    from evolution_sim.config.schema import SignalConfig, WorldConfig
     from evolution_sim.env.runtime.action_contract import ACTION_NAMES
     from evolution_sim.env.runtime.state import RunMode
     from evolution_sim.env.world import SimulationWorld
-    from evolution_sim.mind.recurrent_actor_critic import PublicRecurrentActorCritic
+    from evolution_sim.mind.recurrent_actor_critic import (
+        PublicRecurrentActorCritic,
+        RecurrentActorCriticConfig,
+    )
     from evolution_sim.mind.recurrent_policy import (
         PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION,
         PUBLIC_RECURRENT_SAMPLED_SELECTION,
@@ -41,9 +44,7 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         ):
             validate_public_recurrent_history_prefix(
                 {
-                    "schema_version": (
-                        "mind_v3_public_recurrent_history_prefix_v1"
-                    ),
+                    "schema_version": ("mind_v3_public_recurrent_history_prefix_v1"),
                     "record_count": False,
                     "records": [],
                 }
@@ -61,17 +62,15 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         )
         world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
         agent = world.alive_agents()[0]
-        prefix = policy.diagnostics_checkpoint_state(
-            agent_id=agent.agent_id
-        )["public_history_prefix"]
+        prefix = policy.diagnostics_checkpoint_state(agent_id=agent.agent_id)[
+            "public_history_prefix"
+        ]
         self.assertTrue(prefix["records"])
         for field in ("public_observation", "previous_public_feedback"):
             with self.subTest(field=field):
                 tampered = deepcopy(prefix)
                 expected_size = tampered["records"][0][field]["shape"][0]
-                tampered["records"][0][field]["shape"] = [
-                    float(expected_size)
-                ]
+                tampered["records"][0][field]["shape"] = [float(expected_size)]
                 with self.assertRaisesRegex(
                     RecurrentPolicyAdapterError,
                     "integer size",
@@ -90,9 +89,9 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         )
         world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
         agent = world.alive_agents()[0]
-        prefix = policy.diagnostics_checkpoint_state(
-            agent_id=agent.agent_id
-        )["public_history_prefix"]
+        prefix = policy.diagnostics_checkpoint_state(agent_id=agent.agent_id)[
+            "public_history_prefix"
+        ]
         tampered = deepcopy(prefix)
         tampered["records"][0]["previous_public_feedback"]["values"][0] = 0.5
         with self.assertRaisesRegex(
@@ -160,6 +159,46 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
 
         self.assertEqual(first_summary, second_summary)
         self.assertEqual(first_rows, second_rows)
+
+    def test_token_aware_recurrent_policy_executes_real_world_actions(self) -> None:
+        signals = SignalConfig(communication_signal_emission_enabled=True)
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig.for_signal_config(
+                signals,
+                encoder_size=16,
+                hidden_size=16,
+            ),
+            initialization_seed=90210,
+        )
+        policy = DeterministicPublicRecurrentPolicy(
+            model,
+            artifact_digest="f" * 64,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=17, max_ticks=2, signals=signals),
+            policy=policy,
+        )
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+
+        learned_records = [
+            record
+            for record in world.trajectory_records
+            if record["action_source"] == RECURRENT_ROLLOUT_ACTION_SOURCE
+        ]
+        self.assertTrue(learned_records)
+        self.assertEqual(
+            model.config.public_input_schema_version, "mind_ecological_policy_input_v2"
+        )
+        self.assertEqual(model.config.public_input_size, 645)
+        for record in learned_records:
+            requested_action = str(record["requested_action"])
+            self.assertEqual(
+                record["observation_input"]["schema_version"],
+                "mind_observation_v4",
+            )
+            self.assertEqual(record["observation_input"]["shape"], [646])
+            self.assertTrue(record["action_mask"][requested_action])
 
     def test_parameter_mutation_after_freeze_fails_before_world_action(self) -> None:
         model = PublicRecurrentActorCritic(initialization_seed=7)

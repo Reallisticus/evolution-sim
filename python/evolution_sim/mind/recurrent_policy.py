@@ -32,6 +32,7 @@ from evolution_sim.mind.recurrent_actor_critic import (
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_POLICY,
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_payload,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
@@ -43,7 +44,7 @@ from evolution_sim.mind.recurrent_rollout import (
 PUBLIC_RECURRENT_POLICY_ID = "mind_v3_public_recurrent_actor_critic"
 PUBLIC_RECURRENT_POLICY_VERSION = "mind_v3_public_recurrent_actor_critic_v1"
 PUBLIC_RECURRENT_DIAGNOSTIC_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_actor_critic_decision_v2"
+    "mind_v3_public_recurrent_actor_critic_decision_v3"
 )
 PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION = (
     "mind_v3_public_recurrent_masked_distribution_diagnostics_v1"
@@ -106,6 +107,11 @@ def recurrent_model_state_sha256(model: PublicRecurrentActorCritic) -> str:
 
 def validate_public_recurrent_history_prefix(
     prefix: Mapping[str, object],
+    *,
+    expected_public_input_schema_version: str = (
+        ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    ),
+    expected_public_input_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> None:
     """Validate a JSON-safe, actor-public recurrent reconstruction prefix."""
 
@@ -167,6 +173,8 @@ def validate_public_recurrent_history_prefix(
         _validate_public_observation_payload(
             value.get("public_observation"),
             field=f"public history record {index} observation",
+            expected_schema_version=expected_public_input_schema_version,
+            expected_size=expected_public_input_size,
         )
         _validate_public_action_mask_payload(
             value.get("public_action_mask"),
@@ -195,7 +203,11 @@ def reconstruct_current_model_hidden_from_public_prefix(
 
     if not isinstance(model, PublicRecurrentActorCritic):
         raise TypeError("model must be a PublicRecurrentActorCritic")
-    validate_public_recurrent_history_prefix(prefix)
+    validate_public_recurrent_history_prefix(
+        prefix,
+        expected_public_input_schema_version=(model.config.public_input_schema_version),
+        expected_public_input_size=model.config.public_input_size,
+    )
     reference = next(model.parameters())
     state = model.initial_state(1)
     records = prefix["records"]
@@ -211,6 +223,8 @@ def reconstruct_current_model_hidden_from_public_prefix(
                 value["public_observation"],
                 device=reference.device,
                 dtype=reference.dtype,
+                expected_schema_version=model.config.public_input_schema_version,
+                expected_size=model.config.public_input_size,
             )
             action_mask = _public_action_mask_tensor_from_payload(
                 value["public_action_mask"],
@@ -459,7 +473,13 @@ class DeterministicPublicRecurrentPolicy:
                 list(self._public_history_by_agent.get(resolved_agent_id, ()))
             ),
         }
-        validate_public_recurrent_history_prefix(history_prefix)
+        validate_public_recurrent_history_prefix(
+            history_prefix,
+            expected_public_input_schema_version=(
+                self.model.config.public_input_schema_version
+            ),
+            expected_public_input_size=self.model.config.public_input_size,
+        )
         return {
             "schema_version": RECURRENT_DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION,
             "artifact_digest": self._artifact_digest,
@@ -508,6 +528,8 @@ class DeterministicPublicRecurrentPolicy:
         encoded_observation = encode_observation_input(observation)
         public_observation = public_policy_tensor_from_observation_input(
             encoded_observation,
+            expected_schema_version=self.model.config.public_input_schema_version,
+            expected_size=self.model.config.public_input_size,
             device=reference.device,
             dtype=reference.dtype,
         )
@@ -597,6 +619,11 @@ class DeterministicPublicRecurrentPolicy:
             "model_state_sha256": self._model_state_sha256,
             "decision_index": decision_index,
             "agent_id": agent_id,
+            "policy_input_schema_version": (
+                self.model.config.public_input_schema_version
+            ),
+            "policy_input_size": self.model.config.public_input_size,
+            "learned_input_size": self.model.config.learned_encoder_input_size,
             "previous_feedback_available": (feedback.requested_action_id is not None),
             "recurrent_state_reset_each_decision": (
                 self._reset_recurrent_state_each_decision
@@ -969,24 +996,29 @@ def _validate_public_observation_payload(
     value: object,
     *,
     field: str,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> tuple[float, ...]:
     if not isinstance(value, Mapping):
         raise RecurrentPolicyAdapterError(f"{field} must be a mapping")
     if set(value) != {"schema_version", "policy", "values", "shape"}:
         raise RecurrentPolicyAdapterError(f"{field} field set drifted")
-    if value.get("schema_version") != ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION:
+    if expected_schema_version not in {
+        ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    }:
+        raise RecurrentPolicyAdapterError(f"{field} expected schema is unsupported")
+    if value.get("schema_version") != expected_schema_version:
         raise RecurrentPolicyAdapterError(f"{field} schema drifted")
     if value.get("policy") != ECOLOGICAL_POLICY_INPUT_POLICY:
         raise RecurrentPolicyAdapterError(f"{field} policy drifted")
     _validate_exact_vector_shape(
         value.get("shape"),
-        expected_size=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        expected_size=expected_size,
         field=f"{field} shape",
     )
     values = value.get("values")
-    if not isinstance(values, list) or len(values) != (
-        ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
-    ):
+    if not isinstance(values, list) or len(values) != expected_size:
         raise RecurrentPolicyAdapterError(f"{field} values have the wrong size")
     parsed = tuple(_finite_float(item, field=f"{field} value") for item in values)
     if any(item < -1.0 or item > 1.0 for item in parsed):
@@ -1055,9 +1087,16 @@ def _public_observation_tensor_from_payload(
     *,
     device: torch.device,
     dtype: torch.dtype,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> Tensor:
     return torch.tensor(
-        _validate_public_observation_payload(value, field="public observation"),
+        _validate_public_observation_payload(
+            value,
+            field="public observation",
+            expected_schema_version=expected_schema_version,
+            expected_size=expected_size,
+        ),
         device=device,
         dtype=dtype,
     )

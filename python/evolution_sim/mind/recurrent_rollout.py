@@ -8,7 +8,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Protocol, Sequence
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.observations import encode_observation_input
+from evolution_sim.env.runtime.observations import (
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    encode_observation_input,
+)
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.env.runtime.trajectory import (
     REWARD_COMPONENT_BOUNDS,
@@ -18,13 +21,14 @@ from evolution_sim.env.runtime.trajectory import (
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_values,
 )
 
 
 RECURRENT_ROLLOUT_POLICY_ID = "mind_v3_recurrent_on_policy"
 RECURRENT_ROLLOUT_POLICY_VERSION = "mind_v3_recurrent_on_policy_v1"
-RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = "mind_v3_recurrent_rollout_decision_v1"
+RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = "mind_v3_recurrent_rollout_decision_v2"
 RECURRENT_ROLLOUT_ACTION_SOURCE = "learned_recurrent_on_policy"
 RECURRENT_ROLLOUT_ACTIONS: tuple[str, ...] = tuple(ACTION_NAMES)
 RECURRENT_REWARD_COMPONENTS: tuple[str, ...] = tuple(REWARD_COMPONENT_BOUNDS)
@@ -189,6 +193,9 @@ class PreviousPublicFeedback:
 
 class RecurrentPolicyCore(Protocol):
     hidden_size: int
+    public_input_schema_version: str
+    public_input_size: int
+    learned_input_size: int
 
     def initial_hidden(self) -> Sequence[float]: ...
 
@@ -208,7 +215,6 @@ class TorchRecurrentPolicyCore:
         try:
             import torch
             from evolution_sim.mind.recurrent_actor_critic import (
-                LEARNED_ENCODER_INPUT_SIZE,
                 PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
                 PREVIOUS_PUBLIC_FEEDBACK_SIZE,
                 PublicRecurrentActorCritic,
@@ -230,13 +236,21 @@ class TorchRecurrentPolicyCore:
             raise RecurrentRolloutError(
                 "torch and rollout previous-feedback schema versions disagree"
             )
-        if LEARNED_ENCODER_INPUT_SIZE != RECURRENT_LEARNED_INPUT_VECTOR_SIZE:
+        expected_learned_input_size = (
+            model.config.public_input_size
+            + len(RECURRENT_ROLLOUT_ACTIONS)
+            + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+        )
+        if model.config.learned_encoder_input_size != expected_learned_input_size:
             raise RecurrentRolloutError(
                 "torch and rollout learned input sizes disagree"
             )
         self._torch = torch
         self._model = model
         self._model.eval()
+        self.public_input_schema_version = model.config.public_input_schema_version
+        self.public_input_size = model.config.public_input_size
+        self.learned_input_size = model.config.learned_encoder_input_size
         self._layers = int(model.config.recurrent_layers)
         self._layer_hidden_size = int(model.config.hidden_size)
         self.hidden_size = self._layers * self._layer_hidden_size
@@ -260,7 +274,7 @@ class TorchRecurrentPolicyCore:
             tuple(observation),
             device=reference.device,
             dtype=reference.dtype,
-        ).reshape(1, 1, ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE)
+        ).reshape(1, 1, self.public_input_size)
         action_masks = torch.tensor(
             tuple(current_action_mask),
             device=reference.device,
@@ -695,6 +709,45 @@ class RecurrentOnPolicyCollector:
                 "reset_recurrent_state_each_decision must be an exact boolean"
             )
         self._core = core
+        self._public_input_schema_version = getattr(
+            core,
+            "public_input_schema_version",
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self._public_input_size = getattr(
+            core,
+            "public_input_size",
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+        self._learned_input_size = getattr(
+            core,
+            "learned_input_size",
+            (
+                self._public_input_size
+                + len(RECURRENT_ROLLOUT_ACTIONS)
+                + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+            ),
+        )
+        if self._public_input_schema_version not in {
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        }:
+            raise RecurrentRolloutError("core public input schema is unsupported")
+        if (
+            isinstance(self._public_input_size, bool)
+            or not isinstance(self._public_input_size, int)
+            or self._public_input_size <= 0
+        ):
+            raise RecurrentRolloutError("core public input size must be positive")
+        expected_learned_input_size = (
+            self._public_input_size
+            + len(RECURRENT_ROLLOUT_ACTIONS)
+            + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+        )
+        if self._learned_input_size != expected_learned_input_size:
+            raise RecurrentRolloutError(
+                "core learned input size does not match its public input contract"
+            )
         self.buffer = buffer if buffer is not None else RecurrentRolloutBuffer()
         self._reset_recurrent_state_each_decision = reset_recurrent_state_each_decision
         self._active_world_id: str | None = None
@@ -787,8 +840,21 @@ class RecurrentOnPolicyCollector:
         policy_input = ecological_policy_input_values(
             encode_observation_input(observation)
         )
-        if len(policy_input) != ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE:
-            raise RecurrentRolloutError("ecological policy input size drifted")
+        observed_schema_version = (
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            if observation.get("schema_version")
+            == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+            else ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+        )
+        if observed_schema_version != self._public_input_schema_version:
+            raise RecurrentRolloutError(
+                "ecological policy input schema does not match the recurrent core"
+            )
+        if len(policy_input) != self._public_input_size:
+            raise RecurrentRolloutError(
+                "ecological policy input size does not match the recurrent core: "
+                f"{len(policy_input)} != {self._public_input_size}"
+            )
         mask = _action_mask_tuple(action_mask)
         hidden = (
             None
@@ -855,9 +921,9 @@ class RecurrentOnPolicyCollector:
                 "decision_index": decision_index,
                 "agent_id": agent_id,
                 "phase": tick_phase,
-                "policy_input_schema_version": (ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION),
-                "policy_input_size": ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
-                "learned_input_size": RECURRENT_LEARNED_INPUT_VECTOR_SIZE,
+                "policy_input_schema_version": self._public_input_schema_version,
+                "policy_input_size": self._public_input_size,
+                "learned_input_size": self._learned_input_size,
                 "previous_feedback_schema_version": (
                     RECURRENT_PUBLIC_FEEDBACK_SCHEMA_VERSION
                 ),

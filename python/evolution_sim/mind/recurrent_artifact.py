@@ -20,15 +20,10 @@ from evolution_sim.env.runtime.action_contract import (
     ACTION_MASK_CONTRACT_VERSION,
     ACTION_NAMES,
 )
-from evolution_sim.mind.policy_inputs import (
-    ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-)
 from evolution_sim.mind.recurrent_actor_critic import (
     ACTION_COUNT,
-    LEARNED_ENCODER_INPUT_SIZE,
     PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
-    PUBLIC_INPUT_SIZE,
     RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
     PublicRecurrentActorCritic,
     RecurrentActorCriticConfig,
@@ -36,17 +31,17 @@ from evolution_sim.mind.recurrent_actor_critic import (
 )
 
 
-RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v1"
+RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v2"
 FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION = (
-    "mind_public_recurrent_frozen_policy_artifact_v2"
+    "mind_public_recurrent_frozen_policy_artifact_v3"
 )
 FROZEN_RECURRENT_POLICY_ARTIFACT_KIND = "frozen_recurrent_policy"
-RECURRENT_REPLAY_PROBE_CONTRACT_VERSION = "mind_public_recurrent_cpu_replay_probe_v1"
+RECURRENT_REPLAY_PROBE_CONTRACT_VERSION = "mind_public_recurrent_cpu_replay_probe_v2"
 FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION = (
     "mind_public_recurrent_full_world_replay_manifest_v1"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_SCHEMA_VERSION = (
-    "mind_public_recurrent_training_crash_checkpoint_v1"
+    "mind_public_recurrent_training_crash_checkpoint_v2"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_KIND = "optimizer_rng_crash_checkpoint"
 RECURRENT_TENSOR_ENCODING = "base64_raw"
@@ -112,7 +107,15 @@ _PROVENANCE_KEYS = frozenset(
 _TENSOR_KEYS = frozenset(
     {"name", "shape", "dtype", "encoding", "byte_length", "sha256", "data"}
 )
-_CONFIG_KEYS = frozenset({"encoder_size", "hidden_size", "recurrent_layers"})
+_CONFIG_KEYS = frozenset(
+    {
+        "encoder_size",
+        "hidden_size",
+        "recurrent_layers",
+        "public_input_schema_version",
+        "public_input_size",
+    }
+)
 _FROZEN_POLICY_TOP_LEVEL_KEYS = frozenset(
     {
         "schema_version",
@@ -288,22 +291,7 @@ def build_recurrent_artifact(
             "whole_model_sha256": whole_model_sha256,
             "artifact_digest_policy": RECURRENT_ARTIFACT_DIGEST_POLICY,
         },
-        "model": {
-            "contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
-            "config": asdict(config),
-            "public_input_schema_version": ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-            "public_input_size": PUBLIC_INPUT_SIZE,
-            "previous_public_feedback_schema_version": (
-                PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
-            ),
-            "previous_public_feedback_size": PREVIOUS_PUBLIC_FEEDBACK_SIZE,
-            "learned_encoder_input_size": LEARNED_ENCODER_INPUT_SIZE,
-            "action_mask_contract_version": ACTION_MASK_CONTRACT_VERSION,
-            "action_ordering": list(ACTION_NAMES),
-            "action_count": ACTION_COUNT,
-            "architecture_contract": recurrent_actor_critic_contract(config),
-            "runtime_integrated": False,
-        },
+        "model": _model_contract_payload(config),
         "provenance": {
             "training_config": safe_training_config,
             "seed_registry_digest": seed_registry_digest,
@@ -858,11 +846,12 @@ def _build_cpu_replay_probe(
     model: PublicRecurrentActorCritic,
 ) -> dict[str, object]:
     batch_size = 4
+    public_input_size = model.config.public_input_size
     positions = torch.arange(
-        batch_size * PUBLIC_INPUT_SIZE,
+        batch_size * public_input_size,
         dtype=torch.float32,
         device="cpu",
-    ).reshape(batch_size, PUBLIC_INPUT_SIZE)
+    ).reshape(batch_size, public_input_size)
     observations = ((positions.remainder(257.0) - 128.0) / 128.0).contiguous()
     action_masks = torch.zeros(batch_size, ACTION_COUNT, dtype=torch.bool)
     for row in range(batch_size):
@@ -1245,25 +1234,18 @@ def _validate_and_decode(
                 config_payload.get("recurrent_layers"),
                 "recurrent_layers",
             ),
+            public_input_schema_version=_strict_text(
+                config_payload.get("public_input_schema_version"),
+                "public_input_schema_version",
+            ),
+            public_input_size=_strict_int(
+                config_payload.get("public_input_size"),
+                "public_input_size",
+            ),
         )
     except ValueError as exc:
         raise RecurrentArtifactError(f"invalid model config: {exc}") from exc
-    expected_model = {
-        "contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
-        "config": asdict(config),
-        "public_input_schema_version": ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-        "public_input_size": PUBLIC_INPUT_SIZE,
-        "previous_public_feedback_schema_version": (
-            PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
-        ),
-        "previous_public_feedback_size": PREVIOUS_PUBLIC_FEEDBACK_SIZE,
-        "learned_encoder_input_size": LEARNED_ENCODER_INPUT_SIZE,
-        "action_mask_contract_version": ACTION_MASK_CONTRACT_VERSION,
-        "action_ordering": list(ACTION_NAMES),
-        "action_count": ACTION_COUNT,
-        "architecture_contract": recurrent_actor_critic_contract(config),
-        "runtime_integrated": False,
-    }
+    expected_model = _model_contract_payload(config)
     if dict(model_payload) != expected_model:
         raise RecurrentArtifactError(
             "model contract, public inputs, mask contract, or action ordering drifted"
@@ -1469,6 +1451,12 @@ def _strict_int(value: object, field: str) -> int:
     return value
 
 
+def _strict_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise RecurrentArtifactError(f"{field} must be non-empty trimmed text")
+    return value
+
+
 def _validate_seed(value: object) -> int:
     parsed = _strict_int(value, "learner_seed")
     if parsed < 0 or parsed > (2**63 - 1):
@@ -1529,13 +1517,13 @@ def _model_contract_payload(
     return {
         "contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
         "config": asdict(config),
-        "public_input_schema_version": ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-        "public_input_size": PUBLIC_INPUT_SIZE,
+        "public_input_schema_version": config.public_input_schema_version,
+        "public_input_size": config.public_input_size,
         "previous_public_feedback_schema_version": (
             PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
         ),
         "previous_public_feedback_size": PREVIOUS_PUBLIC_FEEDBACK_SIZE,
-        "learned_encoder_input_size": LEARNED_ENCODER_INPUT_SIZE,
+        "learned_encoder_input_size": config.learned_encoder_input_size,
         "action_mask_contract_version": ACTION_MASK_CONTRACT_VERSION,
         "action_ordering": list(ACTION_NAMES),
         "action_count": ACTION_COUNT,

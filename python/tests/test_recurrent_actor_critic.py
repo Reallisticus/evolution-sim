@@ -8,6 +8,7 @@ except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
 if torch is not None:
+    from evolution_sim.config.schema import SignalConfig
     from evolution_sim.env.runtime.action_contract import ACTION_NAMES
     from evolution_sim.env.runtime.observations import (
         OBSERVATION_INPUT_VECTOR_SIZE,
@@ -24,6 +25,7 @@ if torch is not None:
         PreviousPublicFeedbackInput,
         PublicInputError,
         PublicRecurrentActorCritic,
+        RecurrentActorCriticConfig,
         RecurrentContextError,
         RecurrentPolicyContractError,
         RecurrentStateError,
@@ -62,6 +64,52 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         )
         self.assertFalse(contract["runtime_integrated"])
         self.assertFalse(contract["heuristic_action_source"])
+
+    def test_token_aware_contract_binds_expanded_public_input_shape(self) -> None:
+        config = RecurrentActorCriticConfig.for_signal_config(
+            SignalConfig(communication_signal_emission_enabled=True),
+            encoder_size=16,
+            hidden_size=16,
+        )
+        model = PublicRecurrentActorCritic(config, initialization_seed=1729)
+        contract = recurrent_actor_critic_contract(model.config)
+
+        self.assertEqual(
+            config.public_input_schema_version, "mind_ecological_policy_input_v2"
+        )
+        self.assertEqual(config.public_input_size, 645)
+        self.assertEqual(config.learned_encoder_input_size, 708)
+        self.assertEqual(
+            contract["public_input_schema_version"], "mind_ecological_policy_input_v2"
+        )
+        self.assertEqual(contract["public_input_size"], 645)
+        self.assertEqual(
+            contract["architecture"]["learned_encoder_input_size"],
+            708,
+        )
+        self.assertEqual(model.input_norm.normalized_size, 708)
+        self.assertEqual(model.encoder[0].in_features, 708)
+
+        decoded = [0.0] * 646
+        decoded[len(SELF_INPUT_FIELDS)] = 0.75
+        projected = public_policy_tensor_from_decoded(
+            decoded,
+            expected_schema_version="mind_ecological_policy_input_v2",
+            expected_size=645,
+        )
+        self.assertEqual(tuple(projected.shape), (645,))
+        self.assertEqual(
+            float(projected[SELF_INPUT_FIELDS.index("mind_inheritance_available")]),
+            0.75,
+        )
+
+        with self.assertRaisesRegex(ValueError, "action ordering"):
+            RecurrentActorCriticConfig.for_signal_config(
+                SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_token_count=2,
+                )
+            )
 
     def test_backend_stable_layer_norm_matches_torch_layer_norm(self) -> None:
         inputs = torch.linspace(-2.0, 2.0, 4 * 3 * 604).reshape(4, 3, 604)

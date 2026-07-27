@@ -18,13 +18,14 @@ from evolution_sim.env.runtime.trajectory import (
     TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
 )
 from evolution_sim.mind.policy_inputs import (
-    PolicyInputError,
     ecological_policy_input_values,
 )
 
 
 class RuntimeSignalContractTests(RuntimeContractTestHelpers):
-    def test_starving_scavenger_moves_to_nearby_low_signal_carrion_before_plant(self) -> None:
+    def test_starving_scavenger_moves_to_nearby_low_signal_carrion_before_plant(
+        self,
+    ) -> None:
         navigation = self._empty_navigation()
         navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.0}
 
@@ -102,14 +103,14 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             },
         )
 
-    def test_action_contract_tracks_signal_config_reserved_communication_slots(self) -> None:
+    def test_action_contract_tracks_signal_config_reserved_communication_slots(
+        self,
+    ) -> None:
         signal_config = SignalConfig(
             communication_token_count=2,
             communication_profiles_per_token=3,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         mask = build_action_mask(world._action_mask_context(agent))
         contract = action_contract(signal_config)
@@ -146,9 +147,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_token_count=2,
             communication_profiles_per_token=2,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
 
         contract = action_contract(signal_config)
@@ -191,9 +190,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_signal_base_intensity=0.0,
             communication_signal_trait_intensity_bonus=0.0,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         agent.genome = replace(
             agent.genome,
@@ -214,7 +211,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertNotIn("signal_0_profile_0", contract["active_action_keys"])
         self.assertFalse(mask["signal_0_profile_0"])
 
-    def test_signal_actions_stay_inactive_without_configured_signal_intensity(self) -> None:
+    def test_signal_actions_stay_inactive_without_configured_signal_intensity(
+        self,
+    ) -> None:
         signal_config = SignalConfig(
             reproductive_signal_base_intensity=0.0,
             reproductive_signal_trait_intensity_bonus=0.0,
@@ -222,9 +221,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_signal_base_intensity=0.0,
             communication_signal_trait_intensity_bonus=0.0,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         agent.genome = replace(
             agent.genome,
@@ -342,12 +339,17 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertAlmostEqual(agent.energy, energy_before - 0.025)
         self.assertAlmostEqual(signal_state.reproductive_signal[2][2], 0.5)
         self.assertGreater(signal_state.reproductive_signal[2][2], 0.0)
-        self.assertGreater(signal_state.reproductive_signal[2][2], signal_state.reproductive_signal[2][3])
+        self.assertGreater(
+            signal_state.reproductive_signal[2][2],
+            signal_state.reproductive_signal[2][3],
+        )
         self.assertEqual(signal_state.communication_signal[2][2], 0.0)
         self.assertGreater(observation["self"]["reproductive_signal"], 0.0)
         self.assertEqual(observation["self"]["communication_signal"], 0.0)
         self.assertTrue(
-            any(cell["reproductive_signal"] > 0.0 for cell in observation["local_patch"])
+            any(
+                cell["reproductive_signal"] > 0.0 for cell in observation["local_patch"]
+            )
         )
         self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
 
@@ -535,9 +537,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             default_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(
-                default_world._action_mask_context(default_agent)
-            )["signal_0_profile_0"]
+            build_action_mask(default_world._action_mask_context(default_agent))[
+                "signal_0_profile_0"
+            ]
         )
 
         enabled_world = SimulationWorld(
@@ -559,9 +561,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             enabled_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(
-                enabled_world._action_mask_context(gated_agent)
-            )["signal_0_profile_0"]
+            build_action_mask(enabled_world._action_mask_context(gated_agent))[
+                "signal_0_profile_0"
+            ]
         )
 
     def test_communication_signal_action_emits_opaque_numeric_field(self) -> None:
@@ -760,11 +762,12 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE + 52])
         self.assertGreater(decoded[token_1_value_index], 0.0)
-        with self.assertRaisesRegex(
-            PolicyInputError,
-            "unexpected vector size",
-        ):
-            ecological_policy_input_values(encoded)
+        policy_values = ecological_policy_input_values(encoded)
+        self.assertEqual(len(policy_values), encoded["shape"][0] - 1)
+        self.assertEqual(
+            policy_values[token_1_value_index - 1],
+            decoded[token_1_value_index],
+        )
 
     def test_token_observation_encoder_rejects_noncanonical_field_aliases(
         self,
@@ -786,18 +789,16 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             agent,
             observation_context=world._observation_context(agent),
         )
-        observation["self"]["communication_signal_token_00"] = observation[
-            "self"
-        ].pop("communication_signal_token_0")
+        observation["self"]["communication_signal_token_00"] = observation["self"].pop(
+            "communication_signal_token_0"
+        )
         for cell in observation["local_patch"]:
             cell["communication_signal_token_00"] = cell.pop(
                 "communication_signal_token_0"
             )
 
         self.assertIsNone(
-            parse_communication_token_field_name(
-                "communication_signal_token_00"
-            )
+            parse_communication_token_field_name("communication_signal_token_00")
         )
         with self.assertRaisesRegex(
             ValueError,
@@ -894,9 +895,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             ]
         )
         self.assertEqual(
-            tokenized_signal_contract["communication_token_observation"][
-                "aggregation"
-            ],
+            tokenized_signal_contract["communication_token_observation"]["aggregation"],
             COMMUNICATION_AGGREGATE_PROJECTION,
         )
         self.assertEqual(
@@ -914,14 +913,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             },
         )
         self.assertTrue(
-            token_fields.issubset(
-                set(first.summary["signal_field_stats_at_end"])
-            )
+            token_fields.issubset(set(first.summary["signal_field_stats_at_end"]))
         )
         self.assertTrue(
-            token_fields.issubset(
-                set(first.viewer["analytics"]["signal_fields"])
-            )
+            token_fields.issubset(set(first.viewer["analytics"]["signal_fields"]))
         )
         self.assertNotIn(
             "communication_signal",
@@ -964,9 +959,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             contract["reproductive_readiness_profile"]["field_name"],
             "reproductive_signal",
         )
-        self.assertFalse(
-            contract["reproductive_readiness_profile"]["policy_visible"]
-        )
+        self.assertFalse(contract["reproductive_readiness_profile"]["policy_visible"])
         self.assertEqual(contract["communication_token_count"], 2)
         self.assertEqual(contract["communication_profiles_per_token"], 3)
         self.assertEqual(contract["communication_signal_decay_rate"], 0.42)
@@ -1209,8 +1202,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
                 ]
                 group_summary = first.summary["reproductive_groups_end"]
                 self.assertEqual(
-                    group_summary["asexual_births"]
-                    + group_summary["sexual_births"],
+                    group_summary["asexual_births"] + group_summary["sexual_births"],
                     len(reproduction_events),
                 )
                 self.assertLessEqual(
@@ -1219,8 +1211,6 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
                 )
                 if name == "sexual_disabled_low_thresholds":
                     self.assertEqual(
-                        first.summary["reproduction_end"][
-                            "reproductive_stage_counts"
-                        ],
+                        first.summary["reproduction_end"]["reproductive_stage_counts"],
                         {STAGE0_ASEXUAL: first.summary["alive_agents"]},
                     )

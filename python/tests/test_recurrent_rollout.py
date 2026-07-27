@@ -9,7 +9,7 @@ try:
 except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
-from evolution_sim.config.schema import WorldConfig
+from evolution_sim.config.schema import SignalConfig, WorldConfig
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.state import RunMode
 from evolution_sim.env.runtime.trajectory import (
@@ -34,6 +34,7 @@ from evolution_sim.mind.recurrent_rollout import (
 if torch is not None:
     from evolution_sim.mind.recurrent_actor_critic import (
         PublicRecurrentActorCritic,
+        RecurrentActorCriticConfig,
     )
 
 
@@ -493,6 +494,46 @@ class RecurrentRolloutTests(unittest.TestCase):
 
         self.assertAlmostEqual(step.value, float(output.values[0, 0]), places=6)
         self.assertAlmostEqual(step.logprob, float(expected_logprob), places=6)
+
+    @unittest.skipIf(
+        torch is None, "optional Mind ML dependency torch is not installed"
+    )
+    def test_torch_model_adapter_collects_token_aware_world_without_shape_loss(
+        self,
+    ) -> None:
+        assert torch is not None
+        signals = SignalConfig(communication_signal_emission_enabled=True)
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig.for_signal_config(
+                signals,
+                encoder_size=8,
+                hidden_size=8,
+            ),
+            initialization_seed=73,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        collector = RecurrentOnPolicyCollector(core)
+        collector.start_world(
+            world_id="torch-token-adapter",
+            seed=23,
+            rollout_ticks=1,
+        )
+
+        SimulationWorld(
+            WorldConfig(seed=23, max_ticks=2, signals=signals),
+            policy=collector,
+        ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        collector.finish_world()
+
+        self.assertEqual(
+            core.public_input_schema_version, "mind_ecological_policy_input_v2"
+        )
+        self.assertEqual(core.public_input_size, 645)
+        self.assertEqual(core.learned_input_size, 708)
+        self.assertTrue(collector.buffer.steps)
+        self.assertTrue(
+            all(len(step.observation) == 645 for step in collector.buffer.steps)
+        )
 
 
 def _step(

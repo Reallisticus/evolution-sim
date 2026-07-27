@@ -545,7 +545,7 @@ def evaluate_frozen_recurrent_policy_artifact(
             "training_seed_evidence": training_seed_evidence,
         },
         candidate_provenance={
-            "mode": "verified_frozen_policy_artifact_v2",
+            "mode": "verified_frozen_policy_artifact_v3",
             "source_pinned": True,
             "synthetic_digest_label": False,
             "noncandidate_development_canary": False,
@@ -1100,9 +1100,7 @@ def _evaluate_environment_task(
                 "seed": task.seed,
                 "policy_sampling_seed": sampling_seed,
                 "digest": candidate["replay_digest"],
-                "outcome_evidence_sha256": candidate[
-                    "outcome_evidence_sha256"
-                ],
+                "outcome_evidence_sha256": candidate["outcome_evidence_sha256"],
                 "passed": True,
             }
         )
@@ -2077,10 +2075,7 @@ def _run_outcome_evidence_sha256(run: Mapping[str, object]) -> str:
         raise RecurrentEvaluationError(
             f"run outcome evidence fields are missing: {missing!r}"
         )
-    projection = {
-        field: run[field]
-        for field in sorted(outcome_fields)
-    }
+    projection = {field: run[field] for field in sorted(outcome_fields)}
     return _canonical_sha256(
         {
             "schema_version": _RUN_OUTCOME_EVIDENCE_SCHEMA_VERSION,
@@ -2098,9 +2093,7 @@ def _validated_named_counts(
 ) -> dict[str, int]:
     raw_names = tuple(value)
     if any(
-        not isinstance(raw_name, str)
-        or not raw_name
-        or raw_name != raw_name.strip()
+        not isinstance(raw_name, str) or not raw_name or raw_name != raw_name.strip()
         for raw_name in raw_names
     ):
         raise RecurrentEvaluationError(
@@ -2204,8 +2197,7 @@ def _validate_learned_distribution_summary(
     )
     if decision_count == 0:
         if any(
-            mean_action_probabilities.get(action) is not None
-            for action in ACTION_NAMES
+            mean_action_probabilities.get(action) is not None for action in ACTION_NAMES
         ):
             raise RecurrentEvaluationError(
                 "zero-decision learned distribution must have null action means"
@@ -2214,10 +2206,7 @@ def _validate_learned_distribution_summary(
     action_means = tuple(
         _finite_number(
             mean_action_probabilities.get(action),
-            field=(
-                "learned_masked_distribution.mean_action_probabilities."
-                f"{action}"
-            ),
+            field=(f"learned_masked_distribution.mean_action_probabilities.{action}"),
         )
         for action in ACTION_NAMES
     )
@@ -2273,7 +2262,9 @@ def _validate_run(run: Mapping[str, object]) -> None:
         run.get("requested_action_counts"),
         field="requested_action_counts",
     )
-    if any(not isinstance(action, str) or action not in ACTION_NAMES for action in counts):
+    if any(
+        not isinstance(action, str) or action not in ACTION_NAMES for action in counts
+    ):
         raise RecurrentEvaluationError("run contains an action outside the contract")
     if tuple(counts) != tuple(sorted(counts)):
         raise RecurrentEvaluationError(
@@ -2341,16 +2332,11 @@ def _validate_run(run: Mapping[str, object]) -> None:
         action_source_counts,
         field="action_source_counts",
     )
-    if (
-        sum(parsed_action_source_counts.values()) != trajectory_record_count
-    ):
+    if sum(parsed_action_source_counts.values()) != trajectory_record_count:
         raise RecurrentEvaluationError(
             "action-source distribution does not cover trajectory"
         )
-    if (
-        parsed_action_source_counts.get("passive", 0)
-        != passive_trajectory_record_count
-    ):
+    if parsed_action_source_counts.get("passive", 0) != passive_trajectory_record_count:
         raise RecurrentEvaluationError(
             "passive action-source count differs from passive trajectory count"
         )
@@ -2425,10 +2411,7 @@ def _validate_run(run: Mapping[str, object]) -> None:
             observed_eat_without_gain_share,
             field="eat_without_positive_resource_gain_share",
         )
-    if (
-        observed_eat_without_gain_share
-        != expected_eat_without_gain_share
-    ):
+    if observed_eat_without_gain_share != expected_eat_without_gain_share:
         raise RecurrentEvaluationError(
             "run eat-without-resource-gain share differs from its counts"
         )
@@ -2445,13 +2428,16 @@ def _validate_run(run: Mapping[str, object]) -> None:
         raise RecurrentEvaluationError(
             "learned-distribution count differs from recurrent policy records"
         )
-    if _run_outcome_evidence_sha256(
-        {
-            **dict(run),
-            "behavior_digest": behavior_digest,
-            "replay_digest": replay_digest,
-        }
-    ) != outcome_evidence_sha256:
+    if (
+        _run_outcome_evidence_sha256(
+            {
+                **dict(run),
+                "behavior_digest": behavior_digest,
+                "replay_digest": replay_digest,
+            }
+        )
+        != outcome_evidence_sha256
+    ):
         raise RecurrentEvaluationError(
             "run outcome fields are detached from behavior/replay evidence"
         )

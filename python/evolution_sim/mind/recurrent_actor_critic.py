@@ -12,11 +12,19 @@ from torch import Tensor, nn
 from evolution_sim.env.runtime.action_contract import (
     ACTION_MASK_CONTRACT_VERSION,
     ACTION_NAMES,
+    action_names,
+)
+from evolution_sim.env.runtime.observations import (
+    PATCH_CELL_COUNT,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
 )
 from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    ecological_policy_input_schema_version,
+    ecological_policy_input_vector_size,
     ecological_policy_input_values,
     ecological_policy_values_from_decoded,
 )
@@ -33,7 +41,7 @@ _REWARD_NORMALIZATION_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
 ACTION_INDEX: Mapping[str, int] = MappingProxyType(
     {action: index for index, action in enumerate(ACTION_NAMES)}
 )
-RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v1"
+RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v2"
 
 
 class RecurrentPolicyContractError(ValueError):
@@ -61,12 +69,72 @@ class RecurrentActorCriticConfig:
     encoder_size: int = 128
     hidden_size: int = 128
     recurrent_layers: int = 1
+    public_input_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    public_input_size: int = PUBLIC_INPUT_SIZE
 
     def __post_init__(self) -> None:
         for field_name in ("encoder_size", "hidden_size", "recurrent_layers"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{field_name} must be a positive integer")
+        if self.public_input_schema_version not in {
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        }:
+            raise ValueError("public_input_schema_version is unsupported")
+        if (
+            isinstance(self.public_input_size, bool)
+            or not isinstance(self.public_input_size, int)
+            or self.public_input_size <= 0
+        ):
+            raise ValueError("public_input_size must be a positive integer")
+        if (
+            self.public_input_schema_version == ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            and self.public_input_size != PUBLIC_INPUT_SIZE
+        ):
+            raise ValueError(
+                "base public input schema requires the 541-value projection"
+            )
+        token_channel_width = 1 + PATCH_CELL_COUNT
+        token_width = self.public_input_size - PUBLIC_INPUT_SIZE
+        if (
+            self.public_input_schema_version
+            == TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            and (token_width <= 0 or token_width % token_channel_width != 0)
+        ):
+            raise ValueError(
+                "tokenized public input size must contain complete self-plus-patch "
+                "token channels"
+            )
+
+    @classmethod
+    def for_signal_config(
+        cls,
+        signal_config: object,
+        *,
+        encoder_size: int = 128,
+        hidden_size: int = 128,
+        recurrent_layers: int = 1,
+    ) -> RecurrentActorCriticConfig:
+        configured_actions = tuple(action_names(signal_config))
+        if configured_actions != tuple(ACTION_NAMES):
+            raise ValueError(
+                "recurrent actor-critic requires the stable default 20-action "
+                "ordering; configured signal action capacity differs"
+            )
+        return cls(
+            encoder_size=encoder_size,
+            hidden_size=hidden_size,
+            recurrent_layers=recurrent_layers,
+            public_input_schema_version=ecological_policy_input_schema_version(
+                signal_config
+            ),
+            public_input_size=ecological_policy_input_vector_size(signal_config),
+        )
+
+    @property
+    def learned_encoder_input_size(self) -> int:
+        return self.public_input_size + ACTION_COUNT + PREVIOUS_PUBLIC_FEEDBACK_SIZE
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,13 +194,10 @@ class PreviousPublicFeedbackInput:
                 not self.resolution_action_valid
                 and self.resolved_action_id != ACTION_INDEX["stay"]
             ):
-                raise RecurrentContextError(
-                    "invalid feedback must fail closed to stay"
-                )
+                raise RecurrentContextError("invalid feedback must fail closed to stay")
             resolved_action = ACTION_NAMES[self.resolved_action_id]
             expected_moved = (
-                self.resolution_action_valid
-                and resolved_action.startswith("move_")
+                self.resolution_action_valid and resolved_action.startswith("move_")
             )
             if self.moved != expected_moved:
                 raise RecurrentContextError(
@@ -203,8 +268,8 @@ def recurrent_actor_critic_contract(
     resolved = config or RecurrentActorCriticConfig()
     return {
         "schema_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
-        "public_input_schema_version": ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-        "public_input_size": PUBLIC_INPUT_SIZE,
+        "public_input_schema_version": resolved.public_input_schema_version,
+        "public_input_size": resolved.public_input_size,
         "previous_public_feedback_schema_version": (
             PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
         ),
@@ -215,9 +280,9 @@ def recurrent_actor_critic_contract(
         "action_id_encoding": "zero_based_stable_action_contract_order",
         "architecture": {
             "parameter_sharing": "one_policy_for_all_agents",
-            "learned_encoder_input_size": LEARNED_ENCODER_INPUT_SIZE,
+            "learned_encoder_input_size": resolved.learned_encoder_input_size,
             "learned_encoder_inputs": [
-                "current_ecological_observation_541",
+                f"current_ecological_observation_{resolved.public_input_size}",
                 "current_action_mask_20",
                 "previous_requested_action_one_hot_20",
                 "previous_resolved_action_one_hot_20",
@@ -255,25 +320,58 @@ def recurrent_actor_critic_contract(
 def public_policy_tensor_from_observation_input(
     observation_input: dict[str, object],
     *,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = PUBLIC_INPUT_SIZE,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
-    """Project a versioned raw observation payload onto the safe 541 features."""
+    """Project one exact versioned observation payload without shape coercion."""
 
     values = ecological_policy_input_values(observation_input)
-    return _public_values_tensor(values, device=device, dtype=dtype)
+    observed_schema_version = (
+        TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+        if observation_input.get("schema_version")
+        == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+        else ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    )
+    if observed_schema_version != expected_schema_version:
+        raise PublicInputError(
+            "public observation schema does not match the recurrent model: "
+            f"{observed_schema_version} != {expected_schema_version}"
+        )
+    return _public_values_tensor(
+        values,
+        expected_size=expected_size,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def public_policy_tensor_from_decoded(
     decoded_observation: Sequence[float],
     *,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = PUBLIC_INPUT_SIZE,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
-    """Project a decoded raw observation vector onto the safe 541 features."""
+    """Project a decoded raw observation vector onto one exact model shape."""
 
-    values = ecological_policy_values_from_decoded(decoded_observation)
-    return _public_values_tensor(values, device=device, dtype=dtype)
+    RecurrentActorCriticConfig(
+        public_input_schema_version=expected_schema_version,
+        public_input_size=expected_size,
+    )
+    source_vector_size = expected_size + 1
+    values = ecological_policy_values_from_decoded(
+        decoded_observation,
+        source_vector_size=source_vector_size,
+    )
+    return _public_values_tensor(
+        values,
+        expected_size=expected_size,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def strict_action_mask_tensor(
@@ -329,6 +427,7 @@ def validate_public_input_tensor(
     observations: Tensor,
     *,
     ranks: tuple[int, ...] = (1, 2, 3),
+    expected_size: int = PUBLIC_INPUT_SIZE,
 ) -> None:
     if not isinstance(observations, Tensor):
         raise PublicInputError("public observations must be a torch.Tensor")
@@ -336,10 +435,10 @@ def validate_public_input_tensor(
         raise PublicInputError(
             f"public observations must have rank in {ranks}; got {observations.ndim}"
         )
-    if observations.shape[-1] != PUBLIC_INPUT_SIZE:
+    if observations.shape[-1] != expected_size:
         raise PublicInputError(
             "public observations have unexpected final dimension: "
-            f"{observations.shape[-1]}; expected {PUBLIC_INPUT_SIZE}"
+            f"{observations.shape[-1]}; expected {expected_size}"
         )
     if any(size <= 0 for size in observations.shape):
         raise PublicInputError("public observations cannot contain an empty dimension")
@@ -438,13 +537,9 @@ def validate_previous_feedback_tensor(
     resolution_is_valid = resolution_valid == 1.0
     same_action = (requested == resolved).all(dim=-1)
     if not bool((~present | ~resolution_is_valid | same_action).all().item()):
-        raise RecurrentContextError(
-            "valid feedback must resolve the requested action"
-        )
+        raise RecurrentContextError("valid feedback must resolve the requested action")
     resolved_stay = resolved[..., ACTION_INDEX["stay"]] == 1.0
-    if not bool(
-        (~present | resolution_is_valid | resolved_stay).all().item()
-    ):
+    if not bool((~present | resolution_is_valid | resolved_stay).all().item()):
         raise RecurrentContextError("invalid feedback must fail closed to stay")
     resolved_move = torch.zeros_like(resolution_is_valid)
     for action_index, action in enumerate(ACTION_NAMES):
@@ -553,9 +648,14 @@ class PublicRecurrentActorCritic(nn.Module):
         with rng_context:
             if seed is not None:
                 torch.manual_seed(seed)
-            self.input_norm = BackendStableLayerNorm(LEARNED_ENCODER_INPUT_SIZE)
+            self.input_norm = BackendStableLayerNorm(
+                self.config.learned_encoder_input_size
+            )
             self.encoder = nn.Sequential(
-                nn.Linear(LEARNED_ENCODER_INPUT_SIZE, self.config.encoder_size),
+                nn.Linear(
+                    self.config.learned_encoder_input_size,
+                    self.config.encoder_size,
+                ),
                 nn.Tanh(),
             )
             self.recurrent = nn.GRU(
@@ -619,7 +719,11 @@ class PublicRecurrentActorCritic(nn.Module):
         evaluated episodes while retaining gradients within each segment.
         """
 
-        validate_public_input_tensor(observations, ranks=(3,))
+        validate_public_input_tensor(
+            observations,
+            ranks=(3,),
+            expected_size=self.config.public_input_size,
+        )
         self._validate_model_input_placement(observations)
         time_steps, batch_size, _ = observations.shape
         validate_action_mask_tensor(
@@ -666,7 +770,7 @@ class PublicRecurrentActorCritic(nn.Module):
             ),
             dim=-1,
         )
-        if learned_inputs.shape[-1] != LEARNED_ENCODER_INPUT_SIZE:
+        if learned_inputs.shape[-1] != self.config.learned_encoder_input_size:
             raise AssertionError("learned encoder input size drifted")
         encoded = self.encoder(self.input_norm(learned_inputs))
         outputs: list[Tensor] = []
@@ -734,7 +838,11 @@ class PublicRecurrentActorCritic(nn.Module):
     ) -> ActionSelection:
         """Select a legal action for one decision step per batch member."""
 
-        validate_public_input_tensor(observations, ranks=(1, 2))
+        validate_public_input_tensor(
+            observations,
+            ranks=(1, 2),
+            expected_size=self.config.public_input_size,
+        )
         if not isinstance(action_masks, Tensor):
             raise ActionMaskError("action masks must be a torch.Tensor")
         if type(deterministic) is not bool:
@@ -1023,13 +1131,18 @@ class PerAgentRecurrentStateStore:
 def _public_values_tensor(
     values: Sequence[float],
     *,
+    expected_size: int,
     device: torch.device | str | None,
     dtype: torch.dtype,
 ) -> Tensor:
     if not torch.empty((), dtype=dtype).is_floating_point():
         raise PublicInputError("public policy tensor dtype must be floating point")
     tensor = torch.tensor(values, dtype=dtype, device=device)
-    validate_public_input_tensor(tensor, ranks=(1,))
+    validate_public_input_tensor(
+        tensor,
+        ranks=(1,),
+        expected_size=expected_size,
+    )
     return tensor
 
 

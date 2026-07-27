@@ -15,12 +15,17 @@ except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
 if torch is not None:
+    from evolution_sim.config.schema import SignalConfig, WorldConfig
     from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+    from evolution_sim.env.runtime.state import RunMode
+    from evolution_sim.env.world import SimulationWorld
     from evolution_sim.mind.recurrent_actor_critic import (
         ACTION_COUNT,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PUBLIC_INPUT_SIZE,
+        PublicInputError,
         PublicRecurrentActorCritic,
+        RecurrentActorCriticConfig,
     )
     from evolution_sim.mind.recurrent_artifact import (
         FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
@@ -45,6 +50,9 @@ if torch is not None:
         write_frozen_recurrent_policy_artifact,
         write_recurrent_artifact,
         write_recurrent_training_crash_checkpoint,
+    )
+    from evolution_sim.mind.recurrent_policy import (
+        DeterministicPublicRecurrentPolicy,
     )
 
 
@@ -113,6 +121,72 @@ class RecurrentArtifactTests(unittest.TestCase):
         torch.testing.assert_close(
             original.next_state, loaded.next_state, rtol=0, atol=0
         )
+
+    def test_token_aware_artifact_round_trip_binds_shape_and_base_mismatch_fails(
+        self,
+    ) -> None:
+        signals = SignalConfig(communication_signal_emission_enabled=True)
+        token_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig.for_signal_config(
+                signals,
+                encoder_size=16,
+                hidden_size=16,
+            ),
+            initialization_seed=77,
+        )
+        token_artifact = self._artifact(model=token_model)
+        loaded_token_model = model_from_recurrent_artifact(token_artifact)
+
+        self.assertEqual(
+            token_artifact["model"]["public_input_schema_version"],
+            "mind_ecological_policy_input_v2",
+        )
+        self.assertEqual(token_artifact["model"]["public_input_size"], 645)
+        self.assertEqual(token_artifact["model"]["learned_encoder_input_size"], 708)
+        self.assertEqual(loaded_token_model.config.public_input_size, 645)
+        self.assertEqual(loaded_token_model.input_norm.normalized_size, 708)
+        frozen_token_artifact = build_frozen_recurrent_policy_artifact(
+            token_model,
+            **self._frozen_metadata(),
+        )
+        loaded_frozen_token_model = model_from_frozen_recurrent_policy_artifact(
+            frozen_token_artifact
+        )
+        self.assertEqual(
+            frozen_token_artifact["verification"]["probe"]["observations"]["shape"],
+            [4, 645],
+        )
+        self.assertEqual(loaded_frozen_token_model.config.public_input_size, 645)
+        token_policy = DeterministicPublicRecurrentPolicy(
+            loaded_token_model,
+            artifact_digest=str(token_artifact["artifact_sha256"]),
+        )
+        token_world = SimulationWorld(
+            WorldConfig(seed=7, max_ticks=1, signals=signals),
+            policy=token_policy,
+        )
+        token_world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        self.assertTrue(
+            any(
+                record["action_source"] == "learned_recurrent_on_policy"
+                for record in token_world.trajectory_records
+            )
+        )
+
+        base_artifact = self._artifact()
+        loaded_base_model = model_from_recurrent_artifact(base_artifact)
+        base_policy = DeterministicPublicRecurrentPolicy(
+            loaded_base_model,
+            artifact_digest=str(base_artifact["artifact_sha256"]),
+        )
+        with self.assertRaisesRegex(
+            PublicInputError,
+            "schema does not match",
+        ):
+            SimulationWorld(
+                WorldConfig(seed=7, max_ticks=1, signals=signals),
+                policy=base_policy,
+            ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
 
     def test_seeded_stochastic_inference_replays_after_load(self) -> None:
         artifact = self._artifact()
