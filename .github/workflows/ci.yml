@@ -59,6 +59,24 @@ jobs:
           trap "kill $SERVER_PID" EXIT
           npm run viewer:smoke
 
+  mind-recurrent-cpu:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+          cache: pip
+          cache-dependency-path: requirements-mind-ci.txt
+      - run: python -m pip install --disable-pip-version-check -r requirements-mind-ci.txt
+      - name: Prove Torch is available
+        run: python -c 'import torch; assert torch.__version__.split("+", 1)[0] == "2.11.0"'
+      - name: Run recurrent Mind contracts with Torch enabled
+        run: python -m unittest discover -s python/tests -p 'test_recurrent_*.py' -v
+
   expensive:
     if: github.event_name == 'schedule' || github.event.inputs.run_expensive_checks == 'true'
     runs-on: ubuntu-latest

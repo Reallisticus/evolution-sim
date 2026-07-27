@@ -1,0 +1,4 @@
+# Minimal, pinned CPU dependency for the non-skippable recurrent Mind CI job.
+# Keep this separate from the optional full TorchRL training stack.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0
