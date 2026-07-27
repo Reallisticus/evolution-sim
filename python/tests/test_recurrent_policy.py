@@ -309,7 +309,7 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
                 genome_population_mode="heritable",
             )
 
-    def test_feed_forward_ablation_uses_zero_state_for_every_world_decision(
+    def test_feed_forward_ablation_uses_zero_state_and_feedback_for_every_decision(
         self,
     ) -> None:
         model = PublicRecurrentActorCritic(initialization_seed=31)
@@ -322,7 +322,7 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
 
         with patch.object(model, "act", wraps=model.act) as act:
             SimulationWorld(
-                WorldConfig(seed=17, max_ticks=3),
+                _small_policy_world_config(seed=17, max_ticks=3),
                 policy=policy,
             ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
 
@@ -330,6 +330,10 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         for call in act.call_args_list:
             state = call.kwargs["recurrent_state"]
             self.assertTrue(torch.equal(state, torch.zeros_like(state)))
+            feedback = call.args[2]
+            self.assertTrue(torch.equal(feedback, torch.zeros_like(feedback)))
+        self.assertFalse(policy._state_by_agent)
+        self.assertFalse(policy._feedback_by_agent)
 
     def test_seeded_sampled_policy_is_legal_diverse_and_replay_repeatable(self) -> None:
         def run_once() -> tuple[str, ...]:

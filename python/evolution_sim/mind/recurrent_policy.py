@@ -693,9 +693,13 @@ class DeterministicPublicRecurrentPolicy:
             action_mask,
             device=reference.device,
         )
-        feedback = self._feedback_by_agent.get(
-            agent_id,
-            PreviousPublicFeedbackInput.zero(),
+        feedback = (
+            PreviousPublicFeedbackInput.zero()
+            if self._reset_recurrent_state_each_decision
+            else self._feedback_by_agent.get(
+                agent_id,
+                PreviousPublicFeedbackInput.zero(),
+            )
         )
         feedback_tensor = previous_public_feedback_tensor(
             feedback,
@@ -904,7 +908,7 @@ class DeterministicPublicRecurrentPolicy:
             self._state_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
             self._public_history_by_agent.pop(agent_id, None)
-        elif pending is not None:
+        elif pending is not None and not self._reset_recurrent_state_each_decision:
             assert feedback is not None
             self._feedback_by_agent[agent_id] = feedback
         return None

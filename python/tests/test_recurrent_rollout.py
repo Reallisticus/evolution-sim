@@ -285,7 +285,9 @@ class RecurrentRolloutTests(unittest.TestCase):
         self.assertEqual(second[0].policy_sampling_seed, 2)
         self.assertNotEqual(first[0].requested_action, second[0].requested_action)
 
-    def test_feed_forward_ablation_resets_hidden_for_every_decision(self) -> None:
+    def test_feed_forward_ablation_resets_hidden_and_feedback_for_every_decision(
+        self,
+    ) -> None:
         collector = RecurrentOnPolicyCollector(
             _RecordingCore(),
             reset_recurrent_state_each_decision=True,
@@ -302,12 +304,12 @@ class RecurrentRolloutTests(unittest.TestCase):
             all(step.hidden == (0.0, 0.0, 0.0) for step in collector.buffer.steps)
         )
         self.assertTrue(
-            any(
-                step.previous_feedback.available
+            all(
+                step.previous_feedback == PreviousPublicFeedback.zero()
                 for step in collector.buffer.steps
-                if step.tick > 0
             )
         )
+        self.assertFalse(collector._feedback_by_agent)
 
     def test_finish_fails_closed_without_the_public_bootstrap_tick(self) -> None:
         collector = RecurrentOnPolicyCollector(_RecordingCore())

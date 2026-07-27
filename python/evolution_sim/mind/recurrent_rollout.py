@@ -2045,7 +2045,7 @@ class RecurrentOnPolicyCollector:
             self._discard_terminal_genome(agent_id)
             self._hidden_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
-        else:
+        elif not self._reset_recurrent_state_each_decision:
             self._feedback_by_agent[agent_id] = PreviousPublicFeedback.from_record(
                 record
             )
@@ -2265,9 +2265,13 @@ class RecurrentOnPolicyCollector:
         )
         if hidden is None:
             hidden = self._initial_hidden()
-        previous_feedback = self._feedback_by_agent.get(
-            expected_agent_id,
-            PreviousPublicFeedback.zero(),
+        previous_feedback = (
+            PreviousPublicFeedback.zero()
+            if self._reset_recurrent_state_each_decision
+            else self._feedback_by_agent.get(
+                expected_agent_id,
+                PreviousPublicFeedback.zero(),
+            )
         )
         genome_values: tuple[float, ...] | None = None
         genome_sha256: str | None = None
