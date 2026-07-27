@@ -35,9 +35,9 @@ from evolution_sim.mind.recurrent_actor_critic import (
 from evolution_sim.mind.recurrent_genome import RECURRENT_CONTROLLER_GENOME_SIZE
 
 
-RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v3"
+RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v4"
 FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION = (
-    "mind_public_recurrent_frozen_policy_artifact_v4"
+    "mind_public_recurrent_frozen_policy_artifact_v5"
 )
 FROZEN_RECURRENT_POLICY_ARTIFACT_KIND = "frozen_recurrent_policy"
 RECURRENT_REPLAY_PROBE_CONTRACT_VERSION = "mind_public_recurrent_cpu_replay_probe_v3"
@@ -45,7 +45,7 @@ FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION = (
     "mind_public_recurrent_full_world_replay_manifest_v1"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_SCHEMA_VERSION = (
-    "mind_public_recurrent_training_crash_checkpoint_v3"
+    "mind_public_recurrent_training_crash_checkpoint_v4"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_KIND = "optimizer_rng_crash_checkpoint"
 RECURRENT_TENSOR_ENCODING = "base64_raw"
@@ -120,7 +120,7 @@ _CONFIG_KEYS = frozenset(
         "public_input_size",
         "genome_conditioning_mode",
         "critic_genome_conditioning",
-        "value_trunk_gradient",
+        "value_shared_trunk_gradient",
     }
 )
 _FROZEN_POLICY_TOP_LEVEL_KEYS = frozenset(
@@ -194,6 +194,12 @@ _GENOME_FILM_BUFFER_NAMES = frozenset(
     {
         "_genome_film_scale_coefficients",
         "_genome_film_bias_coefficients",
+    }
+)
+_CRITIC_GENOME_FILM_PARAMETER_NAMES = frozenset(
+    {
+        "critic_genome_film_scale_coefficients",
+        "critic_genome_film_bias_coefficients",
     }
 )
 _FULL_WORLD_REPLAY_MANIFEST_KEYS = frozenset(
@@ -888,7 +894,7 @@ def _disabled_genome_reference_model(
         public_input_size=config.public_input_size,
         genome_conditioning_mode=GENOME_CONDITIONING_DISABLED,
         critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
-        value_trunk_gradient=config.value_trunk_gradient,
+        value_shared_trunk_gradient=config.value_shared_trunk_gradient,
     )
     reference = PublicRecurrentActorCritic(
         disabled_config,
@@ -897,7 +903,7 @@ def _disabled_genome_reference_model(
     source_state = {
         name: tensor
         for name, tensor in model.state_dict().items()
-        if name not in _GENOME_FILM_BUFFER_NAMES
+        if name not in _GENOME_FILM_BUFFER_NAMES | _CRITIC_GENOME_FILM_PARAMETER_NAMES
     }
     if set(source_state) != set(reference.state_dict()):
         raise RecurrentArtifactError(
@@ -1543,9 +1549,9 @@ def _validate_and_decode(
                 config_payload.get("critic_genome_conditioning"),
                 "critic_genome_conditioning",
             ),
-            value_trunk_gradient=_strict_text(
-                config_payload.get("value_trunk_gradient"),
-                "value_trunk_gradient",
+            value_shared_trunk_gradient=_strict_text(
+                config_payload.get("value_shared_trunk_gradient"),
+                "value_shared_trunk_gradient",
             ),
         )
     except ValueError as exc:

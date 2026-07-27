@@ -14,8 +14,12 @@ from torch import Tensor
 
 from evolution_sim.mind.recurrent_actor_critic import (
     ACTION_COUNT,
+    CRITIC_GENOME_CONDITIONING_FILM_V1,
+    CRITIC_GENOME_CONDITIONING_NONE,
     GENOME_CONDITIONING_DISABLED,
     PublicRecurrentActorCritic,
+    VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+    VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     validate_action_mask_tensor,
     validate_previous_feedback_tensor,
     validate_public_input_tensor,
@@ -42,7 +46,7 @@ if TYPE_CHECKING:
     )
 
 
-RECURRENT_PPO_CONTRACT_VERSION = "mind_public_recurrent_ppo_v2"
+RECURRENT_PPO_CONTRACT_VERSION = "mind_public_recurrent_ppo_v3"
 _POST_STEP_KL_ABSOLUTE_TOLERANCE = 1.0e-7
 _POST_STEP_KL_RELATIVE_TOLERANCE = 1.0e-5
 _POST_STEP_KL_AUDIT_SCOPE = (
@@ -172,6 +176,8 @@ class PPOUpdateDiagnostics:
     early_stopped_for_kl: bool
     feed_forward_history_ablation: bool
     world_balanced_loss: bool
+    critic_genome_conditioning: str
+    value_shared_trunk_gradient: str
     world_count: int
     min_world_transition_count: int
     max_world_transition_count: int
@@ -315,6 +321,14 @@ def recurrent_ppo_contract(
         "losses": {
             "policy": "clipped_surrogate",
             "value": "max_unclipped_and_clipped_squared_error",
+            "critic_genome_conditioning": ("bound_by_model_config_none_or_film_v1"),
+            "value_shared_trunk_gradient": (
+                "bound_by_model_config_shared_or_stop_gradient_v1"
+            ),
+            "stop_gradient_semantics": (
+                "detach_shared_recurrent_features_before_trainable_critic_path"
+            ),
+            "inherited_genome_trainable": False,
             "entropy_coefficient": resolved.entropy_coefficient,
             "value_loss_coefficient": resolved.value_loss_coefficient,
             "advantage_normalization": resolved.normalize_advantages,
@@ -961,6 +975,8 @@ class RecurrentPPOTrainer:
             early_stopped_for_kl=early_stopped,
             feed_forward_history_ablation=(self.config.feed_forward_history_ablation),
             world_balanced_loss=self.config.world_balanced_loss,
+            critic_genome_conditioning=(self.model.config.critic_genome_conditioning),
+            value_shared_trunk_gradient=(self.model.config.value_shared_trunk_gradient),
             world_count=len(world_weighting.transition_counts),
             min_world_transition_count=min(world_weighting.transition_counts.values()),
             max_world_transition_count=max(world_weighting.transition_counts.values()),
@@ -2106,6 +2122,16 @@ def _nested_state_equal(left: object, right: object) -> bool:
 
 
 def _assert_finite_diagnostics(diagnostics: PPOUpdateDiagnostics) -> None:
+    if diagnostics.critic_genome_conditioning not in {
+        CRITIC_GENOME_CONDITIONING_NONE,
+        CRITIC_GENOME_CONDITIONING_FILM_V1,
+    }:
+        raise RecurrentPPOError("diagnostic critic_genome_conditioning is malformed")
+    if diagnostics.value_shared_trunk_gradient not in {
+        VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+    }:
+        raise RecurrentPPOError("diagnostic value_shared_trunk_gradient is malformed")
     for field_name in (
         "advantage_mean",
         "advantage_std",

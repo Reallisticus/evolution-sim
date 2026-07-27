@@ -24,8 +24,8 @@ if torch is not None:
         LEARNED_ENCODER_INPUT_SIZE,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PUBLIC_INPUT_SIZE,
-        VALUE_TRUNK_GRADIENT_SHARED,
-        VALUE_TRUNK_GRADIENT_STOP_V1,
+        VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         ActionMaskError,
         GenomeConditioningError,
         PerAgentRecurrentStateStore,
@@ -84,8 +84,8 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             CRITIC_GENOME_CONDITIONING_NONE,
         )
         self.assertEqual(
-            self.model.config.value_trunk_gradient,
-            VALUE_TRUNK_GRADIENT_SHARED,
+            self.model.config.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_SHARED,
         )
         self.assertEqual(
             contract["architecture"]["genome_conditioning"]["required_input"],
@@ -103,7 +103,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             hidden_size=8,
             genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
             critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
-            value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+            value_shared_trunk_gradient=VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         )
         contract = recurrent_actor_critic_contract(enabled)
 
@@ -118,8 +118,10 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             CRITIC_GENOME_CONDITIONING_FILM_V1,
         )
         self.assertEqual(
-            contract["architecture"]["genome_conditioning"]["value_trunk_gradient"],
-            VALUE_TRUNK_GRADIENT_STOP_V1,
+            contract["architecture"]["genome_conditioning"][
+                "value_shared_trunk_gradient"
+            ],
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         )
         self.assertEqual(
             contract["architecture"]["genome_conditioning"]["development"][
@@ -131,7 +133,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         invalid_cases = (
             {"genome_conditioning_mode": "film"},
             {"critic_genome_conditioning": "actor_film_v1"},
-            {"value_trunk_gradient": "separate_critic"},
+            {"value_shared_trunk_gradient": "separate_critic"},
             {
                 "genome_conditioning_mode": GENOME_CONDITIONING_DISABLED,
                 "critic_genome_conditioning": (CRITIC_GENOME_CONDITIONING_FILM_V1),
@@ -728,8 +730,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         )
         actor_output.raw_logits[..., ACTION_NAMES.index("eat")].sum().backward()
 
-        self.assertIsNotNone(actor_genomes.grad)
-        self.assertGreater(float(actor_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNone(actor_genomes.grad)
         self.assertIsNotNone(actor_model.recurrent.weight_ih_l0.grad)
         self.assertGreater(
             float(actor_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
@@ -778,7 +779,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                 hidden_size=12,
                 genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
                 critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_SHARED,
+                value_shared_trunk_gradient=VALUE_SHARED_TRUNK_GRADIENT_SHARED,
             ),
             initialization_seed=820,
         )
@@ -795,14 +796,31 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         )
         shared_output.values.sum().backward()
 
-        self.assertIsNotNone(shared_genomes.grad)
-        self.assertGreater(float(shared_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNone(shared_genomes.grad)
         self.assertIsNotNone(shared_model.recurrent.weight_ih_l0.grad)
         self.assertGreater(
             float(shared_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
             0.0,
         )
         self.assertIsNotNone(shared_model.value.weight.grad)
+        self.assertIsNotNone(shared_model.critic_genome_film_scale_coefficients.grad)
+        self.assertGreater(
+            float(
+                shared_model.critic_genome_film_scale_coefficients.grad.abs()
+                .sum()
+                .item()
+            ),
+            0.0,
+        )
+        self.assertIsNotNone(shared_model.critic_genome_film_bias_coefficients.grad)
+        self.assertGreater(
+            float(
+                shared_model.critic_genome_film_bias_coefficients.grad.abs()
+                .sum()
+                .item()
+            ),
+            0.0,
+        )
 
         stopped_model = PublicRecurrentActorCritic(
             RecurrentActorCriticConfig(
@@ -810,7 +828,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                 hidden_size=12,
                 genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
                 critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
             ),
             initialization_seed=820,
         )
@@ -835,6 +853,24 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             float(stopped_model.value.weight.grad.abs().sum().item()),
             0.0,
         )
+        self.assertIsNotNone(stopped_model.critic_genome_film_scale_coefficients.grad)
+        self.assertGreater(
+            float(
+                stopped_model.critic_genome_film_scale_coefficients.grad.abs()
+                .sum()
+                .item()
+            ),
+            0.0,
+        )
+        self.assertIsNotNone(stopped_model.critic_genome_film_bias_coefficients.grad)
+        self.assertGreater(
+            float(
+                stopped_model.critic_genome_film_bias_coefficients.grad.abs()
+                .sum()
+                .item()
+            ),
+            0.0,
+        )
 
         stopped_model.zero_grad(set_to_none=True)
         stopped_genomes.grad = None
@@ -845,20 +881,21 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             genome_values=stopped_genomes,
         )
         stopped_actor_output.raw_logits[..., ACTION_NAMES.index("eat")].sum().backward()
-        self.assertIsNotNone(stopped_genomes.grad)
-        self.assertGreater(float(stopped_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNone(stopped_genomes.grad)
         self.assertIsNotNone(stopped_model.recurrent.weight_ih_l0.grad)
         self.assertGreater(
             float(stopped_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
             0.0,
         )
         self.assertIsNone(stopped_model.value.weight.grad)
+        self.assertIsNone(stopped_model.critic_genome_film_scale_coefficients.grad)
+        self.assertIsNone(stopped_model.critic_genome_film_bias_coefficients.grad)
 
         disabled_stopped_model = PublicRecurrentActorCritic(
             RecurrentActorCriticConfig(
                 encoder_size=12,
                 hidden_size=12,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
             ),
             initialization_seed=820,
         )
@@ -938,6 +975,93 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         )
         self.assertTrue(
             torch.equal(actor_only_zero.values, actor_and_critic_zero.values)
+        )
+
+    def test_phase_a_cells_share_actor_backbone_and_critic_substream_tensors(
+        self,
+    ) -> None:
+        common = {
+            "encoder_size": 12,
+            "hidden_size": 12,
+            "genome_conditioning_mode": GENOME_CONDITIONING_ACTOR_FILM_V1,
+        }
+        cells = (
+            PublicRecurrentActorCritic(
+                RecurrentActorCriticConfig(
+                    **common,
+                    critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+                    value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_SHARED),
+                ),
+                initialization_seed=832,
+            ),
+            PublicRecurrentActorCritic(
+                RecurrentActorCriticConfig(
+                    **common,
+                    critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+                    value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
+                ),
+                initialization_seed=832,
+            ),
+            PublicRecurrentActorCritic(
+                RecurrentActorCriticConfig(
+                    **common,
+                    critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                    value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_SHARED),
+                ),
+                initialization_seed=832,
+            ),
+            PublicRecurrentActorCritic(
+                RecurrentActorCriticConfig(
+                    **common,
+                    critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                    value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
+                ),
+                initialization_seed=832,
+            ),
+        )
+        critic_parameter_names = {
+            "critic_genome_film_scale_coefficients",
+            "critic_genome_film_bias_coefficients",
+        }
+        shared_names = set(cells[0].state_dict())
+        self.assertEqual(shared_names, set(cells[1].state_dict()))
+        self.assertEqual(
+            shared_names,
+            set(cells[2].state_dict()) - critic_parameter_names,
+        )
+        self.assertEqual(
+            shared_names,
+            set(cells[3].state_dict()) - critic_parameter_names,
+        )
+        for name in shared_names:
+            baseline = cells[0].state_dict()[name]
+            self.assertTrue(
+                all(
+                    torch.equal(baseline, cell.state_dict()[name]) for cell in cells[1:]
+                )
+            )
+        for name in critic_parameter_names:
+            self.assertTrue(
+                torch.equal(cells[2].state_dict()[name], cells[3].state_dict()[name])
+            )
+            self.assertFalse(
+                torch.equal(
+                    cells[2].state_dict()[name],
+                    torch.zeros_like(cells[2].state_dict()[name]),
+                )
+            )
+        self.assertFalse(
+            any(
+                name.startswith("critic_genome_film")
+                for name, _ in cells[0].named_parameters()
+            )
+        )
+        self.assertTrue(
+            all(
+                parameter.requires_grad
+                for name, parameter in cells[2].named_parameters()
+                if name in critic_parameter_names
+            )
         )
 
     def test_token_aware_actor_film_sequence_and_act_are_compatible(self) -> None:
@@ -1041,7 +1165,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             RecurrentActorCriticConfig(
                 genome_conditioning_mode=GENOME_CONDITIONING_DISABLED,
                 critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_SHARED,
+                value_shared_trunk_gradient=VALUE_SHARED_TRUNK_GRADIENT_SHARED,
             ),
             initialization_seed=606,
         )

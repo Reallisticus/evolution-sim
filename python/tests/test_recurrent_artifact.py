@@ -25,7 +25,7 @@ if torch is not None:
         GENOME_CONDITIONING_ACTOR_FILM_V1,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PUBLIC_INPUT_SIZE,
-        VALUE_TRUNK_GRADIENT_STOP_V1,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         PublicInputError,
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
@@ -74,6 +74,10 @@ class RecurrentArtifactTests(unittest.TestCase):
             artifact["schema_version"],
             RECURRENT_ARTIFACT_SCHEMA_VERSION,
         )
+        self.assertEqual(
+            RECURRENT_ARTIFACT_SCHEMA_VERSION,
+            "mind_public_recurrent_actor_critic_artifact_v4",
+        )
         self.assertEqual(artifact["model"]["public_input_size"], 541)
         self.assertEqual(artifact["model"]["learned_encoder_input_size"], 604)
         self.assertEqual(
@@ -85,7 +89,7 @@ class RecurrentArtifactTests(unittest.TestCase):
             "none",
         )
         self.assertEqual(
-            artifact["model"]["config"]["value_trunk_gradient"],
+            artifact["model"]["config"]["value_shared_trunk_gradient"],
             "shared",
         )
         self.assertEqual(artifact["model"]["action_ordering"], list(ACTION_NAMES))
@@ -157,15 +161,32 @@ class RecurrentArtifactTests(unittest.TestCase):
             CRITIC_GENOME_CONDITIONING_FILM_V1,
         )
         self.assertEqual(
-            config["value_trunk_gradient"],
-            VALUE_TRUNK_GRADIENT_STOP_V1,
+            config["value_shared_trunk_gradient"],
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         )
         self.assertIn("_genome_film_scale_coefficients", tensor_names)
         self.assertIn("_genome_film_bias_coefficients", tensor_names)
+        self.assertIn("critic_genome_film_scale_coefficients", tensor_names)
+        self.assertIn("critic_genome_film_bias_coefficients", tensor_names)
         self.assertEqual(
             loaded_model.config.genome_conditioning_mode,
             GENOME_CONDITIONING_ACTOR_FILM_V1,
         )
+        self.assertEqual(
+            loaded_model.config.critic_genome_conditioning,
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        )
+        self.assertEqual(
+            loaded_model.config.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+        )
+        for name in (
+            "critic_genome_film_scale_coefficients",
+            "critic_genome_film_bias_coefficients",
+        ):
+            self.assertTrue(
+                torch.equal(model.state_dict()[name], loaded_model.state_dict()[name])
+            )
         with torch.no_grad():
             original = model.act(
                 observations,
@@ -387,12 +408,39 @@ class RecurrentArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(RecurrentArtifactError, "duplicate"):
                 load_recurrent_artifact(path)
 
-    def test_frozen_policy_v4_binds_exact_hashes_and_executes_cpu_probe(self) -> None:
+    def test_superseded_schema_versions_cannot_masquerade_as_new_contract(
+        self,
+    ) -> None:
+        recurrent = self._artifact()
+        recurrent["schema_version"] = "mind_public_recurrent_actor_critic_artifact_v3"
+        self._refresh_artifact_digest(recurrent)
+        with self.assertRaisesRegex(RecurrentArtifactError, "schema_version"):
+            validate_recurrent_artifact(recurrent)
+
+        frozen = self._frozen_artifact()
+        frozen["schema_version"] = "mind_public_recurrent_frozen_policy_artifact_v4"
+        self._refresh_artifact_digest(frozen)
+        with self.assertRaisesRegex(RecurrentArtifactError, "schema"):
+            validate_frozen_recurrent_policy_artifact(frozen)
+
+        checkpoint = self._checkpoint(optimizer_state={}, rng_state={})
+        checkpoint["schema_version"] = (
+            "mind_public_recurrent_training_crash_checkpoint_v3"
+        )
+        self._refresh_checkpoint_digest(checkpoint)
+        with self.assertRaisesRegex(RecurrentArtifactError, "schema"):
+            validate_recurrent_training_crash_checkpoint(checkpoint)
+
+    def test_frozen_policy_v5_binds_exact_hashes_and_executes_cpu_probe(self) -> None:
         artifact = self._frozen_artifact()
 
         self.assertEqual(
             artifact["schema_version"],
             FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+            "mind_public_recurrent_frozen_policy_artifact_v5",
         )
         self.assertEqual(
             artifact["artifact_kind"], FROZEN_RECURRENT_POLICY_ARTIFACT_KIND
@@ -547,7 +595,7 @@ class RecurrentArtifactTests(unittest.TestCase):
             validate_frozen_recurrent_policy_artifact(changed_probe_genome)
 
         frozen_missing_config = self._frozen_artifact(model=model)
-        del frozen_missing_config["model"]["config"]["critic_genome_conditioning"]
+        del frozen_missing_config["model"]["config"]["value_shared_trunk_gradient"]
         self._refresh_artifact_digest(frozen_missing_config)
         with self.assertRaisesRegex(RecurrentArtifactError, "model.config keys"):
             validate_frozen_recurrent_policy_artifact(frozen_missing_config)
@@ -570,6 +618,54 @@ class RecurrentArtifactTests(unittest.TestCase):
         self._refresh_artifact_digest(frozen_missing_buffer)
         with self.assertRaisesRegex(RecurrentArtifactError, "tensor names"):
             validate_frozen_recurrent_policy_artifact(frozen_missing_buffer)
+
+        missing_critic_parameter = self._artifact(model=model)
+        missing_critic_parameter["tensors"] = [
+            record
+            for record in missing_critic_parameter["tensors"]
+            if record["name"] != "critic_genome_film_scale_coefficients"
+        ]
+        missing_critic_parameter["serialization"]["tensor_count"] = len(
+            missing_critic_parameter["tensors"]
+        )
+        missing_critic_parameter["serialization"]["whole_model_sha256"] = (
+            self._whole_model_sha256(missing_critic_parameter["tensors"])
+        )
+        self._refresh_artifact_digest(missing_critic_parameter)
+        with self.assertRaisesRegex(RecurrentArtifactError, "tensor names"):
+            validate_recurrent_artifact(missing_critic_parameter)
+
+        changed_critic_parameter = self._artifact(model=model)
+        critic_record = next(
+            record
+            for record in changed_critic_parameter["tensors"]
+            if record["name"] == "critic_genome_film_bias_coefficients"
+        )
+        self._change_first_float(critic_record, delta=0.01)
+        with self.assertRaisesRegex(RecurrentArtifactError, "whole-model SHA256"):
+            validate_recurrent_artifact(changed_critic_parameter)
+
+        wrong_critic_shape = self._artifact(model=model)
+        shape_record = next(
+            record
+            for record in wrong_critic_shape["tensors"]
+            if record["name"] == "critic_genome_film_scale_coefficients"
+        )
+        shape_record["shape"] = [shape_record["byte_length"] // 4]
+        wrong_critic_shape["serialization"]["whole_model_sha256"] = (
+            self._whole_model_sha256(wrong_critic_shape["tensors"])
+        )
+        self._refresh_artifact_digest(wrong_critic_shape)
+        with self.assertRaisesRegex(RecurrentArtifactError, "shape"):
+            validate_recurrent_artifact(wrong_critic_shape)
+
+        surplus_model = self._enabled_model()
+        surplus_model.register_parameter(
+            "critic_genome_film_surplus",
+            torch.nn.Parameter(torch.zeros(1)),
+        )
+        with self.assertRaisesRegex(RecurrentArtifactError, "unexpected tensor"):
+            self._artifact(model=surplus_model)
 
     def test_frozen_policy_atomic_round_trip_preserves_verification(self) -> None:
         artifact = self._frozen_artifact()
@@ -668,6 +764,10 @@ class RecurrentArtifactTests(unittest.TestCase):
         self.assertEqual(
             checkpoint["schema_version"],
             RECURRENT_TRAINING_CRASH_CHECKPOINT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            RECURRENT_TRAINING_CRASH_CHECKPOINT_SCHEMA_VERSION,
+            "mind_public_recurrent_training_crash_checkpoint_v4",
         )
         self.assertEqual(
             checkpoint["checkpoint_kind"],
@@ -817,7 +917,7 @@ class RecurrentArtifactTests(unittest.TestCase):
                 hidden_size=16,
                 genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
                 critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
             ),
             initialization_seed=77,
         )

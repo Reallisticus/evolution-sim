@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
+import hashlib
 import math
 from types import MappingProxyType
 
@@ -50,13 +51,16 @@ _REWARD_NORMALIZATION_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
 ACTION_INDEX: Mapping[str, int] = MappingProxyType(
     {action: index for index, action in enumerate(ACTION_NAMES)}
 )
-RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v3"
+RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v4"
 GENOME_CONDITIONING_DISABLED = "disabled"
 GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
 CRITIC_GENOME_CONDITIONING_NONE = "none"
 CRITIC_GENOME_CONDITIONING_FILM_V1 = "film_v1"
-VALUE_TRUNK_GRADIENT_SHARED = "shared"
-VALUE_TRUNK_GRADIENT_STOP_V1 = "stop_gradient_v1"
+VALUE_SHARED_TRUNK_GRADIENT_SHARED = "shared"
+VALUE_SHARED_TRUNK_GRADIENT_STOP_V1 = "stop_gradient_v1"
+CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM = (
+    "mind_recurrent_critic_genome_film_initialization_v1"
+)
 
 
 class RecurrentPolicyContractError(ValueError):
@@ -92,7 +96,7 @@ class RecurrentActorCriticConfig:
     public_input_size: int = PUBLIC_INPUT_SIZE
     genome_conditioning_mode: str = GENOME_CONDITIONING_DISABLED
     critic_genome_conditioning: str = CRITIC_GENOME_CONDITIONING_NONE
-    value_trunk_gradient: str = VALUE_TRUNK_GRADIENT_SHARED
+    value_shared_trunk_gradient: str = VALUE_SHARED_TRUNK_GRADIENT_SHARED
 
     def __post_init__(self) -> None:
         for field_name in ("encoder_size", "hidden_size", "recurrent_layers"):
@@ -145,11 +149,11 @@ class RecurrentActorCriticConfig:
             raise ValueError(
                 "critic film_v1 requires actor_film_v1 genome conditioning"
             )
-        if self.value_trunk_gradient not in {
-            VALUE_TRUNK_GRADIENT_SHARED,
-            VALUE_TRUNK_GRADIENT_STOP_V1,
+        if self.value_shared_trunk_gradient not in {
+            VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         }:
-            raise ValueError("value_trunk_gradient is unsupported")
+            raise ValueError("value_shared_trunk_gradient is unsupported")
 
     @classmethod
     def for_signal_config(
@@ -161,7 +165,7 @@ class RecurrentActorCriticConfig:
         recurrent_layers: int = 1,
         genome_conditioning_mode: str = GENOME_CONDITIONING_DISABLED,
         critic_genome_conditioning: str = CRITIC_GENOME_CONDITIONING_NONE,
-        value_trunk_gradient: str = VALUE_TRUNK_GRADIENT_SHARED,
+        value_shared_trunk_gradient: str = VALUE_SHARED_TRUNK_GRADIENT_SHARED,
     ) -> RecurrentActorCriticConfig:
         configured_actions = tuple(action_names(signal_config))
         if configured_actions != tuple(ACTION_NAMES):
@@ -179,7 +183,7 @@ class RecurrentActorCriticConfig:
             public_input_size=ecological_policy_input_vector_size(signal_config),
             genome_conditioning_mode=genome_conditioning_mode,
             critic_genome_conditioning=critic_genome_conditioning,
-            value_trunk_gradient=value_trunk_gradient,
+            value_shared_trunk_gradient=value_shared_trunk_gradient,
         )
 
     @property
@@ -375,12 +379,35 @@ def recurrent_actor_critic_contract(
                     == CRITIC_GENOME_CONDITIONING_FILM_V1
                     else "raw_recurrent_output"
                 ),
-                "value_trunk_gradient": resolved.value_trunk_gradient,
-                "value_trunk_gradient_semantics": (
-                    "value_head_input_detached_value_head_remains_trainable"
-                    if resolved.value_trunk_gradient == VALUE_TRUNK_GRADIENT_STOP_V1
+                "critic_development": (
+                    {
+                        "projection": "trainable_dense_projection_v1",
+                        "initialization_substream": (
+                            CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM
+                        ),
+                        "transform": "bounded_softsign_featurewise_affine_v1",
+                        "scale_bounds": [
+                            1.0 - RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT,
+                            1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT,
+                        ],
+                        "bias_bounds": [
+                            -RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
+                            RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
+                        ],
+                        "genome_input_autograd": "detached_non_parameter_input",
+                    }
+                    if resolved.critic_genome_conditioning
+                    == CRITIC_GENOME_CONDITIONING_FILM_V1
+                    else None
+                ),
+                "value_shared_trunk_gradient": (resolved.value_shared_trunk_gradient),
+                "value_shared_trunk_gradient_semantics": (
+                    "detach_shared_recurrent_features_before_trainable_critic_path"
+                    if resolved.value_shared_trunk_gradient
+                    == VALUE_SHARED_TRUNK_GRADIENT_STOP_V1
                     else "value_loss_updates_shared_encoder_and_gru"
                 ),
+                "inherited_genome_trainable": False,
             },
             **asdict(resolved),
         },
@@ -768,6 +795,25 @@ class PublicRecurrentActorCritic(nn.Module):
                     torch.tensor(coefficients.bias, dtype=torch.float32),
                 )
             self._initialize_parameters()
+            if (
+                self.config.critic_genome_conditioning
+                == CRITIC_GENOME_CONDITIONING_FILM_V1
+            ):
+                self.critic_genome_film_scale_coefficients = nn.Parameter(
+                    torch.empty(
+                        self.config.hidden_size,
+                        RECURRENT_CONTROLLER_GENOME_SIZE,
+                    )
+                )
+                self.critic_genome_film_bias_coefficients = nn.Parameter(
+                    torch.empty(
+                        self.config.hidden_size,
+                        RECURRENT_CONTROLLER_GENOME_SIZE,
+                    )
+                )
+                self._initialize_critic_genome_film_parameters(
+                    base_seed=(torch.initial_seed() if seed is None else seed)
+                )
 
     def initial_state(
         self,
@@ -891,7 +937,9 @@ class PublicRecurrentActorCritic(nn.Module):
         film_scale: Tensor | None = None
         film_bias: Tensor | None = None
         if validated_genome_values is not None:
-            film_scale, film_bias = self._develop_genome_film(validated_genome_values)
+            film_scale, film_bias = self._develop_genome_film(
+                validated_genome_values.detach()
+            )
         if self.config.genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
             raw_logits = self.actor(recurrent_outputs)
         else:
@@ -900,11 +948,17 @@ class PublicRecurrentActorCritic(nn.Module):
         masked_logits = raw_logits.masked_fill(~action_masks, -torch.inf)
         if (
             self.config.critic_genome_conditioning == CRITIC_GENOME_CONDITIONING_NONE
-            and self.config.value_trunk_gradient == VALUE_TRUNK_GRADIENT_SHARED
+            and self.config.value_shared_trunk_gradient
+            == VALUE_SHARED_TRUNK_GRADIENT_SHARED
         ):
             values = self.value(recurrent_outputs).squeeze(-1)
         else:
             value_features = recurrent_outputs
+            if (
+                self.config.value_shared_trunk_gradient
+                == VALUE_SHARED_TRUNK_GRADIENT_STOP_V1
+            ):
+                value_features = value_features.detach()
             if (
                 self.config.critic_genome_conditioning
                 == CRITIC_GENOME_CONDITIONING_FILM_V1
@@ -916,10 +970,14 @@ class PublicRecurrentActorCritic(nn.Module):
                     raise AssertionError(
                         "critic genome conditioning escaped config validation"
                     )
-                assert film_scale is not None and film_bias is not None
-                value_features = value_features * film_scale + film_bias
-            if self.config.value_trunk_gradient == VALUE_TRUNK_GRADIENT_STOP_V1:
-                value_features = value_features.detach()
+                if validated_genome_values is None:
+                    raise AssertionError(
+                        "critic genome conditioning escaped genome validation"
+                    )
+                critic_film_scale, critic_film_bias = self._develop_critic_genome_film(
+                    validated_genome_values.detach()
+                )
+                value_features = value_features * critic_film_scale + critic_film_bias
             values = self.value(value_features).squeeze(-1)
         return ActorCriticSequenceOutput(
             raw_logits=raw_logits,
@@ -1207,6 +1265,36 @@ class PublicRecurrentActorCritic(nn.Module):
             RECURRENT_CONTROLLER_FILM_BIAS_LIMIT * bias_softsign,
         )
 
+    def _develop_critic_genome_film(
+        self,
+        genome_values: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if self.config.critic_genome_conditioning != CRITIC_GENOME_CONDITIONING_FILM_V1:
+            raise GenomeConditioningError(
+                "critic genome FiLM development requires film_v1 conditioning"
+            )
+        normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
+        scale_projection = (
+            torch.matmul(
+                genome_values,
+                self.critic_genome_film_scale_coefficients.transpose(0, 1),
+            )
+            / normalization
+        )
+        bias_projection = (
+            torch.matmul(
+                genome_values,
+                self.critic_genome_film_bias_coefficients.transpose(0, 1),
+            )
+            / normalization
+        )
+        scale_softsign = scale_projection / (1.0 + scale_projection.abs())
+        bias_softsign = bias_projection / (1.0 + bias_projection.abs())
+        return (
+            1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT * scale_softsign,
+            RECURRENT_CONTROLLER_FILM_BIAS_LIMIT * bias_softsign,
+        )
+
     def _validated_or_initial_state(
         self,
         state: Tensor | None,
@@ -1315,6 +1403,27 @@ class PublicRecurrentActorCritic(nn.Module):
         nn.init.zeros_(self.actor.bias)
         nn.init.orthogonal_(self.value.weight, gain=1.0)
         nn.init.zeros_(self.value.bias)
+
+    def _initialize_critic_genome_film_parameters(self, *, base_seed: int) -> None:
+        domain_payload = (
+            f"{CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM}:{base_seed}"
+        ).encode("ascii")
+        substream_seed = int.from_bytes(
+            hashlib.sha256(domain_payload).digest()[:8],
+            "big",
+        ) % (2**63)
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(substream_seed)
+            nn.init.normal_(
+                self.critic_genome_film_scale_coefficients,
+                mean=0.0,
+                std=1.0,
+            )
+            nn.init.normal_(
+                self.critic_genome_film_bias_coefficients,
+                mean=0.0,
+                std=1.0,
+            )
 
 
 class PerAgentRecurrentStateStore:
@@ -1448,8 +1557,8 @@ __all__ = [
     "RecurrentPolicyContractError",
     "RecurrentStateError",
     "SequenceEvaluation",
-    "VALUE_TRUNK_GRADIENT_SHARED",
-    "VALUE_TRUNK_GRADIENT_STOP_V1",
+    "VALUE_SHARED_TRUNK_GRADIENT_SHARED",
+    "VALUE_SHARED_TRUNK_GRADIENT_STOP_V1",
     "public_policy_tensor_from_decoded",
     "public_policy_tensor_from_observation_input",
     "previous_public_feedback_tensor",

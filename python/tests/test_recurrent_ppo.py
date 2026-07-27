@@ -20,7 +20,7 @@ if torch is not None:
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
-        VALUE_TRUNK_GRADIENT_STOP_V1,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     )
     from evolution_sim.mind.recurrent_genome import founder_recurrent_genome
     from evolution_sim.mind.recurrent_ppo import (
@@ -65,6 +65,15 @@ class RecurrentPPOTests(unittest.TestCase):
             contract["likelihood_contract"]["action_masks"],
             "stored_observation_time_masks_only",
         )
+        self.assertEqual(
+            contract["losses"]["critic_genome_conditioning"],
+            "bound_by_model_config_none_or_film_v1",
+        )
+        self.assertEqual(
+            contract["losses"]["value_shared_trunk_gradient"],
+            "bound_by_model_config_shared_or_stop_gradient_v1",
+        )
+        self.assertFalse(contract["losses"]["inherited_genome_trainable"])
         self.assertTrue(config.normalize_advantages)
         self.assertFalse(config.world_balanced_loss)
         self.assertFalse(contract["world_balancing"]["enabled"])
@@ -756,7 +765,7 @@ class RecurrentPPOTests(unittest.TestCase):
                 hidden_size=16,
                 genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
                 critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
-                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
             ),
             initialization_seed=1201,
         )
@@ -779,6 +788,14 @@ class RecurrentPPOTests(unittest.TestCase):
 
         self.assertEqual(diagnostics.transition_count, 12)
         self.assertGreater(diagnostics.parameter_delta_l2, 0.0)
+        self.assertEqual(
+            diagnostics.critic_genome_conditioning,
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        )
+        self.assertEqual(
+            diagnostics.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+        )
         self.assertTrue(
             all(
                 sequence.genome_sha256 is not None
@@ -796,6 +813,87 @@ class RecurrentPPOTests(unittest.TestCase):
                     strict=True,
                 )
             )
+        )
+
+    def test_value_only_ppo_stop_gradient_updates_only_trainable_critic_path(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=16,
+                hidden_size=16,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
+            ),
+            initialization_seed=1211,
+        )
+        behavior = _behavior_sequences(model, lengths=(5, 7))
+        sequences = tuple(
+            replace(
+                sequence,
+                advantages=torch.zeros_like(sequence.advantages),
+                return_targets=sequence.old_values + 1.0,
+            )
+            for sequence in behavior
+        )
+        genomes_before = tuple(sequence.genome_values.clone() for sequence in sequences)
+        state_before = {
+            name: tensor.detach().clone() for name, tensor in model.state_dict().items()
+        }
+
+        diagnostics = RecurrentPPOTrainer(
+            model,
+            RecurrentPPOConfig(
+                learning_rate=1.0e-2,
+                value_loss_coefficient=1.0,
+                entropy_coefficient=0.0,
+                update_epochs=1,
+                sequence_minibatch_size=16,
+                tbptt_steps=16,
+                burn_in_steps=0,
+                max_gradient_norm=10.0,
+                normalize_advantages=False,
+                learner_seed=1212,
+            ),
+        ).update(sequences)
+
+        state_after = model.state_dict()
+        for name in (
+            "input_norm.weight",
+            "input_norm.bias",
+            "encoder.0.weight",
+            "encoder.0.bias",
+            "recurrent.weight_ih_l0",
+            "recurrent.weight_hh_l0",
+            "recurrent.bias_ih_l0",
+            "recurrent.bias_hh_l0",
+            "actor.weight",
+            "actor.bias",
+            "_genome_film_scale_coefficients",
+            "_genome_film_bias_coefficients",
+        ):
+            self.assertTrue(torch.equal(state_before[name], state_after[name]), name)
+        for name in (
+            "value.weight",
+            "value.bias",
+            "critic_genome_film_scale_coefficients",
+            "critic_genome_film_bias_coefficients",
+        ):
+            self.assertFalse(torch.equal(state_before[name], state_after[name]), name)
+        self.assertTrue(
+            all(
+                torch.equal(sequence.genome_values, original)
+                for sequence, original in zip(
+                    sequences,
+                    genomes_before,
+                    strict=True,
+                )
+            )
+        )
+        self.assertEqual(
+            diagnostics.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
         )
 
     def test_genome_sequence_tampering_and_disabled_extras_fail_closed(self) -> None:
