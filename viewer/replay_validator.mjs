@@ -1201,6 +1201,9 @@ function validateSignalCommunicationContract(
       "aggregate_field",
       "aggregate_field_retained_for_compatibility",
       "aggregation",
+      "receiver_projection_schema_version",
+      "receiver_observation_policy",
+      "global_reporting_policy",
       "simulator_assigned_meanings",
       "profile_provenance_policy_visible",
     ],
@@ -1229,7 +1232,12 @@ function validateSignalCommunicationContract(
     tokenContract.profile_provenance_policy_visible !== false ||
     tokenContract.aggregate_field !== "communication_signal" ||
     tokenContract.aggregate_field_retained_for_compatibility !== true ||
-    tokenContract.aggregation !== COMMUNICATION_AGGREGATE_PROJECTION
+    tokenContract.aggregation !== COMMUNICATION_AGGREGATE_PROJECTION ||
+    tokenContract.receiver_projection_schema_version !==
+      "foundation_communication_receiver_projection_v1" ||
+    tokenContract.receiver_observation_policy !==
+      "exclude_receiver_own_communication_emissions_across_local_patch_v1" ||
+    tokenContract.global_reporting_policy !== "include_all_emitters_v1"
   ) {
     throw new Error(
       "Token-aware signal contract must declare opaque public spatial token channels.",

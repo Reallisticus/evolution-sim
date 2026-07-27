@@ -11,6 +11,9 @@ from evolution_sim.env.runtime.observations import (
 )
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_AGGREGATE_PROJECTION,
+    COMMUNICATION_GLOBAL_REPORTING_POLICY,
+    COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+    COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
     TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
     parse_communication_token_field_name,
 )
@@ -878,6 +881,218 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             0.4,
         )
 
+    def test_receiver_projection_matches_independent_clamp_and_diffusion_model(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=2,
+            communication_profiles_per_token=1,
+            max_intensity=1.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=4,
+                signals=signal_config,
+            )
+        )
+        emissions = [
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-a",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=0,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.8,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-b",
+                source_kind="test",
+                source_agent_id=202,
+                token_id=0,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.7,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-c",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=0,
+                profile_index=0,
+                x=2,
+                y=1,
+                intensity=0.9,
+                radius=2,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_1",
+                profile_id="token-1-a",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=1,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.65,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_1",
+                profile_id="token-1-b",
+                source_kind="test",
+                source_agent_id=303,
+                token_id=1,
+                profile_index=0,
+                x=3,
+                y=2,
+                intensity=0.95,
+                radius=3,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+        ]
+        world.communication_signal_emissions.extend(emissions)
+        state = runtime_signals.build_signal_state(
+            context=world._signal_runtime_context()
+        )
+
+        def independent_value(
+            field_name: str,
+            *,
+            x: int,
+            y: int,
+            excluded_agent_id: int | None,
+        ) -> float:
+            sources: dict[tuple[int, int, int], float] = {}
+            for emission in emissions:
+                if (
+                    excluded_agent_id is not None
+                    and emission.source_agent_id == excluded_agent_id
+                ):
+                    continue
+                if field_name != "communication_signal" and (
+                    field_name
+                    != f"communication_signal_token_{emission.token_id}"
+                ):
+                    continue
+                key = (emission.radius, emission.x, emission.y)
+                sources[key] = sources.get(key, 0.0) + emission.intensity
+            raw_value = 0.0
+            for (radius, source_x, source_y), intensity in sources.items():
+                distance = abs(x - source_x) + abs(y - source_y)
+                if distance <= radius:
+                    raw_value += min(signal_config.max_intensity, intensity) / (
+                        distance + 1.0
+                    )
+            return min(signal_config.max_intensity, raw_value)
+
+        fields = (
+            "communication_signal",
+            "communication_signal_token_0",
+            "communication_signal_token_1",
+        )
+        receivers = (101, 202, 303, 999)
+        height = len(world.grid)
+        width = len(world.grid[0])
+        for field_name in fields:
+            global_field = state.field(field_name)
+            for y in range(height):
+                for x in range(width):
+                    self.assertAlmostEqual(
+                        global_field[y][x],
+                        independent_value(
+                            field_name,
+                            x=x,
+                            y=y,
+                            excluded_agent_id=None,
+                        ),
+                    )
+                    for receiver_agent_id in receivers:
+                        self.assertAlmostEqual(
+                            state.field_value_for_receiver(
+                                field_name,
+                                x=x,
+                                y=y,
+                                receiver_agent_id=receiver_agent_id,
+                            ),
+                            independent_value(
+                                field_name,
+                                x=x,
+                                y=y,
+                                excluded_agent_id=receiver_agent_id,
+                            ),
+                        )
+
+        projection = state.communication_receiver_projection
+        self.assertIsNotNone(projection)
+        assert projection is not None
+        self.assertGreater(len(projection.receiver_value_cache), 0)
+        self.assertGreater(len(projection.raw_global_value_cache), 0)
+
+        copied_state = copy.deepcopy(state)
+        copied_projection = copied_state.communication_receiver_projection
+        self.assertIsNotNone(copied_projection)
+        assert copied_projection is not None
+        self.assertIsNot(
+            copied_projection.receiver_value_cache,
+            projection.receiver_value_cache,
+        )
+        self.assertIsNot(
+            copied_projection.raw_global_value_cache,
+            projection.raw_global_value_cache,
+        )
+        for field_name in fields:
+            for receiver_agent_id in receivers:
+                for y in range(height):
+                    for x in range(width):
+                        self.assertAlmostEqual(
+                            copied_state.field_value_for_receiver(
+                                field_name,
+                                x=x,
+                                y=y,
+                                receiver_agent_id=receiver_agent_id,
+                            ),
+                            independent_value(
+                                field_name,
+                                x=x,
+                                y=y,
+                                excluded_agent_id=receiver_agent_id,
+                            ),
+                        )
+
     def test_opaque_communication_radius_timing_and_decay_are_preserved(
         self,
     ) -> None:
@@ -1294,6 +1509,24 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertEqual(
             tokenized_signal_contract["communication_token_observation"]["aggregation"],
             COMMUNICATION_AGGREGATE_PROJECTION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "receiver_projection_schema_version"
+            ],
+            COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "receiver_observation_policy"
+            ],
+            COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "global_reporting_policy"
+            ],
+            COMMUNICATION_GLOBAL_REPORTING_POLICY,
         )
         self.assertEqual(
             trajectory["observation_contract"]["communication_token_channels"][

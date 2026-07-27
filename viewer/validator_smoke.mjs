@@ -847,6 +847,33 @@ expectError(
   validTokenizedPayload,
 );
 expectError(
+  "signal receiver projection schema must be canonical",
+  (payload) => {
+    payload.viewer.trajectory.observation_contract.signal_contract.communication_token_observation.receiver_projection_schema_version =
+      "stale";
+  },
+  "opaque public spatial token channels",
+  validTokenizedPayload,
+);
+expectError(
+  "signal receiver observation policy must exclude self emissions",
+  (payload) => {
+    payload.viewer.trajectory.observation_contract.signal_contract.communication_token_observation.receiver_observation_policy =
+      "include_receiver_self_emissions";
+  },
+  "opaque public spatial token channels",
+  validTokenizedPayload,
+);
+expectError(
+  "signal global reporting policy must include all emitters",
+  (payload) => {
+    payload.viewer.trajectory.observation_contract.signal_contract.communication_token_observation.global_reporting_policy =
+      "exclude_all_receiver_emissions";
+  },
+  "opaque public spatial token channels",
+  validTokenizedPayload,
+);
+expectError(
   "action contract rejects invented meaning fields",
   (payload) => {
     payload.viewer.trajectory.action_contract.token_0_means_food = true;
@@ -1019,6 +1046,11 @@ function signalContract({
       aggregate_field: "communication_signal",
       aggregate_field_retained_for_compatibility: true,
       aggregation: COMMUNICATION_AGGREGATE_PROJECTION,
+      receiver_projection_schema_version:
+        "foundation_communication_receiver_projection_v1",
+      receiver_observation_policy:
+        "exclude_receiver_own_communication_emissions_across_local_patch_v1",
+      global_reporting_policy: "include_all_emitters_v1",
       simulator_assigned_meanings: false,
       profile_provenance_policy_visible: false,
     };

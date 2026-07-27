@@ -12,6 +12,13 @@ TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v4
 TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION = (
     "foundation_signal_field_reporting_v2"
 )
+COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION = (
+    "foundation_communication_receiver_projection_v1"
+)
+COMMUNICATION_RECEIVER_OBSERVATION_POLICY = (
+    "exclude_receiver_own_communication_emissions_across_local_patch_v1"
+)
+COMMUNICATION_GLOBAL_REPORTING_POLICY = "include_all_emitters_v1"
 REPRODUCTIVE_SIGNAL_FIELD = "reproductive_signal"
 COMMUNICATION_SIGNAL_FIELD = "communication_signal"
 COMMUNICATION_AGGREGATE_PROJECTION = (
@@ -527,6 +534,13 @@ def signal_contract(config: Any | None = None) -> dict[str, object]:
             "aggregate_field": COMMUNICATION_SIGNAL_FIELD,
             "aggregate_field_retained_for_compatibility": True,
             "aggregation": COMMUNICATION_AGGREGATE_PROJECTION,
+            "receiver_projection_schema_version": (
+                COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION
+            ),
+            "receiver_observation_policy": (
+                COMMUNICATION_RECEIVER_OBSERVATION_POLICY
+            ),
+            "global_reporting_policy": COMMUNICATION_GLOBAL_REPORTING_POLICY,
             "simulator_assigned_meanings": False,
             "profile_provenance_policy_visible": False,
         }
