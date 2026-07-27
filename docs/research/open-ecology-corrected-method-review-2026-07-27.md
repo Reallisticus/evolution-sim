@@ -179,13 +179,19 @@ directly in the first campaign.
 
 The model already accepts time-major `[time, batch, feature]` tensors, so the
 performance repair belongs at the rollout boundary. At every tick, each world
-must publish an immutable tick-start snapshot. Requests are sorted by
-`(world_id, tick, agent_id)`, padded to one fixed batch shape, evaluated under
-one frozen artifact, and committed in the same order. Recurrent state and
-previous-action feedback are keyed by the full world and agent identity.
-Action sampling uses a counter-derived per-decision RNG stream, not one mutable
-generator whose consumption changes with queue membership. Cross-world batching
-comes only after within-world simultaneous-action semantics pass exact replay.
+must publish its existing immutable tick-start observations and action masks.
+Only the pure Torch forward pass may be staged, in the simulator's exact
+hash-permuted turn order rather than agent-ID order, and padded to a
+configuration-bound shape. Sampling, recurrent-state commitment, and action
+resolution remain sequential: an earlier attack can remove a later agent, and
+that passive victim must consume neither a sampling draw nor a recurrent-state
+update. Staged rows for such agents are discarded. This preserves the current
+mutable per-world sampling stream instead of changing the scientific contract
+to a new counter-derived RNG merely for speed. Recurrent state and previous
+public feedback remain keyed by full world and agent identity. Cross-world
+batching is a later step and must order rows by `(task_id, tick, turn_rank)`;
+it is admissible only after exact requested-action, RNG-consumption, hidden
+state, and passive-death equivalence tests pass.
 
 GPU batching is a proven throughput pattern—Sample Factory combines batched GPU
 sampling with parallel environment workers
