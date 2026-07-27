@@ -11,13 +11,21 @@ import torch
 
 from evolution_sim.mind.open_ecology_phase_a import (
     OPEN_ECOLOGY_PHASE_A_CELL_ORDER,
+    build_open_ecology_phase_a_evidence_index,
+    build_open_ecology_phase_a_launch_authorization,
     build_open_ecology_phase_a_preregistration,
     build_open_ecology_phase_a_runtime_contract,
     build_open_ecology_phase_a_throughput_gate,
     configure_open_ecology_phase_a_determinism,
+    open_ecology_phase_a_launch_readiness,
     run_open_ecology_phase_a_cell,
     validate_open_ecology_phase_a_launch_authorization,
     validate_open_ecology_phase_a_preregistration,
+)
+from evolution_sim.mind.open_ecology_phase_a_readiness import (
+    DEPENDENCY_EVIDENCE_KINDS,
+    OPERATIONAL_EVIDENCE_KINDS,
+    produce_capture_noninterference_reexecution_report,
 )
 from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifest
 
@@ -58,6 +66,46 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate")
     validate.add_argument("--preregistration", type=Path, required=True)
     validate.add_argument("--launch-authorization", type=Path)
+
+    readiness = subparsers.add_parser("readiness")
+    readiness.add_argument("--preregistration", type=Path)
+    readiness.add_argument("--evidence-index", type=Path)
+    readiness.add_argument("--output", type=Path)
+
+    build_index = subparsers.add_parser("build-evidence-index")
+    build_index.add_argument("--preregistration", type=Path, required=True)
+    build_index.add_argument("--evidence-root", type=Path, required=True)
+    build_index.add_argument(
+        "--dependency-report",
+        action="append",
+        default=[],
+        metavar="DEPENDENCY/KIND=PATH",
+    )
+    build_index.add_argument(
+        "--gate-report",
+        action="append",
+        default=[],
+        metavar="GATE=PATH",
+    )
+    build_index.add_argument("--output", type=Path, required=True)
+
+    authorize = subparsers.add_parser("authorize")
+    authorize.add_argument("--preregistration", type=Path, required=True)
+    authorize.add_argument("--evidence-index", type=Path, required=True)
+    authorize.add_argument("--output", type=Path, required=True)
+
+    capture_reexecution = subparsers.add_parser("prove-capture-reexecution")
+    capture_reexecution.add_argument(
+        "--preregistration",
+        type=Path,
+        required=True,
+    )
+    capture_reexecution.add_argument(
+        "--primary-proof",
+        type=Path,
+        required=True,
+    )
+    capture_reexecution.add_argument("--output", type=Path, required=True)
 
     run_cell = subparsers.add_parser("run-cell")
     run_cell.add_argument("--preregistration", type=Path, required=True)
@@ -142,6 +190,79 @@ def main(argv: list[str] | None = None) -> int:
             f"launch_authorized={args.launch_authorization is not None}"
         )
         return 0
+    if args.command == "readiness":
+        if (args.preregistration is None) != (args.evidence_index is None):
+            raise SystemExit(
+                "--preregistration and --evidence-index must be supplied together"
+            )
+        if args.preregistration is None:
+            report = open_ecology_phase_a_launch_readiness()
+        else:
+            report = open_ecology_phase_a_launch_readiness(
+                preregistration=_load_strict_json(args.preregistration),
+                evidence_index=_load_strict_json(args.evidence_index),
+                evidence_index_path=args.evidence_index,
+            )
+        if args.output is not None:
+            _write_atomic_json(args.output, report)
+        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+        return 0 if report["phase_a_training_authorized"] is True else 2
+    if args.command == "build-evidence-index":
+        evidence_root = args.evidence_root.resolve()
+        if (
+            args.evidence_root.is_symlink()
+            or args.output.is_symlink()
+            or args.output.resolve().parent != evidence_root
+        ):
+            raise SystemExit(
+                "--output must be a non-symlink file directly inside --evidence-root"
+            )
+        preregistration = _load_strict_json(args.preregistration)
+        dependency_reports = _parse_dependency_reports(args.dependency_report)
+        gate_reports = _parse_gate_reports(args.gate_report)
+        evidence_index = build_open_ecology_phase_a_evidence_index(
+            preregistration,
+            evidence_root=evidence_root,
+            dependency_reports=dependency_reports,
+            operational_reports=gate_reports,
+        )
+        _write_atomic_json(args.output, evidence_index)
+        print(
+            "open_ecology_phase_a_evidence_index_built "
+            f"digest={evidence_index['exact_digest']} output={args.output}"
+        )
+        return 0
+    if args.command == "authorize":
+        preregistration = _load_strict_json(args.preregistration)
+        evidence_index = _load_strict_json(args.evidence_index)
+        authorization = build_open_ecology_phase_a_launch_authorization(
+            preregistration,
+            evidence_index=evidence_index,
+            evidence_index_path=args.evidence_index,
+            authorization_path=args.output,
+        )
+        _write_atomic_json(args.output, authorization)
+        validate_open_ecology_phase_a_launch_authorization(
+            authorization,
+            preregistration=preregistration,
+            authorization_path=args.output,
+        )
+        print(
+            "open_ecology_phase_a_launch_authorized "
+            f"digest={authorization['exact_digest']} output={args.output}"
+        )
+        return 0
+    if args.command == "prove-capture-reexecution":
+        report = produce_capture_noninterference_reexecution_report(
+            _load_strict_json(args.preregistration),
+            primary_proof_path=args.primary_proof,
+        )
+        _write_atomic_json(args.output, report)
+        print(
+            "open_ecology_capture_noninterference_reexecuted "
+            f"digest={report['exact_digest']} output={args.output}"
+        )
+        return 0
     if args.command == "run-cell":
         preregistration = _load_strict_json(args.preregistration)
         report = run_open_ecology_phase_a_cell(
@@ -178,6 +299,39 @@ def _git_source_state() -> tuple[str, bool]:
         text=True,
     ).stdout
     return head, not bool(status)
+
+
+def _parse_dependency_reports(
+    values: list[str],
+) -> dict[str, dict[str, Path]]:
+    reports: dict[str, dict[str, Path]] = {}
+    for value in values:
+        identity, separator, raw_path = value.partition("=")
+        dependency_id, slash, evidence_kind = identity.partition("/")
+        if not separator or not slash or not raw_path:
+            raise SystemExit("--dependency-report must be DEPENDENCY/KIND=PATH")
+        if (
+            dependency_id not in DEPENDENCY_EVIDENCE_KINDS
+            or evidence_kind not in DEPENDENCY_EVIDENCE_KINDS[dependency_id]
+        ):
+            raise SystemExit(f"unknown dependency evidence identity {identity!r}")
+        dependency = reports.setdefault(dependency_id, {})
+        if evidence_kind in dependency:
+            raise SystemExit(f"duplicate dependency evidence {identity!r}")
+        dependency[evidence_kind] = Path(raw_path)
+    return reports
+
+
+def _parse_gate_reports(values: list[str]) -> dict[str, Path]:
+    reports: dict[str, Path] = {}
+    for value in values:
+        gate_name, separator, raw_path = value.partition("=")
+        if not separator or not raw_path or gate_name not in OPERATIONAL_EVIDENCE_KINDS:
+            raise SystemExit("--gate-report must be a known GATE=PATH")
+        if gate_name in reports:
+            raise SystemExit(f"duplicate gate report {gate_name!r}")
+        reports[gate_name] = Path(raw_path)
+    return reports
 
 
 def _load_strict_json(path: Path) -> dict[str, object]:

@@ -86,7 +86,7 @@ OPEN_ECOLOGY_PHASE_A_RESOURCE_ENVELOPE_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_resource_envelope_v1"
 )
 OPEN_ECOLOGY_PHASE_A_LAUNCH_AUTHORIZATION_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_launch_authorization_v1"
+    "mind_v3_open_ecology_phase_a_launch_authorization_v2"
 )
 OPEN_ECOLOGY_PHASE_A_UPDATE_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_update_v1"
 OPEN_ECOLOGY_PHASE_A_COMMIT_SCHEMA_VERSION = (
@@ -163,16 +163,8 @@ OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES = tuple(
 )
 OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_PROOF_PRODUCERS_AVAILABLE = False
 OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_BLOCKERS = (
-    *OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES,
-    "dependency_specific_behavioral_evidence_parsers",
-    "throughput_attestation_parser",
-    "phase_b_mixed_density_training_throughput_benchmark_and_parser",
-    "long_horizon_selection_throughput_benchmark_and_parser",
-    "storage_attestation_parser",
-    "output_lock_attestation_parser",
-    "immutable_uploader_attestation_parser",
-    "verification_before_prune_attestation_parser",
-    "terminal_aggregate_validator_attestation_parser",
+    "launch_evidence_index_required",
+    "independent_report_authority_verifiers_required",
 )
 
 OPEN_ECOLOGY_PHASE_A_CELL_ORDER = ("A0", "A1", "A2", "A3")
@@ -659,29 +651,65 @@ def validate_open_ecology_phase_a_throughput_gate(
         raise OpenEcologyPhaseAError("Phase A resource projection drifted")
 
 
-def open_ecology_phase_a_launch_readiness() -> dict[str, object]:
-    """Return the truthful current launch boundary without inferring proof."""
+def open_ecology_phase_a_launch_readiness(
+    *,
+    preregistration: Mapping[str, object] | None = None,
+    evidence_index: Mapping[str, object] | None = None,
+    evidence_index_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Report authority-code readiness and exact outstanding evidence."""
 
-    readiness: dict[str, object] = {
-        "schema_version": "mind_v3_open_ecology_phase_a_launch_readiness_v1",
-        "phase_a_training_authorized": False,
-        "dependency_specific_proof_producers_available": (
-            OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_PROOF_PRODUCERS_AVAILABLE
-        ),
-        "blockers": list(OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_BLOCKERS),
-        "reason": (
-            "dependency_specific_machine_evidence_schemas_and_semantic_"
-            "validators_are_not_yet_implemented"
-        ),
-        "claim_boundary": {
-            "training_launch": False,
-            "phase_b": False,
-            "runtime_integration": False,
-            "promotion": False,
-        },
-    }
-    readiness["exact_digest"] = stable_payload_digest(readiness)
-    return readiness
+    from evolution_sim.mind.open_ecology_phase_a_readiness import (
+        launch_readiness,
+    )
+
+    return launch_readiness(
+        preregistration=preregistration,
+        evidence_index=evidence_index,
+        evidence_index_path=evidence_index_path,
+    )
+
+
+def build_open_ecology_phase_a_evidence_index(
+    preregistration: Mapping[str, object],
+    *,
+    evidence_root: str | Path,
+    dependency_reports: Mapping[str, Mapping[str, str | Path]],
+    operational_reports: Mapping[str, str | Path],
+) -> dict[str, object]:
+    """Index concrete dependency reports without manufacturing their facts."""
+
+    from evolution_sim.mind.open_ecology_phase_a_readiness import (
+        build_evidence_index,
+    )
+
+    return build_evidence_index(
+        preregistration,
+        evidence_root=evidence_root,
+        dependency_reports=dependency_reports,
+        operational_reports=operational_reports,
+    )
+
+
+def build_open_ecology_phase_a_launch_authorization(
+    preregistration: Mapping[str, object],
+    *,
+    evidence_index: Mapping[str, object],
+    evidence_index_path: str | Path,
+    authorization_path: str | Path,
+) -> dict[str, object]:
+    """Assemble launch authority from all semantically valid exact-source reports."""
+
+    from evolution_sim.mind.open_ecology_phase_a_readiness import (
+        build_launch_authorization,
+    )
+
+    return build_launch_authorization(
+        preregistration,
+        evidence_index=evidence_index,
+        evidence_index_path=evidence_index_path,
+        authorization_path=authorization_path,
+    )
 
 
 def validate_open_ecology_phase_a_launch_authorization(
@@ -692,215 +720,15 @@ def validate_open_ecology_phase_a_launch_authorization(
 ) -> None:
     """Verify every sealed readiness proof and its concrete evidence bytes."""
 
-    readiness = open_ecology_phase_a_launch_readiness()
-    if readiness["phase_a_training_authorized"] is not True:
-        raise OpenEcologyPhaseAError(
-            "Phase A launch remains blocked: dependency-specific behavioral "
-            "proof producers and semantic validators are unavailable"
-        )
-    _require_exact_keys(
+    from evolution_sim.mind.open_ecology_phase_a_readiness import (
+        validate_launch_authorization,
+    )
+
+    validate_launch_authorization(
         authorization,
-        {
-            "schema_version",
-            "campaign_digest",
-            "configuration_sha256",
-            "source",
-            "readiness_dependencies",
-            "operational_gates",
-            "authorization",
-            "exact_digest",
-        },
-        field="Phase A launch authorization",
+        preregistration=preregistration,
+        authorization_path=authorization_path,
     )
-    _validate_signed_payload(
-        authorization,
-        field="Phase A launch authorization",
-    )
-    if (
-        authorization.get("schema_version")
-        != OPEN_ECOLOGY_PHASE_A_LAUNCH_AUTHORIZATION_SCHEMA_VERSION
-        or authorization.get("campaign_digest") != preregistration.get("exact_digest")
-        or authorization.get("configuration_sha256")
-        != preregistration.get("configuration_sha256")
-        or authorization.get("source") != preregistration.get("source")
-    ):
-        raise OpenEcologyPhaseAError(
-            "Phase A launch authorization is detached from the campaign"
-        )
-    record_path = Path(authorization_path).resolve()
-    if not record_path.is_file() or record_path.is_symlink():
-        raise OpenEcologyPhaseAError(
-            "Phase A launch authorization must be a regular file"
-        )
-    evidence_root = record_path.parent
-    proofs = _sequence(
-        authorization.get("readiness_dependencies"),
-        field="launch_authorization.readiness_dependencies",
-    )
-    if len(proofs) != len(OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES):
-        raise OpenEcologyPhaseAError(
-            "Phase A launch authorization requires all 10 readiness proofs"
-        )
-    source = _mapping(preregistration.get("source"), field="source")
-    for expected_id, raw_proof in zip(
-        OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES,
-        proofs,
-        strict=True,
-    ):
-        proof = _mapping(raw_proof, field=f"readiness_dependencies.{expected_id}")
-        _require_exact_keys(
-            proof,
-            {
-                "dependency_id",
-                "status",
-                "source_commit",
-                "source_manifest_sha256",
-                "assertions",
-                "evidence",
-            },
-            field=f"readiness_dependencies.{expected_id}",
-        )
-        if (
-            proof.get("dependency_id") != expected_id
-            or proof.get("status") != "behaviorally_proved"
-            or proof.get("source_commit") != source.get("commit")
-            or proof.get("source_manifest_sha256") != source.get("manifest_sha256")
-        ):
-            raise OpenEcologyPhaseAError(
-                f"Phase A readiness proof {expected_id} is not source-bound"
-            )
-        assertions = _mapping(
-            proof.get("assertions"),
-            field=f"readiness_dependencies.{expected_id}.assertions",
-        )
-        if dict(assertions) != _phase_a_readiness_assertions(expected_id):
-            raise OpenEcologyPhaseAError(
-                f"Phase A readiness proof {expected_id} assertions drifted"
-            )
-        _verify_evidence_references(
-            proof.get("evidence"),
-            base=evidence_root,
-            field=f"readiness_dependencies.{expected_id}.evidence",
-        )
-    gates = _mapping(
-        authorization.get("operational_gates"),
-        field="launch_authorization.operational_gates",
-    )
-    _require_exact_keys(
-        gates,
-        {
-            "throughput",
-            "storage",
-            "output_lock",
-            "immutable_uploader",
-            "verification_before_prune",
-            "terminal_aggregate_validator",
-        },
-        field="launch_authorization.operational_gates",
-    )
-    throughput = _mapping(gates.get("throughput"), field="gates.throughput")
-    _require_exact_keys(
-        throughput,
-        {"passed", "throughput_gate_digest", "evidence"},
-        field="gates.throughput",
-    )
-    expected_throughput = _mapping(
-        preregistration.get("throughput_gate"),
-        field="throughput_gate",
-    )
-    if (
-        expected_throughput.get("gate_passed") is not True
-        or throughput.get("passed") is not True
-        or throughput.get("throughput_gate_digest")
-        != expected_throughput.get("exact_digest")
-    ):
-        raise OpenEcologyPhaseAError("Phase A throughput launch proof failed")
-    _verify_evidence_references(
-        throughput.get("evidence"),
-        base=evidence_root,
-        field="gates.throughput.evidence",
-    )
-    storage = _mapping(gates.get("storage"), field="gates.storage")
-    _require_exact_keys(
-        storage,
-        {
-            "passed",
-            "checked_at_utc",
-            "google_drive_free_bytes",
-            "projected_active_storage_bytes",
-            "target_filesystem_capacity_bytes",
-            "target_filesystem_free_bytes",
-            "required_target_free_bytes",
-            "evidence",
-        },
-        field="gates.storage",
-    )
-    capacity = _positive_int(
-        storage.get("target_filesystem_capacity_bytes"),
-        field="gates.storage.target_filesystem_capacity_bytes",
-    )
-    required_free = max(100 * 1024**3, math.ceil(capacity * 0.20))
-    if (
-        storage.get("passed") is not True
-        or not isinstance(storage.get("checked_at_utc"), str)
-        or not str(storage.get("checked_at_utc")).strip()
-        or _positive_int(
-            storage.get("google_drive_free_bytes"),
-            field="gates.storage.google_drive_free_bytes",
-        )
-        < 300 * 1024**3
-        or _positive_int(
-            storage.get("projected_active_storage_bytes"),
-            field="gates.storage.projected_active_storage_bytes",
-        )
-        > 200 * 1024**3
-        or storage.get("required_target_free_bytes") != required_free
-        or _positive_int(
-            storage.get("target_filesystem_free_bytes"),
-            field="gates.storage.target_filesystem_free_bytes",
-        )
-        < required_free
-    ):
-        raise OpenEcologyPhaseAError("Phase A storage launch gate failed")
-    _verify_evidence_references(
-        storage.get("evidence"),
-        base=evidence_root,
-        field="gates.storage.evidence",
-    )
-    for gate_name in (
-        "output_lock",
-        "immutable_uploader",
-        "verification_before_prune",
-        "terminal_aggregate_validator",
-    ):
-        gate = _mapping(gates.get(gate_name), field=f"gates.{gate_name}")
-        _require_exact_keys(
-            gate,
-            {"passed", "evidence"},
-            field=f"gates.{gate_name}",
-        )
-        if gate.get("passed") is not True:
-            raise OpenEcologyPhaseAError(f"Phase A operational gate {gate_name} failed")
-        _verify_evidence_references(
-            gate.get("evidence"),
-            base=evidence_root,
-            field=f"gates.{gate_name}.evidence",
-        )
-    authorization_claim = _mapping(
-        authorization.get("authorization"),
-        field="launch_authorization.authorization",
-    )
-    if dict(authorization_claim) != {
-        "phase_a_training_authorized": True,
-        "authorization_basis": (
-            "all_10_behavioral_dependencies_plus_operational_gates"
-        ),
-        "authorization_scope": "phase_a_training_only",
-        "phase_b_authorized": False,
-        "runtime_integration_authorized": False,
-        "promotion_authorized": False,
-    }:
-        raise OpenEcologyPhaseAError("Phase A launch authorization claim drifted")
 
 
 def build_open_ecology_phase_a_preregistration(
@@ -2075,12 +1903,6 @@ def run_open_ecology_phase_a_cell(
         raise OpenEcologyPhaseAError("Phase A preregistration digest pin mismatched")
     if type(resume) is not bool:
         raise OpenEcologyPhaseAError("resume must be an exact boolean")
-    readiness = open_ecology_phase_a_launch_readiness()
-    if readiness["phase_a_training_authorized"] is not True:
-        raise OpenEcologyPhaseAError(
-            "Phase A launch remains blocked by unimplemented dependency-specific "
-            "behavioral proof producers and validators"
-        )
     authorization_path = Path(launch_authorization_path).resolve()
     launch_authorization = _load_strict_json(authorization_path)
     validate_open_ecology_phase_a_launch_authorization(
@@ -4192,6 +4014,8 @@ __all__ = [
     "PhaseAOpenEcologyRolloutTask",
     "authorize_open_ecology_phase_a_cell_selection",
     "authorize_phase_a_terminal_selection_report",
+    "build_open_ecology_phase_a_evidence_index",
+    "build_open_ecology_phase_a_launch_authorization",
     "build_open_ecology_phase_a_preregistration",
     "build_open_ecology_phase_a_runtime_contract",
     "build_open_ecology_phase_a_throughput_gate",

@@ -419,23 +419,7 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 phase_a.OpenEcologyPhaseAError,
-                "behavioral proof producers",
-            ):
-                phase_a.validate_open_ecology_phase_a_launch_authorization(
-                    authorization,
-                    preregistration=self.campaign,
-                    authorization_path=authorization_path,
-                )
-            with (
-                patch.object(
-                    phase_a,
-                    "open_ecology_phase_a_launch_readiness",
-                    return_value={"phase_a_training_authorized": True},
-                ),
-                self.assertRaisesRegex(
-                    phase_a.OpenEcologyPhaseAError,
-                    "throughput launch proof failed",
-                ),
+                "fields differ",
             ):
                 phase_a.validate_open_ecology_phase_a_launch_authorization(
                     authorization,
@@ -443,16 +427,20 @@ class OpenEcologyPhaseATests(unittest.TestCase):
                     authorization_path=authorization_path,
                 )
 
-    def test_launch_readiness_truthfully_lists_unimplemented_producers(self) -> None:
+    def test_launch_readiness_truthfully_requires_external_evidence(self) -> None:
         readiness = phase_a.open_ecology_phase_a_launch_readiness()
         self.assertIs(readiness["phase_a_training_authorized"], False)
         self.assertIs(
             readiness["dependency_specific_proof_producers_available"],
             False,
         )
+        self.assertIs(readiness["authorization_assembler_available"], True)
         self.assertEqual(
-            readiness["blockers"][:10],
-            list(phase_a.OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES),
+            readiness["blockers"],
+            [
+                "launch_evidence_index_required",
+                "independent_report_authority_verifiers_required",
+            ],
         )
         self.assertIs(readiness["claim_boundary"]["training_launch"], False)
 
