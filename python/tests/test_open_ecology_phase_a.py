@@ -26,6 +26,8 @@ from evolution_sim.mind.recurrent_artifact import (
 from evolution_sim.mind.recurrent_experiment import OPEN_ECOLOGY_PHASE_A
 
 
+REQUIRES_MIND_ML = True
+
 _SOURCE_COMMIT = "a" * 40
 _SOURCE_MANIFEST = "b" * 64
 
@@ -493,6 +495,289 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             result["authorization_blocker"],
             "fresh_exact_cpu_open_ecology_evidence_producer_unavailable",
         )
+
+    def test_authoritative_selection_reopens_and_reexecutes_all_terminals(
+        self,
+    ) -> None:
+        requests: list[SimpleNamespace] = []
+
+        def build_request(
+            _preregistration: object,
+            *,
+            cell_id: str,
+            learner_index: int,
+            terminal_path: Path,
+            evaluation_workers: int,
+        ) -> SimpleNamespace:
+            self.assertEqual(
+                terminal_path.parts[-3:],
+                (
+                    phase_a.phase_a_run_id(
+                        cell_id=cell_id,
+                        learner_index=learner_index,
+                    ),
+                    "terminal",
+                    "terminal.json",
+                ),
+            )
+            self.assertEqual(evaluation_workers, 3)
+            request = SimpleNamespace(
+                cell_id=cell_id,
+                learner_index=learner_index,
+            )
+            requests.append(request)
+            return request
+
+        def evaluate(request: SimpleNamespace) -> dict[str, object]:
+            ordinal = len(phase_a.OPEN_ECOLOGY_PHASE_A_CELL_ORDER) * int(
+                request.learner_index
+            ) + phase_a.OPEN_ECOLOGY_PHASE_A_CELL_ORDER.index(request.cell_id)
+            return {"exact_digest": f"{ordinal + 1:064x}"}
+
+        def authorize(
+            _preregistration: object,
+            _report: object,
+            *,
+            cell_id: str,
+            learner_index: int,
+            terminal_path: Path,
+            evaluation_workers: int,
+        ) -> dict[str, object]:
+            del terminal_path, evaluation_workers
+            ordinal = (
+                phase_a.OPEN_ECOLOGY_PHASE_A_CELL_ORDER.index(cell_id)
+                * phase_a.OPEN_ECOLOGY_PHASE_A_LEARNER_COUNT
+                + learner_index
+            )
+            return {
+                "cell_id": cell_id,
+                "learner_index": learner_index,
+                "terminal_authority": {
+                    "exact_digest": f"{ordinal + 101:064x}",
+                },
+                "exact_digest": f"{ordinal + 201:064x}",
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(
+                    phase_a,
+                    "validate_open_ecology_phase_a_preregistration",
+                ),
+                patch.object(phase_a, "_require_live_source") as live_source,
+                patch.object(
+                    phase_a,
+                    "build_verified_phase_a_selection_request",
+                    side_effect=build_request,
+                ) as request_builder,
+                patch(
+                    "evolution_sim.mind.open_ecology_selection."
+                    "evaluate_open_ecology_selection_artifact",
+                    side_effect=evaluate,
+                ) as evaluator,
+                patch.object(
+                    phase_a,
+                    "authorize_phase_a_terminal_selection_report",
+                    side_effect=authorize,
+                ) as authorizer,
+                patch.object(
+                    phase_a,
+                    "preview_open_ecology_phase_a_cell_selection",
+                    return_value={
+                        "provisional_selected_cell_id": "A2",
+                        "provisional_selected_contract": {
+                            "critic_genome_conditioning": "none",
+                            "value_shared_trunk_gradient": "stop",
+                        },
+                        "cell_summaries": {"A2": {"eligible": True}},
+                        "selection_rule": "sealed-test-rule",
+                    },
+                ) as preview,
+            ):
+                result = phase_a.authorize_open_ecology_phase_a_cell_selection(
+                    self.campaign,
+                    terminal_root=temporary,
+                    evaluation_workers=3,
+                )
+
+        self.assertEqual(len(requests), 16)
+        self.assertEqual(request_builder.call_count, 16)
+        self.assertEqual(evaluator.call_count, 16)
+        self.assertEqual(authorizer.call_count, 16)
+        self.assertEqual(preview.call_count, 1)
+        self.assertEqual(live_source.call_count, 3)
+        self.assertEqual(result["selected_cell_id"], "A2")
+        self.assertIs(result["phase_b_authorized"], True)
+        self.assertEqual(result["authority"]["terminal_bundle_count"], 16)
+        self.assertIs(
+            result["authority"]["caller_supplied_learner_summaries"],
+            False,
+        )
+        self.assertEqual(len(result["learner_evidence"]), 16)
+        self.assertIs(
+            result["lifecycle"]["runtime_integration_authorized"],
+            False,
+        )
+
+    def test_authoritative_selection_failure_injections_never_authorize(
+        self,
+    ) -> None:
+        def request(
+            _preregistration: object,
+            *,
+            cell_id: str,
+            learner_index: int,
+            terminal_path: Path,
+            evaluation_workers: int,
+        ) -> SimpleNamespace:
+            del terminal_path, evaluation_workers
+            return SimpleNamespace(
+                cell_id=cell_id,
+                learner_index=learner_index,
+            )
+
+        def report(item: SimpleNamespace) -> dict[str, object]:
+            ordinal = (
+                phase_a.OPEN_ECOLOGY_PHASE_A_CELL_ORDER.index(item.cell_id)
+                * phase_a.OPEN_ECOLOGY_PHASE_A_LEARNER_COUNT
+                + item.learner_index
+            )
+            return {"exact_digest": f"{ordinal + 1:064x}"}
+
+        def evidence(
+            _preregistration: object,
+            _report: object,
+            *,
+            cell_id: str,
+            learner_index: int,
+            terminal_path: Path,
+            evaluation_workers: int,
+        ) -> dict[str, object]:
+            del terminal_path, evaluation_workers
+            ordinal = (
+                phase_a.OPEN_ECOLOGY_PHASE_A_CELL_ORDER.index(cell_id)
+                * phase_a.OPEN_ECOLOGY_PHASE_A_LEARNER_COUNT
+                + learner_index
+            )
+            return {
+                "cell_id": cell_id,
+                "learner_index": learner_index,
+                "terminal_authority": {
+                    "exact_digest": f"{ordinal + 101:064x}",
+                },
+                "exact_digest": f"{ordinal + 201:064x}",
+            }
+
+        preview = {
+            "provisional_selected_cell_id": "A0",
+            "provisional_selected_contract": {
+                "critic_genome_conditioning": "none",
+                "value_shared_trunk_gradient": "stop",
+            },
+            "cell_summaries": {"A0": {"eligible": True}},
+            "selection_rule": "sealed-test-rule",
+        }
+        cases = (
+            (
+                "missing terminal",
+                {
+                    "request_side_effect": [
+                        *(
+                            request(
+                                None,
+                                cell_id="A0",
+                                learner_index=index,
+                                terminal_path=Path("unused"),
+                                evaluation_workers=1,
+                            )
+                            for index in range(2)
+                        ),
+                        phase_a.OpenEcologyPhaseAError("missing terminal"),
+                    ],
+                },
+                "missing terminal",
+            ),
+            (
+                "primary reexecution mismatch",
+                {
+                    "authorize_side_effect": phase_a.OpenEcologyPhaseAError(
+                        "selection report changed under exact reexecution"
+                    ),
+                },
+                "changed under exact reexecution",
+            ),
+            (
+                "no eligible cell",
+                {
+                    "preview_side_effect": phase_a.OpenEcologyPhaseAError(
+                        "no Phase A cell is eligible; Phase B remains blocked"
+                    ),
+                },
+                "no Phase A cell is eligible",
+            ),
+            (
+                "final source drift",
+                {
+                    "source_side_effect": [
+                        None,
+                        None,
+                        phase_a.OpenEcologyPhaseAError(
+                            "Phase A runtime source manifest drifted"
+                        ),
+                    ],
+                },
+                "source manifest drifted",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            for label, overrides, expected in cases:
+                with self.subTest(label=label):
+                    with (
+                        patch.object(
+                            phase_a,
+                            "validate_open_ecology_phase_a_preregistration",
+                        ),
+                        patch.object(
+                            phase_a,
+                            "_require_live_source",
+                            side_effect=overrides.get("source_side_effect"),
+                        ),
+                        patch.object(
+                            phase_a,
+                            "build_verified_phase_a_selection_request",
+                            side_effect=overrides.get(
+                                "request_side_effect",
+                                request,
+                            ),
+                        ),
+                        patch(
+                            "evolution_sim.mind.open_ecology_selection."
+                            "evaluate_open_ecology_selection_artifact",
+                            side_effect=report,
+                        ),
+                        patch.object(
+                            phase_a,
+                            "authorize_phase_a_terminal_selection_report",
+                            side_effect=overrides.get(
+                                "authorize_side_effect",
+                                evidence,
+                            ),
+                        ),
+                        patch.object(
+                            phase_a,
+                            "preview_open_ecology_phase_a_cell_selection",
+                            side_effect=overrides.get("preview_side_effect"),
+                            return_value=preview,
+                        ),
+                        self.assertRaisesRegex(
+                            phase_a.OpenEcologyPhaseAError,
+                            expected,
+                        ),
+                    ):
+                        phase_a.authorize_open_ecology_phase_a_cell_selection(
+                            self.campaign,
+                            terminal_root=temporary,
+                        )
 
     def test_checkpoint_roundtrip_has_no_wall_clock_digest_input(self) -> None:
         model_config, _ppo, _schedule = phase_a.build_phase_a_run_components(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 
 from evolution_sim.cli import test_runner
@@ -42,6 +44,26 @@ def test_case(world):
             "test_case.py:4: _invalidate_biotic_state patch",
             failures,
         )
+
+    def test_mind_ml_marker_is_read_without_importing_test_module(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marked = root / "test_marked.py"
+            unmarked = root / "test_unmarked.py"
+            false_marker = root / "test_false.py"
+            marked.write_text(
+                "REQUIRES_MIND_ML = True\nraise RuntimeError('must not import')\n",
+                encoding="utf-8",
+            )
+            unmarked.write_text("VALUE = True\n", encoding="utf-8")
+            false_marker.write_text(
+                "REQUIRES_MIND_ML = False\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(test_runner._requires_mind_ml(marked))
+            self.assertFalse(test_runner._requires_mind_ml(unmarked))
+            self.assertFalse(test_runner._requires_mind_ml(false_marker))
 
 
 if __name__ == "__main__":

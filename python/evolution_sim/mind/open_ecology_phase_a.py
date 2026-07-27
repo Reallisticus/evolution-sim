@@ -104,6 +104,9 @@ OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION = (
 OPEN_ECOLOGY_PHASE_A_SELECTION_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_cell_selection_v1"
 )
+OPEN_ECOLOGY_PHASE_A_AUTHORITATIVE_SELECTION_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_phase_a_authoritative_cell_selection_v1"
+)
 OPEN_ECOLOGY_PHASE_A_POLICY_SAMPLING_NAMESPACE = (
     "evolution-sim|mind-v3-open-ecology|phase-a|policy-sampling-v1"
 )
@@ -1883,6 +1886,7 @@ def build_verified_phase_a_selection_request(
         learner_seed=int(run_contract["learner_seed"]),
         evaluation_workers=evaluation_workers,
         training_authority=authority,
+        source_repository_root=_REPOSITORY_ROOT,
     )
 
 
@@ -1917,6 +1921,136 @@ def authorize_phase_a_terminal_selection_report(
         report,
         request=request,
     )
+
+
+def authorize_open_ecology_phase_a_cell_selection(
+    preregistration: Mapping[str, object],
+    *,
+    terminal_root: str | Path,
+    evaluation_workers: int = 1,
+) -> dict[str, object]:
+    """Reopen and independently evaluate every Phase-A terminal before ranking.
+
+    The caller supplies no learner summaries or artifact digests. This function
+    derives the canonical 4 x 4 terminal paths, produces one fresh primary
+    selection report per artifact, rebuilds each terminal chain, independently
+    reexecutes the full selection matrix, and only then applies the sealed
+    ranking rule. Any incomplete, replaced, or nondeterministic terminal fails
+    the entire matrix closed.
+    """
+
+    from evolution_sim.mind.open_ecology_selection import (
+        evaluate_open_ecology_selection_artifact,
+    )
+
+    validate_open_ecology_phase_a_preregistration(preregistration)
+    _require_live_source(preregistration)
+    root = Path(terminal_root)
+    if not root.is_dir() or root.is_symlink():
+        raise OpenEcologyPhaseAError(
+            "Phase A authoritative selection requires one regular terminal root"
+        )
+
+    learner_evidence: list[dict[str, object]] = []
+    primary_report_digests: list[str] = []
+    for cell_id in OPEN_ECOLOGY_PHASE_A_CELL_ORDER:
+        for learner_index in range(OPEN_ECOLOGY_PHASE_A_LEARNER_COUNT):
+            terminal_path = (
+                root
+                / phase_a_run_id(
+                    cell_id=cell_id,
+                    learner_index=learner_index,
+                )
+                / "terminal"
+                / "terminal.json"
+            )
+            request = build_verified_phase_a_selection_request(
+                preregistration,
+                cell_id=cell_id,
+                learner_index=learner_index,
+                terminal_path=terminal_path,
+                evaluation_workers=evaluation_workers,
+            )
+            primary_report = evaluate_open_ecology_selection_artifact(request)
+            evidence = authorize_phase_a_terminal_selection_report(
+                preregistration,
+                primary_report,
+                cell_id=cell_id,
+                learner_index=learner_index,
+                terminal_path=terminal_path,
+                evaluation_workers=evaluation_workers,
+            )
+            learner_evidence.append(evidence)
+            primary_report_digests.append(
+                _sha256(
+                    primary_report.get("exact_digest"),
+                    field="primary selection report exact_digest",
+                )
+            )
+
+    _require_live_source(preregistration)
+    preview = preview_open_ecology_phase_a_cell_selection(
+        preregistration,
+        learner_evidence,
+    )
+    selected_cell = _cell_id(preview.get("provisional_selected_cell_id"))
+    selected_contract = _mapping(
+        preview.get("provisional_selected_contract"),
+        field="provisional selected contract",
+    )
+    terminal_authority_digests = [
+        _sha256(
+            _mapping(
+                evidence.get("terminal_authority"),
+                field="learner terminal authority",
+            ).get("exact_digest"),
+            field="learner terminal authority exact_digest",
+        )
+        for evidence in learner_evidence
+    ]
+    result: dict[str, object] = {
+        "schema_version": (OPEN_ECOLOGY_PHASE_A_AUTHORITATIVE_SELECTION_SCHEMA_VERSION),
+        "campaign_digest": preregistration["exact_digest"],
+        "configuration_sha256": preregistration["configuration_sha256"],
+        "authority": {
+            "terminal_bundle_count": len(learner_evidence),
+            "terminal_matrix": "four_cells_by_four_learners_canonical_paths_v1",
+            "primary_report_producer": (
+                "fresh_exact_cpu_open_ecology_selection_execution_v1"
+            ),
+            "independent_verification": (
+                "rebuild_terminal_prefix_checkpoint_and_artifact_then_"
+                "full_exact_cpu_reexecution_v1"
+            ),
+            "caller_supplied_learner_summaries": False,
+            "all_terminal_bundles_reopened": True,
+            "all_primary_reports_independently_reexecuted": True,
+        },
+        "primary_selection_report_exact_digests": primary_report_digests,
+        "terminal_authority_exact_digests": terminal_authority_digests,
+        "learner_evidence": learner_evidence,
+        "learner_evidence_exact_digests": [
+            evidence["exact_digest"] for evidence in learner_evidence
+        ],
+        "cell_summaries": preview["cell_summaries"],
+        "selected_cell_id": selected_cell,
+        "selected_contract": dict(selected_contract),
+        "phase_b_authorized": True,
+        "selection_rule": preview["selection_rule"],
+        "lifecycle": {
+            "development_only": True,
+            "phase_a_selection_complete": True,
+            "phase_b_training_authorized": True,
+            "validation_accessed": False,
+            "lockbox_accessed": False,
+            "runtime_integration_authorized": False,
+            "promotion_authorized": False,
+            "society_claim_authorized": False,
+        },
+    }
+    result["exact_digest"] = stable_payload_digest(result)
+    _require_live_source(preregistration)
+    return result
 
 
 def run_open_ecology_phase_a_cell(
@@ -4056,6 +4190,7 @@ __all__ = [
     "OpenEcologyPhaseAError",
     "PhaseAEvidencePrefix",
     "PhaseAOpenEcologyRolloutTask",
+    "authorize_open_ecology_phase_a_cell_selection",
     "authorize_phase_a_terminal_selection_report",
     "build_open_ecology_phase_a_preregistration",
     "build_open_ecology_phase_a_runtime_contract",

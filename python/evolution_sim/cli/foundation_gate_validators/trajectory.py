@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from math import isfinite
 
 from evolution_sim.config import SignalConfig
@@ -28,6 +28,9 @@ from evolution_sim.env.runtime.reproduction import (
 )
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_AGGREGATE_PROJECTION,
+    COMMUNICATION_GLOBAL_REPORTING_POLICY,
+    COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+    COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
     COMMUNICATION_SIGNAL_FIELD,
     SIGNAL_CONTRACT_VERSION,
     TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
@@ -758,6 +761,9 @@ def _signal_action_capacity_flags(
                 "aggregate_field",
                 "aggregate_field_retained_for_compatibility",
                 "aggregation",
+                "receiver_projection_schema_version",
+                "receiver_observation_policy",
+                "global_reporting_policy",
                 "simulator_assigned_meanings",
                 "profile_provenance_policy_visible",
             }
@@ -775,6 +781,12 @@ def _signal_action_capacity_flags(
             is not True
             or signal_token_contract.get("aggregation")
             != COMMUNICATION_AGGREGATE_PROJECTION
+            or signal_token_contract.get("receiver_projection_schema_version")
+            != COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION
+            or signal_token_contract.get("receiver_observation_policy")
+            != COMMUNICATION_RECEIVER_OBSERVATION_POLICY
+            or signal_token_contract.get("global_reporting_policy")
+            != COMMUNICATION_GLOBAL_REPORTING_POLICY
             or signal_token_contract.get("simulator_assigned_meanings") is not False
             or signal_token_contract.get("profile_provenance_policy_visible")
             is not False

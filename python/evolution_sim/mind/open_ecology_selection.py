@@ -12,6 +12,7 @@ import math
 import multiprocessing
 from pathlib import Path
 from statistics import median
+import subprocess
 from typing import Any
 
 import torch
@@ -87,6 +88,7 @@ from evolution_sim.mind.recurrent_rollout import (
     RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
     derive_recurrent_policy_sampling_seed,
 )
+from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifest
 
 
 OPEN_ECOLOGY_SELECTION_EVIDENCE_SCHEMA_VERSION = (
@@ -185,6 +187,7 @@ _PHASE_A_CELL_MODEL_CONTRACTS = {
 _PARALLEL_PRIMARY_MODEL: PublicRecurrentActorCritic | None = None
 _PARALLEL_REPLAY_MODEL: PublicRecurrentActorCritic | None = None
 _PARALLEL_ARTIFACT_BINDING: dict[str, object] | None = None
+_PARALLEL_SOURCE_REQUEST: OpenEcologySelectionRequest | None = None
 
 
 class OpenEcologySelectionError(ValueError):
@@ -262,6 +265,7 @@ class OpenEcologySelectionRequest:
     artifact_logical_name: str = "terminal-training-artifact.json"
     run_contract_logical_name: str = "run-contract.json"
     training_authority: Mapping[str, object] | None = None
+    source_repository_root: Path | None = None
 
     def __post_init__(self) -> None:
         path = Path(self.artifact_path)
@@ -295,6 +299,18 @@ class OpenEcologySelectionRequest:
         ):
             _sha256(getattr(self, field), field=field)
         _source_commit(self.expected_source_commit)
+        source_root = self.source_repository_root
+        if source_root is not None:
+            source_root = Path(source_root)
+            if (
+                not source_root.is_absolute()
+                or not source_root.is_dir()
+                or source_root.is_symlink()
+            ):
+                raise OpenEcologySelectionError(
+                    "source_repository_root must be one absolute regular directory"
+                )
+            object.__setattr__(self, "source_repository_root", source_root)
         if self.training_authority is not None:
             authority = dict(
                 _mapping(
@@ -548,6 +564,7 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
 
     if not isinstance(request, OpenEcologySelectionRequest):
         raise TypeError("request must be an OpenEcologySelectionRequest")
+    _require_live_selection_source(request)
     plan = OpenEcologySelectionPlan.for_phase(request.phase)
     primary, _replay, artifact_binding = _load_bound_artifact(request)
     tasks = tuple(
@@ -594,6 +611,7 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
         raise OpenEcologySelectionError(
             "selection environments returned out of canonical order"
         )
+    _require_live_selection_source(request)
     causal = _aggregate_causal_genome_evidence(environments)
     metrics = _aggregate_learner_metrics(environments)
     gates = _learner_gates(environments=environments, causal=causal)
@@ -1397,11 +1415,65 @@ def _initialize_selection_worker(request: OpenEcologySelectionRequest) -> None:
     global _PARALLEL_ARTIFACT_BINDING
     global _PARALLEL_PRIMARY_MODEL
     global _PARALLEL_REPLAY_MODEL
+    global _PARALLEL_SOURCE_REQUEST
     torch.set_num_threads(1)
+    _require_live_selection_source(request)
     primary, replay, binding = _load_bound_artifact(request)
     _PARALLEL_PRIMARY_MODEL = primary
     _PARALLEL_REPLAY_MODEL = replay
     _PARALLEL_ARTIFACT_BINDING = binding
+    _PARALLEL_SOURCE_REQUEST = request
+
+
+def _require_live_selection_source(request: OpenEcologySelectionRequest) -> None:
+    """Bind authoritative parent and spawned workers to one immutable checkout."""
+
+    root = request.source_repository_root
+    if root is None:
+        return
+    module_root = Path(__file__).resolve().parents[3]
+    if module_root != root.resolve():
+        raise OpenEcologySelectionError(
+            "selection implementation was imported from a different checkout"
+        )
+    try:
+        commit = subprocess.run(
+            ("git", "-C", str(root), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            (
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise OpenEcologySelectionError(
+            "failed to inspect authoritative selection source"
+        ) from error
+    if commit != request.expected_source_commit or status.strip():
+        raise OpenEcologySelectionError(
+            "authoritative selection requires the exact clean source checkout"
+        )
+    try:
+        manifest = source_file_hash_manifest(root)
+    except (OSError, ValueError) as error:
+        raise OpenEcologySelectionError(
+            "failed to hash authoritative selection source"
+        ) from error
+    if manifest.get("aggregate_sha256") != request.expected_source_manifest_sha256:
+        raise OpenEcologySelectionError(
+            "authoritative selection source manifest drifted"
+        )
 
 
 def _evaluate_environment_task_in_worker(
@@ -1411,17 +1483,21 @@ def _evaluate_environment_task_in_worker(
         _PARALLEL_PRIMARY_MODEL is None
         or _PARALLEL_REPLAY_MODEL is None
         or _PARALLEL_ARTIFACT_BINDING is None
+        or _PARALLEL_SOURCE_REQUEST is None
     ):
         raise OpenEcologySelectionError("selection worker was not initialized")
     if _PARALLEL_ARTIFACT_BINDING.get("artifact_sha256") != task.artifact_sha256:
         raise OpenEcologySelectionError(
             "selection worker artifact differs from its task"
         )
-    return _evaluate_environment_task(
+    _require_live_selection_source(_PARALLEL_SOURCE_REQUEST)
+    result = _evaluate_environment_task(
         task,
         primary_model=_PARALLEL_PRIMARY_MODEL,
         replay_model=None,
     )
+    _require_live_selection_source(_PARALLEL_SOURCE_REQUEST)
+    return result
 
 
 def _evaluate_environment_task(

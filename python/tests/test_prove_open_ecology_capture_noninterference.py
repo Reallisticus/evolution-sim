@@ -9,6 +9,8 @@ from unittest.mock import patch
 from scripts import prove_open_ecology_capture_noninterference as proof_script
 
 
+REQUIRES_MIND_ML = True
+
 class CaptureNoninterferenceProofScriptTests(unittest.TestCase):
     def test_execute_rejects_a_dirty_checkout_before_running_worlds(self) -> None:
         with (

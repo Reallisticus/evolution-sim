@@ -167,6 +167,16 @@ class FoundationGateValidatorModuleTests(unittest.TestCase):
                 "viewer.trajectory.observation_contract.communication_token_channels",
             ),
             (
+                "stale receiver observation policy",
+                lambda summary, viewer: viewer["trajectory"][
+                    "observation_contract"
+                ]["signal_contract"]["communication_token_observation"].__setitem__(
+                    "receiver_observation_policy",
+                    "include_receiver_own_emissions",
+                ),
+                "viewer.trajectory.observation_contract.communication_token_channels",
+            ),
+            (
                 "policy-hidden token fields",
                 lambda summary, viewer: viewer["trajectory"][
                     "observation_contract"

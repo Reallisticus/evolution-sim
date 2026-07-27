@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import sys
 import time
 import unittest
@@ -105,8 +106,37 @@ def _cache_poking_failures(source: str, *, filename: str) -> list[str]:
 
 def _discover_suite() -> unittest.TestSuite:
     loader = unittest.defaultTestLoader
-    root = _repo_root()
-    return loader.discover(str(root / "python" / "tests"), pattern="test_*.py")
+    test_dir = _repo_root() / "python" / "tests"
+    mind_ml_available = importlib.util.find_spec("torch") is not None
+    suite = unittest.TestSuite()
+    original_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(test_dir))
+        for path in sorted(test_dir.glob("test_*.py")):
+            if not mind_ml_available and _requires_mind_ml(path):
+                continue
+            suite.addTests(loader.loadTestsFromName(path.stem))
+    finally:
+        sys.path[:] = original_path
+    return suite
+
+
+def _requires_mind_ml(path: Path) -> bool:
+    """Return the explicit pre-import dependency marker for one test module."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(target, ast.Name) and target.id == "REQUIRES_MIND_ML"
+            for target in targets
+        ):
+            continue
+        value = node.value
+        return isinstance(value, ast.Constant) and value.value is True
+    return False
 
 
 def _suite_runtime_budget(

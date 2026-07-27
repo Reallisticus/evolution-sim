@@ -7,7 +7,9 @@ import json
 import multiprocessing
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +29,8 @@ from evolution_sim.mind.recurrent_actor_critic import (
 from evolution_sim.mind.recurrent_artifact import save_recurrent_artifact
 from evolution_sim.mind.recurrent_experiment import OpenEcologyBroadWorldTreatment
 
+
+REQUIRES_MIND_ML = True
 
 _SOURCE_COMMIT = "a" * 40
 _SOURCE_MANIFEST = "b" * 64
@@ -143,6 +147,59 @@ def _training_authority(
 
 
 class OpenEcologySelectionTests(unittest.TestCase):
+    def test_authoritative_source_binding_checks_commit_tree_and_manifest(self) -> None:
+        root = Path(selection.__file__).resolve().parents[3]
+        request = SimpleNamespace(
+            source_repository_root=root,
+            expected_source_commit=_SOURCE_COMMIT,
+            expected_source_manifest_sha256=_SOURCE_MANIFEST,
+        )
+        with (
+            patch.object(
+                selection.subprocess,
+                "run",
+                side_effect=(
+                    subprocess.CompletedProcess((), 0, f"{_SOURCE_COMMIT}\n", ""),
+                    subprocess.CompletedProcess((), 0, "", ""),
+                ),
+            ) as run,
+            patch.object(
+                selection,
+                "source_file_hash_manifest",
+                return_value={"aggregate_sha256": _SOURCE_MANIFEST},
+            ),
+        ):
+            selection._require_live_selection_source(request)
+        self.assertEqual(run.call_count, 2)
+
+    def test_authoritative_source_binding_rejects_dirty_spawn_source(self) -> None:
+        root = Path(selection.__file__).resolve().parents[3]
+        request = SimpleNamespace(
+            source_repository_root=root,
+            expected_source_commit=_SOURCE_COMMIT,
+            expected_source_manifest_sha256=_SOURCE_MANIFEST,
+        )
+        with (
+            patch.object(
+                selection.subprocess,
+                "run",
+                side_effect=(
+                    subprocess.CompletedProcess((), 0, f"{_SOURCE_COMMIT}\n", ""),
+                    subprocess.CompletedProcess(
+                        (),
+                        0,
+                        " M python/evolution_sim/mind/open_ecology_selection.py\n",
+                        "",
+                    ),
+                ),
+            ),
+            self.assertRaisesRegex(
+                selection.OpenEcologySelectionError,
+                "exact clean source",
+            ),
+        ):
+            selection._require_live_selection_source(request)
+
     def test_phase_plans_use_disjoint_selection_roles_and_fixed_densities(
         self,
     ) -> None:

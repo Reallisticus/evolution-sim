@@ -56,6 +56,9 @@ from evolution_sim.mind.recurrent_rollout import (
 )
 
 
+REQUIRES_MIND_ML = True
+
+
 class _ExactBatchCore:
     hidden_size = 3
 
