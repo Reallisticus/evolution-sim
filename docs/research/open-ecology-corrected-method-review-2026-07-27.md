@@ -198,6 +198,20 @@ lag, using stored state and burn-in
 Here, synchronous collection with a frozen policy is preferable until measured
 simulation latency justifies asynchrony.
 
+JaxLife is the closest recent systems comparison to the requested direction: it
+uses recurrent neural agents, inherited mutated controllers, communication,
+terrain modification, and programmable tools, and reports qualitative
+communication, agriculture, and tool-use phenomena
+([Lu et al., 2024](https://arxiv.org/abs/2409.00853)). Its public implementation
+JIT-compiles the world step and vectorizes agent inference rather than driving
+one Python model call per organism
+([source](https://github.com/luchris429/JaxLife)). Its scaling result is also a
+warning against tiny demonstrations: the reported large-scale patterns appeared
+at 256 agents and were absent or weaker in smaller populations. This is useful
+engineering evidence for fixed-capacity vectorization and population-scale
+experiments, not evidence that copying its environment or evolving every neural
+weight would produce the same result here.
+
 “Deterministic batching” must mean repeatability for one bound runtime contract,
 not equality with batch-one inference. PyTorch explicitly states that a batched
 calculation is not guaranteed to be bitwise identical to the corresponding
@@ -232,3 +246,14 @@ replayable long-lived ecology in which inherited controller variation
 causally changes behavior, selection acts on that variation, population and
 behavior diversity do not immediately collapse, and genuine inter-agent
 effects can be inspected.
+
+That is deliberately narrower than cumulative culture. Recent open-ended
+evolution work argues that culture adds a second inheritance system capable of
+preserving learned innovations across generations
+([Froese et al., 2024](https://direct.mit.edu/artl/article/30/3/417/116175/Evolved-Open-Endedness-in-Cultural-Evolution-A-New)).
+This repository should not label recurrent memory or opaque tokens as culture.
+After the first long ecology is stable, a later treatment can expose
+agent-created persistent environmental state or copied conventions and test
+whether acquired information survives replacement of the original individuals.
+That is a future major-transition experiment, not a hidden requirement or
+reward in the first campaign.
