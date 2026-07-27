@@ -134,6 +134,20 @@ transfer actions, and partner choice are later experimental treatments because
 they alter the fitness landscape; they are not prerequisites for this first
 feasibility test.
 
+Population scale and density must be treated as explicit environmental axes,
+not incidental constants. JaxLife reported its strongest large-scale
+qualitative phenomena with 256 agents and weaker or absent effects at smaller
+population sizes. A newer independent-MARL preprint likewise reports
+coordinated, fragile, and jammed regimes separated by scale and density, with
+temporal synchronization distinguishing sustained from collapsing coordination
+([Yamaguchi, 2025](https://arxiv.org/abs/2511.23315)). That paper studies a much
+simpler navigation task and is not evidence that this simulator will reproduce
+its phase diagram. It is enough to reject a single low-density world as a fair
+test of emergent interaction. The development campaign should therefore vary a
+small preregistered set of initial densities while keeping reward and action
+semantics fixed, then select a viable operating range using extinction,
+congestion, diversity, and throughput rather than a cooperation score.
+
 The tokenized observation surface must also become a configuration-bound policy
 contract. PR28 validates both base and tokenized observation schemas, while the
 policy projection still accepts only the static base vector size
