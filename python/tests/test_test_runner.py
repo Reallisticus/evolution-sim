@@ -9,7 +9,7 @@ from evolution_sim.cli import test_runner
 
 class TestRunnerTests(unittest.TestCase):
     def test_suite_budget_defaults_and_override(self) -> None:
-        self.assertGreater(test_runner._suite_runtime_budget("fast", None), 0)
+        self.assertEqual(test_runner._suite_runtime_budget("fast", None), 960.0)
         self.assertEqual(test_runner._suite_runtime_budget("fast", 12.5), 12.5)
         self.assertIsNone(test_runner._suite_runtime_budget("fast", 0.0))
 
