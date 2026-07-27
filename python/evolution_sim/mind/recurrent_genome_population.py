@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 import hashlib
 import json
@@ -117,6 +118,25 @@ class RecurrentGenomePopulationMode(StrEnum):
     ZERO_ALL = "zero_all"
 
 
+@dataclass(frozen=True, slots=True)
+class RecurrentGenomeBinding:
+    """One immutable live-agent genome plus its validated cached digest."""
+
+    genome: RecurrentControllerGenome
+    genome_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.genome, RecurrentControllerGenome):
+            raise RecurrentGenomePopulationError(
+                "binding genome must be RecurrentControllerGenome"
+            )
+        object.__setattr__(self, "genome_sha256", self.genome.sha256)
+
+
+def _bind_genome(genome: RecurrentControllerGenome) -> RecurrentGenomeBinding:
+    return RecurrentGenomeBinding(genome=genome)
+
+
 def recurrent_genome_population_contract() -> dict[str, object]:
     """Return the exact runtime population, seed, and snapshot contract."""
     return _copy_json_value(_POPULATION_CONTRACT)
@@ -223,7 +243,9 @@ class RecurrentGenomePopulationManager:
             genome_stream_seed=self._genome_stream_seed,
             world_identity=self._world_identity,
         )
-        self._genomes: dict[int, RecurrentControllerGenome] = {}
+        self._bindings: dict[int, RecurrentGenomeBinding] = {}
+        self._state_sha256_cache: str | None = None
+        self._empty_state_sha256 = self.state_sha256
 
     @property
     def mode(self) -> RecurrentGenomePopulationMode:
@@ -247,11 +269,21 @@ class RecurrentGenomePopulationManager:
 
     @property
     def population_size(self) -> int:
-        return len(self._genomes)
+        return len(self._bindings)
+
+    @property
+    def registered_agent_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._bindings))
 
     @property
     def state_sha256(self) -> str:
-        return str(self.snapshot_artifact()["snapshot_sha256"])
+        if self._state_sha256_cache is None:
+            self._state_sha256_cache = str(self.snapshot_artifact()["snapshot_sha256"])
+        return self._state_sha256_cache
+
+    @property
+    def empty_state_sha256(self) -> str:
+        return self._empty_state_sha256
 
     def founder_metadata(self, *, agent_id: int) -> dict[str, object]:
         """Register one founder and return compact replay-visible metadata."""
@@ -269,9 +301,11 @@ class RecurrentGenomePopulationManager:
                     parent_genome_sha256s=(),
                 )
             )
-        self._genomes[parsed_agent_id] = genome
+        binding = _bind_genome(genome)
+        self._bindings[parsed_agent_id] = binding
+        self._invalidate_state_sha256()
         return self._mind_metadata(
-            genome=genome,
+            binding=binding,
             inheritance_kind="founder",
             parent_genome_sha256s=(),
         )
@@ -301,19 +335,31 @@ class RecurrentGenomePopulationManager:
             raise RecurrentGenomePopulationError(
                 "child agent id must differ from parent ids"
             )
-        primary = self.genome_for_agent(parsed_primary_parent_id)
+        primary_binding = self.genome_binding_for_agent(parsed_primary_parent_id)
+        primary = primary_binding.genome
         if parsed_secondary_parent_id is None:
             parents = (primary,)
+            parent_genome_sha256s = (primary_binding.genome_sha256,)
             inheritance_kind = "asexual"
         else:
             if parsed_secondary_parent_id == parsed_primary_parent_id:
                 raise RecurrentGenomePopulationError(
                     "two-parent inheritance requires distinct parent ids"
                 )
-            secondary = self.genome_for_agent(parsed_secondary_parent_id)
+            secondary_binding = self.genome_binding_for_agent(
+                parsed_secondary_parent_id
+            )
+            secondary = secondary_binding.genome
             parents = (primary, secondary)
+            parent_genome_sha256s = tuple(
+                sorted(
+                    (
+                        primary_binding.genome_sha256,
+                        secondary_binding.genome_sha256,
+                    )
+                )
+            )
             inheritance_kind = "two_parent"
-        parent_genome_sha256s = tuple(sorted(parent.sha256 for parent in parents))
         if self._mode is RecurrentGenomePopulationMode.ZERO_ALL:
             genome = zero_recurrent_genome()
         elif inheritance_kind == "asexual":
@@ -337,24 +383,29 @@ class RecurrentGenomePopulationManager:
                 ),
                 mutation=self._mutation,
             )
-        self._genomes[parsed_child_id] = genome
+        binding = _bind_genome(genome)
+        self._bindings[parsed_child_id] = binding
+        self._invalidate_state_sha256()
         return self._mind_metadata(
-            genome=genome,
+            binding=binding,
             inheritance_kind=inheritance_kind,
             parent_genome_sha256s=parent_genome_sha256s,
         )
 
     def genome_for_agent(self, agent_id: int) -> RecurrentControllerGenome:
+        return self.genome_binding_for_agent(agent_id).genome
+
+    def genome_binding_for_agent(self, agent_id: int) -> RecurrentGenomeBinding:
         parsed_agent_id = _validate_agent_id(agent_id)
         try:
-            return self._genomes[parsed_agent_id]
+            return self._bindings[parsed_agent_id]
         except KeyError as exc:
             raise RecurrentGenomePopulationError(
                 f"agent {parsed_agent_id} has no registered recurrent genome"
             ) from exc
 
     def genome_sha256_for_agent(self, agent_id: int) -> str:
-        return self.genome_for_agent(agent_id).sha256
+        return self.genome_binding_for_agent(agent_id).genome_sha256
 
     def genome_artifact_for_agent(self, agent_id: int) -> dict[str, object]:
         return recurrent_genome_artifact(self.genome_for_agent(agent_id))
@@ -362,11 +413,70 @@ class RecurrentGenomePopulationManager:
     def discard_agent(self, agent_id: int) -> bool:
         """Discard acquired runtime ownership after death without using RNG."""
         parsed_agent_id = _validate_agent_id(agent_id)
-        return self._genomes.pop(parsed_agent_id, None) is not None
+        discarded = self._bindings.pop(parsed_agent_id, None) is not None
+        if discarded:
+            self._invalidate_state_sha256()
+        return discarded
+
+    def reconcile_live_agent_ids(
+        self,
+        live_agent_ids: Sequence[int],
+    ) -> tuple[int, ...]:
+        """Atomically validate every live owner, then discard registered dead."""
+        discarded_agent_ids = self.reconciliation_dead_agent_ids(live_agent_ids)
+        for agent_id in discarded_agent_ids:
+            del self._bindings[agent_id]
+        if discarded_agent_ids:
+            self._invalidate_state_sha256()
+        return discarded_agent_ids
+
+    def reconciliation_dead_agent_ids(
+        self,
+        live_agent_ids: Sequence[int],
+    ) -> tuple[int, ...]:
+        """Return the exact dead-owner plan without mutating population state."""
+        if isinstance(live_agent_ids, (str, bytes)) or not isinstance(
+            live_agent_ids,
+            Sequence,
+        ):
+            raise RecurrentGenomePopulationError(
+                "live_agent_ids must be a strictly increasing sequence"
+            )
+        parsed_live_agent_ids = tuple(
+            _validate_agent_id(agent_id) for agent_id in live_agent_ids
+        )
+        if parsed_live_agent_ids != tuple(sorted(set(parsed_live_agent_ids))):
+            raise RecurrentGenomePopulationError(
+                "live_agent_ids must be strictly increasing and unique"
+            )
+        if self._mode is RecurrentGenomePopulationMode.DISABLED:
+            if self._bindings:
+                raise RecurrentGenomePopulationError(
+                    "disabled population cannot own recurrent genomes"
+                )
+            return ()
+        missing_live_agent_ids = tuple(
+            agent_id
+            for agent_id in parsed_live_agent_ids
+            if agent_id not in self._bindings
+        )
+        if missing_live_agent_ids:
+            raise RecurrentGenomePopulationError(
+                "live agents have no registered recurrent genome: "
+                f"{list(missing_live_agent_ids)}"
+            )
+        live_agent_id_set = set(parsed_live_agent_ids)
+        return tuple(
+            agent_id
+            for agent_id in self.registered_agent_ids
+            if agent_id not in live_agent_id_set
+        )
 
     def reset(self) -> None:
         """Clear all live genomes while preserving the exact stream binding."""
-        self._genomes.clear()
+        if self._bindings:
+            self._bindings.clear()
+            self._invalidate_state_sha256()
 
     def snapshot_artifact(self) -> dict[str, object]:
         """Serialize the complete live population under an exact state digest."""
@@ -387,16 +497,16 @@ class RecurrentGenomePopulationManager:
             "agents": [
                 {
                     "agent_id": agent_id,
-                    "genome": recurrent_genome_artifact(genome),
+                    "genome": recurrent_genome_artifact(binding.genome),
                 }
-                for agent_id, genome in sorted(self._genomes.items())
+                for agent_id, binding in sorted(self._bindings.items())
             ],
         }
+        snapshot_sha256 = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+        self._state_sha256_cache = snapshot_sha256
         return {
             **payload,
-            "snapshot_sha256": hashlib.sha256(
-                _canonical_json_bytes(payload)
-            ).hexdigest(),
+            "snapshot_sha256": snapshot_sha256,
         }
 
     def serialize_snapshot(self) -> bytes:
@@ -542,7 +652,10 @@ class RecurrentGenomePopulationManager:
             mode=mode,
             mutation=mutation,
         )
-        manager._genomes.update(genomes)
+        manager._bindings.update(
+            {agent_id: _bind_genome(genome) for agent_id, genome in genomes.items()}
+        )
+        manager._invalidate_state_sha256()
         if manager.snapshot_artifact() != artifact:
             raise RecurrentGenomePopulationError(
                 "population snapshot is not canonical for restored state"
@@ -597,10 +710,13 @@ class RecurrentGenomePopulationManager:
         return manager
 
     def _require_new_agent_id(self, agent_id: int) -> None:
-        if agent_id in self._genomes:
+        if agent_id in self._bindings:
             raise RecurrentGenomePopulationError(
                 f"agent {agent_id} already has a registered recurrent genome"
             )
+
+    def _invalidate_state_sha256(self) -> None:
+        self._state_sha256_cache = None
 
     def _event_seed(
         self,
@@ -620,7 +736,7 @@ class RecurrentGenomePopulationManager:
     def _mind_metadata(
         self,
         *,
-        genome: RecurrentControllerGenome,
+        binding: RecurrentGenomeBinding,
         inheritance_kind: str,
         parent_genome_sha256s: Sequence[str],
     ) -> dict[str, object]:
@@ -631,7 +747,7 @@ class RecurrentGenomePopulationManager:
             "population_mode": self._mode.value,
             "population_binding_sha256": self._binding_sha256,
             "inheritance_kind": inheritance_kind,
-            "genome_sha256": genome.sha256,
+            "genome_sha256": binding.genome_sha256,
             "parent_genome_sha256s": list(parent_genome_sha256s),
         }
 

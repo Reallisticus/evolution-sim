@@ -426,6 +426,7 @@ class SimulationWorld:
             reproduction_context=self._reproduction_context,
             kill_agent=self._kill_agent,
             finalize_trajectory_decisions=self._finalize_trajectory_decisions,
+            reconcile_policy_live_agent_ids=self._reconcile_policy_live_agent_ids,
             record_animal_resource_opportunity_tick=(
                 self._record_animal_resource_opportunity_tick
             ),
@@ -3379,6 +3380,14 @@ class SimulationWorld:
                     dict(update_trace) if isinstance(update_trace, dict) else None
                 )
                 self.trajectory_records.append(record)
+
+    def _reconcile_policy_live_agent_ids(
+        self,
+        live_agent_ids: tuple[int, ...],
+    ) -> None:
+        reconcile = getattr(self.policy, "reconcile_live_agent_ids", None)
+        if callable(reconcile):
+            reconcile(live_agent_ids=live_agent_ids)
 
     def _passive_outcome_for_agent(self, agent_id: int, *, acted: bool) -> dict[str, object]:
         damage_events = [

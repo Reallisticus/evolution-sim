@@ -18,17 +18,33 @@ from evolution_sim.env.runtime.trajectory import (
     REWARD_SCHEMA_VERSION,
     REWARD_TOTAL_BOUNDS,
 )
+from evolution_sim.env.runtime.state import empty_mind_inheritance_metadata
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
     TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_values,
 )
+from evolution_sim.mind.recurrent_genome import (
+    RECURRENT_CONTROLLER_GENOME_SIZE,
+    RecurrentControllerGenome,
+    RecurrentGenomeError,
+    zero_recurrent_genome,
+)
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationError,
+    RecurrentGenomePopulationManager,
+    RecurrentGenomePopulationMode,
+    recurrent_genome_stream_binding_sha256,
+)
 
 
 RECURRENT_ROLLOUT_POLICY_ID = "mind_v3_recurrent_on_policy"
 RECURRENT_ROLLOUT_POLICY_VERSION = "mind_v3_recurrent_on_policy_v1"
 RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = "mind_v3_recurrent_rollout_decision_v2"
+RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = (
+    "mind_v3_recurrent_rollout_decision_genome_v1"
+)
 RECURRENT_ROLLOUT_ACTION_SOURCE = "learned_recurrent_on_policy"
 RECURRENT_ROLLOUT_ACTIONS: tuple[str, ...] = tuple(ACTION_NAMES)
 RECURRENT_REWARD_COMPONENTS: tuple[str, ...] = tuple(REWARD_COMPONENT_BOUNDS)
@@ -43,8 +59,11 @@ RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE = (
     "evolution-sim|mind-v3-public-recurrent-ippo|policy-action-sampling-v1|2026-07-21"
 )
 MAX_RECURRENT_POLICY_SAMPLING_SEED = 2**63 - 1
+MAX_RECURRENT_GENOME_STREAM_SEED = 2**64 - 1
 _MIN_DERIVED_POLICY_SAMPLING_SEED = 2**31
 _FEEDBACK_REWARD_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
+RECURRENT_GENOME_CONDITIONING_DISABLED = "disabled"
+RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
 
 
 class RecurrentRolloutError(ValueError):
@@ -196,6 +215,7 @@ class RecurrentPolicyCore(Protocol):
     public_input_schema_version: str
     public_input_size: int
     learned_input_size: int
+    genome_conditioning_mode: str
 
     def initial_hidden(self) -> Sequence[float]: ...
 
@@ -205,6 +225,8 @@ class RecurrentPolicyCore(Protocol):
         current_action_mask: Sequence[bool],
         previous_feedback: PreviousPublicFeedback,
         hidden: Sequence[float],
+        *,
+        genome_values: Sequence[float] | None = None,
     ) -> RecurrentCoreOutput: ...
 
 
@@ -215,6 +237,8 @@ class TorchRecurrentPolicyCore:
         try:
             import torch
             from evolution_sim.mind.recurrent_actor_critic import (
+                GENOME_CONDITIONING_ACTOR_FILM_V1,
+                GENOME_CONDITIONING_DISABLED,
                 PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
                 PREVIOUS_PUBLIC_FEEDBACK_SIZE,
                 PublicRecurrentActorCritic,
@@ -251,6 +275,14 @@ class TorchRecurrentPolicyCore:
         self.public_input_schema_version = model.config.public_input_schema_version
         self.public_input_size = model.config.public_input_size
         self.learned_input_size = model.config.learned_encoder_input_size
+        self.genome_conditioning_mode = model.config.genome_conditioning_mode
+        if self.genome_conditioning_mode not in {
+            GENOME_CONDITIONING_DISABLED,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        }:
+            raise RecurrentRolloutError(
+                "torch model genome conditioning mode is unsupported"
+            )
         self._layers = int(model.config.recurrent_layers)
         self._layer_hidden_size = int(model.config.hidden_size)
         self.hidden_size = self._layers * self._layer_hidden_size
@@ -267,6 +299,8 @@ class TorchRecurrentPolicyCore:
         current_action_mask: Sequence[bool],
         previous_feedback: PreviousPublicFeedback,
         hidden: Sequence[float],
+        *,
+        genome_values: Sequence[float] | None = None,
     ) -> RecurrentCoreOutput:
         torch = self._torch
         reference = next(self._model.parameters())
@@ -290,11 +324,21 @@ class TorchRecurrentPolicyCore:
             device=reference.device,
             dtype=reference.dtype,
         ).reshape(self._layers, 1, self._layer_hidden_size)
+        genome_tensor = (
+            None
+            if genome_values is None
+            else torch.tensor(
+                tuple(genome_values),
+                device=reference.device,
+                dtype=reference.dtype,
+            ).reshape(1, 1, RECURRENT_CONTROLLER_GENOME_SIZE)
+        )
         with torch.no_grad():
             output = self._model.forward_sequence(
                 observations,
                 action_masks,
                 feedback,
+                genome_values=genome_tensor,
                 initial_state=state,
             )
         return RecurrentCoreOutput(
@@ -328,6 +372,22 @@ class PendingDecision:
     value: float
     hidden: tuple[float, ...]
     next_hidden: tuple[float, ...]
+    genome_values: tuple[float, ...] | None = None
+    genome_sha256: str | None = None
+    genome_stream_seed: int | None = None
+
+    def __post_init__(self) -> None:
+        genome_values, genome_sha256, genome_stream_seed = (
+            _validated_rollout_genome_fields(
+                genome_values=self.genome_values,
+                genome_sha256=self.genome_sha256,
+                genome_stream_seed=self.genome_stream_seed,
+                field="pending decision",
+            )
+        )
+        object.__setattr__(self, "genome_values", genome_values)
+        object.__setattr__(self, "genome_sha256", genome_sha256)
+        object.__setattr__(self, "genome_stream_seed", genome_stream_seed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +425,9 @@ class RecurrentRolloutStep:
     passive_terminal_tick: int | None = None
     environment_seed: int | None = None
     policy_sampling_seed: int | None = None
+    genome_values: tuple[float, ...] | None = None
+    genome_sha256: str | None = None
+    genome_stream_seed: int | None = None
 
     def __post_init__(self) -> None:
         world_seed = _strict_int(self.world_seed, field="world_seed")
@@ -389,6 +452,17 @@ class RecurrentRolloutStep:
         object.__setattr__(self, "world_seed", world_seed)
         object.__setattr__(self, "environment_seed", environment_seed)
         object.__setattr__(self, "policy_sampling_seed", policy_sampling_seed)
+        genome_values, genome_sha256, genome_stream_seed = (
+            _validated_rollout_genome_fields(
+                genome_values=self.genome_values,
+                genome_sha256=self.genome_sha256,
+                genome_stream_seed=self.genome_stream_seed,
+                field="rollout step",
+            )
+        )
+        object.__setattr__(self, "genome_values", genome_values)
+        object.__setattr__(self, "genome_sha256", genome_sha256)
+        object.__setattr__(self, "genome_stream_seed", genome_stream_seed)
         reward, reward_components = _validated_reward_values(
             self.reward,
             self.reward_components,
@@ -433,19 +507,16 @@ class RecurrentRolloutBuffer:
         self._steps: list[RecurrentRolloutStep] = []
         self._indices_by_agent: dict[tuple[str, int], list[int]] = {}
         self._world_ids: set[str] = set()
-        self._world_seed_provenance: dict[str, tuple[int, int] | None] = {}
+        self._world_seed_provenance: dict[str, dict[str, object] | None] = {}
 
     @property
     def steps(self) -> tuple[RecurrentRolloutStep, ...]:
         return tuple(self._steps)
 
     @property
-    def world_seed_provenance(self) -> dict[str, dict[str, int]]:
+    def world_seed_provenance(self) -> dict[str, dict[str, object]]:
         return {
-            world_id: {
-                "environment_seed": provenance[0],
-                "policy_sampling_seed": provenance[1],
-            }
+            world_id: copy.deepcopy(provenance)
             for world_id, provenance in self._world_seed_provenance.items()
             if provenance is not None
         }
@@ -456,6 +527,11 @@ class RecurrentRolloutBuffer:
         *,
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
+        genome_conditioning_mode: str | None = None,
+        genome_population_mode: RecurrentGenomePopulationMode | str | None = None,
+        genome_stream_seed: int | None = None,
+        genome_population_binding_sha256: str | None = None,
+        genome_population_pre_founder_state_sha256: str | None = None,
     ) -> None:
         if not world_id:
             raise RecurrentRolloutError("world_id must not be empty")
@@ -465,34 +541,182 @@ class RecurrentRolloutBuffer:
             raise RecurrentRolloutError(
                 "world seed provenance requires both environment and policy seeds"
             )
-        provenance: tuple[int, int] | None = None
+        genome_provenance = (
+            genome_conditioning_mode,
+            genome_population_mode,
+            genome_stream_seed,
+            genome_population_binding_sha256,
+            genome_population_pre_founder_state_sha256,
+        )
+        if any(value is not None for value in genome_provenance) and not all(
+            value is not None for value in genome_provenance
+        ):
+            raise RecurrentRolloutError(
+                "world genome provenance requires conditioning mode, population "
+                "mode, stream seed, binding SHA256, and pre-founder state SHA256"
+            )
+        provenance: dict[str, object] | None = None
         if environment_seed is not None and policy_sampling_seed is not None:
-            provenance = (
-                _strict_int(environment_seed, field="environment_seed"),
-                _policy_sampling_seed(
+            provenance = {
+                "environment_seed": _strict_int(
+                    environment_seed,
+                    field="environment_seed",
+                ),
+                "policy_sampling_seed": _policy_sampling_seed(
                     policy_sampling_seed,
                     field="policy_sampling_seed",
                 ),
+            }
+            if genome_conditioning_mode is not None:
+                parsed_conditioning_mode = _genome_conditioning_mode(
+                    genome_conditioning_mode
+                )
+                if (
+                    parsed_conditioning_mode
+                    != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                ):
+                    raise RecurrentRolloutError(
+                        "registered genome provenance requires actor_film_v1 "
+                        "conditioning"
+                    )
+                parsed_population_mode = _active_genome_population_mode(
+                    genome_population_mode
+                )
+                parsed_stream_seed = _genome_stream_seed(
+                    genome_stream_seed,
+                    field="genome_stream_seed",
+                )
+                parsed_binding_sha256 = _sha256(
+                    genome_population_binding_sha256,
+                    field="genome_population_binding_sha256",
+                )
+                try:
+                    expected_binding_sha256 = recurrent_genome_stream_binding_sha256(
+                        genome_stream_seed=parsed_stream_seed,
+                        world_identity=world_id,
+                    )
+                except RecurrentGenomePopulationError as exc:
+                    raise RecurrentRolloutError(
+                        f"world genome provenance binding is invalid: {exc}"
+                    ) from exc
+                if parsed_binding_sha256 != expected_binding_sha256:
+                    raise RecurrentRolloutError(
+                        "world genome provenance binding SHA256 does not match "
+                        "its stream seed and world identity"
+                    )
+                provenance.update(
+                    {
+                        "genome_conditioning_mode": parsed_conditioning_mode,
+                        "genome_population_mode": parsed_population_mode.value,
+                        "genome_stream_seed": parsed_stream_seed,
+                        "genome_population_binding_sha256": parsed_binding_sha256,
+                        "genome_population_pre_founder_state_sha256": _sha256(
+                            genome_population_pre_founder_state_sha256,
+                            field="genome_population_pre_founder_state_sha256",
+                        ),
+                    }
+                )
+        elif any(value is not None for value in genome_provenance):
+            raise RecurrentRolloutError(
+                "world genome provenance requires world seed provenance"
             )
         self._world_ids.add(world_id)
         self._world_seed_provenance[world_id] = provenance
+
+    def finalize_world_genome_provenance(
+        self,
+        world_id: str,
+        *,
+        final_state_sha256: str,
+        reset_state_sha256: str,
+    ) -> None:
+        provenance = self._world_seed_provenance.get(world_id)
+        if provenance is None:
+            raise RecurrentRolloutError(
+                f"world has no registered seed provenance: {world_id!r}"
+            )
+        if (
+            provenance.get("genome_conditioning_mode")
+            != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            raise RecurrentRolloutError(
+                "cannot finalize genome provenance for an unconditioned world"
+            )
+        if "genome_population_final_state_sha256" in provenance:
+            raise RecurrentRolloutError("world genome provenance was already finalized")
+        parsed_final_state_sha256 = _sha256(
+            final_state_sha256,
+            field="genome_population_final_state_sha256",
+        )
+        parsed_reset_state_sha256 = _sha256(
+            reset_state_sha256,
+            field="genome_population_reset_state_sha256",
+        )
+        if parsed_reset_state_sha256 != provenance.get(
+            "genome_population_pre_founder_state_sha256"
+        ):
+            raise RecurrentRolloutError(
+                "world genome reset state SHA256 must match its pre-founder empty state"
+            )
+        provenance.update(
+            {
+                "genome_population_final_state_sha256": (parsed_final_state_sha256),
+                "genome_population_reset_state_sha256": (parsed_reset_state_sha256),
+            }
+        )
 
     def append(self, step: RecurrentRolloutStep) -> None:
         if step.world_id not in self._world_ids:
             raise RecurrentRolloutError(
                 f"rollout world was not registered: {step.world_id!r}"
             )
-        observed_provenance = (
-            int(step.environment_seed),
-            int(step.policy_sampling_seed),
-        )
+        observed_provenance = {
+            "environment_seed": int(step.environment_seed),
+            "policy_sampling_seed": int(step.policy_sampling_seed),
+        }
         registered_provenance = self._world_seed_provenance[step.world_id]
         if registered_provenance is None:
             self._world_seed_provenance[step.world_id] = observed_provenance
-        elif observed_provenance != registered_provenance:
+            registered_provenance = observed_provenance
+        elif any(
+            observed_provenance[key] != registered_provenance.get(key)
+            for key in observed_provenance
+        ):
             raise RecurrentRolloutError(
                 "rollout step seed provenance does not match its registered world"
             )
+        registered_conditioning_mode = registered_provenance.get(
+            "genome_conditioning_mode"
+        )
+        if step.genome_values is None:
+            if registered_conditioning_mode is not None:
+                raise RecurrentRolloutError(
+                    "unconditioned rollout step cannot enter a genome-conditioned world"
+                )
+        else:
+            if (
+                registered_conditioning_mode
+                != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+            ):
+                raise RecurrentRolloutError(
+                    "genome-conditioned rollout step requires matching registered "
+                    "world provenance"
+                )
+            if step.genome_stream_seed != registered_provenance.get(
+                "genome_stream_seed"
+            ):
+                raise RecurrentRolloutError(
+                    "rollout step genome stream seed does not match its registered "
+                    "world"
+                )
+            if (
+                registered_provenance.get("genome_population_mode")
+                == RecurrentGenomePopulationMode.ZERO_ALL.value
+                and step.genome_values != zero_recurrent_genome().values
+            ):
+                raise RecurrentRolloutError(
+                    "zero_all rollout world contains a nonzero controller genome"
+                )
         key = (step.world_id, step.agent_id)
         indices = self._indices_by_agent.setdefault(key, [])
         if indices:
@@ -709,6 +933,13 @@ class RecurrentOnPolicyCollector:
                 "reset_recurrent_state_each_decision must be an exact boolean"
             )
         self._core = core
+        self._genome_conditioning_mode = _genome_conditioning_mode(
+            getattr(
+                core,
+                "genome_conditioning_mode",
+                RECURRENT_GENOME_CONDITIONING_DISABLED,
+            )
+        )
         self._public_input_schema_version = getattr(
             core,
             "public_input_schema_version",
@@ -760,6 +991,11 @@ class RecurrentOnPolicyCollector:
         self._hidden_by_agent: dict[int, tuple[float, ...]] = {}
         self._feedback_by_agent: dict[int, PreviousPublicFeedback] = {}
         self._pending_by_agent: dict[int, PendingDecision] = {}
+        self._genome_population_manager: RecurrentGenomePopulationManager | None = None
+
+    @property
+    def genome_conditioning_mode(self) -> str:
+        return self._genome_conditioning_mode
 
     def start_world(
         self,
@@ -769,11 +1005,14 @@ class RecurrentOnPolicyCollector:
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
         seed: int | None = None,
+        genome_stream_seed: int | None = None,
+        genome_population_mode: RecurrentGenomePopulationMode | str | None = None,
     ) -> None:
         if self._active_world_id is not None:
             raise RecurrentRolloutError(
                 "finish the active world before starting another"
             )
+        self._validate_core_conditioning_mode_binding()
         if environment_seed is None:
             environment_seed = seed
         elif seed is not None and seed != environment_seed:
@@ -795,10 +1034,57 @@ class RecurrentOnPolicyCollector:
         )
         if isinstance(rollout_ticks, bool) or int(rollout_ticks) <= 0:
             raise RecurrentRolloutError("rollout_ticks must be positive")
+        genome_population_manager: RecurrentGenomePopulationManager | None = None
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            if genome_stream_seed is not None:
+                raise RecurrentRolloutError(
+                    "disabled recurrent core cannot accept a genome stream seed"
+                )
+            if (
+                genome_population_mode is not None
+                and genome_population_mode != RecurrentGenomePopulationMode.DISABLED
+                and genome_population_mode
+                != RecurrentGenomePopulationMode.DISABLED.value
+            ):
+                raise RecurrentRolloutError(
+                    "disabled recurrent core cannot use an active genome population"
+                )
+        else:
+            parsed_genome_stream_seed = _genome_stream_seed(
+                genome_stream_seed,
+                field="genome_stream_seed",
+            )
+            parsed_population_mode = _active_genome_population_mode(
+                genome_population_mode
+            )
+            try:
+                genome_population_manager = RecurrentGenomePopulationManager(
+                    genome_stream_seed=parsed_genome_stream_seed,
+                    world_identity=world_id,
+                    mode=parsed_population_mode,
+                )
+            except RecurrentGenomePopulationError as exc:
+                raise RecurrentRolloutError(
+                    f"recurrent genome population setup failed: {exc}"
+                ) from exc
+        genome_provenance: dict[str, object] = {}
+        if genome_population_manager is not None:
+            genome_provenance = {
+                "genome_conditioning_mode": self._genome_conditioning_mode,
+                "genome_population_mode": genome_population_manager.mode,
+                "genome_stream_seed": genome_population_manager.genome_stream_seed,
+                "genome_population_binding_sha256": (
+                    genome_population_manager.binding_sha256
+                ),
+                "genome_population_pre_founder_state_sha256": (
+                    genome_population_manager.state_sha256
+                ),
+            }
         self.buffer.register_world(
             world_id,
             environment_seed=environment_seed,
             policy_sampling_seed=policy_sampling_seed,
+            **genome_provenance,
         )
         self._active_world_id = world_id
         self._environment_seed = int(environment_seed)
@@ -810,6 +1096,53 @@ class RecurrentOnPolicyCollector:
         self._hidden_by_agent.clear()
         self._feedback_by_agent.clear()
         self._pending_by_agent.clear()
+        self._genome_population_manager = genome_population_manager
+
+    def contextual_founder_metadata(
+        self,
+        *,
+        agent_id: int,
+        trophic_role: object | None = None,
+        meat_mode: object | None = None,
+    ) -> dict[str, object]:
+        del trophic_role, meat_mode
+        return self.founder_metadata(agent_id=agent_id)
+
+    def founder_metadata(self, *, agent_id: int) -> dict[str, object]:
+        self._require_active_world()
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.founder_metadata(agent_id=agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent founder genome registration failed: {exc}"
+            ) from exc
+
+    def child_metadata(
+        self,
+        *,
+        child_agent_id: int,
+        primary_parent_id: int,
+        secondary_parent_id: int | None,
+    ) -> dict[str, object]:
+        self._require_active_world()
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(child_agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.child_metadata(
+                child_agent_id=child_agent_id,
+                primary_parent_id=primary_parent_id,
+                secondary_parent_id=secondary_parent_id,
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent child genome registration failed: {exc}"
+            ) from exc
 
     def finish_world(self) -> None:
         world_id = self._require_active_world()
@@ -818,13 +1151,64 @@ class RecurrentOnPolicyCollector:
                 "world finished with decisions that have no finalized transition"
             )
         self.buffer.validate_world_closed(world_id)
+        manager = self._genome_population_manager
+        if manager is not None:
+            final_state_sha256 = manager.state_sha256
+            self.buffer.finalize_world_genome_provenance(
+                world_id,
+                final_state_sha256=final_state_sha256,
+                reset_state_sha256=manager.empty_state_sha256,
+            )
+            manager.reset()
+            if manager.state_sha256 != manager.empty_state_sha256:
+                raise RecurrentRolloutError(
+                    "recurrent genome population reset state digest mismatch"
+                )
         self._hidden_by_agent.clear()
         self._feedback_by_agent.clear()
         self._pending_by_agent.clear()
+        self._genome_population_manager = None
         self._active_world_id = None
         self._environment_seed = 0
         self._policy_sampling_seed = 0
         self._bootstrap_phase = False
+
+    def reconcile_live_agent_ids(
+        self,
+        *,
+        live_agent_ids: Sequence[int],
+    ) -> None:
+        self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return
+        manager = self._require_genome_population_manager()
+        try:
+            planned_dead_agent_ids = manager.reconciliation_dead_agent_ids(
+                live_agent_ids
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent genome live-agent reconciliation failed: {exc}"
+            ) from exc
+        pending_dead_agent_ids = tuple(
+            agent_id
+            for agent_id in planned_dead_agent_ids
+            if agent_id in self._pending_by_agent
+        )
+        if pending_dead_agent_ids:
+            raise RecurrentRolloutError(
+                "recurrent genome reconciliation found dead agents with "
+                f"unfinalized decisions: {list(pending_dead_agent_ids)}"
+            )
+        discarded_agent_ids = manager.reconcile_live_agent_ids(live_agent_ids)
+        if discarded_agent_ids != planned_dead_agent_ids:
+            raise RecurrentRolloutError(
+                "recurrent genome reconciliation plan changed before apply"
+            )
+        for agent_id in discarded_agent_ids:
+            self._hidden_by_agent.pop(agent_id, None)
+            self._feedback_by_agent.pop(agent_id, None)
 
     def decide(
         self,
@@ -832,6 +1216,7 @@ class RecurrentOnPolicyCollector:
         action_mask: dict[str, bool],
     ) -> ActionDecision:
         world_id = self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
         agent_id = _agent_id_from_observation(observation)
         if agent_id in self._pending_by_agent:
             raise RecurrentRolloutError(
@@ -867,14 +1252,38 @@ class RecurrentOnPolicyCollector:
             agent_id,
             PreviousPublicFeedback.zero(),
         )
-        output = self._validated_core_output(
-            self._core.forward_step(
+        genome_values: tuple[float, ...] | None = None
+        genome_sha256: str | None = None
+        genome_stream_seed: int | None = None
+        if (
+            self._genome_conditioning_mode
+            == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            manager = self._require_genome_population_manager()
+            try:
+                binding = manager.genome_binding_for_agent(agent_id)
+            except RecurrentGenomePopulationError as exc:
+                raise RecurrentRolloutError(
+                    f"recurrent genome lookup failed before decision: {exc}"
+                ) from exc
+            genome_values = binding.genome.values
+            genome_sha256 = binding.genome_sha256
+            genome_stream_seed = manager.genome_stream_seed
+            raw_output = self._core.forward_step(
+                policy_input,
+                mask,
+                previous_feedback,
+                hidden,
+                genome_values=genome_values,
+            )
+        else:
+            raw_output = self._core.forward_step(
                 policy_input,
                 mask,
                 previous_feedback,
                 hidden,
             )
-        )
+        output = self._validated_core_output(raw_output)
         action_index, logprob, entropy = _sample_masked_action(
             output.logits,
             mask,
@@ -901,40 +1310,59 @@ class RecurrentOnPolicyCollector:
             value=output.value,
             hidden=hidden,
             next_hidden=output.next_hidden,
+            genome_values=genome_values,
+            genome_sha256=genome_sha256,
+            genome_stream_seed=genome_stream_seed,
         )
         self._pending_by_agent[agent_id] = pending
         if not self._reset_recurrent_state_each_decision:
             self._hidden_by_agent[agent_id] = output.next_hidden
+        diagnostics: dict[str, object] = {
+            "schema_version": (
+                RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                if genome_values is not None
+                else RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+            ),
+            "world_id": world_id,
+            "environment_seed": self._environment_seed,
+            "policy_sampling_seed": self._policy_sampling_seed,
+            "policy_sampling_seed_namespace": (
+                RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE
+            ),
+            "decision_index": decision_index,
+            "agent_id": agent_id,
+            "phase": tick_phase,
+            "policy_input_schema_version": self._public_input_schema_version,
+            "policy_input_size": self._public_input_size,
+            "learned_input_size": self._learned_input_size,
+            "previous_feedback_schema_version": (
+                RECURRENT_PUBLIC_FEEDBACK_SCHEMA_VERSION
+            ),
+            "previous_feedback_available": previous_feedback.available,
+            "recurrent_state_reset_each_decision": (
+                self._reset_recurrent_state_each_decision
+            ),
+            "action_index": action_index,
+            "logprob": round(logprob, 12),
+            "value": round(output.value, 12),
+        }
+        if genome_values is not None:
+            manager = self._require_genome_population_manager()
+            diagnostics.update(
+                {
+                    "genome_conditioning_mode": self._genome_conditioning_mode,
+                    "genome_population_mode": manager.mode.value,
+                    "genome_population_binding_sha256": manager.binding_sha256,
+                    "genome_sha256": genome_sha256,
+                    "genome_stream_seed": genome_stream_seed,
+                }
+            )
         return ActionDecision(
             requested_action=requested_action,
             source=RECURRENT_ROLLOUT_ACTION_SOURCE,
             policy_id=self.policy_id,
             policy_version=self.policy_version,
-            diagnostics={
-                "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
-                "world_id": world_id,
-                "environment_seed": self._environment_seed,
-                "policy_sampling_seed": self._policy_sampling_seed,
-                "policy_sampling_seed_namespace": (
-                    RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE
-                ),
-                "decision_index": decision_index,
-                "agent_id": agent_id,
-                "phase": tick_phase,
-                "policy_input_schema_version": self._public_input_schema_version,
-                "policy_input_size": self._public_input_size,
-                "learned_input_size": self._learned_input_size,
-                "previous_feedback_schema_version": (
-                    RECURRENT_PUBLIC_FEEDBACK_SCHEMA_VERSION
-                ),
-                "previous_feedback_available": previous_feedback.available,
-                "recurrent_state_reset_each_decision": (
-                    self._reset_recurrent_state_each_decision
-                ),
-                "action_index": action_index,
-                "logprob": round(logprob, 12),
-                "value": round(output.value, 12),
-            },
+            diagnostics=diagnostics,
         )
 
     def observe_transition(
@@ -964,16 +1392,31 @@ class RecurrentOnPolicyCollector:
                 agent_id=agent_id,
                 bootstrap_value=pending.value,
             )
+            if _record_terminated(record):
+                self._discard_terminal_genome(agent_id)
             self._hidden_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
-            return {
-                "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
+            update_trace: dict[str, object] = {
+                "schema_version": (
+                    RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                    if pending.genome_values is not None
+                    else RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                ),
                 "decision_index": pending.decision_index,
                 "phase": "bootstrap",
                 "collected": False,
                 "environment_seed": pending.environment_seed,
                 "policy_sampling_seed": pending.policy_sampling_seed,
             }
+            if pending.genome_values is not None:
+                update_trace.update(
+                    {
+                        "genome_conditioning_mode": (self._genome_conditioning_mode),
+                        "genome_sha256": pending.genome_sha256,
+                        "genome_stream_seed": pending.genome_stream_seed,
+                    }
+                )
+            return update_trace
 
         if tick >= self._rollout_ticks:
             raise RecurrentRolloutError(
@@ -1022,9 +1465,13 @@ class RecurrentOnPolicyCollector:
             terminated=terminated,
             environment_seed=pending.environment_seed,
             policy_sampling_seed=pending.policy_sampling_seed,
+            genome_values=pending.genome_values,
+            genome_sha256=pending.genome_sha256,
+            genome_stream_seed=pending.genome_stream_seed,
         )
         self.buffer.append(step)
         if terminated:
+            self._discard_terminal_genome(agent_id)
             self._hidden_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
         else:
@@ -1033,8 +1480,12 @@ class RecurrentOnPolicyCollector:
             )
         if tick == self._rollout_ticks - 1:
             self._bootstrap_phase = True
-        return {
-            "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
+        update_trace = {
+            "schema_version": (
+                RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                if pending.genome_values is not None
+                else RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+            ),
             "decision_index": pending.decision_index,
             "phase": "rollout",
             "collected": True,
@@ -1042,6 +1493,15 @@ class RecurrentOnPolicyCollector:
             "environment_seed": pending.environment_seed,
             "policy_sampling_seed": pending.policy_sampling_seed,
         }
+        if pending.genome_values is not None:
+            update_trace.update(
+                {
+                    "genome_conditioning_mode": self._genome_conditioning_mode,
+                    "genome_sha256": pending.genome_sha256,
+                    "genome_stream_seed": pending.genome_stream_seed,
+                }
+            )
+        return update_trace
 
     def _observe_passive_record(
         self,
@@ -1062,6 +1522,7 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError(
                 "passive terminal arrived beyond the one-tick bootstrap boundary"
             )
+        self._require_live_genome_if_conditioned(agent_id)
         reward, reward_components = _reward_payload(record)
         self.buffer.mark_passive_terminal(
             world_id=world_id,
@@ -1070,6 +1531,7 @@ class RecurrentOnPolicyCollector:
             reward=reward,
             reward_components=reward_components,
         )
+        self._discard_terminal_genome(agent_id)
         self._hidden_by_agent.pop(agent_id, None)
         self._feedback_by_agent.pop(agent_id, None)
 
@@ -1084,10 +1546,13 @@ class RecurrentOnPolicyCollector:
             record.get("policy_decision_diagnostics"),
             field="policy_decision_diagnostics",
         )
-        if (
-            diagnostics.get("schema_version")
-            != RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
-        ):
+        self._validate_pending_genome(pending)
+        expected_diagnostic_schema = (
+            RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+            if pending.genome_values is not None
+            else RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+        )
+        if diagnostics.get("schema_version") != expected_diagnostic_schema:
             raise RecurrentRolloutError(
                 "transition decision diagnostic schema mismatch"
             )
@@ -1112,6 +1577,20 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError("transition decision_index does not match")
         if diagnostics.get("phase") != pending.tick_phase:
             raise RecurrentRolloutError("transition phase does not match decision")
+        if pending.genome_values is not None:
+            manager = self._require_genome_population_manager()
+            expected_genome_diagnostics = {
+                "genome_conditioning_mode": self._genome_conditioning_mode,
+                "genome_population_mode": manager.mode.value,
+                "genome_population_binding_sha256": manager.binding_sha256,
+                "genome_sha256": pending.genome_sha256,
+                "genome_stream_seed": pending.genome_stream_seed,
+            }
+            for key, expected_value in expected_genome_diagnostics.items():
+                if diagnostics.get(key) != expected_value:
+                    raise RecurrentRolloutError(
+                        f"transition {key} does not match decision"
+                    )
         if record.get("policy_id") != self.policy_id:
             raise RecurrentRolloutError("transition policy_id does not match collector")
         if record.get("policy_version") != self.policy_version:
@@ -1175,10 +1654,222 @@ class RecurrentOnPolicyCollector:
             next_hidden=next_hidden,
         )
 
+    def _require_genome_population_manager(
+        self,
+    ) -> RecurrentGenomePopulationManager:
+        self._validate_core_conditioning_mode_binding()
+        if (
+            self._genome_conditioning_mode
+            != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            raise RecurrentRolloutError(
+                "genome population is unavailable for a disabled recurrent core"
+            )
+        manager = self._genome_population_manager
+        if manager is None:
+            raise RecurrentRolloutError(
+                "actor_film_v1 collection has no active genome population"
+            )
+        if manager.mode not in {
+            RecurrentGenomePopulationMode.HERITABLE,
+            RecurrentGenomePopulationMode.ZERO_ALL,
+        }:
+            raise RecurrentRolloutError(
+                "actor_film_v1 collection has an incompatible population mode"
+            )
+        if manager.world_identity != self._require_active_world():
+            raise RecurrentRolloutError(
+                "recurrent genome population world binding does not match collector"
+            )
+        return manager
+
+    def _validate_core_conditioning_mode_binding(self) -> None:
+        observed_mode = _genome_conditioning_mode(
+            getattr(
+                self._core,
+                "genome_conditioning_mode",
+                RECURRENT_GENOME_CONDITIONING_DISABLED,
+            )
+        )
+        if observed_mode != self._genome_conditioning_mode:
+            raise RecurrentRolloutError(
+                "recurrent core genome conditioning mode changed after collector "
+                "construction"
+            )
+
+    def _require_zero_newborn_runtime_state(self, agent_id: int) -> None:
+        if agent_id in self._hidden_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has recurrent hidden state"
+            )
+        if agent_id in self._feedback_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has previous public feedback"
+            )
+        if agent_id in self._pending_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has a pending decision"
+            )
+
+    def _validate_pending_genome(self, pending: PendingDecision) -> None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            if pending.genome_values is not None:
+                raise RecurrentRolloutError(
+                    "disabled recurrent core received genome-conditioned decision"
+                )
+            return
+        if pending.genome_values is None:
+            raise RecurrentRolloutError(
+                "actor_film_v1 decision is missing its controller genome"
+            )
+        manager = self._require_genome_population_manager()
+        if pending.genome_stream_seed != manager.genome_stream_seed:
+            raise RecurrentRolloutError(
+                "pending controller genome stream seed does not match active world"
+            )
+        try:
+            binding = manager.genome_binding_for_agent(pending.agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"pending controller genome ownership failed: {exc}"
+            ) from exc
+        if (
+            pending.genome_values != binding.genome.values
+            or pending.genome_sha256 != binding.genome_sha256
+        ):
+            raise RecurrentRolloutError(
+                "pending controller genome does not match active population state"
+            )
+
+    def _discard_terminal_genome(self, agent_id: int) -> None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return
+        manager = self._require_live_genome_if_conditioned(agent_id)
+        if manager is None:
+            raise RecurrentRolloutError(
+                "conditioned terminal cleanup has no genome population"
+            )
+        try:
+            discarded = manager.discard_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        if not discarded:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup missed agent {agent_id}"
+            )
+
+    def _require_live_genome_if_conditioned(
+        self,
+        agent_id: int,
+    ) -> RecurrentGenomePopulationManager | None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return None
+        manager = self._require_genome_population_manager()
+        try:
+            manager.genome_for_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        return manager
+
     def _require_active_world(self) -> str:
         if self._active_world_id is None:
             raise RecurrentRolloutError("start_world must be called before collection")
         return self._active_world_id
+
+
+def _validated_rollout_genome_fields(
+    *,
+    genome_values: tuple[float, ...] | None,
+    genome_sha256: str | None,
+    genome_stream_seed: int | None,
+    field: str,
+) -> tuple[tuple[float, ...] | None, str | None, int | None]:
+    presence = (
+        genome_values is not None,
+        genome_sha256 is not None,
+        genome_stream_seed is not None,
+    )
+    if not any(presence):
+        return None, None, None
+    if not all(presence):
+        raise RecurrentRolloutError(
+            f"{field} controller genome values, SHA256, and stream seed "
+            "must be present together"
+        )
+    try:
+        genome = RecurrentControllerGenome(values=genome_values)
+    except RecurrentGenomeError as exc:
+        raise RecurrentRolloutError(
+            f"{field} controller genome is invalid: {exc}"
+        ) from exc
+    parsed_sha256 = _sha256(genome_sha256, field=f"{field} genome_sha256")
+    if parsed_sha256 != genome.sha256:
+        raise RecurrentRolloutError(
+            f"{field} controller genome SHA256 does not match its values"
+        )
+    parsed_stream_seed = _genome_stream_seed(
+        genome_stream_seed,
+        field=f"{field} genome_stream_seed",
+    )
+    return genome.values, parsed_sha256, parsed_stream_seed
+
+
+def _genome_conditioning_mode(value: object) -> str:
+    if not isinstance(value, str) or value not in {
+        RECURRENT_GENOME_CONDITIONING_DISABLED,
+        RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
+    }:
+        raise RecurrentRolloutError(
+            "core genome conditioning mode must be exactly disabled or actor_film_v1"
+        )
+    return str(value)
+
+
+def _active_genome_population_mode(
+    value: object,
+) -> RecurrentGenomePopulationMode:
+    try:
+        mode = (
+            value
+            if isinstance(value, RecurrentGenomePopulationMode)
+            else RecurrentGenomePopulationMode(value)
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecurrentRolloutError(
+            "actor_film_v1 requires genome population mode heritable or zero_all"
+        ) from exc
+    if mode not in {
+        RecurrentGenomePopulationMode.HERITABLE,
+        RecurrentGenomePopulationMode.ZERO_ALL,
+    }:
+        raise RecurrentRolloutError(
+            "actor_film_v1 requires genome population mode heritable or zero_all"
+        )
+    return mode
+
+
+def _genome_stream_seed(value: object, *, field: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= MAX_RECURRENT_GENOME_STREAM_SEED
+    ):
+        raise RecurrentRolloutError(f"{field} must be an unsigned 64-bit integer")
+    return value
+
+
+def _sha256(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RecurrentRolloutError(f"{field} must be a lowercase SHA256")
+    return value
 
 
 def _sample_masked_action(

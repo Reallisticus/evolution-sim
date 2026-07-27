@@ -36,6 +36,7 @@ class TickPhaseContext:
     reproduction_context: Callable[[], runtime_reproduction.ReproductionContext]
     kill_agent: Callable[..., None]
     finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
+    reconcile_policy_live_agent_ids: Callable[[tuple[int, ...]], None]
     record_animal_resource_opportunity_tick: Callable[
         [dict[str, int], dict[str, dict[str, int]], dict[str, bool]],
         None,
@@ -190,6 +191,9 @@ def run_tick(
             pending_trajectory_records,
         )
         tick_context.finalize_trajectory_decisions(pending_trajectory_records)
+    tick_context.reconcile_policy_live_agent_ids(
+        tuple(sorted(agent.agent_id for agent in world.alive_agents()))
+    )
 
     deaths_this_tick = world.deaths - deaths_before_tick
     alive_count = len(world.alive_agents())

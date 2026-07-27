@@ -416,6 +416,78 @@ class RecurrentGenomePopulationTests(unittest.TestCase):
         repeated_metadata = manager.founder_metadata(agent_id=1)
         self.assertEqual(repeated_metadata, original_metadata)
 
+    def test_live_agent_reconciliation_is_strict_atomic_and_dead_only(self) -> None:
+        manager = RecurrentGenomePopulationManager(
+            genome_stream_seed=8,
+            world_identity="live-reconciliation",
+            mode="heritable",
+        )
+        manager.founder_metadata(agent_id=1)
+        manager.founder_metadata(agent_id=2)
+        before = manager.snapshot_artifact()
+
+        with self.assertRaisesRegex(
+            RecurrentGenomePopulationError,
+            "live agents have no registered",
+        ):
+            manager.reconcile_live_agent_ids((1, 3))
+        self.assertEqual(manager.snapshot_artifact(), before)
+        with self.assertRaisesRegex(
+            RecurrentGenomePopulationError,
+            "strictly increasing and unique",
+        ):
+            manager.reconcile_live_agent_ids((2, 1))
+        self.assertEqual(manager.snapshot_artifact(), before)
+
+        planned = manager.reconciliation_dead_agent_ids((1,))
+        self.assertEqual(planned, (2,))
+        self.assertEqual(manager.snapshot_artifact(), before)
+        discarded = manager.reconcile_live_agent_ids((1,))
+
+        self.assertEqual(discarded, (2,))
+        self.assertEqual(manager.population_size, 1)
+        self.assertEqual(
+            manager.genome_sha256_for_agent(1),
+            before["agents"][0]["genome"]["genome_sha256"],
+        )
+        with self.assertRaisesRegex(
+            RecurrentGenomePopulationError,
+            "agent 2 has no registered",
+        ):
+            manager.genome_for_agent(2)
+
+        disabled = RecurrentGenomePopulationManager(
+            genome_stream_seed=8,
+            world_identity="disabled-live-reconciliation",
+            mode="disabled",
+        )
+        self.assertEqual(disabled.reconcile_live_agent_ids((1, 2)), ())
+
+    def test_immutable_binding_and_state_digest_caches_track_public_mutations(
+        self,
+    ) -> None:
+        manager = RecurrentGenomePopulationManager(
+            genome_stream_seed=9,
+            world_identity="binding-cache",
+            mode="heritable",
+        )
+        empty_digest = manager.empty_state_sha256
+        self.assertEqual(manager.state_sha256, empty_digest)
+        manager.founder_metadata(agent_id=1)
+        first_binding = manager.genome_binding_for_agent(1)
+        first_live_digest = manager.state_sha256
+
+        self.assertIs(first_binding, manager.genome_binding_for_agent(1))
+        self.assertEqual(
+            first_binding.genome_sha256,
+            first_binding.genome.sha256,
+        )
+        self.assertEqual(manager.state_sha256, first_live_digest)
+        self.assertNotEqual(first_live_digest, empty_digest)
+
+        manager.reset()
+        self.assertEqual(manager.state_sha256, empty_digest)
+
     def test_snapshot_round_trip_digest_pin_and_strict_serialization(self) -> None:
         manager = RecurrentGenomePopulationManager(
             genome_stream_seed=2**64 - 1,
