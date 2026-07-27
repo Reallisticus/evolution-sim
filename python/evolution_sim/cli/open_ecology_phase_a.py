@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+import torch
+
+from evolution_sim.mind.open_ecology_phase_a import (
+    OPEN_ECOLOGY_PHASE_A_CELL_ORDER,
+    build_open_ecology_phase_a_preregistration,
+    build_open_ecology_phase_a_runtime_contract,
+    build_open_ecology_phase_a_throughput_gate,
+    configure_open_ecology_phase_a_determinism,
+    run_open_ecology_phase_a_cell,
+    validate_open_ecology_phase_a_launch_authorization,
+    validate_open_ecology_phase_a_preregistration,
+)
+from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifest
+
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Seal and execute the fixed Phase-A open-ecology 2x2 causal "
+            "critic/gradient campaign. Execution remains blocked without a "
+            "complete machine-readable launch authorization."
+        )
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    preregister = subparsers.add_parser("preregister")
+    preregister.add_argument("--source-commit", required=True)
+    preregister.add_argument(
+        "--heritable-benchmark",
+        type=Path,
+        required=True,
+    )
+    preregister.add_argument(
+        "--zero-all-benchmark",
+        type=Path,
+        required=True,
+    )
+    preregister.add_argument(
+        "--resource-envelope",
+        type=Path,
+        required=True,
+    )
+    preregister.add_argument("--device", default="cuda")
+    preregister.add_argument("--output", type=Path, required=True)
+
+    validate = subparsers.add_parser("validate")
+    validate.add_argument("--preregistration", type=Path, required=True)
+    validate.add_argument("--launch-authorization", type=Path)
+
+    run_cell = subparsers.add_parser("run-cell")
+    run_cell.add_argument("--preregistration", type=Path, required=True)
+    run_cell.add_argument("--expected-preregistration-digest", required=True)
+    run_cell.add_argument(
+        "--launch-authorization",
+        type=Path,
+        required=True,
+    )
+    run_cell.add_argument(
+        "--cell",
+        choices=OPEN_ECOLOGY_PHASE_A_CELL_ORDER,
+        required=True,
+    )
+    run_cell.add_argument(
+        "--learner-index",
+        type=int,
+        choices=range(4),
+        required=True,
+    )
+    run_cell.add_argument("--output-root", type=Path, required=True)
+    run_cell.add_argument("--device", default="cuda")
+    run_cell.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "preregister":
+        head, clean = _git_source_state()
+        if head != args.source_commit or not clean:
+            raise SystemExit(
+                "Phase A preregistration requires --source-commit to match "
+                "a clean Git HEAD"
+            )
+        configure_open_ecology_phase_a_determinism()
+        heritable = _load_strict_json(args.heritable_benchmark)
+        zero_all = _load_strict_json(args.zero_all_benchmark)
+        resource_envelope = _load_strict_json(args.resource_envelope)
+        throughput_gate = build_open_ecology_phase_a_throughput_gate(
+            source_commit=head,
+            heritable_report=heritable,
+            zero_all_report=zero_all,
+            resource_envelope=resource_envelope,
+        )
+        runtime = build_open_ecology_phase_a_runtime_contract(
+            device=torch.device(args.device),
+            rollout_workers=int(throughput_gate["selected_rollout_workers"]),
+        )
+        manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        preregistration = build_open_ecology_phase_a_preregistration(
+            source_commit=head,
+            source_manifest_sha256=str(manifest["aggregate_sha256"]),
+            runtime_contract=runtime,
+            throughput_gate=throughput_gate,
+        )
+        _write_atomic_json(args.output, preregistration)
+        print(
+            "open_ecology_phase_a_preregistered "
+            f"digest={preregistration['exact_digest']} "
+            f"workers={throughput_gate['selected_rollout_workers']} "
+            f"output={args.output}"
+        )
+        return 0
+    if args.command == "validate":
+        preregistration = _load_strict_json(args.preregistration)
+        validate_open_ecology_phase_a_preregistration(preregistration)
+        if args.launch_authorization is not None:
+            authorization = _load_strict_json(args.launch_authorization)
+            validate_open_ecology_phase_a_launch_authorization(
+                authorization,
+                preregistration=preregistration,
+                authorization_path=args.launch_authorization,
+            )
+        print(
+            "open_ecology_phase_a_contract_valid "
+            f"digest={preregistration['exact_digest']} "
+            f"launch_authorized={args.launch_authorization is not None}"
+        )
+        return 0
+    if args.command == "run-cell":
+        preregistration = _load_strict_json(args.preregistration)
+        report = run_open_ecology_phase_a_cell(
+            preregistration,
+            expected_preregistration_digest=(args.expected_preregistration_digest),
+            launch_authorization_path=args.launch_authorization,
+            cell_id=args.cell,
+            learner_index=args.learner_index,
+            output_root=args.output_root,
+            device=torch.device(args.device),
+            resume=args.resume,
+        )
+        print(
+            "open_ecology_phase_a_cell_complete "
+            f"run_id={report['run_id']} digest={report['exact_digest']}"
+        )
+        return 0
+    raise AssertionError(f"unhandled command {args.command!r}")
+
+
+def _git_source_state() -> tuple[str, bool]:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=_REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+        cwd=_REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return head, not bool(status)
+
+
+def _load_strict_json(path: Path) -> dict[str, object]:
+    def reject_duplicates(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    with path.open("r", encoding="utf-8") as handle:
+        value = json.load(
+            handle,
+            object_pairs_hook=reject_duplicates,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {value!r}")
+            ),
+        )
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return value
+
+
+def _write_atomic_json(path: Path, payload: dict[str, object]) -> None:
+    destination = path.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                payload,
+                handle,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
