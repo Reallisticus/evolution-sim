@@ -52,7 +52,7 @@ from evolution_sim.mind.recurrent_rollout import (
 
 
 RECURRENT_COUNTERFACTUAL_COMPARISON_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_ippo_counterfactual_three_arm_comparison_v2"
+    "mind_v3_public_recurrent_ippo_counterfactual_three_arm_comparison_v3"
 )
 RECURRENT_COUNTERFACTUAL_ANALYZER_PROVENANCE_SCHEMA_VERSION = (
     "mind_v3_public_recurrent_ippo_counterfactual_analyzer_provenance_v1"
@@ -246,7 +246,7 @@ def analyze_recurrent_counterfactual_three_arm(
             "evaluation_sampling_stream_id": matched["evaluation_sampling_stream_id"],
             "label_shuffle_permutation_seed": matched["label_shuffle_permutation_seed"],
             "all_top_level_exact_digests_verified": True,
-            "all_nested_v4_evaluations_publicly_validated": True,
+            "all_nested_v5_evaluations_publicly_validated": True,
             "counterfactual_collection_digests_verified": True,
             "counterfactual_bundle_one_use_semantics_verified": True,
             "source_head_manifest_and_initialization_exactly_matched": True,
@@ -1813,13 +1813,13 @@ def _validate_evaluations(report: Mapping[str, object], *, arm: str) -> None:
             )
             if evaluation.get("schema_version") != RECURRENT_EVALUATION_SCHEMA_VERSION:
                 raise RecurrentCounterfactualComparisonError(
-                    f"{arm}.{phase}.{mode} nested evaluation is not v4"
+                    f"{arm}.{phase}.{mode} nested evaluation is not v5"
                 )
             try:
                 validate_recurrent_evaluation_report(evaluation)
             except RecurrentEvaluationError as error:
                 raise RecurrentCounterfactualComparisonError(
-                    f"{arm}.{phase}.{mode} failed the public v4 evaluator contract"
+                    f"{arm}.{phase}.{mode} failed the public v5 evaluator contract"
                 ) from error
             contract = _mapping(
                 evaluation.get("evaluation_contract"),

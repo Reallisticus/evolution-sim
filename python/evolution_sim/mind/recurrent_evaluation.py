@@ -31,8 +31,13 @@ from evolution_sim.mind.recurrent_evaluation_contract import (
     RecurrentEvaluationError,
 )
 from evolution_sim.mind.recurrent_artifact import (
+    FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
+    FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+    RECURRENT_ARTIFACT_SCHEMA_VERSION,
+    RECURRENT_REPLAY_PROBE_CONTRACT_VERSION,
     LoadedFrozenRecurrentPolicyArtifact,
     LoadedRecurrentArtifact,
+    RecurrentArtifactError,
     load_frozen_recurrent_policy_artifact,
     load_recurrent_artifact,
 )
@@ -65,6 +70,18 @@ RECURRENT_EVALUATION_RUNTIME_SCHEMA_VERSION = (
     "mind_public_recurrent_evaluation_runtime_reproducibility_v1"
 )
 RECURRENT_EVALUATION_TICKS = 120
+LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION = "mind_public_recurrent_evaluation_v4"
+VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE = "verified_frozen_policy_artifact_v4"
+_VERIFIED_RECURRENT_ARTIFACT_MODE = "verified_artifact_path"
+_VERIFIED_RECURRENT_ARTIFACT_PIN = (
+    "canonical_seed_registry_and_external_expected_source_commit"
+)
+_VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN = (
+    "frozen_policy_artifact_v4_registry_source_commit_source_manifest_and_cpu_probe_v3"
+)
+_SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY = (
+    "canonical_json_source_pinned_artifact_evidence_without_evidence_sha256_v1"
+)
 MASKED_RANDOM_POLICY_ID = "mind_v3_masked_random_control"
 MASKED_RANDOM_POLICY_VERSION = "mind_v3_masked_random_control_v1"
 MASKED_RANDOM_ACTION_SOURCE = "masked_random_control"
@@ -389,18 +406,21 @@ def evaluate_recurrent_artifact(
         policy_digest_label=artifact_digest,
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
-        artifact_evidence={
-            "path": str(Path(artifact_path)),
-            "artifact_sha256": artifact_digest,
-            "model_contract_version": _artifact_model_contract(loaded),
-            "seed_registry_digest": seed_registry_digest,
-            "source_commit": artifact_source_commit,
-            "expected_source_commit": resolved_expected_source_commit,
-            "source_commit_match": True,
-            "training_seed_evidence": training_seed_evidence,
-        },
+        artifact_evidence=_bound_source_pinned_artifact_evidence(
+            {
+                "path": str(Path(artifact_path)),
+                "artifact_sha256": artifact_digest,
+                "schema_version": loaded.artifact.get("schema_version"),
+                "model_contract_version": _artifact_model_contract(loaded),
+                "seed_registry_digest": seed_registry_digest,
+                "source_commit": artifact_source_commit,
+                "expected_source_commit": resolved_expected_source_commit,
+                "source_commit_match": True,
+                "training_seed_evidence": training_seed_evidence,
+            }
+        ),
         candidate_provenance={
-            "mode": "verified_artifact_path",
+            "mode": _VERIFIED_RECURRENT_ARTIFACT_MODE,
             "source_pinned": True,
             "synthetic_digest_label": False,
             "noncandidate_development_canary": False,
@@ -425,9 +445,7 @@ def evaluate_recurrent_artifact(
                 selection == PUBLIC_RECURRENT_SAMPLED_SELECTION
             ),
             "feed_forward_history_ablation": feed_forward_history_ablation,
-            "pin_verification": (
-                "canonical_seed_registry_and_external_expected_source_commit"
-            ),
+            "pin_verification": _VERIFIED_RECURRENT_ARTIFACT_PIN,
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
         candidate_action_selection=selection,
@@ -450,7 +468,7 @@ def evaluate_frozen_recurrent_policy_artifact(
     candidate_sampling_stream_id: str | None = None,
     evaluation_workers: int = 1,
 ) -> dict[str, object]:
-    """Evaluate a v2 frozen policy after strict source and registry pin checks."""
+    """Evaluate a v4 frozen policy after strict source and registry pin checks."""
 
     resolved_workers = _validated_evaluation_workers(evaluation_workers)
     if not isinstance(seed_plan, RecurrentEvaluationSeedPlan):
@@ -475,6 +493,10 @@ def evaluate_frozen_recurrent_policy_artifact(
     integrity = _required_mapping(
         loaded.artifact.get("integrity"),
         field="artifact.integrity",
+    )
+    verification = _required_mapping(
+        loaded.artifact.get("verification"),
+        field="artifact.verification",
     )
     artifact_registry_digest = provenance.get("seed_registry_digest")
     if (
@@ -530,22 +552,31 @@ def evaluate_frozen_recurrent_policy_artifact(
         policy_digest_label=artifact_digest,
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
-        artifact_evidence={
-            "path": str(Path(artifact_path)),
-            "artifact_sha256": artifact_digest,
-            "artifact_kind": loaded.artifact.get("artifact_kind"),
-            "model_contract_version": _artifact_model_contract(loaded),
-            "seed_registry_digest": artifact_registry_digest,
-            "source_commit": artifact_source_commit,
-            "expected_source_commit": resolved_source_commit,
-            "source_commit_match": True,
-            "source_manifest_sha256": artifact_source_manifest,
-            "expected_source_manifest_sha256": resolved_source_manifest,
-            "source_manifest_match": True,
-            "training_seed_evidence": training_seed_evidence,
-        },
+        artifact_evidence=_bound_source_pinned_artifact_evidence(
+            {
+                "path": str(Path(artifact_path)),
+                "artifact_sha256": artifact_digest,
+                "schema_version": loaded.artifact.get("schema_version"),
+                "artifact_kind": loaded.artifact.get("artifact_kind"),
+                "model_contract_version": _artifact_model_contract(loaded),
+                "seed_registry_digest": artifact_registry_digest,
+                "source_commit": artifact_source_commit,
+                "expected_source_commit": resolved_source_commit,
+                "source_commit_match": True,
+                "source_manifest_sha256": artifact_source_manifest,
+                "expected_source_manifest_sha256": resolved_source_manifest,
+                "source_manifest_match": True,
+                "replay_probe_contract_version": verification.get(
+                    "replay_probe_contract_version"
+                ),
+                "replay_probe_verified_on_device": verification.get(
+                    "verified_on_device"
+                ),
+                "training_seed_evidence": training_seed_evidence,
+            }
+        ),
         candidate_provenance={
-            "mode": "verified_frozen_policy_artifact_v3",
+            "mode": VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE,
             "source_pinned": True,
             "synthetic_digest_label": False,
             "noncandidate_development_canary": False,
@@ -570,9 +601,7 @@ def evaluate_frozen_recurrent_policy_artifact(
                 selection == PUBLIC_RECURRENT_SAMPLED_SELECTION
             ),
             "feed_forward_history_ablation": feed_forward_history_ablation,
-            "pin_verification": (
-                "frozen_v2_registry_source_commit_source_manifest_and_cpu_probe"
-            ),
+            "pin_verification": _VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN,
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
         candidate_action_selection=selection,
@@ -2443,9 +2472,242 @@ def _validate_run(run: Mapping[str, object]) -> None:
         )
 
 
+def _source_pinned_artifact_evidence_sha256(
+    artifact: Mapping[str, object],
+) -> str:
+    """Bind report claims to one externally verifiable artifact digest.
+
+    This digest makes the report's artifact schema, source pins, training-seed
+    evidence, and replay-probe claims internally inseparable from the reported
+    artifact SHA256. It does not authenticate artifact bytes that are absent
+    from the standalone report; callers still need the artifact bytes or an
+    external trusted digest pin for that stronger guarantee.
+    """
+
+    bound = dict(artifact)
+    bound.pop("artifact_evidence_sha256", None)
+    return _canonical_sha256(
+        {
+            "digest_policy": _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY,
+            "source_pinned_artifact_evidence": bound,
+        }
+    )
+
+
+def _bound_source_pinned_artifact_evidence(
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    if (
+        "artifact_evidence_digest_policy" in artifact
+        or "artifact_evidence_sha256" in artifact
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence is already bound"
+        )
+    bound = dict(artifact)
+    bound["artifact_evidence_digest_policy"] = (
+        _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY
+    )
+    bound["artifact_evidence_sha256"] = _source_pinned_artifact_evidence_sha256(bound)
+    return bound
+
+
+def _validate_source_pinned_artifact_identity(
+    artifact: Mapping[str, object],
+    provenance: Mapping[str, object],
+    *,
+    seed_plan: RecurrentEvaluationSeedPlan,
+) -> None:
+    common_fields = {
+        "path",
+        "artifact_sha256",
+        "schema_version",
+        "model_contract_version",
+        "seed_registry_digest",
+        "source_commit",
+        "expected_source_commit",
+        "source_commit_match",
+        "training_seed_evidence",
+        "artifact_evidence_digest_policy",
+        "artifact_evidence_sha256",
+    }
+    mode = provenance.get("mode")
+    if mode == _VERIFIED_RECURRENT_ARTIFACT_MODE:
+        expected_fields = common_fields
+        expected_pin = _VERIFIED_RECURRENT_ARTIFACT_PIN
+    elif mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        expected_fields = common_fields | {
+            "schema_version",
+            "artifact_kind",
+            "source_manifest_sha256",
+            "expected_source_manifest_sha256",
+            "source_manifest_match",
+            "replay_probe_contract_version",
+            "replay_probe_verified_on_device",
+        }
+        expected_pin = _VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN
+    else:
+        raise RecurrentEvaluationError(
+            "source-pinned candidate mode is missing, stale, or unsupported"
+        )
+
+    _require_exact_fields(
+        artifact,
+        expected_fields,
+        field="artifact",
+    )
+    if provenance.get("pin_verification") != expected_pin:
+        raise RecurrentEvaluationError(
+            "source-pinned candidate pin verification is missing or stale"
+        )
+    if artifact.get("artifact_evidence_digest_policy") != (
+        _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence digest policy is missing or stale"
+        )
+    evidence_sha256 = _validated_sha256(
+        artifact.get("artifact_evidence_sha256"),
+        field="artifact.artifact_evidence_sha256",
+    )
+    if evidence_sha256 != _source_pinned_artifact_evidence_sha256(artifact):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence SHA256 mismatch"
+        )
+    path = artifact.get("path")
+    if not isinstance(path, str) or not path:
+        raise RecurrentEvaluationError("artifact path must be a non-empty string")
+    _validated_sha256(
+        artifact.get("artifact_sha256"),
+        field="artifact.artifact_sha256",
+    )
+    model_contract_version = artifact.get("model_contract_version")
+    if not isinstance(model_contract_version, str) or not model_contract_version:
+        raise RecurrentEvaluationError(
+            "artifact model contract version must be a non-empty string"
+        )
+    _validated_sha256(
+        artifact.get("seed_registry_digest"),
+        field="artifact.seed_registry_digest",
+    )
+    source_commit = _validated_expected_source_commit(artifact.get("source_commit"))
+    expected_source_commit = _validated_expected_source_commit(
+        artifact.get("expected_source_commit")
+    )
+    if (
+        source_commit != expected_source_commit
+        or artifact.get("source_commit_match") is not True
+    ):
+        raise RecurrentEvaluationError(
+            "artifact source commit evidence differs from its expected pin"
+        )
+
+    source_manifest: str | None = None
+    if mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        if (
+            artifact.get("schema_version")
+            != FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION
+            or artifact.get("artifact_kind") != FROZEN_RECURRENT_POLICY_ARTIFACT_KIND
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact identity or schema is missing or stale"
+            )
+        source_manifest = _validated_sha256(
+            artifact.get("source_manifest_sha256"),
+            field="artifact.source_manifest_sha256",
+        )
+        expected_source_manifest = _validated_sha256(
+            artifact.get("expected_source_manifest_sha256"),
+            field="artifact.expected_source_manifest_sha256",
+        )
+        if (
+            source_manifest != expected_source_manifest
+            or artifact.get("source_manifest_match") is not True
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact source manifest evidence differs from its expected pin"
+            )
+        if (
+            artifact.get("replay_probe_contract_version")
+            != RECURRENT_REPLAY_PROBE_CONTRACT_VERSION
+            or artifact.get("replay_probe_verified_on_device") != "cpu"
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact CPU replay-probe evidence is missing or stale"
+            )
+    elif artifact.get("schema_version") != RECURRENT_ARTIFACT_SCHEMA_VERSION:
+        raise RecurrentEvaluationError("recurrent artifact schema is missing or stale")
+
+    try:
+        loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact
+        if mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+            loaded = load_frozen_recurrent_policy_artifact(path)
+        else:
+            loaded = load_recurrent_artifact(path)
+    except RecurrentArtifactError as error:
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes are missing, invalid, or stale"
+        ) from error
+    if _artifact_digest(loaded) != artifact.get("artifact_sha256"):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes differ from the reported artifact SHA256"
+        )
+    loaded_provenance = _required_mapping(
+        loaded.artifact.get("provenance"),
+        field="loaded artifact.provenance",
+    )
+    if (
+        loaded.artifact.get("schema_version") != artifact.get("schema_version")
+        or _artifact_model_contract(loaded) != artifact.get("model_contract_version")
+        or loaded_provenance.get("seed_registry_digest")
+        != artifact.get("seed_registry_digest")
+        or loaded_provenance.get("source_commit") != source_commit
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes differ from report identity evidence"
+        )
+    loaded_training_evidence = _artifact_training_seed_evidence(
+        loaded_provenance,
+        seed_plan=seed_plan,
+    )
+    if loaded_training_evidence != artifact.get("training_seed_evidence"):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact training-seed evidence is not bound to its bytes"
+        )
+
+    if mode != VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        return
+    assert source_manifest is not None
+    loaded_verification = _required_mapping(
+        loaded.artifact.get("verification"),
+        field="loaded frozen artifact.verification",
+    )
+    loaded_frozen_provenance = _required_mapping(
+        loaded.artifact.get("provenance"),
+        field="loaded frozen artifact.provenance",
+    )
+    if (
+        loaded.artifact.get("artifact_kind") != artifact.get("artifact_kind")
+        or loaded_frozen_provenance.get("source_manifest_sha256") != source_manifest
+        or loaded_verification.get("replay_probe_contract_version")
+        != artifact.get("replay_probe_contract_version")
+        or loaded_verification.get("verified_on_device")
+        != artifact.get("replay_probe_verified_on_device")
+    ):
+        raise RecurrentEvaluationError(
+            "frozen artifact bytes differ from report replay-probe evidence"
+        )
+
+
 def _validate_report(report: Mapping[str, object]) -> None:
     _reject_ambiguous_v3_terminal_fields(report, field="report")
-    if report.get("schema_version") != RECURRENT_EVALUATION_SCHEMA_VERSION:
+    report_schema = report.get("schema_version")
+    if report_schema == LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION:
+        raise RecurrentEvaluationError(
+            "evaluation report schema v4 is stale; v5 source-pinned artifact "
+            "evidence is required"
+        )
+    if report_schema != RECURRENT_EVALUATION_SCHEMA_VERSION:
         raise RecurrentEvaluationError("evaluation report schema drifted")
     execution = _required_mapping(
         report.get("execution_provenance"),
@@ -2559,6 +2821,11 @@ def _validate_report(report: Mapping[str, object]) -> None:
         if not isinstance(report.get("artifact"), Mapping):
             raise RecurrentEvaluationError("source-pinned evaluation lacks artifact")
         artifact = _required_mapping(report.get("artifact"), field="artifact")
+        _validate_source_pinned_artifact_identity(
+            artifact,
+            provenance,
+            seed_plan=seed_plan,
+        )
         artifact_training_evidence = _required_mapping(
             artifact.get("training_seed_evidence"),
             field="artifact.training_seed_evidence",
@@ -2766,7 +3033,14 @@ def _validate_report(report: Mapping[str, object]) -> None:
 
 
 def validate_recurrent_evaluation_report(report: Mapping[str, object]) -> None:
-    """Public fail-closed validator for persisted or nested v4 evaluations."""
+    """Validate v5 structure and re-open every claimed source-pinned artifact.
+
+    Source-pinned reports fail when their referenced artifact bytes are absent.
+    The appropriate strict loader revalidates the artifact digest and, for a
+    frozen policy, executes its exact CPU replay probe. This proves consistency
+    between locally available bytes and the report; trust in an externally
+    supplied report still requires a trusted report or artifact digest pin.
+    """
 
     _validate_report(report)
 
@@ -3855,6 +4129,7 @@ def _canonical_sha256(value: object) -> str:
 
 
 __all__ = [
+    "LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION",
     "MASKED_RANDOM_ACTION_SOURCE",
     "MASKED_RANDOM_POLICY_ID",
     "MASKED_RANDOM_POLICY_VERSION",
@@ -3865,6 +4140,7 @@ __all__ = [
     "RECURRENT_EVALUATION_SCHEMA_VERSION",
     "RECURRENT_EVALUATION_TICKS",
     "UNPINNED_NONCANDIDATE_DIGEST_PREFIX",
+    "VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE",
     "MaskedRandomPolicy",
     "RecurrentEvaluationError",
     "RecurrentEvaluationSeedPlan",

@@ -399,7 +399,7 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
             _reseal(tampered)
             with self.assertRaisesRegex(
                 RecurrentCounterfactualComparisonError,
-                "public v4 evaluator contract",
+                "public v5 evaluator contract",
             ):
                 analyze_recurrent_counterfactual_three_arm(
                     self.base,
@@ -517,7 +517,7 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
                 self.shuffled,
             )
 
-    def test_resealed_nested_evaluation_tamper_uses_public_v4_validator(self) -> None:
+    def test_resealed_nested_evaluation_tamper_uses_public_v5_validator(self) -> None:
         tampered = copy.deepcopy(self.exact)
         candidate = tampered["evaluations"]["after"][
             PUBLIC_RECURRENT_SAMPLED_SELECTION
@@ -527,7 +527,7 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RecurrentCounterfactualComparisonError,
-            "public v4 evaluator contract",
+            "public v5 evaluator contract",
         ):
             analyze_recurrent_counterfactual_three_arm(
                 self.base,
@@ -546,7 +546,7 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RecurrentCounterfactualComparisonError,
-            "public v4 evaluator contract|duplicated",
+            "public v5 evaluator contract|duplicated",
         ):
             analyze_recurrent_counterfactual_three_arm(
                 self.base,
@@ -564,8 +564,8 @@ class RecurrentCounterfactualComparisonTests(unittest.TestCase):
         candidate_runs = policies["public_recurrent"]["runs"]
         control_runs = policies["mind_v3_linear"]["runs"]
         control_runs[0]["terminal_alive"] += 1
-        control_runs[0]["outcome_evidence_sha256"] = (
-            _run_outcome_evidence_sha256(control_runs[0])
+        control_runs[0]["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(
+            control_runs[0]
         )
         policies["mind_v3_linear"]["aggregate"] = _aggregate_runs(control_runs)
         by_seed = {run["seed"]: run for run in control_runs}
@@ -1298,9 +1298,7 @@ def _evaluation_context(
                     "seed": seed,
                     "policy_sampling_seed": sampling_seed,
                     "digest": candidate["replay_digest"],
-                    "outcome_evidence_sha256": candidate[
-                        "outcome_evidence_sha256"
-                    ],
+                    "outcome_evidence_sha256": candidate["outcome_evidence_sha256"],
                     "passed": True,
                 }
             )

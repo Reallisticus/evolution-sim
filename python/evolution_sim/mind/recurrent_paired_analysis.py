@@ -658,15 +658,20 @@ def _validate_evaluation(
             if error.name not in {"numpy", "torch"}:
                 raise
             raise RecurrentPairedAnalysisError(
-                f"{label} v4 recurrent evaluation validation requires the "
+                f"{label} v5 recurrent evaluation validation requires the "
                 "optional Mind ML dependencies"
             ) from error
         try:
             validate_recurrent_evaluation_report(evaluation)
         except RecurrentEvaluationError as error:
             raise RecurrentPairedAnalysisError(
-                f"{label} nested recurrent evaluation failed its v4 contract"
+                f"{label} nested recurrent evaluation failed its v5 contract"
             ) from error
+    elif evaluation_schema == "mind_public_recurrent_evaluation_v4":
+        raise RecurrentPairedAnalysisError(
+            f"{label} recurrent evaluation v4 is stale; v5 artifact evidence "
+            "binding is required"
+        )
     elif evaluation_schema != "mind_public_recurrent_evaluation_v3":
         raise RecurrentPairedAnalysisError(
             f"{label} recurrent evaluation schema drifted"
