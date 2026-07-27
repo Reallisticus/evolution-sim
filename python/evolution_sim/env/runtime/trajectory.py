@@ -26,7 +26,7 @@ from evolution_sim.genome.recombination import (
 )
 
 TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1"
-TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v2"
+TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v3"
 REWARD_SCHEMA_VERSION = "mind_reward_v1"
 ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2"
 REWARD_COMPONENT_BOUNDS: dict[str, tuple[float, float]] = {

@@ -36,15 +36,15 @@ export const TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION = "foundation_summar
 
 export const TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1";
 
-export const TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v2";
+export const TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v3";
 
 export const OBSERVATION_SCHEMA_VERSION = "mind_observation_v3";
 
-export const TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v4";
+export const TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v5";
 
 export const OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2";
 
-export const TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v3";
+export const TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v4";
 
 export const OBSERVATION_INPUT_DECODED_DTYPE = "float32";
 
@@ -350,7 +350,7 @@ export const ACTION_COMMUNICATION_MEANING = "simulator_opaque";
 
 export const SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v2";
 
-export const TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v3";
+export const TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v4";
 
 export const TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION = "foundation_signal_field_reporting_v2";
 

@@ -154,12 +154,12 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         contract = recurrent_actor_critic_contract(model.config)
 
         self.assertEqual(
-            config.public_input_schema_version, "mind_ecological_policy_input_v2"
+            config.public_input_schema_version, "mind_ecological_policy_input_v3"
         )
         self.assertEqual(config.public_input_size, 645)
         self.assertEqual(config.learned_encoder_input_size, 708)
         self.assertEqual(
-            contract["public_input_schema_version"], "mind_ecological_policy_input_v2"
+            contract["public_input_schema_version"], "mind_ecological_policy_input_v3"
         )
         self.assertEqual(contract["public_input_size"], 645)
         self.assertEqual(
@@ -173,7 +173,7 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         decoded[len(SELF_INPUT_FIELDS)] = 0.75
         projected = public_policy_tensor_from_decoded(
             decoded,
-            expected_schema_version="mind_ecological_policy_input_v2",
+            expected_schema_version="mind_ecological_policy_input_v3",
             expected_size=645,
         )
         self.assertEqual(tuple(projected.shape), (645,))
@@ -181,6 +181,12 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             float(projected[SELF_INPUT_FIELDS.index("mind_inheritance_available")]),
             0.75,
         )
+
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            RecurrentActorCriticConfig(
+                public_input_schema_version="mind_ecological_policy_input_v2",
+                public_input_size=645,
+            )
 
         with self.assertRaisesRegex(ValueError, "action ordering"):
             RecurrentActorCriticConfig.for_signal_config(

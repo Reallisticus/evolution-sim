@@ -104,7 +104,7 @@ class RecurrentBatchingBenchmarkTests(unittest.TestCase):
         measurement = report["measurements"][0]
         self.assertGreater(measurement["public_input_size"], 541)
         self.assertIn(
-            "mind_ecological_policy_input_v2",
+            "mind_ecological_policy_input_v3",
             measurement["public_input_schema_version"],
         )
         self.assertEqual(

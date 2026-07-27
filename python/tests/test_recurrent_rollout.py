@@ -1061,7 +1061,7 @@ class RecurrentRolloutTests(unittest.TestCase):
         collector.finish_world()
 
         self.assertEqual(
-            core.public_input_schema_version, "mind_ecological_policy_input_v2"
+            core.public_input_schema_version, "mind_ecological_policy_input_v3"
         )
         self.assertEqual(core.public_input_size, 645)
         self.assertEqual(core.learned_input_size, 708)

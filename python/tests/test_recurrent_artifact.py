@@ -224,7 +224,7 @@ class RecurrentArtifactTests(unittest.TestCase):
 
         self.assertEqual(
             token_artifact["model"]["public_input_schema_version"],
-            "mind_ecological_policy_input_v2",
+            "mind_ecological_policy_input_v3",
         )
         self.assertEqual(token_artifact["model"]["public_input_size"], 645)
         self.assertEqual(token_artifact["model"]["learned_encoder_input_size"], 708)

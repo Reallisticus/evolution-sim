@@ -18,7 +18,7 @@ from evolution_sim.env.runtime.observations import (
 from evolution_sim.env.runtime.signals import communication_token_field_names
 
 ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION = "mind_ecological_policy_input_v1"
-TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION = "mind_ecological_policy_input_v2"
+TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION = "mind_ecological_policy_input_v3"
 ECOLOGICAL_POLICY_INPUT_POLICY = "exclude_controller_diagnostics_v1"
 CONTROLLER_DIAGNOSTIC_SELF_FIELDS: tuple[str, ...] = ("mind_inheritance_available",)
 CONTROLLER_DIAGNOSTIC_INPUT_FIELDS: tuple[str, ...] = tuple(

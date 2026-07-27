@@ -257,14 +257,14 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         ]
         self.assertTrue(learned_records)
         self.assertEqual(
-            model.config.public_input_schema_version, "mind_ecological_policy_input_v2"
+            model.config.public_input_schema_version, "mind_ecological_policy_input_v3"
         )
         self.assertEqual(model.config.public_input_size, 645)
         for record in learned_records:
             requested_action = str(record["requested_action"])
             self.assertEqual(
                 record["observation_input"]["schema_version"],
-                "mind_observation_v4",
+                "mind_observation_v5",
             )
             self.assertEqual(record["observation_input"]["shape"], [646])
             self.assertTrue(record["action_mask"][requested_action])

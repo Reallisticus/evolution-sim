@@ -41,9 +41,9 @@ from evolution_sim.env.runtime.state import (
 
 OBSERVATION_SCHEMA_VERSION = "mind_observation_v3"
 OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2"
-TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v4"
+TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v5"
 TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION = (
-    "mind_observation_encoder_v3"
+    "mind_observation_encoder_v4"
 )
 OBSERVATION_INPUT_DTYPE = "float32"
 OBSERVATION_STORAGE_DTYPE = "int16"
@@ -401,7 +401,13 @@ def build_observation(
             signal_state.reproductive_signal[agent.y][agent.x]
         ),
         COMMUNICATION_SIGNAL_FIELD: _round(
-            signal_state.communication_signal[agent.y][agent.x]
+            _signal_value_for_observer(
+                signal_state,
+                COMMUNICATION_SIGNAL_FIELD,
+                observer_agent_id=agent.agent_id,
+                x=agent.x,
+                y=agent.y,
+            )
         ),
         "mind_inheritance_available": bool(
             agent.mind_inheritance_metadata.get("inherited_state", False)
@@ -409,7 +415,15 @@ def build_observation(
     }
     self_state.update(
         {
-            field_name: _round(signal_state.field(field_name)[agent.y][agent.x])
+            field_name: _round(
+                _signal_value_for_observer(
+                    signal_state,
+                    field_name,
+                    observer_agent_id=agent.agent_id,
+                    x=agent.x,
+                    y=agent.y,
+                )
+            )
             for field_name in token_fields
         }
     )
@@ -498,7 +512,8 @@ def encode_observation_input(observation: dict[str, object]) -> dict[str, object
         and not token_fields
     ):
         raise ValueError(
-            "mind_observation_v4 requires communication token channels"
+            f"{TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION} requires "
+            "communication token channels"
         )
     expected_size = (
         OBSERVATION_INPUT_VECTOR_SIZE
@@ -638,15 +653,56 @@ def _patch_cell(
         "carrion_signal": _round(biotic_state.carrion[y][x]),
         "predator_risk": _round(biotic_state.predator_risk[y][x]),
         REPRODUCTIVE_SIGNAL_FIELD: _round(signal_state.reproductive_signal[y][x]),
-        COMMUNICATION_SIGNAL_FIELD: _round(signal_state.communication_signal[y][x]),
+        COMMUNICATION_SIGNAL_FIELD: _round(
+            _signal_value_for_observer(
+                signal_state,
+                COMMUNICATION_SIGNAL_FIELD,
+                observer_agent_id=agent.agent_id,
+                x=x,
+                y=y,
+            )
+        ),
     }
     cell.update(
         {
-            field_name: _round(signal_state.field(field_name)[y][x])
+            field_name: _round(
+                _signal_value_for_observer(
+                    signal_state,
+                    field_name,
+                    observer_agent_id=agent.agent_id,
+                    x=x,
+                    y=y,
+                )
+            )
             for field_name in token_fields
         }
     )
     return cell
+
+
+def _signal_value_for_observer(
+    signal_state: Any,
+    field_name: str,
+    *,
+    observer_agent_id: int,
+    x: int,
+    y: int,
+) -> float:
+    receiver_projection = getattr(
+        signal_state,
+        "field_value_for_receiver",
+        None,
+    )
+    if callable(receiver_projection):
+        return float(
+            receiver_projection(
+                field_name,
+                x=x,
+                y=y,
+                receiver_agent_id=observer_agent_id,
+            )
+        )
+    return float(signal_state.field(field_name)[y][x])
 
 
 def _signal_state_communication_token_fields(
