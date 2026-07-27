@@ -14,7 +14,7 @@ from evolution_sim.mind.recurrent_seed_registry import (
 )
 
 
-OPEN_ECOLOGY_SEED_REGISTRY_VERSION = "mind_v3_open_ecology_development_seed_registry_v1"
+OPEN_ECOLOGY_SEED_REGISTRY_VERSION = "mind_v3_open_ecology_development_seed_registry_v2"
 OPEN_ECOLOGY_SEED_REGISTRY_NAMESPACE = (
     "evolution-sim|mind-v3-open-ecology|development-seed-registry-v1|2026-07-27"
 )
@@ -24,10 +24,12 @@ OPEN_ECOLOGY_SEED_ROLE_COUNTS: tuple[tuple[str, int], ...] = (
     ("open_ecology_island", 32),
     ("open_ecology_learner", 8),
     ("open_ecology_genome_stream", 32),
+    ("open_ecology_benchmark", 64),
+    ("open_ecology_proof", 16),
 )
 OPEN_ECOLOGY_UNAVAILABLE_ROLES: tuple[str, ...] = ("validation", "lockbox")
 OPEN_ECOLOGY_CANONICAL_SHA256 = (
-    "3614d3e2ff0feba461a968e8128d84e0087beda842153e9f251abca482ab8e08"
+    "ed4ba14609fe2e98795cc4352ec50ab1e172c3c758b1a268f6481ac024e348e0"
 )
 OPEN_ECOLOGY_EXPECTED_LEARNER_SEEDS: tuple[int, ...] = (
     1_570_849_880,
@@ -101,6 +103,22 @@ OPEN_ECOLOGY_SEED_ROLE_POLICIES: Mapping[str, OpenEcologySeedRolePolicy] = (
                 may_tune_configuration=True,
                 promotion_evidence=False,
                 access_policy="paired_across_preregistered_treatment_arms",
+            ),
+            "open_ecology_benchmark": OpenEcologySeedRolePolicy(
+                axis="environment",
+                lifecycle="open_ecology_operational_resource_benchmark",
+                may_tune_configuration=False,
+                promotion_evidence=False,
+                access_policy=("operational_throughput_and_capacity_measurement_only"),
+            ),
+            "open_ecology_proof": OpenEcologySeedRolePolicy(
+                axis="environment",
+                lifecycle="open_ecology_prelaunch_engineering_proof",
+                may_tune_configuration=False,
+                promotion_evidence=False,
+                access_policy=(
+                    "source_bound_noninterference_and_continuation_proofs_only"
+                ),
             ),
         }
     )

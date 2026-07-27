@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import median
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -61,6 +62,11 @@ from evolution_sim.mind.recurrent_rollout import (
 )
 from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifest
 
+if TYPE_CHECKING:
+    from evolution_sim.mind.open_ecology_selection import (
+        OpenEcologySelectionRequest,
+    )
+
 
 OPEN_ECOLOGY_PHASE_A_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_campaign_v1"
 OPEN_ECOLOGY_PHASE_A_RUN_CONTRACT_VERSION = (
@@ -71,10 +77,10 @@ OPEN_ECOLOGY_PHASE_A_TASK_SCHEMA_VERSION = (
 )
 OPEN_ECOLOGY_PHASE_A_RUNTIME_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_runtime_v1"
 OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_throughput_gate_v2"
+    "mind_v3_open_ecology_phase_a_throughput_gate_v3"
 )
 OPEN_ECOLOGY_PHASE_A_RESOURCE_PROJECTION_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_resource_projection_v2"
+    "mind_v3_open_ecology_phase_a_resource_projection_v3"
 )
 OPEN_ECOLOGY_PHASE_A_RESOURCE_ENVELOPE_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_resource_envelope_v1"
@@ -87,10 +93,13 @@ OPEN_ECOLOGY_PHASE_A_COMMIT_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_evidence_commit_v1"
 )
 OPEN_ECOLOGY_PHASE_A_TERMINAL_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_training_terminal_v1"
+    "mind_v3_open_ecology_phase_a_training_terminal_v2"
 )
 OPEN_ECOLOGY_PHASE_A_LEARNER_EVIDENCE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_learner_selection_evidence_v1"
+    "mind_v3_open_ecology_phase_a_learner_selection_evidence_v2"
+)
+OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_terminal_selection_authority_v1"
 )
 OPEN_ECOLOGY_PHASE_A_SELECTION_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_cell_selection_v1"
@@ -102,7 +111,7 @@ OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH = (
     "docs/research/open-ecology-campaign-preregistration-v1.md"
 )
 OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256 = (
-    "08bdfd64caccaffa1eabaa8ab4b943097ec5195c1a14ba0fa7e15b0688cf5618"
+    "058b19dfadcb3cd4aef0c942d6b88be1b3a077701818774f40c162713bfdd8ad"
 )
 
 OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT = 8
@@ -125,6 +134,7 @@ OPEN_ECOLOGY_PHASE_A_TOTAL_TRAINING_WORLDS = (
     * OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE
 )
 OPEN_ECOLOGY_PHASE_A_BENCHMARK_WORKER_COUNTS = (1, 2, 4, 8, 16)
+OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS = 3
 OPEN_ECOLOGY_PHASE_A_BENCHMARK_SCHEMA_VERSION = (
     "mind_recurrent_end_to_end_pipeline_benchmark_v1"
 )
@@ -144,6 +154,7 @@ OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS = (
     OPEN_ECOLOGY_PHASE_B_PRIMARY_SELECTION_EXECUTIONS
     + OPEN_ECOLOGY_PHASE_B_REPLAY_SELECTION_EXECUTIONS
 )
+OPEN_ECOLOGY_RESOURCE_PROJECTION_SAFETY_FACTOR = 1.20
 OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES = tuple(
     f"readiness_dependency_{index:02d}" for index in range(1, 11)
 )
@@ -152,6 +163,7 @@ OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_BLOCKERS = (
     *OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES,
     "dependency_specific_behavioral_evidence_parsers",
     "throughput_attestation_parser",
+    "phase_b_mixed_density_training_throughput_benchmark_and_parser",
     "long_horizon_selection_throughput_benchmark_and_parser",
     "storage_attestation_parser",
     "output_lock_attestation_parser",
@@ -472,6 +484,7 @@ def build_open_ecology_phase_a_throughput_gate(
         "source_commit": commit,
         "benchmark_contract": {
             "worker_counts": list(OPEN_ECOLOGY_PHASE_A_BENCHMARK_WORKER_COUNTS),
+            "repeats": OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS,
             "updates": 1,
             "worlds_per_update": OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE,
             "rollout_ticks": OPEN_ECOLOGY_PHASE_A_ROLLOUT_TICKS,
@@ -533,7 +546,10 @@ def validate_open_ecology_phase_a_throughput_gate(
         field="Phase A throughput gate",
     )
     _validate_signed_payload(gate, field="Phase A throughput gate")
-    if gate.get("schema_version") != OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION:
+    if (
+        gate.get("schema_version")
+        != OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION
+    ):
         raise OpenEcologyPhaseAError("Phase A throughput gate schema drifted")
     if (
         gate.get("training_topology_gate_passed") is not True
@@ -550,6 +566,7 @@ def validate_open_ecology_phase_a_throughput_gate(
     )
     expected_benchmark_contract = {
         "worker_counts": list(OPEN_ECOLOGY_PHASE_A_BENCHMARK_WORKER_COUNTS),
+        "repeats": OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS,
         "updates": 1,
         "worlds_per_update": OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE,
         "rollout_ticks": OPEN_ECOLOGY_PHASE_A_ROLLOUT_TICKS,
@@ -1002,6 +1019,22 @@ def build_open_ecology_phase_a_preregistration(
             "selection_seeds": selection_seeds,
             "genome_stream_role": "open_ecology_genome_stream",
             "genome_stream_pairing": "learner_index_selects_same_index",
+            "benchmark_role": "open_ecology_benchmark",
+            "benchmark_seed_indices": list(
+                range(len(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_benchmark"]))
+            ),
+            "benchmark_seeds": list(
+                OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_benchmark"]
+            ),
+            "benchmark_scientific_outcomes_allowed": False,
+            "engineering_proof_role": "open_ecology_proof",
+            "engineering_proof_seed_indices": list(
+                range(len(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"]))
+            ),
+            "engineering_proof_seeds": list(
+                OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"]
+            ),
+            "engineering_proof_scientific_outcomes_allowed": False,
             "validation_available": False,
             "validation_accessed": False,
             "lockbox_available": False,
@@ -1089,6 +1122,26 @@ def build_open_ecology_phase_a_preregistration(
                 "original_vs_donor_js_state_threshold": 0.01,
                 "mean_original_vs_donor_js_threshold": 0.002,
                 "single_locus_total_variation_p99_max": 0.25,
+                "capture_noninterference_proof": {
+                    "schema_version": (
+                        "mind_v3_open_ecology_capture_noninterference_proof_v1"
+                    ),
+                    "producer": (
+                        "scripts/prove_open_ecology_capture_noninterference.py"
+                    ),
+                    "authority_verification": (
+                        "exact_clean_source_full_reexecution_and_exact_report_match_v1"
+                    ),
+                    "environment_seed_role": "open_ecology_proof",
+                    "environment_seed_indices": list(range(12)),
+                    "scientific_selection_seed_accessed": False,
+                    "cell_order": list(OPEN_ECOLOGY_PHASE_A_CELL_ORDER),
+                    "case_matrix": "four_cells_by_three_densities_cartesian_v1",
+                    "density_levels": [32, 64, 128],
+                    "case_count": 12,
+                    "ticks_per_case": 128,
+                    "births_and_deaths_required": True,
+                },
             },
             "cell_eligibility_minimum_passing_learners": 3,
             "selection_rule": (
@@ -1244,6 +1297,20 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
         ),
         "genome_stream_role": "open_ecology_genome_stream",
         "genome_stream_pairing": "learner_index_selects_same_index",
+        "benchmark_role": "open_ecology_benchmark",
+        "benchmark_seed_indices": list(
+            range(len(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_benchmark"]))
+        ),
+        "benchmark_seeds": list(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_benchmark"]),
+        "benchmark_scientific_outcomes_allowed": False,
+        "engineering_proof_role": "open_ecology_proof",
+        "engineering_proof_seed_indices": list(
+            range(len(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"]))
+        ),
+        "engineering_proof_seeds": list(
+            OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"]
+        ),
+        "engineering_proof_scientific_outcomes_allowed": False,
         "validation_available": False,
         "validation_accessed": False,
         "lockbox_available": False,
@@ -1399,6 +1466,24 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
             "original_vs_donor_js_state_threshold": 0.01,
             "mean_original_vs_donor_js_threshold": 0.002,
             "single_locus_total_variation_p99_max": 0.25,
+            "capture_noninterference_proof": {
+                "schema_version": (
+                    "mind_v3_open_ecology_capture_noninterference_proof_v1"
+                ),
+                "producer": "scripts/prove_open_ecology_capture_noninterference.py",
+                "authority_verification": (
+                    "exact_clean_source_full_reexecution_and_exact_report_match_v1"
+                ),
+                "environment_seed_role": "open_ecology_proof",
+                "environment_seed_indices": list(range(12)),
+                "scientific_selection_seed_accessed": False,
+                "cell_order": list(OPEN_ECOLOGY_PHASE_A_CELL_ORDER),
+                "case_matrix": "four_cells_by_three_densities_cartesian_v1",
+                "density_levels": [32, 64, 128],
+                "case_count": 12,
+                "ticks_per_case": 128,
+                "births_and_deaths_required": True,
+            },
         },
         "cell_eligibility_minimum_passing_learners": 3,
         "selection_rule": (
@@ -1622,6 +1707,218 @@ def build_phase_a_run_contract(
     return contract
 
 
+def build_verified_phase_a_selection_request(
+    preregistration: Mapping[str, object],
+    *,
+    cell_id: str,
+    learner_index: int,
+    terminal_path: str | Path,
+    evaluation_workers: int = 1,
+) -> OpenEcologySelectionRequest:
+    """Derive every Phase-A selection pin from one verified terminal chain."""
+
+    from evolution_sim.mind import open_ecology_selection as selection
+
+    validate_open_ecology_phase_a_preregistration(preregistration)
+    _require_live_source(preregistration)
+    resolved_cell = _cell_id(cell_id)
+    resolved_index = _index(
+        learner_index,
+        field="learner_index",
+        upper=OPEN_ECOLOGY_PHASE_A_LEARNER_COUNT,
+    )
+    path = Path(terminal_path)
+    if not path.is_file() or path.is_symlink() or path.name != "terminal.json":
+        raise OpenEcologyPhaseAError(
+            "Phase A selection terminal must be a regular terminal.json file"
+        )
+    terminal_directory = path.parent
+    run_directory = terminal_directory.parent
+    if (
+        terminal_directory.name != "terminal"
+        or not terminal_directory.is_dir()
+        or terminal_directory.is_symlink()
+        or not run_directory.is_dir()
+        or run_directory.is_symlink()
+        or run_directory.name
+        != phase_a_run_id(
+            cell_id=resolved_cell,
+            learner_index=resolved_index,
+        )
+        or {entry.name for entry in terminal_directory.iterdir()}
+        != {
+            "terminal.json",
+            "terminal-training-artifact.json",
+            "run-contract.json",
+        }
+    ):
+        raise OpenEcologyPhaseAError(
+            "Phase A selection terminal directory is not the canonical bundle"
+        )
+    preview = _load_strict_json(path)
+    if (
+        preview.get("campaign_digest") != preregistration.get("exact_digest")
+        or preview.get("cell_id") != resolved_cell
+        or preview.get("learner_index") != resolved_index
+    ):
+        raise OpenEcologyPhaseAError(
+            "Phase A selection terminal identity differs from its request"
+        )
+
+    def bound_path(
+        reference: Mapping[str, object],
+        *,
+        field: str,
+        logical_name: str,
+    ) -> Path:
+        file_reference = _mapping(
+            reference.get("file"),
+            field=f"{field}.file",
+        )
+        relative = file_reference.get("path")
+        if (
+            relative != logical_name
+            or not isinstance(relative, str)
+            or Path(relative).name != relative
+        ):
+            raise OpenEcologyPhaseAError(
+                f"{field} does not resolve one canonical relative file"
+            )
+        resolved = terminal_directory / relative
+        if not resolved.is_file() or resolved.is_symlink():
+            raise OpenEcologyPhaseAError(
+                f"{field} does not resolve a regular terminal file"
+            )
+        return resolved
+
+    run_contract_path = bound_path(
+        _mapping(preview.get("run_contract"), field="terminal.run_contract"),
+        field="terminal.run_contract",
+        logical_name="run-contract.json",
+    )
+    artifact_path = bound_path(
+        _mapping(preview.get("artifact"), field="terminal.artifact"),
+        field="terminal.artifact",
+        logical_name="terminal-training-artifact.json",
+    )
+    run_contract = build_phase_a_run_contract(
+        preregistration,
+        cell_id=resolved_cell,
+        learner_index=resolved_index,
+    )
+    _model_config, _ppo_config, schedule = build_phase_a_run_components(
+        cell_id=resolved_cell,
+        learner_index=resolved_index,
+    )
+    terminal = _verify_phase_a_terminal(
+        path,
+        artifact_path=artifact_path,
+        run_contract_path=run_contract_path,
+        run_contract=run_contract,
+        run_directory=run_directory,
+        schedule=schedule,
+    )
+    training = _mapping(terminal.get("training"), field="terminal.training")
+    commits = training.get("commit_exact_digests")
+    if (
+        not isinstance(commits, Sequence)
+        or isinstance(commits, (str, bytes))
+        or len(commits) != OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT
+    ):
+        raise OpenEcologyPhaseAError(
+            "Phase A terminal does not expose the complete verified prefix"
+        )
+    artifact = _mapping(terminal.get("artifact"), field="terminal.artifact")
+    source = _mapping(run_contract.get("source"), field="run.source")
+    authority: dict[str, object] = {
+        "schema_version": (
+            selection.OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION
+        ),
+        "campaign_digest": run_contract["campaign_digest"],
+        "source_commit": source["commit"],
+        "source_manifest_sha256": source["manifest_sha256"],
+        "run_id": run_contract["run_id"],
+        "cell_id": resolved_cell,
+        "learner_index": resolved_index,
+        "learner_seed": run_contract["learner_seed"],
+        "terminal_logical_name": "terminal.json",
+        "terminal_exact_digest": terminal["exact_digest"],
+        "terminal_file_sha256": _file_sha256(path),
+        "final_prefix_commit_exact_digest": _sha256(
+            commits[-1],
+            field="terminal final prefix commit",
+        ),
+        "terminal_checkpoint_model_state_sha256": _sha256(
+            training.get("terminal_model_state_sha256"),
+            field="terminal model state",
+        ),
+        "run_contract_logical_name": "run-contract.json",
+        "run_contract_exact_digest": run_contract["exact_digest"],
+        "run_contract_file_sha256": _file_sha256(run_contract_path),
+        "artifact_logical_name": "terminal-training-artifact.json",
+        "artifact_sha256": _sha256(
+            artifact.get("artifact_sha256"),
+            field="terminal artifact SHA",
+        ),
+        "artifact_file_sha256": _file_sha256(artifact_path),
+        "selection_binding_required": True,
+    }
+    authority["exact_digest"] = stable_payload_digest(authority)
+    if (
+        authority["schema_version"]
+        != OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION
+    ):
+        raise OpenEcologyPhaseAError("Phase A and selection authority schemas differ")
+    return selection.OpenEcologySelectionRequest(
+        artifact_path=artifact_path,
+        run_contract_path=run_contract_path,
+        expected_artifact_sha256=str(authority["artifact_sha256"]),
+        expected_source_commit=str(source["commit"]),
+        expected_source_manifest_sha256=str(source["manifest_sha256"]),
+        campaign_digest=str(run_contract["campaign_digest"]),
+        run_contract_digest=str(run_contract["exact_digest"]),
+        phase=selection.OpenEcologySelectionPhase.PHASE_A,
+        cell_id=resolved_cell,
+        learner_index=resolved_index,
+        learner_seed=int(run_contract["learner_seed"]),
+        evaluation_workers=evaluation_workers,
+        training_authority=authority,
+    )
+
+
+def authorize_phase_a_terminal_selection_report(
+    preregistration: Mapping[str, object],
+    report: Mapping[str, object],
+    *,
+    cell_id: str,
+    learner_index: int,
+    terminal_path: str | Path,
+    evaluation_workers: int = 1,
+) -> dict[str, object]:
+    """Rebuild and reexecute one canonical terminal chain before authorization.
+
+    This is the only public path that may emit Phase-A learner selection
+    evidence. Portable request objects, report mappings, and unkeyed digests
+    remain provisional integrity data and cannot authorize this transition.
+    """
+
+    from evolution_sim.mind.open_ecology_selection import (
+        _phase_a_learner_evidence_from_verified_selection_report,
+    )
+
+    request = build_verified_phase_a_selection_request(
+        preregistration,
+        cell_id=cell_id,
+        learner_index=learner_index,
+        terminal_path=terminal_path,
+        evaluation_workers=evaluation_workers,
+    )
+    return _phase_a_learner_evidence_from_verified_selection_report(
+        report,
+        request=request,
+    )
+
+
 def run_open_ecology_phase_a_cell(
     preregistration: Mapping[str, object],
     *,
@@ -1688,6 +1985,7 @@ def run_open_ecology_phase_a_cell(
         terminal_directory = run_directory / "terminal"
         terminal_path = terminal_directory / "terminal.json"
         artifact_path = terminal_directory / "terminal-training-artifact.json"
+        run_contract_path = terminal_directory / "run-contract.json"
         _recover_unpublished_terminal_staging(
             run_directory,
             resume=resume,
@@ -1701,7 +1999,11 @@ def run_open_ecology_phase_a_cell(
                 not terminal_directory.is_dir()
                 or terminal_directory.is_symlink()
                 or {path.name for path in terminal_directory.iterdir()}
-                != {"terminal.json", "terminal-training-artifact.json"}
+                != {
+                    "terminal.json",
+                    "terminal-training-artifact.json",
+                    "run-contract.json",
+                }
             ):
                 raise OpenEcologyPhaseAError(
                     "Phase A terminal directory is incomplete or contains surplus"
@@ -1709,13 +2011,16 @@ def run_open_ecology_phase_a_cell(
             return _verify_phase_a_terminal(
                 terminal_path,
                 artifact_path=artifact_path,
+                run_contract_path=run_contract_path,
                 run_contract=run_contract,
                 run_directory=run_directory,
                 schedule=schedule,
             )
-        if (run_directory / "terminal.json").exists() or (
-            run_directory / "terminal-training-artifact.json"
-        ).exists():
+        if (
+            (run_directory / "terminal.json").exists()
+            or (run_directory / "terminal-training-artifact.json").exists()
+            or (run_directory / "run-contract.json").exists()
+        ):
             raise OpenEcologyPhaseAError(
                 "legacy non-transactional terminal evidence is not accepted"
             )
@@ -1838,6 +2143,8 @@ def run_open_ecology_phase_a_cell(
         try:
             staging_artifact_path = staging / "terminal-training-artifact.json"
             staging_terminal_path = staging / "terminal.json"
+            staging_run_contract_path = staging / "run-contract.json"
+            _write_atomic_json(staging_run_contract_path, run_contract)
             artifact = save_recurrent_artifact(
                 staging_artifact_path,
                 runner.model,
@@ -1899,6 +2206,14 @@ def run_open_ecology_phase_a_cell(
                 "cell_id": resolved_cell,
                 "learner_index": resolved_index,
                 "learner_seed": learner_seed,
+                "run_contract": {
+                    "file": _file_reference(
+                        staging_run_contract_path,
+                        base=staging,
+                    ),
+                    "exact_digest": run_contract["exact_digest"],
+                    "selection_binding_required": True,
+                },
                 "training": {
                     "completed_updates": prefix.completed_updates,
                     "training_world_count": (
@@ -1942,6 +2257,7 @@ def run_open_ecology_phase_a_cell(
         return _verify_phase_a_terminal(
             terminal_path,
             artifact_path=artifact_path,
+            run_contract_path=run_contract_path,
             run_contract=run_contract,
             run_directory=run_directory,
             schedule=schedule,
@@ -2153,11 +2469,18 @@ def verify_phase_a_evidence_prefix(
     )
 
 
-def select_open_ecology_phase_a_cell(
+def preview_open_ecology_phase_a_cell_selection(
     preregistration: Mapping[str, object],
     learner_evidence: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
-    """Apply the frozen learner-level eligibility and lexicographic selection rule."""
+    """Compute a nonauthoritative selector preview from portable summaries.
+
+    Mappings and SHA-256 values are not authority. This function therefore
+    remains hard-blocked from selecting or launching Phase B even when every
+    supplied learner summary is structurally valid. A future authoritative
+    orchestrator must reopen all 16 canonical terminal bundles and reexecute
+    their artifacts before applying the same frozen ranking rule.
+    """
 
     validate_open_ecology_phase_a_preregistration(preregistration)
     if len(learner_evidence) != (
@@ -2346,6 +2669,7 @@ def validate_open_ecology_phase_a_learner_evidence(
             "learner_index",
             "learner_seed",
             "artifact_sha256",
+            "terminal_authority",
             "evaluation",
             "causal_genome",
             "gates",
@@ -2370,7 +2694,10 @@ def validate_open_ecology_phase_a_learner_evidence(
     )
     if report.get("learner_seed") != _phase_a_learner_seeds()[learner_index]:
         raise OpenEcologyPhaseAError("Phase A learner evidence seed drifted")
-    _sha256(report.get("artifact_sha256"), field="artifact_sha256")
+    artifact_sha256 = _sha256(
+        report.get("artifact_sha256"),
+        field="artifact_sha256",
+    )
     expected_run_contract = build_phase_a_run_contract(
         preregistration,
         cell_id=cell_id,
@@ -2379,6 +2706,84 @@ def validate_open_ecology_phase_a_learner_evidence(
     if report.get("run_contract_digest") != expected_run_contract["exact_digest"]:
         raise OpenEcologyPhaseAError("Phase A learner evidence run contract drifted")
     evaluation = _mapping(report.get("evaluation"), field="evaluation")
+    terminal_authority = _mapping(
+        report.get("terminal_authority"),
+        field="terminal_authority",
+    )
+    _require_exact_keys(
+        terminal_authority,
+        {
+            "schema_version",
+            "campaign_digest",
+            "source_commit",
+            "source_manifest_sha256",
+            "run_id",
+            "cell_id",
+            "learner_index",
+            "learner_seed",
+            "terminal_logical_name",
+            "terminal_exact_digest",
+            "terminal_file_sha256",
+            "final_prefix_commit_exact_digest",
+            "terminal_checkpoint_model_state_sha256",
+            "run_contract_logical_name",
+            "run_contract_exact_digest",
+            "run_contract_file_sha256",
+            "artifact_logical_name",
+            "artifact_sha256",
+            "artifact_file_sha256",
+            "selection_binding_required",
+            "exact_digest",
+        },
+        field="terminal_authority",
+    )
+    _validate_signed_payload(
+        terminal_authority,
+        field="terminal_authority",
+    )
+    source = _mapping(
+        preregistration.get("source"),
+        field="source",
+    )
+    for field in (
+        "terminal_exact_digest",
+        "terminal_file_sha256",
+        "final_prefix_commit_exact_digest",
+        "terminal_checkpoint_model_state_sha256",
+        "run_contract_exact_digest",
+        "run_contract_file_sha256",
+        "artifact_sha256",
+        "artifact_file_sha256",
+    ):
+        _sha256(
+            terminal_authority.get(field),
+            field=f"terminal_authority.{field}",
+        )
+    if (
+        terminal_authority.get("schema_version")
+        != OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION
+        or terminal_authority.get("campaign_digest")
+        != preregistration.get("exact_digest")
+        or terminal_authority.get("source_commit") != source.get("commit")
+        or terminal_authority.get("source_manifest_sha256")
+        != source.get("manifest_sha256")
+        or terminal_authority.get("run_id") != expected_run_contract.get("run_id")
+        or terminal_authority.get("cell_id") != cell_id
+        or terminal_authority.get("learner_index") != learner_index
+        or terminal_authority.get("learner_seed")
+        != _phase_a_learner_seeds()[learner_index]
+        or terminal_authority.get("terminal_logical_name") != "terminal.json"
+        or terminal_authority.get("run_contract_logical_name") != "run-contract.json"
+        or terminal_authority.get("artifact_logical_name")
+        != "terminal-training-artifact.json"
+        or terminal_authority.get("run_contract_exact_digest")
+        != expected_run_contract.get("exact_digest")
+        or terminal_authority.get("artifact_sha256") != artifact_sha256
+        or terminal_authority.get("artifact_file_sha256")
+        != evaluation.get("artifact_file_sha256")
+        or terminal_authority.get("selection_binding_required") is not True
+    ):
+        raise OpenEcologyPhaseAError("Phase A learner terminal authority drifted")
     seed_contract = _mapping(
         preregistration.get("seed_contract"), field="seed_contract"
     )
@@ -2505,6 +2910,7 @@ def _validate_phase_a_pipeline_benchmark(
     protocol = _mapping(report.get("protocol"), field="benchmark.protocol")
     required_protocol = {
         "worker_counts": list(OPEN_ECOLOGY_PHASE_A_BENCHMARK_WORKER_COUNTS),
+        "repeats": OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS,
         "updates": 1,
         "worlds_per_update": OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE,
         "rollout_ticks": OPEN_ECOLOGY_PHASE_A_ROLLOUT_TICKS,
@@ -2540,6 +2946,8 @@ def _validate_phase_a_pipeline_benchmark(
                 f"Phase A pipeline benchmark protocol drifted at {key}"
             )
     repeats = _positive_int(protocol.get("repeats"), field="benchmark.repeats")
+    if repeats != OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS:
+        raise OpenEcologyPhaseAError("Phase A benchmark repeat count drifted")
     device = protocol.get("device_resolved")
     if not isinstance(device, str) or not device.startswith("cuda"):
         raise OpenEcologyPhaseAError("Phase A pipeline benchmark was not CUDA")
@@ -2721,42 +3129,77 @@ def _build_phase_a_resource_projection(
     conservative_world_ticks_per_second = benchmark_world_ticks / (
         worst_mode_median_ns / 1_000_000_000.0
     )
-    training_update_count = (
-        OPEN_ECOLOGY_PHASE_A_ALL_TRAINING_WORLDS
+    phase_a_training_update_count = (
+        OPEN_ECOLOGY_PHASE_A_MATRIX_TRAINING_WORLDS
         // OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE
     )
-    training_world_ticks = OPEN_ECOLOGY_PHASE_A_MATRIX_TRAINING_WORLDS * (
+    phase_b_training_update_count = (
+        OPEN_ECOLOGY_PHASE_B_MATRIX_TRAINING_WORLDS
+        // OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE
+    )
+    training_update_count = (
+        phase_a_training_update_count + phase_b_training_update_count
+    )
+    phase_a_training_world_ticks = OPEN_ECOLOGY_PHASE_A_MATRIX_TRAINING_WORLDS * (
         OPEN_ECOLOGY_PHASE_A_ROLLOUT_TICKS + 1
-    ) + OPEN_ECOLOGY_PHASE_B_MATRIX_TRAINING_WORLDS * (
+    )
+    phase_b_training_world_ticks = OPEN_ECOLOGY_PHASE_B_MATRIX_TRAINING_WORLDS * (
         OPEN_ECOLOGY_PHASE_B_ROLLOUT_TICKS + 1
     )
-    training_seconds = training_world_ticks / conservative_world_ticks_per_second
+    training_world_ticks = phase_a_training_world_ticks + phase_b_training_world_ticks
+    phase_a_training_seconds = (
+        phase_a_training_update_count
+        * (worst_mode_median_ns / 1_000_000_000.0)
+        * OPEN_ECOLOGY_RESOURCE_PROJECTION_SAFETY_FACTOR
+    )
+    phase_b_training_seconds_proxy = (
+        phase_b_training_world_ticks
+        / conservative_world_ticks_per_second
+        * OPEN_ECOLOGY_RESOURCE_PROJECTION_SAFETY_FACTOR
+    )
+    training_seconds_proxy = phase_a_training_seconds + phase_b_training_seconds_proxy
     selection_world_ticks = (
         OPEN_ECOLOGY_PHASE_A_PHYSICAL_SELECTION_EXECUTIONS
         * OPEN_ECOLOGY_PHASE_A_SELECTION_TICKS
         + OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS * 2_000
     )
     selection_seconds_proxy = (
-        selection_world_ticks / conservative_world_ticks_per_second
+        selection_world_ticks
+        / conservative_world_ticks_per_second
+        * OPEN_ECOLOGY_RESOURCE_PROJECTION_SAFETY_FACTOR
     )
-    projected_total_seconds_proxy = training_seconds + selection_seconds_proxy
+    projected_total_seconds_proxy = training_seconds_proxy + selection_seconds_proxy
     proxy_inside_recorded_resource_envelope = (
         projected_total_seconds_proxy <= maximum_wall_seconds
     )
     return {
         "schema_version": OPEN_ECOLOGY_PHASE_A_RESOURCE_PROJECTION_SCHEMA_VERSION,
         "method": (
-            "training_from_worst_h_or_z_full_update_rate_with_non_authoritative_"
-            "selection_tick_rate_proxy_v2"
+            "phase_a_training_from_worst_h_or_z_full_update_rate_with_non_"
+            "authoritative_phase_b_training_and_selection_tick_rate_proxies_v3"
         ),
         "selected_rollout_workers": selected_workers,
         "worst_mode_median_update_elapsed_ns": worst_mode_median_ns,
         "benchmark_world_ticks_per_update": benchmark_world_ticks,
         "conservative_world_ticks_per_second": (conservative_world_ticks_per_second),
+        "projection_safety_factor": (OPEN_ECOLOGY_RESOURCE_PROJECTION_SAFETY_FACTOR),
         "training_worlds": OPEN_ECOLOGY_PHASE_A_ALL_TRAINING_WORLDS,
+        "phase_a_training_update_count": phase_a_training_update_count,
+        "phase_b_training_update_count": phase_b_training_update_count,
         "training_update_count": training_update_count,
+        "phase_a_training_world_ticks": phase_a_training_world_ticks,
+        "phase_b_training_world_ticks": phase_b_training_world_ticks,
         "training_world_ticks": training_world_ticks,
-        "projected_training_seconds": training_seconds,
+        "phase_a_training_rate_source": ("measured_phase_a_fixed_density_full_update"),
+        "projected_phase_a_training_seconds": phase_a_training_seconds,
+        "phase_a_training_projection_authoritative": True,
+        "phase_b_training_rate_source": (
+            "phase_a_training_tick_rate_proxy_non_authoritative"
+        ),
+        "projected_phase_b_training_seconds_proxy": (phase_b_training_seconds_proxy),
+        "projected_training_seconds_proxy": training_seconds_proxy,
+        "phase_b_training_projection_authoritative": False,
+        "phase_b_mixed_density_full_update_benchmark_required": True,
         "phase_a_primary_selection_executions": (
             OPEN_ECOLOGY_PHASE_A_PRIMARY_SELECTION_EXECUTIONS
         ),
@@ -2776,9 +3219,7 @@ def _build_phase_a_resource_projection(
             OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS
         ),
         "selection_world_ticks": selection_world_ticks,
-        "selection_rate_source": (
-            "training_update_tick_rate_proxy_non_authoritative"
-        ),
+        "selection_rate_source": ("training_update_tick_rate_proxy_non_authoritative"),
         "projected_selection_seconds_proxy": selection_seconds_proxy,
         "projected_total_seconds_proxy": projected_total_seconds_proxy,
         "proxy_inside_recorded_resource_envelope": (
@@ -2815,8 +3256,10 @@ def _phase_a_readiness_assertions(dependency_id: str) -> dict[str, object]:
             "stop_gradient_probe_proved": True,
         },
         "readiness_dependency_04": {
-            "fixed_shape_batching_scalar_equivalence_proved": True,
-            "ordered_merge_and_world_digest_equivalence_proved": True,
+            "fixed_shape_batching_same_contract_repeatability_proved": True,
+            "phase_a_shape_scalar_behavior_regression_proved": True,
+            "ordered_merge_and_semantic_evidence_equivalence_proved": True,
+            "measured_topology_gate_required": True,
         },
         "readiness_dependency_05": {
             "persistent_island_50000_tick_runner_proved": True,
@@ -2833,6 +3276,8 @@ def _phase_a_readiness_assertions(dependency_id: str) -> dict[str, object]:
         "readiness_dependency_08": {
             "frozen_state_causal_evaluators_proved": True,
             "pseudo_replication_and_self_echo_rejections_proved": True,
+            "capture_noninterference_exact_reexecution_proved": True,
+            "scientific_selection_seed_access_absent": True,
         },
         "readiness_dependency_09": {
             "machine_preregistration_roundtrip_proved": True,
@@ -2950,6 +3395,7 @@ def _verify_phase_a_terminal(
     terminal_path: Path,
     *,
     artifact_path: Path,
+    run_contract_path: Path,
     run_contract: Mapping[str, object],
     run_directory: Path,
     schedule: Sequence[Sequence[PhaseAOpenEcologyRolloutTask]],
@@ -2965,6 +3411,7 @@ def _verify_phase_a_terminal(
             "cell_id",
             "learner_index",
             "learner_seed",
+            "run_contract",
             "training",
             "artifact",
             "lifecycle",
@@ -2983,6 +3430,34 @@ def _verify_phase_a_terminal(
         or terminal.get("learner_seed") != run_contract.get("learner_seed")
     ):
         raise OpenEcologyPhaseAError("Phase A terminal record drifted")
+    run_contract_reference = _mapping(
+        terminal.get("run_contract"),
+        field="terminal.run_contract",
+    )
+    _require_exact_keys(
+        run_contract_reference,
+        {
+            "file",
+            "exact_digest",
+            "selection_binding_required",
+        },
+        field="terminal.run_contract",
+    )
+    if (
+        run_contract_reference.get("exact_digest") != run_contract.get("exact_digest")
+        or run_contract_reference.get("selection_binding_required") is not True
+    ):
+        raise OpenEcologyPhaseAError("Phase A terminal run contract claim drifted")
+    _verify_file_reference(
+        _mapping(
+            run_contract_reference.get("file"),
+            field="terminal.run_contract.file",
+        ),
+        path=run_contract_path,
+        base=terminal_path.parent,
+    )
+    if _load_strict_json(run_contract_path) != dict(run_contract):
+        raise OpenEcologyPhaseAError("Phase A terminal run contract bytes drifted")
     prefix = verify_phase_a_evidence_prefix(
         run_directory,
         run_contract=run_contract,
@@ -2990,6 +3465,10 @@ def _verify_phase_a_terminal(
     )
     if prefix.completed_updates != OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT:
         raise OpenEcologyPhaseAError("Phase A terminal evidence prefix is incomplete")
+    if prefix.terminal_checkpoint is None:
+        raise OpenEcologyPhaseAError(
+            "Phase A terminal evidence prefix lacks its final checkpoint"
+        )
     training = _mapping(terminal.get("training"), field="terminal.training")
     _require_exact_keys(
         training,
@@ -3014,6 +3493,13 @@ def _verify_phase_a_terminal(
         training.get("terminal_model_state_sha256"),
         field="terminal.training.terminal_model_state_sha256",
     )
+    checkpoint_model_sha256 = recurrent_model_state_sha256(
+        prefix.terminal_checkpoint.model
+    )
+    if training.get("terminal_model_state_sha256") != checkpoint_model_sha256:
+        raise OpenEcologyPhaseAError(
+            "Phase A terminal model differs from the final committed checkpoint"
+        )
     artifact_reference = _mapping(terminal.get("artifact"), field="terminal.artifact")
     _require_exact_keys(
         artifact_reference,
@@ -3042,6 +3528,52 @@ def _verify_phase_a_terminal(
         "terminal_model_state_sha256"
     ):
         raise OpenEcologyPhaseAError("Phase A terminal artifact evidence drifted")
+    provenance = _mapping(
+        loaded.artifact.get("provenance"),
+        field="terminal artifact provenance",
+    )
+    expected_source = _mapping(run_contract.get("source"), field="run.source")
+    expected_data_metadata = {
+        "campaign_digest": run_contract["campaign_digest"],
+        "run_contract_digest": run_contract["exact_digest"],
+        "environment_seed_role": OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+        "environment_seed_indices": list(
+            range(
+                OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT
+                * OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE
+            )
+        ),
+        "training_world_count": (
+            OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT * OPEN_ECOLOGY_PHASE_A_WORLDS_PER_UPDATE
+        ),
+        "training_scenarios": ["broad"],
+        "fixture_names": [],
+        "validation_accessed": False,
+        "lockbox_accessed": False,
+    }
+    expected_run_metadata = {
+        "purpose": "preregistered_open_ecology_phase_a_training_cell",
+        "cell_id": run_contract["cell_id"],
+        "learner_index": run_contract["learner_index"],
+        "run_id": run_contract["run_id"],
+        "terminal_commit_exact_digest": prefix.commit_digests[-1],
+        "source_manifest_sha256": expected_source["manifest_sha256"],
+        "selection_evaluation_pending": True,
+        "exact_cpu_reevaluation_required": True,
+        "runtime_integration_authorized": False,
+        "promotion_authorized": False,
+    }
+    if (
+        provenance.get("training_config") != run_contract.get("ppo")
+        or provenance.get("seed_registry_digest") != OPEN_ECOLOGY_CANONICAL_SHA256
+        or provenance.get("source_commit") != expected_source.get("commit")
+        or provenance.get("learner_seed") != run_contract.get("learner_seed")
+        or provenance.get("data_metadata") != expected_data_metadata
+        or provenance.get("run_metadata") != expected_run_metadata
+    ):
+        raise OpenEcologyPhaseAError(
+            "Phase A terminal artifact provenance detached from its evidence prefix"
+        )
     lifecycle = _mapping(terminal.get("lifecycle"), field="terminal.lifecycle")
     if dict(lifecycle) != {
         "development_only": True,
@@ -3401,7 +3933,7 @@ def _recover_unpublished_terminal_staging(
             raise OpenEcologyPhaseAError("unsafe Phase A terminal staging entry")
         # These bytes were never atomically published. The complete verified
         # update prefix remains authoritative and deterministically rebuilds
-        # the terminal pair.
+        # the terminal bundle.
         shutil.rmtree(path)
 
 
@@ -3524,16 +4056,18 @@ __all__ = [
     "OpenEcologyPhaseAError",
     "PhaseAEvidencePrefix",
     "PhaseAOpenEcologyRolloutTask",
+    "authorize_phase_a_terminal_selection_report",
     "build_open_ecology_phase_a_preregistration",
     "build_open_ecology_phase_a_runtime_contract",
     "build_open_ecology_phase_a_throughput_gate",
     "build_phase_a_run_components",
     "build_phase_a_run_contract",
+    "build_verified_phase_a_selection_request",
     "configure_open_ecology_phase_a_determinism",
     "open_ecology_phase_a_launch_readiness",
     "phase_a_run_id",
+    "preview_open_ecology_phase_a_cell_selection",
     "run_open_ecology_phase_a_cell",
-    "select_open_ecology_phase_a_cell",
     "validate_open_ecology_phase_a_learner_evidence",
     "validate_open_ecology_phase_a_launch_authorization",
     "validate_open_ecology_phase_a_preregistration",

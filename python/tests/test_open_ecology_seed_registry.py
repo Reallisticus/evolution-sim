@@ -34,7 +34,7 @@ class OpenEcologySeedRegistryTests(unittest.TestCase):
     def test_registry_is_pinned_fresh_and_has_declared_axes(self) -> None:
         self.assertEqual(
             OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
-            "mind_v3_open_ecology_development_seed_registry_v1",
+            "mind_v3_open_ecology_development_seed_registry_v2",
         )
         self.assertEqual(
             OPEN_ECOLOGY_SEED_REGISTRY_NAMESPACE,
@@ -47,7 +47,7 @@ class OpenEcologySeedRegistryTests(unittest.TestCase):
         )
         self.assertEqual(
             OPEN_ECOLOGY_GENERATED_SHA256,
-            "3614d3e2ff0feba461a968e8128d84e0087beda842153e9f251abca482ab8e08",
+            "ed4ba14609fe2e98795cc4352ec50ab1e172c3c758b1a268f6481ac024e348e0",
         )
         self.assertEqual(
             OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"],
@@ -125,6 +125,25 @@ class OpenEcologySeedRegistryTests(unittest.TestCase):
         )
         self.assertFalse(
             OPEN_ECOLOGY_SEED_ROLE_POLICIES["open_ecology_selection"].promotion_evidence
+        )
+        benchmark_policy = OPEN_ECOLOGY_SEED_ROLE_POLICIES["open_ecology_benchmark"]
+        self.assertFalse(benchmark_policy.may_tune_configuration)
+        self.assertFalse(benchmark_policy.promotion_evidence)
+        self.assertEqual(
+            benchmark_policy.lifecycle,
+            "open_ecology_operational_resource_benchmark",
+        )
+        proof_policy = OPEN_ECOLOGY_SEED_ROLE_POLICIES["open_ecology_proof"]
+        self.assertFalse(proof_policy.may_tune_configuration)
+        self.assertFalse(proof_policy.promotion_evidence)
+        self.assertEqual(
+            proof_policy.lifecycle,
+            "open_ecology_prelaunch_engineering_proof",
+        )
+        self.assertTrue(
+            set(OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"]).isdisjoint(
+                OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_selection"]
+            )
         )
         for role in OPEN_ECOLOGY_UNAVAILABLE_ROLES:
             self.assertIs(contract["unavailable_roles"][role]["available"], False)

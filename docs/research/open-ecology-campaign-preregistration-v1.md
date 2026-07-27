@@ -50,13 +50,17 @@ before the first training update. A missing value, dirty checkout, or digest
 change fails closed. Editing this file after evidence exists is prohibited; a
 change requires a new version that says what changed and why.
 
-The only scientific seeds are from
-`mind_v3_open_ecology_development_seed_registry_v1`, whose canonical digest is
-`3614d3e2ff0feba461a968e8128d84e0087beda842153e9f251abca482ab8e08`.
+All campaign seed identities come from
+`mind_v3_open_ecology_development_seed_registry_v2`, whose canonical digest is
+`ed4ba14609fe2e98795cc4352ec50ab1e172c3c758b1a268f6481ac024e348e0`.
 It contains 512 training-world seeds, 128 development-selection seeds, 32
 persistent-island seeds, eight learner seeds, and 32 independent high-64-bit
-genome-stream roots. Validation and lockbox roles are unavailable and must
-remain inaccessible.
+genome-stream roots. It also contains 64 disjoint operational benchmark seeds
+that may measure capacity and throughput but may not train a model, select a
+configuration, or support a scientific claim, plus 16 disjoint engineering
+proof seeds reserved for source-bound noninterference and continuation proofs.
+Proof seeds likewise cannot tune configuration or support scientific outcomes.
+Validation and lockbox roles are unavailable and must remain inaccessible.
 
 The eight learner seeds, in fixed order, are `1570849880`, `1323833341`,
 `67094806`, `1871495966`, `411483968`, `1589768480`, `1483917974`, and
@@ -194,6 +198,37 @@ Global action collapse means one requested action has share at least `0.80` in
 three consecutive 1,000-decision windows and the same dominant action appears
 in at least 90% of represented lineages. It is a failure, not an invitation to
 tune a prior.
+
+The causal-state adapter is read-only but reaches protected recurrent state.
+Before its output can be authoritative, the final exact source must run the
+source-bound capture-noninterference proof over all four cell configurations,
+the Cartesian product of all four cells and densities 32/64/128, the first
+twelve seeds of the dedicated `open_ecology_proof` engineering role, and
+aggregate worlds with observed births and deaths. It must not open an
+`open_ecology_selection` world. For every case,
+the capture adapter and the ordinary public recurrent policy must produce
+identical summaries, trajectories, decision diagnostics, action/RNG evidence,
+genome provenance, and unchanged model-state digests. A self-digested report
+is only structural evidence: the launch dependency must reexecute the proof on
+the exact source and match the full report. A short capture-versus-capture unit
+test is not enough.
+
+Selection is exactly two-pass. The producer executes the 32 environments
+times four stochastic tapes plus argmax once, or 160 physical worlds, and
+emits only a provisional report. The authority pass first reconstructs the
+canonical run contract from this preregistration, validates the complete
+eight-update checkpoint/commit chain and terminal model, resolves the artifact
+and run contract only through the terminal bundle's relative file references,
+then independently reruns the same 160 worlds. Only an exact report match may
+emit learner evidence. That receipt binds the terminal digest and final prefix
+commit digest; caller-supplied artifact paths, source hashes, or self-signed
+run contracts cannot choose those pins.
+
+The clean-checkout producer is
+`PYTHONPATH=python .venv/bin/python scripts/prove_open_ecology_capture_noninterference.py
+--repository-root . --output <proof.json>`. Its twelve full cases are campaign
+engineering evidence only. The dedicated proof seeds cannot tune configuration
+or thresholds, and the proof does not consume scientific selection seeds.
 
 Among eligible cells, selection is lexicographic. First maximize the median,
 across learner seeds, of each learner's median per-decision normalized
@@ -386,25 +421,48 @@ forward batches; it does not estimate campaign duration.
 
 Before phase A, the exact source SHA must run the end-to-end recurrent pipeline
 benchmark on the intended training host with worker counts `1, 2, 4, 8, 16`,
-one full-shaped 16-world update, 128 rollout ticks, and both `heritable` and
-`zero_all` conditioning. The benchmark includes world construction,
-observation encoding, policy sampling, ordered worker merge, GAE, and PPO. A
-worker topology is eligible only when its final model-state and semantic-
-evidence digests exactly match the one-worker case. The fastest eligible
-topology is frozen for phases A and B. This benchmark may project training
-cost, but its 128-tick rate is not authoritative for selection because
-population size and interaction cost can grow over 512- and 2,000-tick worlds.
+one full-shaped 16-world update, 128 rollout ticks, fixed density 64, and both
+`heritable` and `zero_all` conditioning. It uses benchmark-seed indices 0
+through 15 in order and runs three fresh, identically seeded repetitions per
+mode and worker count. The benchmark includes world construction, observation
+encoding, policy sampling, ordered worker merge, GAE, and PPO. A worker
+topology is eligible only when every repetition's final model-state and
+semantic-evidence digests exactly match the one-worker case. The topology
+minimizing the slower H/Z median wall time is frozen, with smaller worker count
+as the exact tie-break. Phase-A cost is 128 full updates multiplied by that
+slower median and a fixed `1.20` safety factor.
 
-The same exact source and selected topology must therefore run a separate
-long-horizon selection resource benchmark at both 512 and 2,000 ticks. It must
-exercise the real observation, policy, world, evidence, and independent-replay
-paths, record primary and replay wall time separately, and conservatively
-project all 5,120 phase-A and 2,560 phase-B physical selection world runs.
-Phase A remains blocked until the sum of the measured training projection and
-this measured selection projection fits the recorded resource envelope. A
-training-rate extrapolation may be shown as a planning proxy but cannot pass
-the launch gate. A dirty-source smoke result may guide engineering but cannot
-satisfy either benchmark gate.
+The same exact source must separately benchmark the phase-B shape before phase
+B can be budgeted: one 16-world update, 256 rollout ticks, density cycle
+`32,64,128,64` repeated four times, benchmark-seed indices 16 through 31, both
+H and Z conditioning, and three fresh repetitions at worker counts one and the
+already-selected topology. Exact model/evidence equality is again mandatory.
+Phase-B cost is 256 full updates multiplied by the slower selected-topology H/Z
+median and the same `1.20` safety factor. The phase-A tick rate may be retained
+as a planning proxy, but it cannot authorize phase B.
+
+Selection has an independent CPU process topology and must not inherit the
+training worker count. On the exact source, a separate long-horizon resource
+benchmark uses benchmark-seed indices 32 through 35, a canonical frozen
+width-256 actor-FiLM artifact initialized from benchmark seed index 36, H and Z
+genome populations, horizons 512 and 2,000, and initial densities 64 and the
+population-cap stress case 320. It runs the real observation, policy, world,
+bounded-evidence, primary, and independent-replay paths. Evaluation-worker
+counts are `1,2,4,8,16`, capped by task count, with three fresh repetitions per
+case. A topology is eligible only when semantic evidence exactly matches the
+one-worker case; the topology minimizing the slowest case median is selected,
+with smaller count as tie-break. Primary and replay wall time are recorded
+separately. The slower per-horizon median, multiplied by `1.20`, projects all
+5,120 phase-A and 2,560 phase-B physical selection world runs. The stress
+density cannot contribute scientific outcomes or model selection.
+
+Phase A remains blocked until the authoritative phase-A training projection
+fits its resource envelope, and phase-A selection cannot start until its
+long-horizon projection does too. Phase B remains separately blocked until its
+mixed-density training and 2,000-tick selection projections pass. Any
+128-tick-rate extrapolation may be shown only as a planning proxy. A
+dirty-source smoke result may guide engineering but cannot satisfy a benchmark
+gate.
 
 Before any of the 48 primary islands starts, the final exact source SHA must run
 an end-to-end resource benchmark on every intended host class. It uses one
@@ -513,10 +571,13 @@ implemented and behaviorally proved:
    expressible in the training runner and canonical configuration. Gradient
    probes must prove that `stop_gradient_v1` blocks only the intended value
    path.
-4. Synchronous fixed-shape rollout batching must preserve scalar sampling-draw
-   consumption, turn order, passive-death behavior, hidden-state commits,
-   requested actions, and world digests. The current model-forward benchmark
-   is not this proof.
+4. Any synchronous fixed-shape rollout path must be opt-in until the exact
+   Phase-A shape proves same-contract repeatability, scalar behavior agreement
+   for that declared shape, ordered semantic-evidence equivalence, and a
+   measured speed benefit on the intended host. PyTorch does not promise
+   universal bit identity between batched and elementwise kernels, so
+   higher-density numerical equality cannot be assumed. A slower batch path
+   cannot satisfy the throughput gate merely because it uses larger tensors.
 5. A persistent-island runner must advance the same world to 50,000 ticks
    without episode reset, keep the backbone frozen, schedule the 48 fixed
    tasks, emit the 10,000-tick report without replacing the running worlds, and

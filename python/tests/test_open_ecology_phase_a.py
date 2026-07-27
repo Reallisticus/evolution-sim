@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from statistics import median
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -58,7 +59,7 @@ def _benchmark_report(mode: str) -> dict[str, object]:
         elapsed_ns = elapsed[workers]
         samples = [
             {
-                "repeat_index": 0,
+                "repeat_index": repeat_index,
                 "elapsed_ns": elapsed_ns,
                 "worlds_per_second": 16.0 / (elapsed_ns / 1e9),
                 "transitions_per_second": 100.0,
@@ -67,16 +68,17 @@ def _benchmark_report(mode: str) -> dict[str, object]:
                 "final_model_state_sha256": model_sha,
                 "semantic_evidence_sha256": semantic_sha,
             }
+            for repeat_index in range(phase_a.OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS)
         ]
         cases.append(
             {
                 "rollout_workers": workers,
                 "samples": samples,
-                "elapsed_ns": _distribution([elapsed_ns]),
+                "elapsed_ns": _distribution([elapsed_ns] * len(samples)),
                 "worlds_per_second": _distribution(
-                    [float(samples[0]["worlds_per_second"])]
+                    [float(sample["worlds_per_second"]) for sample in samples]
                 ),
-                "transitions_per_second": _distribution([100.0]),
+                "transitions_per_second": _distribution([100.0] * len(samples)),
                 "speedup_vs_first_case": 1.0,
                 "parallel_efficiency_vs_first_case": 1.0,
             }
@@ -104,7 +106,7 @@ def _benchmark_report(mode: str) -> dict[str, object]:
         "runtime": {"device": "cuda:0"},
         "protocol": {
             "worker_counts": list(phase_a.OPEN_ECOLOGY_PHASE_A_BENCHMARK_WORKER_COUNTS),
-            "repeats": 1,
+            "repeats": phase_a.OPEN_ECOLOGY_PHASE_A_BENCHMARK_REPEATS,
             "updates": 1,
             "worlds_per_update": 16,
             "rollout_ticks": 128,
@@ -252,6 +254,26 @@ class OpenEcologyPhaseATests(unittest.TestCase):
         self.assertEqual(
             projection["training_world_ticks"],
             2_048 * 129 + 4_096 * 257,
+        )
+        self.assertEqual(
+            projection["phase_a_training_world_ticks"],
+            2_048 * 129,
+        )
+        self.assertEqual(
+            projection["phase_b_training_world_ticks"],
+            4_096 * 257,
+        )
+        self.assertIs(
+            projection["phase_a_training_projection_authoritative"],
+            True,
+        )
+        self.assertIs(
+            projection["phase_b_training_projection_authoritative"],
+            False,
+        )
+        self.assertIs(
+            projection["phase_b_mixed_density_full_update_benchmark_required"],
+            True,
         )
         self.assertEqual(
             projection["phase_a_primary_selection_executions"],
@@ -461,7 +483,7 @@ class OpenEcologyPhaseATests(unittest.TestCase):
                 "validate_open_ecology_phase_a_learner_evidence",
             ),
         ):
-            result = phase_a.select_open_ecology_phase_a_cell(
+            result = phase_a.preview_open_ecology_phase_a_cell_selection(
                 self.campaign,
                 reports,
             )
@@ -524,6 +546,210 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             rebuilt["checkpoint_sha256"],
         )
         self.assertEqual(checkpoint, rebuilt)
+
+    def test_terminal_cannot_replace_the_final_prefix_model(self) -> None:
+        model_config, _ppo, _schedule = phase_a.build_phase_a_run_components(
+            cell_id="A0",
+            learner_index=0,
+        )
+        learner_seed = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][0]
+        prefix_model = PublicRecurrentActorCritic(
+            model_config,
+            initialization_seed=learner_seed,
+        )
+        replacement_model = PublicRecurrentActorCritic(
+            model_config,
+            initialization_seed=learner_seed + 1,
+        )
+        run_contract = {
+            "campaign_digest": "1" * 64,
+            "exact_digest": "2" * 64,
+            "run_id": "phase-a-a0-learner-0-test",
+            "cell_id": "A0",
+            "learner_index": 0,
+            "learner_seed": learner_seed,
+        }
+        commit_digests = tuple(f"{index + 1:064x}" for index in range(8))
+        terminal: dict[str, object] = {
+            "schema_version": phase_a.OPEN_ECOLOGY_PHASE_A_TERMINAL_SCHEMA_VERSION,
+            "campaign_digest": run_contract["campaign_digest"],
+            "run_contract_digest": run_contract["exact_digest"],
+            "run_id": run_contract["run_id"],
+            "cell_id": run_contract["cell_id"],
+            "learner_index": run_contract["learner_index"],
+            "learner_seed": learner_seed,
+            "run_contract": {
+                "file": {"path": "run-contract.json"},
+                "exact_digest": run_contract["exact_digest"],
+                "selection_binding_required": True,
+            },
+            "training": {
+                "completed_updates": 8,
+                "training_world_count": 128,
+                "commit_exact_digests": list(commit_digests),
+                "terminal_model_state_sha256": (
+                    phase_a.recurrent_model_state_sha256(replacement_model)
+                ),
+            },
+            "artifact": {
+                "file": {"path": "terminal-training-artifact.json"},
+                "artifact_sha256": "3" * 64,
+                "strict_cpu_reconstruction_verified": True,
+                "selection_evaluation_pending": True,
+            },
+            "lifecycle": {
+                "development_only": True,
+                "training_complete": True,
+                "selection_complete": False,
+                "cell_selection_authorized": False,
+                "runtime_integration_authorized": False,
+                "promotion_authorized": False,
+                "validation_accessed": False,
+                "lockbox_accessed": False,
+            },
+        }
+        terminal["exact_digest"] = stable_payload_digest(terminal)
+        prefix = phase_a.PhaseAEvidencePrefix(
+            completed_updates=8,
+            commit_digests=commit_digests,
+            terminal_checkpoint=SimpleNamespace(model=prefix_model),
+        )
+        with (
+            patch.object(
+                phase_a,
+                "_load_strict_json",
+                side_effect=[terminal, run_contract],
+            ),
+            patch.object(phase_a, "_verify_file_reference"),
+            patch.object(
+                phase_a,
+                "verify_phase_a_evidence_prefix",
+                return_value=prefix,
+            ),
+            self.assertRaisesRegex(
+                phase_a.OpenEcologyPhaseAError,
+                "final committed checkpoint",
+            ),
+        ):
+            phase_a._verify_phase_a_terminal(
+                Path("/tmp/terminal/terminal.json"),
+                artifact_path=Path("/tmp/terminal/terminal-training-artifact.json"),
+                run_contract_path=Path("/tmp/terminal/run-contract.json"),
+                run_contract=run_contract,
+                run_directory=Path("/tmp/run"),
+                schedule=(),
+            )
+
+    def test_selection_request_is_derived_from_verified_terminal_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_directory = root / phase_a.phase_a_run_id(
+                cell_id="A0",
+                learner_index=0,
+            )
+            terminal_directory = run_directory / "terminal"
+            terminal_directory.mkdir(parents=True)
+            terminal_path = terminal_directory / "terminal.json"
+            artifact_path = terminal_directory / "terminal-training-artifact.json"
+            run_contract_path = terminal_directory / "run-contract.json"
+            run_contract = phase_a.build_phase_a_run_contract(
+                self.campaign,
+                cell_id="A0",
+                learner_index=0,
+            )
+            run_contract_path.write_text(
+                json.dumps(run_contract, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            artifact_path.write_text('{"artifact":"test"}\n', encoding="utf-8")
+            commits = [f"{index + 1:064x}" for index in range(8)]
+            terminal: dict[str, object] = {
+                "campaign_digest": self.campaign["exact_digest"],
+                "cell_id": "A0",
+                "learner_index": 0,
+                "run_contract": {
+                    "file": {"path": "run-contract.json"},
+                },
+                "artifact": {
+                    "file": {"path": "terminal-training-artifact.json"},
+                    "artifact_sha256": "c" * 64,
+                },
+                "training": {
+                    "commit_exact_digests": commits,
+                    "terminal_model_state_sha256": "d" * 64,
+                },
+                "exact_digest": "e" * 64,
+            }
+            terminal_path.write_text(
+                json.dumps(terminal, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(phase_a, "_require_live_source") as live_source,
+                patch.object(
+                    phase_a,
+                    "_verify_phase_a_terminal",
+                    return_value=terminal,
+                ) as verifier,
+            ):
+                request = phase_a.build_verified_phase_a_selection_request(
+                    self.campaign,
+                    cell_id="A0",
+                    learner_index=0,
+                    terminal_path=terminal_path,
+                    evaluation_workers=3,
+                )
+
+            verifier.assert_called_once()
+            live_source.assert_called_once_with(self.campaign)
+            self.assertEqual(request.artifact_path, artifact_path)
+            self.assertEqual(request.run_contract_path, run_contract_path)
+            self.assertEqual(
+                request.expected_artifact_sha256,
+                terminal["artifact"]["artifact_sha256"],
+            )
+            self.assertEqual(request.evaluation_workers, 3)
+            authority = request.training_authority
+            self.assertIsNotNone(authority)
+            assert authority is not None
+            self.assertEqual(
+                authority["terminal_exact_digest"],
+                terminal["exact_digest"],
+            )
+            self.assertEqual(
+                authority["final_prefix_commit_exact_digest"],
+                commits[-1],
+            )
+            self.assertEqual(
+                authority["run_contract_exact_digest"],
+                run_contract["exact_digest"],
+            )
+            self.assertEqual(
+                authority["artifact_file_sha256"],
+                phase_a._file_sha256(artifact_path),
+            )
+
+            tampered = dict(terminal)
+            tampered["cell_id"] = "A1"
+            terminal_path.write_text(
+                json.dumps(tampered, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                self.assertRaisesRegex(
+                    phase_a.OpenEcologyPhaseAError,
+                    "identity",
+                ),
+                patch.object(phase_a, "_require_live_source"),
+            ):
+                phase_a.build_verified_phase_a_selection_request(
+                    self.campaign,
+                    cell_id="A0",
+                    learner_index=0,
+                    terminal_path=terminal_path,
+                )
 
 
 if __name__ == "__main__":
