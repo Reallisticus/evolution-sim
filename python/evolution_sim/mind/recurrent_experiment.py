@@ -12,16 +12,28 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from evolution_sim.config.schema import WorldConfig
+from evolution_sim.config.schema import SignalConfig, WorldConfig
 from evolution_sim.env.runtime.state import RunMode
 from evolution_sim.env.world import SimulationWorld
 from evolution_sim.mind.evaluation_harness import (
     CONTROLLED_FIXTURE_NAMES,
     _fixture_world,
 )
+from evolution_sim.mind.open_ecology_seed_registry import (
+    OPEN_ECOLOGY_CANONICAL_SHA256,
+    OPEN_ECOLOGY_SEED_REGISTRY,
+    OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
+)
+from evolution_sim.mind.policy_inputs import (
+    ecological_policy_input_schema_version,
+    ecological_policy_input_vector_size,
+)
 from evolution_sim.mind.recurrent_actor_critic import (
     PublicRecurrentActorCritic,
     RecurrentActorCriticConfig,
+)
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationMode,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
@@ -48,7 +60,10 @@ from evolution_sim.mind.recurrent_ppo import (
     ppo_sequences_from_rollout_buffer,
 )
 from evolution_sim.mind.recurrent_rollout import (
+    MAX_RECURRENT_GENOME_STREAM_SEED,
     MAX_RECURRENT_POLICY_SAMPLING_SEED,
+    RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
+    RECURRENT_GENOME_CONDITIONING_DISABLED,
     RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
     RECURRENT_REWARD_COMPONENTS,
     RECURRENT_ROLLOUT_ACTIONS,
@@ -65,7 +80,7 @@ from evolution_sim.mind.recurrent_seed_registry import (
 )
 
 
-RECURRENT_EXPERIMENT_CONTRACT_VERSION = "mind_public_recurrent_ippo_experiment_v4"
+RECURRENT_EXPERIMENT_CONTRACT_VERSION = "mind_public_recurrent_ippo_experiment_v5"
 RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_public_recurrent_training_seed_provenance_v1"
 )
@@ -106,6 +121,98 @@ RECURRENT_TRAINING_SCENARIOS: tuple[str, ...] = (
 MAX_RECURRENT_ROLLOUT_WORKERS = 64
 RECURRENT_ROLLOUT_WORKER_START_METHOD = "spawn"
 RECURRENT_ROLLOUT_WORKER_TORCH_THREADS = 1
+OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION = "mind_v3_open_ecology_broad_treatment_v1"
+OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_rollout_task_provenance_v1"
+)
+OPEN_ECOLOGY_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_training_seed_provenance_v1"
+)
+OPEN_ECOLOGY_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
+    "mind_v3_open_ecology_ippo_training_schedule_task_v1"
+)
+OPEN_ECOLOGY_TRAINING_SEED_ROLE = "open_ecology_train"
+OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES: tuple[int, ...] = (32, 64, 128, 256)
+OPEN_ECOLOGY_PHASE_A = "phase_a"
+OPEN_ECOLOGY_PHASE_B = "phase_b"
+OPEN_ECOLOGY_TRAINING_PHASES: tuple[str, ...] = (
+    OPEN_ECOLOGY_PHASE_A,
+    OPEN_ECOLOGY_PHASE_B,
+)
+OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE: tuple[int, ...] = (64,)
+OPEN_ECOLOGY_PHASE_B_DENSITY_CYCLE: tuple[int, ...] = (32, 64, 128, 64)
+OPEN_ECOLOGY_MAX_AGENTS = 320
+_OPEN_ECOLOGY_SIGNAL_VALUES: dict[str, object] = {
+    "enabled": True,
+    "reproductive_signal_channels": 1,
+    "reproductive_signal_emission_enabled": True,
+    "reproductive_signal_radius": 3,
+    "reproductive_signal_duration_ticks": 6,
+    "reproductive_signal_decay_rate": 0.58,
+    "reproductive_signal_base_intensity": 0.16,
+    "reproductive_signal_trait_intensity_bonus": 0.24,
+    "communication_token_count": 4,
+    "communication_profiles_per_token": 2,
+    "communication_signal_emission_enabled": True,
+    "communication_signal_radius": 3,
+    "communication_signal_duration_ticks": 6,
+    "communication_signal_decay_rate": 0.58,
+    "communication_signal_base_intensity": 0.10,
+    "communication_signal_trait_intensity_bonus": 0.20,
+    "max_signal_radius": 8,
+    "max_duration_ticks": 24,
+    "max_intensity": 1.0,
+    "base_emission_energy_cost": 0.005,
+}
+_ROLLOUT_SUMMARY_KEYS = frozenset(
+    {
+        "task_id",
+        "scenario",
+        "environment_seed",
+        "seed_role",
+        "policy_sampling_identity",
+        "policy_sampling_seed",
+        "policy_sampling_seed_namespace",
+        "rollout_ticks",
+        "summary",
+    }
+)
+_CONDITIONED_WORLD_SEED_PROVENANCE_KEYS = frozenset(
+    {
+        "environment_seed",
+        "policy_sampling_seed",
+        "genome_conditioning_mode",
+        "genome_population_mode",
+        "genome_stream_seed",
+        "genome_population_binding_sha256",
+        "genome_population_pre_founder_state_sha256",
+        "genome_population_final_state_sha256",
+        "genome_population_reset_state_sha256",
+    }
+)
+_LEGACY_WORLD_SEED_PROVENANCE_KEYS = frozenset(
+    {
+        "environment_seed",
+        "policy_sampling_seed",
+    }
+)
+_OPEN_ECOLOGY_TASK_PROVENANCE_KEYS = frozenset(
+    {
+        "schema_version",
+        "seed_registry_version",
+        "seed_registry_sha256",
+        "learner_seed",
+        "environment_seed",
+        "environment_seed_index",
+        "genome_stream_seed",
+        "genome_stream_seed_index",
+        "genome_population_mode",
+        "training_phase",
+        "update_index",
+        "world_index",
+        "treatment",
+    }
+)
 
 
 _WORKER_BEHAVIOR_MODEL: PublicRecurrentActorCritic | None = None
@@ -114,6 +221,113 @@ _WORKER_FEED_FORWARD_HISTORY_ABLATION: bool | None = None
 
 class RecurrentExperimentError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class OpenEcologySignalTreatment:
+    """Deeply immutable signal settings for the first open-ecology treatment."""
+
+    enabled: bool = True
+    reproductive_signal_channels: int = 1
+    reproductive_signal_emission_enabled: bool = True
+    reproductive_signal_radius: int = 3
+    reproductive_signal_duration_ticks: int = 6
+    reproductive_signal_decay_rate: float = 0.58
+    reproductive_signal_base_intensity: float = 0.16
+    reproductive_signal_trait_intensity_bonus: float = 0.24
+    communication_token_count: int = 4
+    communication_profiles_per_token: int = 2
+    communication_signal_emission_enabled: bool = True
+    communication_signal_radius: int = 3
+    communication_signal_duration_ticks: int = 6
+    communication_signal_decay_rate: float = 0.58
+    communication_signal_base_intensity: float = 0.10
+    communication_signal_trait_intensity_bonus: float = 0.20
+    max_signal_radius: int = 8
+    max_duration_ticks: int = 24
+    max_intensity: float = 1.0
+    base_emission_energy_cost: float = 0.005
+
+    def __post_init__(self) -> None:
+        if asdict(self) != _OPEN_ECOLOGY_SIGNAL_VALUES:
+            raise RecurrentExperimentError(
+                "open-ecology signal treatment must match the canonical contract"
+            )
+        # Reuse Foundation validation rather than duplicating its numeric limits.
+        self.as_signal_config()
+
+    def as_signal_config(self) -> SignalConfig:
+        return SignalConfig(**asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class OpenEcologyLaunchDependencies:
+    """Truthful boundary for functionality outside this bounded implementation."""
+
+    self_echo_exclusion_implemented: bool = True
+    self_echo_exclusion_required_before_authoritative_launch: bool = True
+
+    def __post_init__(self) -> None:
+        if (
+            self.self_echo_exclusion_implemented is not True
+            or self.self_echo_exclusion_required_before_authoritative_launch is not True
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology launch dependencies must satisfy the preregistered "
+                "self-echo requirement"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class OpenEcologyBroadWorldTreatment:
+    """Canonical broad-world treatment; only initial population may vary."""
+
+    initial_agents: int
+    schema_version: str = OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION
+    max_agents: int = OPEN_ECOLOGY_MAX_AGENTS
+    signals: OpenEcologySignalTreatment = OpenEcologySignalTreatment()
+    reward_contract: str = "foundation_reward_contract_unchanged_v1"
+    reward_shaping_added: bool = False
+    action_heuristics_added: bool = False
+    launch_dependencies: OpenEcologyLaunchDependencies = OpenEcologyLaunchDependencies()
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.initial_agents, bool)
+            or not isinstance(self.initial_agents, int)
+            or self.initial_agents not in OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology initial_agents must be one of "
+                f"{OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES}"
+            )
+        if self.schema_version != OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION:
+            raise RecurrentExperimentError("open-ecology treatment schema drifted")
+        if (
+            isinstance(self.max_agents, bool)
+            or not isinstance(self.max_agents, int)
+            or self.max_agents != OPEN_ECOLOGY_MAX_AGENTS
+        ):
+            raise RecurrentExperimentError("open-ecology max_agents must be 320")
+        if not isinstance(self.signals, OpenEcologySignalTreatment):
+            raise RecurrentExperimentError(
+                "open-ecology treatment signals have the wrong type"
+            )
+        if (
+            self.reward_contract != "foundation_reward_contract_unchanged_v1"
+            or self.reward_shaping_added is not False
+            or self.action_heuristics_added is not False
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology treatment cannot change rewards or add action heuristics"
+            )
+        if not isinstance(self.launch_dependencies, OpenEcologyLaunchDependencies):
+            raise RecurrentExperimentError(
+                "open-ecology launch dependencies have the wrong type"
+            )
+
+    def as_contract(self) -> dict[str, object]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +422,8 @@ class RecurrentRolloutTask:
     policy_sampling_identity: str | None = None
     policy_sampling_seed: int | None = None
     seed_role: str | None = None
+    genome_stream_seed: int | None = None
+    genome_population_mode: str = RecurrentGenomePopulationMode.DISABLED.value
 
     def __post_init__(self) -> None:
         if not self.task_id or self.task_id != self.task_id.strip():
@@ -234,15 +450,23 @@ class RecurrentRolloutTask:
             else "scale_v2_curriculum"
         )
         expected_seed_role = self.seed_role or legacy_seed_role
+        open_ecology_task = isinstance(self, OpenEcologyRolloutTask)
         if expected_seed_role not in {
             legacy_seed_role,
             scale_seed_role,
             scale_v2_seed_role,
+            *(
+                (OPEN_ECOLOGY_TRAINING_SEED_ROLE,)
+                if self.scenario == RECURRENT_BROAD_SCENARIO and open_ecology_task
+                else ()
+            ),
         }:
             raise RecurrentExperimentError(
                 "rollout task seed_role does not match its training scenario"
             )
-        if expected_seed_role == legacy_seed_role:
+        if expected_seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE:
+            seed_registry = OPEN_ECOLOGY_SEED_REGISTRY
+        elif expected_seed_role == legacy_seed_role:
             seed_registry = RECURRENT_SEED_REGISTRY
         elif expected_seed_role == scale_seed_role:
             seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
@@ -286,6 +510,146 @@ class RecurrentRolloutTask:
         )
         object.__setattr__(self, "policy_sampling_seed", policy_sampling_seed)
         object.__setattr__(self, "seed_role", expected_seed_role)
+        genome_population_mode, genome_stream_seed = _genome_population_configuration(
+            population_mode=self.genome_population_mode,
+            stream_seed=self.genome_stream_seed,
+        )
+        object.__setattr__(
+            self,
+            "genome_population_mode",
+            genome_population_mode,
+        )
+        object.__setattr__(self, "genome_stream_seed", genome_stream_seed)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenEcologyRolloutTask(RecurrentRolloutTask):
+    """A broad training task with exact registry and treatment provenance."""
+
+    open_ecology_treatment: OpenEcologyBroadWorldTreatment
+    open_ecology_learner_seed: int
+    open_ecology_environment_seed_index: int
+    open_ecology_genome_stream_seed_index: int
+    open_ecology_training_phase: str
+    open_ecology_update_index: int
+    open_ecology_world_index: int
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.scenario != RECURRENT_BROAD_SCENARIO:
+            raise RecurrentExperimentError(
+                "open-ecology rollout tasks must use the broad scenario"
+            )
+        if self.seed_role != OPEN_ECOLOGY_TRAINING_SEED_ROLE:
+            raise RecurrentExperimentError(
+                "open-ecology rollout tasks must use open_ecology_train seeds"
+            )
+        if not isinstance(self.open_ecology_treatment, OpenEcologyBroadWorldTreatment):
+            raise RecurrentExperimentError(
+                "open-ecology rollout task treatment has the wrong type"
+            )
+        learner_seed = _positive_seed(
+            self.open_ecology_learner_seed,
+            field="open_ecology_learner_seed",
+        )
+        if learner_seed not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"]:
+            raise RecurrentExperimentError(
+                "open_ecology_learner_seed is not registered"
+            )
+        environment_index = _nonnegative_int(
+            self.open_ecology_environment_seed_index,
+            field="open_ecology_environment_seed_index",
+        )
+        train_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_TRAINING_SEED_ROLE]
+        if (
+            environment_index >= len(train_seeds)
+            or train_seeds[environment_index] != self.environment_seed
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology environment seed index does not bind its seed"
+            )
+        genome_index = _nonnegative_int(
+            self.open_ecology_genome_stream_seed_index,
+            field="open_ecology_genome_stream_seed_index",
+        )
+        genome_seeds = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"]
+        if (
+            genome_index >= len(genome_seeds)
+            or genome_seeds[genome_index] != self.genome_stream_seed
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology genome stream index does not bind its seed"
+            )
+        if self.genome_population_mode not in {
+            RecurrentGenomePopulationMode.HERITABLE.value,
+            RecurrentGenomePopulationMode.ZERO_ALL.value,
+        }:
+            raise RecurrentExperimentError(
+                "open-ecology rollout tasks require heritable or zero_all genomes"
+            )
+        training_phase = _open_ecology_training_phase(
+            self.open_ecology_training_phase
+        )
+        update_index = _nonnegative_int(
+            self.open_ecology_update_index,
+            field="open_ecology_update_index",
+        )
+        world_index = _nonnegative_int(
+            self.open_ecology_world_index,
+            field="open_ecology_world_index",
+        )
+        expected_density_cycle = _open_ecology_density_cycle(training_phase)
+        expected_density = expected_density_cycle[
+            world_index % len(expected_density_cycle)
+        ]
+        if self.open_ecology_treatment.initial_agents != expected_density:
+            raise RecurrentExperimentError(
+                "open-ecology rollout task density does not match its training phase"
+            )
+        expected_identity = _open_ecology_policy_sampling_identity(
+            learner_seed=learner_seed,
+            genome_stream_seed_index=genome_index,
+            genome_population_mode=self.genome_population_mode,
+            training_phase=training_phase,
+            update_index=update_index,
+            world_index=world_index,
+            environment_seed_index=environment_index,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.policy_sampling_identity != expected_identity:
+            raise RecurrentExperimentError(
+                "open-ecology policy sampling identity is not canonical"
+            )
+        expected_task_id = _open_ecology_task_id(
+            learner_seed=learner_seed,
+            genome_stream_seed_index=genome_index,
+            genome_population_mode=self.genome_population_mode,
+            training_phase=training_phase,
+            update_index=update_index,
+            world_index=world_index,
+            environment_seed_index=environment_index,
+            environment_seed=self.environment_seed,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.task_id != expected_task_id:
+            raise RecurrentExperimentError("open-ecology task_id is not canonical")
+
+    def open_ecology_task_provenance(self) -> dict[str, object]:
+        return {
+            "schema_version": OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION,
+            "seed_registry_version": OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
+            "seed_registry_sha256": OPEN_ECOLOGY_CANONICAL_SHA256,
+            "learner_seed": self.open_ecology_learner_seed,
+            "environment_seed": self.environment_seed,
+            "environment_seed_index": self.open_ecology_environment_seed_index,
+            "genome_stream_seed": self.genome_stream_seed,
+            "genome_stream_seed_index": self.open_ecology_genome_stream_seed_index,
+            "genome_population_mode": self.genome_population_mode,
+            "training_phase": self.open_ecology_training_phase,
+            "update_index": self.open_ecology_update_index,
+            "world_index": self.open_ecology_world_index,
+            "treatment": self.open_ecology_treatment.as_contract(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +732,10 @@ def build_recurrent_training_schedule(
     scenarios: Sequence[str] = RECURRENT_TRAINING_SCENARIOS,
     seed_registry_contract: str = RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL,
     scale_learner_seed: int | None = None,
+    genome_stream_seed: int | None = None,
+    genome_population_mode: RecurrentGenomePopulationMode | str = (
+        RecurrentGenomePopulationMode.DISABLED
+    ),
 ) -> tuple[tuple[RecurrentRolloutTask, ...], ...]:
     """Build a deterministic policy-optimization schedule from train-only roles.
 
@@ -379,6 +747,12 @@ def build_recurrent_training_schedule(
     _positive_int(update_count, field="update_count")
     _positive_int(worlds_per_update, field="worlds_per_update")
     _positive_int(rollout_ticks, field="rollout_ticks")
+    resolved_genome_population_mode, resolved_genome_stream_seed = (
+        _genome_population_configuration(
+            population_mode=genome_population_mode,
+            stream_seed=genome_stream_seed,
+        )
+    )
     selected_scenarios = tuple(scenarios)
     if not selected_scenarios:
         raise RecurrentExperimentError("training scenarios cannot be empty")
@@ -401,8 +775,7 @@ def build_recurrent_training_schedule(
         seed_registry_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT
     )
     scale_v2_development = (
-        seed_registry_contract
-        == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
+        seed_registry_contract == RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2
     )
     scale_development = scale_v1_development or scale_v2_development
     if scale_development:
@@ -440,7 +813,9 @@ def build_recurrent_training_schedule(
         seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
         broad_role = "scale_train"
         fixture_role = "scale_curriculum"
-        sampling_identity_version = RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+        sampling_identity_version = (
+            RECURRENT_SCALE_POLICY_SAMPLING_TASK_IDENTITY_VERSION
+        )
     else:
         seed_registry = RECURRENT_SEED_REGISTRY
         broad_role = "train"
@@ -477,9 +852,7 @@ def build_recurrent_training_schedule(
                     f"scenario={scenario}"
                 )
                 scale_task_prefix = (
-                    "scale-v2-learner"
-                    if scale_v2_development
-                    else "scale-learner"
+                    "scale-v2-learner" if scale_v2_development else "scale-learner"
                 )
                 task_id = (
                     f"{scale_task_prefix}-{resolved_scale_learner_seed}-"
@@ -517,6 +890,131 @@ def build_recurrent_training_schedule(
                         if scenario == RECURRENT_BROAD_SCENARIO
                         else fixture_role
                     ),
+                    genome_stream_seed=resolved_genome_stream_seed,
+                    genome_population_mode=resolved_genome_population_mode,
+                )
+            )
+            global_index += 1
+        schedule.append(tuple(tasks))
+    return tuple(schedule)
+
+
+def build_open_ecology_training_schedule(
+    *,
+    training_phase: str,
+    update_count: int,
+    worlds_per_update: int,
+    rollout_ticks: int,
+    learner_seed: int,
+    genome_stream_seed: int,
+    genome_population_mode: RecurrentGenomePopulationMode | str,
+    environment_seed_offset: int = 0,
+) -> tuple[tuple[OpenEcologyRolloutTask, ...], ...]:
+    """Build one learner-namespaced, broad-only open-ecology schedule.
+
+    Environment seeds are consumed once from a contiguous registry slice. The
+    explicit offset permits preregistered disjoint ranges while avoiding the
+    modulo wraparound used by legacy schedules.
+    """
+
+    resolved_training_phase = _open_ecology_training_phase(training_phase)
+    density_cycle = _open_ecology_density_cycle(resolved_training_phase)
+    _positive_int(update_count, field="update_count")
+    _positive_int(worlds_per_update, field="worlds_per_update")
+    _positive_int(rollout_ticks, field="rollout_ticks")
+    resolved_learner_seed = _positive_seed(
+        learner_seed,
+        field="learner_seed",
+    )
+    if resolved_learner_seed not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"]:
+        raise RecurrentExperimentError("open-ecology learner_seed must be registered")
+    resolved_mode, resolved_genome_seed = _genome_population_configuration(
+        population_mode=genome_population_mode,
+        stream_seed=genome_stream_seed,
+    )
+    if resolved_mode not in {
+        RecurrentGenomePopulationMode.HERITABLE.value,
+        RecurrentGenomePopulationMode.ZERO_ALL.value,
+    }:
+        raise RecurrentExperimentError(
+            "open-ecology schedule requires heritable or zero_all genomes"
+        )
+    genome_seeds = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"]
+    if resolved_genome_seed not in genome_seeds:
+        raise RecurrentExperimentError(
+            "open-ecology genome_stream_seed must be registered"
+        )
+    genome_stream_seed_index = genome_seeds.index(resolved_genome_seed)
+    offset = _nonnegative_int(
+        environment_seed_offset,
+        field="environment_seed_offset",
+    )
+    total_worlds = update_count * worlds_per_update
+    train_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_TRAINING_SEED_ROLE]
+    if offset + total_worlds > len(train_seeds):
+        raise RecurrentExperimentError(
+            "open-ecology environment seed range exceeds the non-reused registry"
+        )
+
+    schedule: list[tuple[OpenEcologyRolloutTask, ...]] = []
+    policy_sampling_seeds: set[int] = set()
+    global_index = 0
+    for update_index in range(update_count):
+        tasks: list[OpenEcologyRolloutTask] = []
+        for _ in range(worlds_per_update):
+            environment_seed_index = offset + global_index
+            environment_seed = train_seeds[environment_seed_index]
+            initial_agents = density_cycle[global_index % len(density_cycle)]
+            treatment = OpenEcologyBroadWorldTreatment(
+                initial_agents=initial_agents,
+            )
+            policy_sampling_identity = _open_ecology_policy_sampling_identity(
+                learner_seed=resolved_learner_seed,
+                genome_stream_seed_index=genome_stream_seed_index,
+                genome_population_mode=resolved_mode,
+                training_phase=resolved_training_phase,
+                update_index=update_index,
+                world_index=global_index,
+                environment_seed_index=environment_seed_index,
+                initial_agents=initial_agents,
+            )
+            policy_sampling_seed = derive_recurrent_policy_sampling_seed(
+                task_identity=policy_sampling_identity
+            )
+            if policy_sampling_seed in policy_sampling_seeds:
+                raise RecurrentExperimentError(
+                    "policy sampling seed collision in open-ecology schedule"
+                )
+            policy_sampling_seeds.add(policy_sampling_seed)
+            task_id = _open_ecology_task_id(
+                learner_seed=resolved_learner_seed,
+                genome_stream_seed_index=genome_stream_seed_index,
+                genome_population_mode=resolved_mode,
+                training_phase=resolved_training_phase,
+                update_index=update_index,
+                world_index=global_index,
+                environment_seed_index=environment_seed_index,
+                environment_seed=environment_seed,
+                initial_agents=initial_agents,
+            )
+            tasks.append(
+                OpenEcologyRolloutTask(
+                    task_id=task_id,
+                    scenario=RECURRENT_BROAD_SCENARIO,
+                    environment_seed=environment_seed,
+                    rollout_ticks=rollout_ticks,
+                    policy_sampling_identity=policy_sampling_identity,
+                    policy_sampling_seed=policy_sampling_seed,
+                    seed_role=OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+                    genome_stream_seed=resolved_genome_seed,
+                    genome_population_mode=resolved_mode,
+                    open_ecology_treatment=treatment,
+                    open_ecology_learner_seed=resolved_learner_seed,
+                    open_ecology_environment_seed_index=environment_seed_index,
+                    open_ecology_genome_stream_seed_index=(genome_stream_seed_index),
+                    open_ecology_training_phase=resolved_training_phase,
+                    open_ecology_update_index=update_index,
+                    open_ecology_world_index=global_index,
                 )
             )
             global_index += 1
@@ -548,6 +1046,14 @@ def build_recurrent_counterfactual_collection_tasks(
     if not tasks or any(not isinstance(task, RecurrentRolloutTask) for task in tasks):
         raise RecurrentExperimentError(
             "training_tasks must contain RecurrentRolloutTask values"
+        )
+    if any(
+        task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value
+        for task in tasks
+    ):
+        raise RecurrentExperimentError(
+            "conditioned counterfactual collection is blocked until exact branch "
+            "rows carry genotype provenance"
         )
     if (
         isinstance(update_index, bool)
@@ -646,6 +1152,8 @@ def collect_recurrent_rollout_batch(
     task_ids = [task.task_id for task in task_tuple]
     if len(task_ids) != len(set(task_ids)):
         raise RecurrentExperimentError("rollout task ids must be unique")
+    _validate_rollout_task_genome_bindings(model=model, tasks=task_tuple)
+    _validate_rollout_task_treatment_bindings(model=model, tasks=task_tuple)
 
     behavior_model = frozen_cpu_model_copy(model)
     if rollout_workers == 1 or len(task_tuple) == 1:
@@ -664,23 +1172,64 @@ def collect_recurrent_rollout_batch(
             feed_forward_history_ablation=feed_forward_history_ablation,
             rollout_workers=rollout_workers,
         )
+    if len(task_results) != len(task_tuple):
+        raise RecurrentExperimentError(
+            "rollout worker result count does not match the task batch"
+        )
 
     buffer = RecurrentRolloutBuffer()
     summaries: list[dict[str, object]] = []
     for task, task_result in zip(task_tuple, task_results, strict=True):
         steps, summary = task_result
-        if summary.get("task_id") != task.task_id:
-            raise RecurrentExperimentError(
-                "rollout worker result task order or identity drifted"
-            )
+        worker_provenance = _validate_rollout_worker_result(
+            task=task,
+            summary=summary,
+            steps=steps,
+            genome_conditioning_mode=model.config.genome_conditioning_mode,
+        )
+        genome_registration: dict[str, object] = {}
+        if task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value:
+            genome_registration = {
+                "genome_conditioning_mode": worker_provenance[
+                    "genome_conditioning_mode"
+                ],
+                "genome_population_mode": worker_provenance["genome_population_mode"],
+                "genome_stream_seed": worker_provenance["genome_stream_seed"],
+                "genome_population_binding_sha256": worker_provenance[
+                    "genome_population_binding_sha256"
+                ],
+                "genome_population_pre_founder_state_sha256": worker_provenance[
+                    "genome_population_pre_founder_state_sha256"
+                ],
+            }
         buffer.register_world(
             task.task_id,
             environment_seed=task.environment_seed,
             policy_sampling_seed=task.policy_sampling_seed,
+            **genome_registration,
         )
         for step in steps:
             buffer.append(step)
+        if genome_registration:
+            buffer.finalize_world_genome_provenance(
+                task.task_id,
+                final_state_sha256=str(
+                    worker_provenance["genome_population_final_state_sha256"]
+                ),
+                reset_state_sha256=str(
+                    worker_provenance["genome_population_reset_state_sha256"]
+                ),
+            )
         buffer.validate_world_closed(task.task_id)
+        buffer_worker_provenance = {
+            key: value
+            for key, value in worker_provenance.items()
+            if key != "open_ecology_task_provenance"
+        }
+        if buffer.world_seed_provenance.get(task.task_id) != buffer_worker_provenance:
+            raise RecurrentExperimentError(
+                "rollout worker and merged buffer genome provenance drifted"
+            )
         summaries.append(summary)
     diagnostics = _rollout_diagnostics(buffer, world_summaries=summaries)
     return buffer, diagnostics
@@ -706,11 +1255,18 @@ def _collect_recurrent_rollout_task(
         rollout_ticks=task.rollout_ticks,
         environment_seed=task.environment_seed,
         policy_sampling_seed=task.policy_sampling_seed,
+        genome_stream_seed=task.genome_stream_seed,
+        genome_population_mode=task.genome_population_mode,
     )
     world = _world_for_task(task, policy=collector)
     result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
     collector.finish_world()
-    return task_buffer.steps, {
+    world_seed_provenance = task_buffer.world_seed_provenance
+    if set(world_seed_provenance) != {task.task_id}:
+        raise RecurrentExperimentError(
+            "isolated rollout task emitted invalid world provenance coverage"
+        )
+    summary: dict[str, object] = {
         "task_id": task.task_id,
         "scenario": task.scenario,
         "environment_seed": task.environment_seed,
@@ -721,6 +1277,11 @@ def _collect_recurrent_rollout_task(
         "rollout_ticks": task.rollout_ticks,
         "summary": _compact_world_summary(result.summary),
     }
+    if task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value:
+        summary["world_seed_provenance"] = world_seed_provenance[task.task_id]
+    if isinstance(task, OpenEcologyRolloutTask):
+        summary["open_ecology_task_provenance"] = task.open_ecology_task_provenance()
+    return task_buffer.steps, summary
 
 
 def _collect_recurrent_rollout_tasks_parallel(
@@ -846,8 +1407,18 @@ class RecurrentExperimentRunner:
                 "counterfactual recurrent-history auxiliary is incompatible with "
                 "the feed-forward history ablation"
             )
+        resolved_model_config = model_config or RecurrentActorCriticConfig()
+        if (
+            counterfactual_config is not None
+            and resolved_model_config.genome_conditioning_mode
+            != RECURRENT_GENOME_CONDITIONING_DISABLED
+        ):
+            raise RecurrentExperimentError(
+                "conditioned counterfactual auxiliary training is blocked until "
+                "exact branch rows carry genotype provenance"
+            )
         self.model = PublicRecurrentActorCritic(
-            model_config,
+            resolved_model_config,
             initialization_seed=learner_seed,
         ).to(device=self.device, dtype=torch.float32)
         self.ppo_config = resolved_ppo
@@ -1061,6 +1632,24 @@ class RecurrentExperimentRunner:
                 "scheduled experiment runner is terminal and cannot train more updates"
             )
         task_tuple = tuple(tasks)
+        open_ecology_tasks = tuple(
+            task for task in task_tuple if isinstance(task, OpenEcologyRolloutTask)
+        )
+        if open_ecology_tasks and any(
+            task.open_ecology_learner_seed != self.learner_seed
+            for task in open_ecology_tasks
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology task learner seed must match the experiment runner"
+            )
+        if self.counterfactual_config is not None and any(
+            task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value
+            for task in task_tuple
+        ):
+            raise RecurrentExperimentError(
+                "conditioned counterfactual auxiliary training is blocked until "
+                "exact branch rows carry genotype provenance"
+            )
         buffer, rollout_diagnostics = collect_recurrent_rollout_batch(
             self.model,
             task_tuple,
@@ -1230,6 +1819,24 @@ class RecurrentExperimentRunner:
             tuple(int(task.policy_sampling_seed) for task in scheduled_tasks),
             field="policy_sampling_seed",
         )
+        schedule_genome_configuration = _validate_rollout_task_genome_bindings(
+            model=self.model,
+            tasks=scheduled_tasks,
+        )
+        schedule_open_ecology_treatments = _validate_rollout_task_treatment_bindings(
+            model=self.model,
+            tasks=scheduled_tasks,
+        )
+        open_ecology_tasks = tuple(
+            task for task in scheduled_tasks if isinstance(task, OpenEcologyRolloutTask)
+        )
+        if open_ecology_tasks and any(
+            task.open_ecology_learner_seed != self.learner_seed
+            for task in open_ecology_tasks
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology schedule learner seed must match the experiment runner"
+            )
         self._scheduled_run_state = "in_progress"
         try:
             for tasks in schedule_tuple:
@@ -1243,6 +1850,36 @@ class RecurrentExperimentRunner:
             for task in update.tasks:
                 if task.scenario not in scenario_order:
                     scenario_order.append(task.scenario)
+        rollout_execution: dict[str, object] = {
+            "requested_workers": self.rollout_workers,
+            "start_method": RECURRENT_ROLLOUT_WORKER_START_METHOD,
+            "torch_threads_per_worker": RECURRENT_ROLLOUT_WORKER_TORCH_THREADS,
+            "ordered_merge": True,
+            "sequential_default": True,
+        }
+        genome_population_mode, genome_stream_seed = schedule_genome_configuration
+        if genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value:
+            rollout_execution["genome_conditioning"] = {
+                "conditioning_mode": self.model.config.genome_conditioning_mode,
+                "population_mode": genome_population_mode,
+                "stream_seed": genome_stream_seed,
+                "per_world_full_seed_provenance_recorded": True,
+            }
+        if schedule_open_ecology_treatments is not None:
+            unique_treatments: list[dict[str, object]] = []
+            for treatment in schedule_open_ecology_treatments:
+                payload = treatment.as_contract()
+                if payload not in unique_treatments:
+                    unique_treatments.append(payload)
+            rollout_execution["open_ecology"] = {
+                "treatment_schema_version": OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION,
+                "broad_world_only": True,
+                "full_task_worker_merge_diagnostic_provenance": True,
+                "treatments": unique_treatments,
+                "treatment_runtime_ready": True,
+                "authoritative_campaign_launch_claimed": False,
+                "launch_dependencies": asdict(OpenEcologyLaunchDependencies()),
+            }
         return RecurrentTrainingRunResult(
             contract_version=RECURRENT_EXPERIMENT_CONTRACT_VERSION,
             learner_seed=self.learner_seed,
@@ -1252,13 +1889,7 @@ class RecurrentExperimentRunner:
             ),
             model_config=asdict(self.model.config),
             ppo_config=asdict(self.ppo_config),
-            rollout_execution={
-                "requested_workers": self.rollout_workers,
-                "start_method": RECURRENT_ROLLOUT_WORKER_START_METHOD,
-                "torch_threads_per_worker": RECURRENT_ROLLOUT_WORKER_TORCH_THREADS,
-                "ordered_merge": True,
-                "sequential_default": True,
-            },
+            rollout_execution=rollout_execution,
             training_scenarios=tuple(scenario_order),
             environment_seed_provenance=_training_seed_provenance(self._updates),
             updates=tuple(self._updates),
@@ -1305,6 +1936,15 @@ def recurrent_training_run_payload(
 def _training_seed_provenance(
     updates: Sequence[RecurrentTrainingUpdateResult],
 ) -> dict[str, object]:
+    observed_roles = {
+        str(task.seed_role) for update in updates for task in update.tasks
+    }
+    if observed_roles == {OPEN_ECOLOGY_TRAINING_SEED_ROLE}:
+        return _open_ecology_training_seed_provenance(updates)
+    if OPEN_ECOLOGY_TRAINING_SEED_ROLE in observed_roles:
+        raise RecurrentExperimentError(
+            "committed updates mix open-ecology and legacy seed registries"
+        )
     role_contracts = {
         RECURRENT_TRAINING_SEED_REGISTRY_CANONICAL: (
             ("train", "curriculum"),
@@ -1321,9 +1961,6 @@ def _training_seed_provenance(
             SCALE_DEVELOPMENT_V2_SEED_REGISTRY,
             RECURRENT_SCALE_V2_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
         ),
-    }
-    observed_roles = {
-        str(task.seed_role) for update in updates for task in update.tasks
     }
     selected_contract: str | None = None
     selected_roles: tuple[str, str] | None = None
@@ -1384,6 +2021,109 @@ def _training_seed_provenance(
     return payload
 
 
+def _open_ecology_training_seed_provenance(
+    updates: Sequence[RecurrentTrainingUpdateResult],
+) -> dict[str, object]:
+    tasks = tuple(task for update in updates for task in update.tasks)
+    if not tasks or any(not isinstance(task, OpenEcologyRolloutTask) for task in tasks):
+        raise RecurrentExperimentError(
+            "open-ecology updates require exact open-ecology rollout tasks"
+        )
+    open_tasks = tuple(
+        task for task in tasks if isinstance(task, OpenEcologyRolloutTask)
+    )
+    learner_seeds = {task.open_ecology_learner_seed for task in open_tasks}
+    genome_bindings = {
+        (
+            task.genome_stream_seed,
+            task.open_ecology_genome_stream_seed_index,
+            task.genome_population_mode,
+        )
+        for task in open_tasks
+    }
+    training_phases = {task.open_ecology_training_phase for task in open_tasks}
+    if (
+        len(learner_seeds) != 1
+        or len(genome_bindings) != 1
+        or len(training_phases) != 1
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology updates mix learner, genome, or training-phase axes"
+        )
+    environment_indices = [
+        task.open_ecology_environment_seed_index for task in open_tasks
+    ]
+    if environment_indices != list(
+        range(environment_indices[0], environment_indices[0] + len(open_tasks))
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology environment seeds must form one ordered non-reused range"
+        )
+    environment_seeds = [task.environment_seed for task in open_tasks]
+    if len(environment_seeds) != len(set(environment_seeds)):
+        raise RecurrentExperimentError(
+            "open-ecology environment seeds cannot be reused in one schedule"
+        )
+    training_phase = _open_ecology_training_phase(next(iter(training_phases)))
+    density_cycle = _open_ecology_density_cycle(training_phase)
+    for global_index, task in enumerate(open_tasks):
+        if (
+            task.open_ecology_world_index != global_index
+            or task.open_ecology_treatment.initial_agents
+            != density_cycle[global_index % len(density_cycle)]
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology task order or density cycle drifted"
+            )
+    for update_index, update in enumerate(updates):
+        if any(
+            not isinstance(task, OpenEcologyRolloutTask)
+            or task.open_ecology_update_index != update_index
+            for task in update.tasks
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology update index provenance drifted"
+            )
+
+    learner_seed = next(iter(learner_seeds))
+    learner_seed_index = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"].index(
+        learner_seed
+    )
+    genome_stream_seed, genome_stream_seed_index, genome_population_mode = next(
+        iter(genome_bindings)
+    )
+    return {
+        "schema_version": OPEN_ECOLOGY_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION,
+        "seed_registry_contract": {
+            "version": OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
+            "sha256": OPEN_ECOLOGY_CANONICAL_SHA256,
+        },
+        "environment_seed_roles": [OPEN_ECOLOGY_TRAINING_SEED_ROLE],
+        "environment_seeds_by_role": {
+            OPEN_ECOLOGY_TRAINING_SEED_ROLE: environment_seeds,
+        },
+        "observed_environment_seed_count": len(environment_seeds),
+        "canonical_registry_membership_valid": True,
+        "registry_ordered_non_reused_range": {
+            "offset": environment_indices[0],
+            "count": len(environment_indices),
+            "exclusive_stop": environment_indices[-1] + 1,
+        },
+        "learner": {
+            "seed": learner_seed,
+            "registry_index": learner_seed_index,
+        },
+        "genome_stream": {
+            "seed": genome_stream_seed,
+            "registry_index": genome_stream_seed_index,
+        },
+        "genome_population_mode": genome_population_mode,
+        "training_phase": training_phase,
+        "initial_agent_density_cycle": list(density_cycle),
+        "non_training_seed_values_exposed": False,
+    }
+
+
 def _require_unique_schedule_values(
     values: Sequence[object],
     *,
@@ -1393,6 +2133,529 @@ def _require_unique_schedule_values(
         raise RecurrentExperimentError(
             f"scheduled {field} values must be globally unique"
         )
+
+
+def _open_ecology_training_phase(value: object) -> str:
+    if not isinstance(value, str) or value not in OPEN_ECOLOGY_TRAINING_PHASES:
+        raise RecurrentExperimentError(
+            "open-ecology training_phase must be phase_a or phase_b"
+        )
+    return value
+
+
+def _open_ecology_density_cycle(training_phase: object) -> tuple[int, ...]:
+    resolved = _open_ecology_training_phase(training_phase)
+    if resolved == OPEN_ECOLOGY_PHASE_A:
+        return OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE
+    return OPEN_ECOLOGY_PHASE_B_DENSITY_CYCLE
+
+
+def _genome_population_configuration(
+    *,
+    population_mode: object,
+    stream_seed: object,
+) -> tuple[str, int | None]:
+    try:
+        resolved_mode = RecurrentGenomePopulationMode(population_mode)
+    except (TypeError, ValueError) as error:
+        raise RecurrentExperimentError(
+            "genome_population_mode must be disabled, heritable, or zero_all"
+        ) from error
+    if resolved_mode is RecurrentGenomePopulationMode.DISABLED:
+        if stream_seed is not None:
+            raise RecurrentExperimentError(
+                "disabled genome population cannot define genome_stream_seed"
+            )
+        return resolved_mode.value, None
+    if isinstance(stream_seed, bool) or not isinstance(stream_seed, int):
+        raise RecurrentExperimentError(
+            "active genome population requires an unsigned 64-bit genome_stream_seed"
+        )
+    if stream_seed < 0 or stream_seed > MAX_RECURRENT_GENOME_STREAM_SEED:
+        raise RecurrentExperimentError(
+            "genome_stream_seed must be an unsigned 64-bit integer"
+        )
+    return resolved_mode.value, stream_seed
+
+
+def _validate_rollout_task_treatment_bindings(
+    *,
+    model: PublicRecurrentActorCritic,
+    tasks: Sequence[RecurrentRolloutTask],
+) -> tuple[OpenEcologyBroadWorldTreatment, ...] | None:
+    open_tasks = tuple(
+        task for task in tasks if isinstance(task, OpenEcologyRolloutTask)
+    )
+    if not open_tasks:
+        return None
+    if len(open_tasks) != len(tasks):
+        raise RecurrentExperimentError(
+            "open-ecology and legacy rollout tasks cannot share one batch"
+        )
+    expected_signal_config = open_tasks[
+        0
+    ].open_ecology_treatment.signals.as_signal_config()
+    expected_schema = ecological_policy_input_schema_version(expected_signal_config)
+    expected_size = ecological_policy_input_vector_size(expected_signal_config)
+    if (
+        model.config.public_input_schema_version != expected_schema
+        or model.config.public_input_size != expected_size
+    ):
+        raise RecurrentExperimentError(
+            "recurrent model public input schema/size does not match the "
+            "open-ecology signal treatment"
+        )
+    treatments: list[OpenEcologyBroadWorldTreatment] = []
+    for task in open_tasks:
+        treatment = task.open_ecology_treatment
+        signal_config = treatment.signals.as_signal_config()
+        if (
+            ecological_policy_input_schema_version(signal_config) != expected_schema
+            or ecological_policy_input_vector_size(signal_config) != expected_size
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology tasks disagree on the public signal input contract"
+            )
+        treatments.append(treatment)
+    return tuple(treatments)
+
+
+def _open_ecology_treatment_from_payload(
+    value: object,
+) -> OpenEcologyBroadWorldTreatment:
+    if not isinstance(value, Mapping):
+        raise RecurrentExperimentError(
+            "open-ecology treatment provenance must be a mapping"
+        )
+    canonical_field_names = set(OpenEcologyBroadWorldTreatment(32).as_contract())
+    if set(value) != canonical_field_names:
+        raise RecurrentExperimentError(
+            "open-ecology treatment provenance fields do not match the exact contract"
+        )
+    raw_signals = value.get("signals")
+    raw_dependencies = value.get("launch_dependencies")
+    if not isinstance(raw_signals, Mapping) or set(raw_signals) != set(
+        _OPEN_ECOLOGY_SIGNAL_VALUES
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology signal provenance fields do not match the exact contract"
+        )
+    dependency_fields = {
+        "self_echo_exclusion_implemented",
+        "self_echo_exclusion_required_before_authoritative_launch",
+    }
+    if (
+        not isinstance(raw_dependencies, Mapping)
+        or set(raw_dependencies) != dependency_fields
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology launch dependency fields do not match the exact contract"
+        )
+    try:
+        treatment = OpenEcologyBroadWorldTreatment(
+            initial_agents=value.get("initial_agents"),  # type: ignore[arg-type]
+            schema_version=value.get("schema_version"),  # type: ignore[arg-type]
+            max_agents=value.get("max_agents"),  # type: ignore[arg-type]
+            signals=OpenEcologySignalTreatment(**dict(raw_signals)),
+            reward_contract=value.get("reward_contract"),  # type: ignore[arg-type]
+            reward_shaping_added=value.get("reward_shaping_added"),  # type: ignore[arg-type]
+            action_heuristics_added=value.get("action_heuristics_added"),  # type: ignore[arg-type]
+            launch_dependencies=OpenEcologyLaunchDependencies(**dict(raw_dependencies)),
+        )
+    except (TypeError, ValueError) as error:
+        raise RecurrentExperimentError(
+            "open-ecology treatment provenance is invalid"
+        ) from error
+    if treatment.as_contract() != dict(value):
+        raise RecurrentExperimentError(
+            "open-ecology treatment provenance is not canonical"
+        )
+    return treatment
+
+
+def _open_ecology_task_provenance_from_payload(
+    value: object,
+    *,
+    environment_seed: int,
+    genome_stream_seed: int | None,
+    genome_population_mode: str,
+) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise RecurrentExperimentError("open-ecology task provenance must be a mapping")
+    if set(value) != _OPEN_ECOLOGY_TASK_PROVENANCE_KEYS:
+        raise RecurrentExperimentError(
+            "open-ecology task provenance fields do not match the exact contract"
+        )
+    if (
+        value.get("schema_version") != OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION
+        or value.get("seed_registry_version") != OPEN_ECOLOGY_SEED_REGISTRY_VERSION
+        or value.get("seed_registry_sha256") != OPEN_ECOLOGY_CANONICAL_SHA256
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology task provenance registry contract drifted"
+        )
+    learner_seed = _positive_seed(
+        value.get("learner_seed"),
+        field="open-ecology task learner_seed",
+    )
+    if learner_seed not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"]:
+        raise RecurrentExperimentError(
+            "open-ecology task learner seed is not registered"
+        )
+    environment_seed_index = _nonnegative_int(
+        value.get("environment_seed_index"),
+        field="open-ecology task environment_seed_index",
+    )
+    train_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_TRAINING_SEED_ROLE]
+    if (
+        value.get("environment_seed") != environment_seed
+        or environment_seed_index >= len(train_seeds)
+        or train_seeds[environment_seed_index] != environment_seed
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology task environment seed provenance drifted"
+        )
+    genome_stream_seed_index = _nonnegative_int(
+        value.get("genome_stream_seed_index"),
+        field="open-ecology task genome_stream_seed_index",
+    )
+    genome_seeds = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"]
+    if (
+        value.get("genome_stream_seed") != genome_stream_seed
+        or genome_stream_seed_index >= len(genome_seeds)
+        or genome_seeds[genome_stream_seed_index] != genome_stream_seed
+        or value.get("genome_population_mode") != genome_population_mode
+    ):
+        raise RecurrentExperimentError("open-ecology task genome provenance drifted")
+    training_phase = _open_ecology_training_phase(value.get("training_phase"))
+    update_index = _nonnegative_int(
+        value.get("update_index"),
+        field="open-ecology task update_index",
+    )
+    world_index = _nonnegative_int(
+        value.get("world_index"),
+        field="open-ecology task world_index",
+    )
+    treatment = _open_ecology_treatment_from_payload(value.get("treatment"))
+    density_cycle = _open_ecology_density_cycle(training_phase)
+    if treatment.initial_agents != density_cycle[world_index % len(density_cycle)]:
+        raise RecurrentExperimentError(
+            "open-ecology task treatment density differs from its training phase"
+        )
+    canonical = {
+        **dict(value),
+        "training_phase": training_phase,
+        "update_index": update_index,
+        "world_index": world_index,
+        "treatment": treatment.as_contract(),
+    }
+    if canonical != dict(value):
+        raise RecurrentExperimentError("open-ecology task provenance is not canonical")
+    return canonical
+
+
+def _open_ecology_policy_sampling_identity(
+    *,
+    learner_seed: int,
+    genome_stream_seed_index: int,
+    genome_population_mode: str,
+    training_phase: str,
+    update_index: int,
+    world_index: int,
+    environment_seed_index: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"{OPEN_ECOLOGY_POLICY_SAMPLING_TASK_IDENTITY_VERSION}|"
+        f"registry={OPEN_ECOLOGY_CANONICAL_SHA256}|learner={learner_seed}|"
+        f"genome_stream_index={genome_stream_seed_index:02d}|"
+        f"genome_mode={genome_population_mode}|phase={training_phase}|"
+        f"update={update_index:04d}|"
+        f"world={world_index:06d}|environment_index={environment_seed_index:03d}|"
+        f"initial_agents={initial_agents}"
+    )
+
+
+def _open_ecology_task_id(
+    *,
+    learner_seed: int,
+    genome_stream_seed_index: int,
+    genome_population_mode: str,
+    training_phase: str,
+    update_index: int,
+    world_index: int,
+    environment_seed_index: int,
+    environment_seed: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"open-ecology-learner-{learner_seed}-genome-{genome_stream_seed_index:02d}-"
+        f"{genome_population_mode}-{training_phase}-update-{update_index:04d}-"
+        f"world-{world_index:06d}-environment-{environment_seed_index:03d}-"
+        f"seed-{environment_seed}-density-{initial_agents}"
+    )
+
+
+def _validate_rollout_task_genome_bindings(
+    *,
+    model: PublicRecurrentActorCritic,
+    tasks: Sequence[RecurrentRolloutTask],
+) -> tuple[str, int | None]:
+    configurations = {
+        _genome_population_configuration(
+            population_mode=task.genome_population_mode,
+            stream_seed=task.genome_stream_seed,
+        )
+        for task in tasks
+    }
+    if len(configurations) != 1:
+        raise RecurrentExperimentError(
+            "rollout tasks must share one exact genome population mode and stream seed"
+        )
+    population_mode, stream_seed = next(iter(configurations))
+    conditioning_mode = model.config.genome_conditioning_mode
+    if conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+        if (
+            population_mode != RecurrentGenomePopulationMode.DISABLED.value
+            or stream_seed is not None
+        ):
+            raise RecurrentExperimentError(
+                "disabled recurrent model requires disabled rollout genome tasks"
+            )
+    elif conditioning_mode == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1:
+        if population_mode not in {
+            RecurrentGenomePopulationMode.HERITABLE.value,
+            RecurrentGenomePopulationMode.ZERO_ALL.value,
+        }:
+            raise RecurrentExperimentError(
+                "actor_film_v1 recurrent model requires heritable or zero_all "
+                "rollout tasks"
+            )
+        if stream_seed is None:
+            raise RecurrentExperimentError(
+                "actor_film_v1 recurrent model requires a genome stream seed"
+            )
+    else:
+        raise RecurrentExperimentError(
+            "recurrent model genome conditioning mode is unsupported"
+        )
+    return population_mode, stream_seed
+
+
+def _summary_world_seed_provenance(
+    summary: Mapping[str, object],
+) -> dict[str, object]:
+    if not isinstance(summary, Mapping):
+        raise RecurrentExperimentError("rollout worker summary must be a mapping")
+    conditioned = "world_seed_provenance" in summary
+    open_ecology = "open_ecology_task_provenance" in summary
+    expected_summary_keys = set(_ROLLOUT_SUMMARY_KEYS)
+    if conditioned:
+        expected_summary_keys.add("world_seed_provenance")
+    if open_ecology:
+        expected_summary_keys.add("open_ecology_task_provenance")
+    if set(summary) != expected_summary_keys:
+        raise RecurrentExperimentError(
+            "rollout worker summary fields do not match the exact contract"
+        )
+    world_id = summary.get("task_id")
+    if not isinstance(world_id, str) or not world_id:
+        raise RecurrentExperimentError(
+            "rollout worker summary task_id must be non-empty"
+        )
+    environment_seed = _positive_seed(
+        summary.get("environment_seed"),
+        field="world summary environment_seed",
+    )
+    policy_sampling_seed = _policy_sampling_seed(
+        summary.get("policy_sampling_seed"),
+        field="world summary policy_sampling_seed",
+    )
+    compact_summary = summary.get("summary")
+    if not isinstance(compact_summary, Mapping):
+        raise RecurrentExperimentError(
+            "rollout worker compact simulator summary must be a mapping"
+        )
+    if set(compact_summary) != {
+        "run_id",
+        "seed",
+        "ticks_executed",
+        "births",
+        "deaths",
+        "alive_agents",
+        "peak_alive_agents",
+        "extinct",
+    }:
+        raise RecurrentExperimentError(
+            "rollout worker compact simulator summary fields drifted"
+        )
+    if compact_summary.get("seed") != environment_seed:
+        raise RecurrentExperimentError("rollout worker simulator summary seed drifted")
+    if open_ecology and not conditioned:
+        raise RecurrentExperimentError(
+            "open-ecology rollout worker provenance requires genome conditioning"
+        )
+    if not conditioned:
+        return {
+            "environment_seed": environment_seed,
+            "policy_sampling_seed": policy_sampling_seed,
+        }
+
+    raw_provenance = summary.get("world_seed_provenance")
+    if not isinstance(raw_provenance, Mapping):
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance must be a mapping"
+        )
+    if set(raw_provenance) != _CONDITIONED_WORLD_SEED_PROVENANCE_KEYS:
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance fields do not match the "
+            "exact contract"
+        )
+    population_mode, stream_seed = _genome_population_configuration(
+        population_mode=raw_provenance.get("genome_population_mode"),
+        stream_seed=raw_provenance.get("genome_stream_seed"),
+    )
+    if population_mode == RecurrentGenomePopulationMode.DISABLED.value:
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance requires an active population"
+        )
+    if (
+        raw_provenance.get("environment_seed") != environment_seed
+        or raw_provenance.get("policy_sampling_seed") != policy_sampling_seed
+        or raw_provenance.get("genome_conditioning_mode")
+        != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+    ):
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance disagrees with its summary"
+        )
+    probe = RecurrentRolloutBuffer()
+    try:
+        probe.register_world(
+            world_id,
+            environment_seed=environment_seed,
+            policy_sampling_seed=policy_sampling_seed,
+            genome_conditioning_mode=raw_provenance.get("genome_conditioning_mode"),
+            genome_population_mode=population_mode,
+            genome_stream_seed=stream_seed,
+            genome_population_binding_sha256=raw_provenance.get(
+                "genome_population_binding_sha256"
+            ),
+            genome_population_pre_founder_state_sha256=raw_provenance.get(
+                "genome_population_pre_founder_state_sha256"
+            ),
+        )
+        probe.finalize_world_genome_provenance(
+            world_id,
+            final_state_sha256=raw_provenance.get(
+                "genome_population_final_state_sha256"
+            ),
+            reset_state_sha256=raw_provenance.get(
+                "genome_population_reset_state_sha256"
+            ),
+        )
+    except ValueError as error:
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance is invalid"
+        ) from error
+    provenance = probe.world_seed_provenance[world_id]
+    if provenance != dict(raw_provenance):
+        raise RecurrentExperimentError(
+            "conditioned rollout worker provenance is not canonical"
+        )
+    if open_ecology:
+        provenance["open_ecology_task_provenance"] = (
+            _open_ecology_task_provenance_from_payload(
+                summary.get("open_ecology_task_provenance"),
+                environment_seed=environment_seed,
+                genome_stream_seed=stream_seed,
+                genome_population_mode=population_mode,
+            )
+        )
+    return provenance
+
+
+def _validate_rollout_worker_result(
+    *,
+    task: RecurrentRolloutTask,
+    summary: Mapping[str, object],
+    steps: Sequence[RecurrentRolloutStep],
+    genome_conditioning_mode: str,
+) -> dict[str, object]:
+    provenance = _summary_world_seed_provenance(summary)
+    exact_task_fields = {
+        "task_id": task.task_id,
+        "scenario": task.scenario,
+        "environment_seed": task.environment_seed,
+        "seed_role": task.seed_role,
+        "policy_sampling_identity": task.policy_sampling_identity,
+        "policy_sampling_seed": task.policy_sampling_seed,
+        "policy_sampling_seed_namespace": RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
+        "rollout_ticks": task.rollout_ticks,
+    }
+    if any(summary.get(key) != value for key, value in exact_task_fields.items()):
+        raise RecurrentExperimentError(
+            "rollout worker result task order, identity, or configuration drifted"
+        )
+    conditioned = (
+        task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value
+    )
+    if conditioned != ("world_seed_provenance" in summary):
+        raise RecurrentExperimentError(
+            "rollout worker summary conditioning shape disagrees with its task"
+        )
+    open_ecology = isinstance(task, OpenEcologyRolloutTask)
+    if open_ecology != ("open_ecology_task_provenance" in summary):
+        raise RecurrentExperimentError(
+            "rollout worker open-ecology provenance shape disagrees with its task"
+        )
+    if (
+        open_ecology
+        and provenance.get("open_ecology_task_provenance")
+        != task.open_ecology_task_provenance()
+    ):
+        raise RecurrentExperimentError(
+            "rollout worker open-ecology provenance disagrees with its task"
+        )
+    if conditioned:
+        if (
+            genome_conditioning_mode != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+            or provenance.get("genome_population_mode") != task.genome_population_mode
+            or provenance.get("genome_stream_seed") != task.genome_stream_seed
+        ):
+            raise RecurrentExperimentError(
+                "rollout worker genome provenance disagrees with its task or model"
+            )
+    elif genome_conditioning_mode != RECURRENT_GENOME_CONDITIONING_DISABLED:
+        raise RecurrentExperimentError(
+            "rollout worker omitted genome provenance for a conditioned model"
+        )
+    if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)) or not steps:
+        raise RecurrentExperimentError(
+            "rollout worker result must contain policy decision steps"
+        )
+    if any(not isinstance(step, RecurrentRolloutStep) for step in steps):
+        raise RecurrentExperimentError(
+            "rollout worker result contains an invalid rollout step"
+        )
+    for step in steps:
+        if (
+            step.world_id != task.task_id
+            or step.environment_seed != task.environment_seed
+            or step.policy_sampling_seed != task.policy_sampling_seed
+        ):
+            raise RecurrentExperimentError(
+                "rollout worker step identity or seed provenance drifted"
+            )
+        step_conditioned = step.genome_values is not None
+        if step_conditioned != conditioned:
+            raise RecurrentExperimentError(
+                "rollout worker step conditioning disagrees with its task"
+            )
+        if conditioned and step.genome_stream_seed != task.genome_stream_seed:
+            raise RecurrentExperimentError(
+                "rollout worker step genome stream seed drifted"
+            )
+    return provenance
 
 
 def configure_recurrent_training_determinism(
@@ -1405,7 +2668,13 @@ def configure_recurrent_training_determinism(
     _positive_seed(learner_seed, field="learner_seed")
     resolved = torch.device(device)
     if resolved.type == "cuda":
-        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        expected_workspace = ":4096:8"
+        observed_workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+        if observed_workspace not in {None, expected_workspace}:
+            raise RecurrentExperimentError(
+                "CUBLAS_WORKSPACE_CONFIG must be unset or exactly :4096:8"
+            )
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = expected_workspace
     torch.manual_seed(learner_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(learner_seed)
@@ -1416,6 +2685,41 @@ def configure_recurrent_training_determinism(
         torch.backends.cudnn.allow_tf32 = False
     if hasattr(torch.backends, "cuda"):
         torch.backends.cuda.matmul.allow_tf32 = False
+    if not torch.are_deterministic_algorithms_enabled():
+        raise RecurrentExperimentError(
+            "Torch deterministic algorithms did not remain enabled"
+        )
+    warn_only_enabled = getattr(
+        torch,
+        "is_deterministic_algorithms_warn_only_enabled",
+        None,
+    )
+    if callable(warn_only_enabled) and warn_only_enabled():
+        raise RecurrentExperimentError(
+            "Torch deterministic algorithms cannot use warn-only mode"
+        )
+    if hasattr(torch.backends, "cudnn") and (
+        torch.backends.cudnn.benchmark
+        or not torch.backends.cudnn.deterministic
+        or torch.backends.cudnn.allow_tf32
+    ):
+        raise RecurrentExperimentError(
+            "cuDNN deterministic runtime flags did not match the contract"
+        )
+    if (
+        hasattr(torch.backends, "cuda")
+        and torch.backends.cuda.matmul.allow_tf32
+    ):
+        raise RecurrentExperimentError(
+            "CUDA matrix multiplication TF32 remained enabled"
+        )
+    if (
+        resolved.type == "cuda"
+        and os.environ.get("CUBLAS_WORKSPACE_CONFIG") != ":4096:8"
+    ):
+        raise RecurrentExperimentError(
+            "CUBLAS_WORKSPACE_CONFIG did not match the deterministic contract"
+        )
 
 
 def _world_for_task(
@@ -1425,6 +2729,18 @@ def _world_for_task(
 ) -> SimulationWorld:
     world_ticks = task.rollout_ticks + 1
     if task.scenario == RECURRENT_BROAD_SCENARIO:
+        if isinstance(task, OpenEcologyRolloutTask):
+            treatment = task.open_ecology_treatment
+            return SimulationWorld(
+                WorldConfig(
+                    seed=task.environment_seed,
+                    max_ticks=world_ticks,
+                    initial_agents=treatment.initial_agents,
+                    max_agents=treatment.max_agents,
+                    signals=treatment.signals.as_signal_config(),
+                ),
+                policy=policy,
+            )
         return SimulationWorld(
             WorldConfig(seed=task.environment_seed, max_ticks=world_ticks),
             policy=policy,
@@ -1449,6 +2765,7 @@ def _rollout_diagnostics(
     world_scenario: dict[str, str] = {}
     world_seed_provenance: dict[str, dict[str, object]] = {}
     for summary in world_summaries:
+        summary_seed_provenance = _summary_world_seed_provenance(summary)
         world_id = summary.get("task_id")
         scenario = summary.get("scenario")
         if not isinstance(world_id, str) or not world_id:
@@ -1466,10 +2783,7 @@ def _rollout_diagnostics(
             raise RecurrentExperimentError(
                 f"rollout world summary has an invalid scenario: {scenario!r}"
             )
-        environment_seed = _positive_seed(
-            summary.get("environment_seed"),
-            field="world summary environment_seed",
-        )
+        environment_seed = int(summary_seed_provenance["environment_seed"])
         seed_role = summary.get("seed_role")
         legacy_seed_role = (
             "train" if scenario == RECURRENT_BROAD_SCENARIO else "curriculum"
@@ -1484,15 +2798,23 @@ def _rollout_diagnostics(
             if scenario == RECURRENT_BROAD_SCENARIO
             else "scale_v2_curriculum"
         )
+        open_ecology_seed_role = (
+            OPEN_ECOLOGY_TRAINING_SEED_ROLE
+            if scenario == RECURRENT_BROAD_SCENARIO
+            else None
+        )
         if seed_role not in {
             legacy_seed_role,
             scale_seed_role,
             scale_v2_seed_role,
+            open_ecology_seed_role,
         }:
             raise RecurrentExperimentError(
                 "world summary seed role does not match its training scenario"
             )
-        if seed_role == legacy_seed_role:
+        if seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE:
+            seed_registry = OPEN_ECOLOGY_SEED_REGISTRY
+        elif seed_role == legacy_seed_role:
             seed_registry = RECURRENT_SEED_REGISTRY
         elif seed_role == scale_seed_role:
             seed_registry = SCALE_DEVELOPMENT_SEED_REGISTRY
@@ -1502,10 +2824,16 @@ def _rollout_diagnostics(
             raise RecurrentExperimentError(
                 "world summary environment seed is outside its canonical training role"
             )
-        policy_sampling_seed = _policy_sampling_seed(
-            summary.get("policy_sampling_seed"),
-            field="world summary policy_sampling_seed",
+        open_ecology_provenance = summary_seed_provenance.get(
+            "open_ecology_task_provenance"
         )
+        if (seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE) != (
+            open_ecology_provenance is not None
+        ):
+            raise RecurrentExperimentError(
+                "world summary open-ecology role and treatment provenance disagree"
+            )
+        policy_sampling_seed = int(summary_seed_provenance["policy_sampling_seed"])
         policy_sampling_identity = summary.get("policy_sampling_identity")
         if (
             not isinstance(policy_sampling_identity, str)
@@ -1536,6 +2864,18 @@ def _rollout_diagnostics(
             "policy_sampling_identity": policy_sampling_identity,
             "policy_sampling_seed": policy_sampling_seed,
         }
+        if summary_seed_provenance.keys() != _LEGACY_WORLD_SEED_PROVENANCE_KEYS:
+            world_seed_provenance[world_id].update(
+                {
+                    key: value
+                    for key, value in summary_seed_provenance.items()
+                    if key
+                    not in {
+                        "environment_seed",
+                        "policy_sampling_seed",
+                    }
+                }
+            )
     unknown_world_ids = sorted({step.world_id for step in steps} - set(world_scenario))
     if unknown_world_ids:
         raise RecurrentExperimentError(
@@ -1551,16 +2891,38 @@ def _rollout_diagnostics(
             raise RecurrentExperimentError(
                 "rollout step policy seed does not match its world summary"
             )
+        step_conditioned = step.genome_values is not None
+        provenance_conditioned = (
+            provenance.get("genome_conditioning_mode")
+            == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        )
+        if step_conditioned != provenance_conditioned:
+            raise RecurrentExperimentError(
+                "rollout step conditioning does not match its world summary"
+            )
+        if step_conditioned and step.genome_stream_seed != provenance.get(
+            "genome_stream_seed"
+        ):
+            raise RecurrentExperimentError(
+                "rollout step genome stream seed does not match its world summary"
+            )
     buffer_provenance = buffer.world_seed_provenance
     if set(buffer_provenance) != set(world_seed_provenance):
         raise RecurrentExperimentError(
             "rollout buffer and world summaries cover different seed provenance"
         )
     for world_id, provenance in world_seed_provenance.items():
-        if buffer_provenance[world_id] != {
-            "environment_seed": provenance["environment_seed"],
-            "policy_sampling_seed": provenance["policy_sampling_seed"],
-        }:
+        expected_buffer_provenance = {
+            key: value
+            for key, value in provenance.items()
+            if key
+            not in {
+                "seed_role",
+                "policy_sampling_identity",
+                "open_ecology_task_provenance",
+            }
+        }
+        if buffer_provenance[world_id] != expected_buffer_provenance:
             raise RecurrentExperimentError(
                 "rollout buffer seed provenance does not match world summary"
             )
@@ -1797,6 +3159,12 @@ def _positive_int(value: object, *, field: str) -> int:
     return value
 
 
+def _nonnegative_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RecurrentExperimentError(f"{field} must be a non-negative integer")
+    return value
+
+
 def _positive_seed(value: object, *, field: str) -> int:
     parsed = _positive_int(value, field=field)
     if parsed > 2**31 - 1:
@@ -1825,6 +3193,18 @@ def _rollout_worker_count(value: object) -> int:
 
 
 __all__ = [
+    "OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES",
+    "OPEN_ECOLOGY_MAX_AGENTS",
+    "OPEN_ECOLOGY_PHASE_A",
+    "OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE",
+    "OPEN_ECOLOGY_PHASE_B",
+    "OPEN_ECOLOGY_PHASE_B_DENSITY_CYCLE",
+    "OPEN_ECOLOGY_POLICY_SAMPLING_TASK_IDENTITY_VERSION",
+    "OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION",
+    "OPEN_ECOLOGY_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION",
+    "OPEN_ECOLOGY_TRAINING_SEED_ROLE",
+    "OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION",
+    "OPEN_ECOLOGY_TRAINING_PHASES",
     "RECURRENT_BROAD_SCENARIO",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION",
     "RECURRENT_EXPERIMENT_CONTRACT_VERSION",
@@ -1850,10 +3230,15 @@ __all__ = [
     "RecurrentRolloutBatchDiagnostics",
     "RecurrentRolloutScopeDiagnostics",
     "RecurrentRolloutTask",
+    "OpenEcologyBroadWorldTreatment",
+    "OpenEcologyLaunchDependencies",
+    "OpenEcologyRolloutTask",
+    "OpenEcologySignalTreatment",
     "RecurrentTrainingRunResult",
     "RecurrentTrainingUpdateResult",
     "build_recurrent_counterfactual_collection_tasks",
     "build_recurrent_training_schedule",
+    "build_open_ecology_training_schedule",
     "collect_recurrent_rollout_batch",
     "configure_recurrent_training_determinism",
     "derive_recurrent_policy_sampling_seed",
