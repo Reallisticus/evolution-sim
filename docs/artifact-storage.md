@@ -87,6 +87,35 @@ for the compressed archive but never another uncompressed copy. When the Mac is
 critically full, first remove only already-verified expanded backup copies or
 place `--output-dir` on another volume.
 
+## Stream a GPU-host campaign without using Mac staging space
+
+For campaigns generated on `gpu4070`, keep the expanded evidence and temporary
+compressed archive on the server's NVMe. The coordinator can invoke the same
+deterministic archiver remotely and pipe each resulting object directly from
+SSH stdout into rclone stdin:
+
+```bash
+python3 scripts/stream_remote_evolution_archive.py \
+  --ssh-target gpu4070 \
+  --remote-repository-root /home/train/evolution-sim-open-ecology-checkouts/COMMIT \
+  --remote-input-dir /home/train/evolution-sim-open-ecology-runs/CAMPAIGN \
+  --remote-staging-dir /home/train/evolution-sim-open-ecology-archives \
+  --archive-name YYYYMMDDTHHMMSSZ-CAMPAIGN.tar.zst
+```
+
+This path does not put archive payload bytes on the Mac filesystem. It first
+creates and validates the deterministic archive on the server, refuses any
+destination-name collision, streams the archive, manifest, and SHA sidecar
+directly into `gdrive:evolution-sim-backups/archives`, and streams all three
+Drive objects back through SHA256 for comparison with independently hashed
+server files.
+
+The streaming tool never deletes the server's source or staging files. Treat
+its successful JSON result as an archival verification gate, inspect the
+recorded object paths and digests, and only then schedule a separate,
+explicitly scoped server cleanup. This separation ensures a transfer bug can
+never silently turn into source deletion.
+
 ## Restore
 
 Download all three objects into a new empty directory:
