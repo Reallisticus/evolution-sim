@@ -22,6 +22,9 @@ from evolution_sim.env.runtime.action_contract import (
 )
 from evolution_sim.mind.recurrent_actor_critic import (
     ACTION_COUNT,
+    CRITIC_GENOME_CONDITIONING_NONE,
+    GENOME_CONDITIONING_ACTOR_FILM_V1,
+    GENOME_CONDITIONING_DISABLED,
     PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
     RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
@@ -29,29 +32,30 @@ from evolution_sim.mind.recurrent_actor_critic import (
     RecurrentActorCriticConfig,
     recurrent_actor_critic_contract,
 )
+from evolution_sim.mind.recurrent_genome import RECURRENT_CONTROLLER_GENOME_SIZE
 
 
-RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v2"
+RECURRENT_ARTIFACT_SCHEMA_VERSION = "mind_public_recurrent_actor_critic_artifact_v3"
 FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION = (
-    "mind_public_recurrent_frozen_policy_artifact_v3"
+    "mind_public_recurrent_frozen_policy_artifact_v4"
 )
 FROZEN_RECURRENT_POLICY_ARTIFACT_KIND = "frozen_recurrent_policy"
-RECURRENT_REPLAY_PROBE_CONTRACT_VERSION = "mind_public_recurrent_cpu_replay_probe_v2"
+RECURRENT_REPLAY_PROBE_CONTRACT_VERSION = "mind_public_recurrent_cpu_replay_probe_v3"
 FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION = (
     "mind_public_recurrent_full_world_replay_manifest_v1"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_SCHEMA_VERSION = (
-    "mind_public_recurrent_training_crash_checkpoint_v2"
+    "mind_public_recurrent_training_crash_checkpoint_v3"
 )
 RECURRENT_TRAINING_CRASH_CHECKPOINT_KIND = "optimizer_rng_crash_checkpoint"
 RECURRENT_TENSOR_ENCODING = "base64_raw"
 RECURRENT_TENSOR_DTYPE = "float32_le"
 RECURRENT_MODEL_DIGEST_POLICY = "length_prefixed_tensor_records_and_bytes_v1"
-RECURRENT_ARTIFACT_DIGEST_POLICY = "canonical_json_without_artifact_sha256_v1"
+RECURRENT_ARTIFACT_DIGEST_POLICY = "canonical_json_without_artifact_sha256_v2"
 FROZEN_RECURRENT_POLICY_ARTIFACT_DIGEST_POLICY = (
-    "canonical_json_without_artifact_sha256_v2"
+    "canonical_json_without_artifact_sha256_v3"
 )
-RECURRENT_CRASH_CHECKPOINT_DIGEST_POLICY = "canonical_json_without_checkpoint_sha256_v1"
+RECURRENT_CRASH_CHECKPOINT_DIGEST_POLICY = "canonical_json_without_checkpoint_sha256_v2"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _TOP_LEVEL_KEYS = frozenset(
@@ -114,6 +118,9 @@ _CONFIG_KEYS = frozenset(
         "recurrent_layers",
         "public_input_schema_version",
         "public_input_size",
+        "genome_conditioning_mode",
+        "critic_genome_conditioning",
+        "value_trunk_gradient",
     }
 )
 _FROZEN_POLICY_TOP_LEVEL_KEYS = frozenset(
@@ -165,10 +172,28 @@ _REPLAY_PROBE_KEYS = frozenset(
         "observations",
         "action_masks",
         "previous_feedback",
+        "genome_values",
+        "zero_genome_evidence",
         "expected_raw_logits",
         "expected_values",
         "expected_actions",
         "expected_next_state",
+    }
+)
+_ZERO_GENOME_EVIDENCE_KEYS = frozenset(
+    {
+        "genome_values",
+        "expected_raw_logits",
+        "expected_values",
+        "expected_actions",
+        "expected_next_state",
+        "neutral_against_disabled_path",
+    }
+)
+_GENOME_FILM_BUFFER_NAMES = frozenset(
+    {
+        "_genome_film_scale_coefficients",
+        "_genome_film_bias_coefficients",
     }
 )
 _FULL_WORLD_REPLAY_MANIFEST_KEYS = frozenset(
@@ -281,7 +306,7 @@ def build_recurrent_artifact(
     artifact: dict[str, object] = {
         "schema_version": RECURRENT_ARTIFACT_SCHEMA_VERSION,
         "serialization": {
-            "format": "json_tensor_artifact_v1",
+            "format": "json_tensor_artifact_v2",
             "tensor_encoding": RECURRENT_TENSOR_ENCODING,
             "tensor_dtype": RECURRENT_TENSOR_DTYPE,
             "tensor_byte_order": "little",
@@ -459,7 +484,7 @@ def build_frozen_recurrent_policy_artifact(
     probe = _build_cpu_replay_probe(cpu_model)
 
     serialization = dict(legacy["serialization"])
-    serialization["format"] = "json_frozen_policy_tensor_artifact_v2"
+    serialization["format"] = "json_frozen_policy_tensor_artifact_v3"
     serialization["artifact_digest_policy"] = (
         FROZEN_RECURRENT_POLICY_ARTIFACT_DIGEST_POLICY
     )
@@ -709,7 +734,7 @@ def _validate_frozen_policy_and_decode(
     serialization = _required_mapping(artifact.get("serialization"), "serialization")
     _require_exact_keys(serialization, _SERIALIZATION_KEYS, field="serialization")
     expected_serialization = {
-        "format": "json_frozen_policy_tensor_artifact_v2",
+        "format": "json_frozen_policy_tensor_artifact_v3",
         "tensor_encoding": RECURRENT_TENSOR_ENCODING,
         "tensor_dtype": RECURRENT_TENSOR_DTYPE,
         "tensor_byte_order": "little",
@@ -828,7 +853,7 @@ def _validated_model_from_extended_artifact(
     tensors: object,
 ) -> _ValidatedArtifact:
     legacy_serialization = dict(serialization)
-    legacy_serialization["format"] = "json_tensor_artifact_v1"
+    legacy_serialization["format"] = "json_tensor_artifact_v2"
     legacy_serialization["artifact_digest_policy"] = RECURRENT_ARTIFACT_DIGEST_POLICY
     legacy_provenance = {key: provenance[key] for key in _PROVENANCE_KEYS}
     legacy: dict[str, object] = {
@@ -840,6 +865,47 @@ def _validated_model_from_extended_artifact(
     }
     legacy["artifact_sha256"] = _artifact_sha256(legacy)
     return _validate_and_decode(legacy)
+
+
+def _canonical_probe_genome_values(*, batch_size: int) -> Tensor:
+    positions = torch.arange(
+        batch_size * RECURRENT_CONTROLLER_GENOME_SIZE,
+        dtype=torch.float32,
+        device="cpu",
+    ).reshape(batch_size, RECURRENT_CONTROLLER_GENOME_SIZE)
+    return ((positions.remainder(31.0) - 15.0) / 15.0).contiguous()
+
+
+def _disabled_genome_reference_model(
+    model: PublicRecurrentActorCritic,
+) -> PublicRecurrentActorCritic:
+    config = model.config
+    disabled_config = RecurrentActorCriticConfig(
+        encoder_size=config.encoder_size,
+        hidden_size=config.hidden_size,
+        recurrent_layers=config.recurrent_layers,
+        public_input_schema_version=config.public_input_schema_version,
+        public_input_size=config.public_input_size,
+        genome_conditioning_mode=GENOME_CONDITIONING_DISABLED,
+        critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+        value_trunk_gradient=config.value_trunk_gradient,
+    )
+    reference = PublicRecurrentActorCritic(
+        disabled_config,
+        initialization_seed=0,
+    ).to(device="cpu", dtype=torch.float32)
+    source_state = {
+        name: tensor
+        for name, tensor in model.state_dict().items()
+        if name not in _GENOME_FILM_BUFFER_NAMES
+    }
+    if set(source_state) != set(reference.state_dict()):
+        raise RecurrentArtifactError(
+            "enabled model parameters do not match the disabled neutral reference"
+        )
+    reference.load_state_dict(source_state, strict=True)
+    reference.eval()
+    return reference
 
 
 def _build_cpu_replay_probe(
@@ -863,13 +929,76 @@ def _build_cpu_replay_probe(
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         dtype=torch.float32,
     )
+    genome_values: Tensor | None = None
+    zero_genome_evidence: dict[str, object] | None = None
+    act_kwargs: dict[str, object] = {}
+    if model.config.genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1:
+        genome_values = _canonical_probe_genome_values(batch_size=batch_size)
+        zero_genome_values = torch.zeros_like(genome_values)
+        act_kwargs["genome_values"] = genome_values
     with torch.no_grad():
         selected = model.act(
             observations,
             action_masks,
             previous_feedback,
             deterministic=True,
+            **act_kwargs,
         )
+        if genome_values is not None:
+            zero_selected = model.act(
+                observations,
+                action_masks,
+                previous_feedback,
+                genome_values=zero_genome_values,
+                deterministic=True,
+            )
+            disabled_reference = _disabled_genome_reference_model(model)
+            disabled_selected = disabled_reference.act(
+                observations,
+                action_masks,
+                previous_feedback,
+                deterministic=True,
+            )
+            for label, actual, expected in (
+                (
+                    "raw logits",
+                    zero_selected.raw_logits,
+                    disabled_selected.raw_logits,
+                ),
+                ("values", zero_selected.values, disabled_selected.values),
+                ("actions", zero_selected.actions, disabled_selected.actions),
+                (
+                    "next state",
+                    zero_selected.next_state,
+                    disabled_selected.next_state,
+                ),
+            ):
+                if not torch.equal(actual, expected):
+                    raise RecurrentArtifactError(
+                        f"zero genome is not neutral for replay probe {label}"
+                    )
+            zero_genome_evidence = {
+                "genome_values": _encode_tensor(
+                    "probe.zero_genome_values",
+                    zero_genome_values,
+                ),
+                "expected_raw_logits": _encode_tensor(
+                    "probe.zero_expected_raw_logits",
+                    zero_selected.raw_logits,
+                ),
+                "expected_values": _encode_tensor(
+                    "probe.zero_expected_values",
+                    zero_selected.values,
+                ),
+                "expected_actions": [
+                    int(value) for value in zero_selected.actions.tolist()
+                ],
+                "expected_next_state": _encode_tensor(
+                    "probe.zero_expected_next_state",
+                    zero_selected.next_state,
+                ),
+                "neutral_against_disabled_path": True,
+            }
     return {
         "deterministic": True,
         "observations": _encode_tensor("probe.observations", observations),
@@ -877,6 +1006,12 @@ def _build_cpu_replay_probe(
         "previous_feedback": _encode_tensor(
             "probe.previous_feedback", previous_feedback
         ),
+        "genome_values": (
+            None
+            if genome_values is None
+            else _encode_tensor("probe.genome_values", genome_values)
+        ),
+        "zero_genome_evidence": zero_genome_evidence,
         "expected_raw_logits": _encode_tensor(
             "probe.expected_raw_logits", selected.raw_logits
         ),
@@ -889,23 +1024,45 @@ def _build_cpu_replay_probe(
 
 
 def _replay_probe_input_sha256(probe: Mapping[str, object]) -> str:
+    zero_genome_evidence = probe.get("zero_genome_evidence")
     return _json_sha256(
         {
             "deterministic": probe.get("deterministic"),
             "observations": probe.get("observations"),
             "action_masks": probe.get("action_masks"),
             "previous_feedback": probe.get("previous_feedback"),
+            "genome_values": probe.get("genome_values"),
+            "zero_genome_values": (
+                zero_genome_evidence.get("genome_values")
+                if isinstance(zero_genome_evidence, Mapping)
+                else None
+            ),
         }
     )
 
 
 def _replay_probe_output_sha256(probe: Mapping[str, object]) -> str:
+    zero_genome_evidence = probe.get("zero_genome_evidence")
     return _json_sha256(
         {
             "expected_raw_logits": probe.get("expected_raw_logits"),
             "expected_values": probe.get("expected_values"),
             "expected_actions": probe.get("expected_actions"),
             "expected_next_state": probe.get("expected_next_state"),
+            "zero_genome_evidence": (
+                {
+                    key: zero_genome_evidence.get(key)
+                    for key in (
+                        "expected_raw_logits",
+                        "expected_values",
+                        "expected_actions",
+                        "expected_next_state",
+                        "neutral_against_disabled_path",
+                    )
+                }
+                if isinstance(zero_genome_evidence, Mapping)
+                else None
+            ),
         }
     )
 
@@ -923,6 +1080,80 @@ def _verify_cpu_replay_probe(
         probe.get("previous_feedback"),
         expected_name="probe.previous_feedback",
     )
+    genome_values: Tensor | None = None
+    zero_genome_expected: tuple[Tensor, Tensor, Tensor, Tensor] | None = None
+    if model.config.genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1:
+        if probe.get("genome_values") is None:
+            raise RecurrentArtifactError(
+                "enabled replay probe requires explicit genome_values"
+            )
+        genome_values = _decode_float32_record(
+            probe.get("genome_values"),
+            expected_name="probe.genome_values",
+        )
+        expected_genomes = _canonical_probe_genome_values(
+            batch_size=observations.shape[0]
+        )
+        if not torch.equal(genome_values, expected_genomes):
+            raise RecurrentArtifactError(
+                "replay probe genome_values are not the canonical nonzero probe"
+            )
+        if not bool((genome_values != 0.0).any().item()):
+            raise RecurrentArtifactError(
+                "enabled replay probe genome_values must be nonzero"
+            )
+        zero_evidence = _required_mapping(
+            probe.get("zero_genome_evidence"),
+            "verification.probe.zero_genome_evidence",
+        )
+        _require_exact_keys(
+            zero_evidence,
+            _ZERO_GENOME_EVIDENCE_KEYS,
+            field="verification.probe.zero_genome_evidence",
+        )
+        if zero_evidence.get("neutral_against_disabled_path") is not True:
+            raise RecurrentArtifactError("zero-genome replay evidence is not neutral")
+        zero_genome_values = _decode_float32_record(
+            zero_evidence.get("genome_values"),
+            expected_name="probe.zero_genome_values",
+        )
+        if zero_genome_values.shape != genome_values.shape or not torch.equal(
+            zero_genome_values,
+            torch.zeros_like(genome_values),
+        ):
+            raise RecurrentArtifactError(
+                "zero-genome replay evidence must contain exact zero rows"
+            )
+        zero_actions_value = zero_evidence.get("expected_actions")
+        if not isinstance(zero_actions_value, list) or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in zero_actions_value
+        ):
+            raise RecurrentArtifactError(
+                "zero-genome replay expected_actions are invalid"
+            )
+        zero_genome_expected = (
+            _decode_float32_record(
+                zero_evidence.get("expected_raw_logits"),
+                expected_name="probe.zero_expected_raw_logits",
+            ),
+            _decode_float32_record(
+                zero_evidence.get("expected_values"),
+                expected_name="probe.zero_expected_values",
+            ),
+            torch.tensor(zero_actions_value, dtype=torch.long),
+            _decode_float32_record(
+                zero_evidence.get("expected_next_state"),
+                expected_name="probe.zero_expected_next_state",
+            ),
+        )
+    elif (
+        probe.get("genome_values") is not None
+        or probe.get("zero_genome_evidence") is not None
+    ):
+        raise RecurrentArtifactError(
+            "disabled replay probe must not contain genome evidence"
+        )
     raw_logits = _decode_float32_record(
         probe.get("expected_raw_logits"),
         expected_name="probe.expected_raw_logits",
@@ -965,6 +1196,7 @@ def _verify_cpu_replay_probe(
                 observations,
                 action_masks,
                 previous_feedback,
+                genome_values=genome_values,
                 deterministic=True,
             )
     except (ValueError, RuntimeError) as exc:
@@ -980,6 +1212,67 @@ def _verify_cpu_replay_probe(
     for label, actual, expected in comparisons:
         if not torch.equal(actual, expected):
             raise RecurrentArtifactError(f"CPU replay probe {label} mismatch")
+    if genome_values is not None:
+        assert zero_genome_expected is not None
+        with torch.no_grad():
+            zero_observed = model.act(
+                observations,
+                action_masks,
+                previous_feedback,
+                genome_values=torch.zeros_like(genome_values),
+                deterministic=True,
+            )
+            disabled_observed = _disabled_genome_reference_model(model).act(
+                observations,
+                action_masks,
+                previous_feedback,
+                deterministic=True,
+            )
+        zero_comparisons = (
+            (
+                "zero-genome raw logits",
+                zero_observed.raw_logits,
+                zero_genome_expected[0],
+            ),
+            (
+                "zero-genome values",
+                zero_observed.values,
+                zero_genome_expected[1],
+            ),
+            (
+                "zero-genome actions",
+                zero_observed.actions,
+                zero_genome_expected[2],
+            ),
+            (
+                "zero-genome next state",
+                zero_observed.next_state,
+                zero_genome_expected[3],
+            ),
+            (
+                "zero-genome neutral raw logits",
+                zero_observed.raw_logits,
+                disabled_observed.raw_logits,
+            ),
+            (
+                "zero-genome neutral values",
+                zero_observed.values,
+                disabled_observed.values,
+            ),
+            (
+                "zero-genome neutral actions",
+                zero_observed.actions,
+                disabled_observed.actions,
+            ),
+            (
+                "zero-genome neutral next state",
+                zero_observed.next_state,
+                disabled_observed.next_state,
+            ),
+        )
+        for label, actual, expected in zero_comparisons:
+            if not torch.equal(actual, expected):
+                raise RecurrentArtifactError(f"CPU replay probe {label} mismatch")
 
 
 def _validated_full_world_replay_manifest(value: object) -> dict[str, object]:
@@ -1144,7 +1437,7 @@ def _validate_crash_checkpoint_and_decode(
     model_payload = checkpoint.get("model")
     tensors = checkpoint.get("model_tensors")
     serialization = {
-        "format": "json_tensor_artifact_v1",
+        "format": "json_tensor_artifact_v2",
         "tensor_encoding": RECURRENT_TENSOR_ENCODING,
         "tensor_dtype": RECURRENT_TENSOR_DTYPE,
         "tensor_byte_order": "little",
@@ -1208,7 +1501,7 @@ def _validate_and_decode(
     serialization = _required_mapping(artifact.get("serialization"), "serialization")
     _require_exact_keys(serialization, _SERIALIZATION_KEYS, field="serialization")
     expected_serialization = {
-        "format": "json_tensor_artifact_v1",
+        "format": "json_tensor_artifact_v2",
         "tensor_encoding": RECURRENT_TENSOR_ENCODING,
         "tensor_dtype": RECURRENT_TENSOR_DTYPE,
         "tensor_byte_order": "little",
@@ -1241,6 +1534,18 @@ def _validate_and_decode(
             public_input_size=_strict_int(
                 config_payload.get("public_input_size"),
                 "public_input_size",
+            ),
+            genome_conditioning_mode=_strict_text(
+                config_payload.get("genome_conditioning_mode"),
+                "genome_conditioning_mode",
+            ),
+            critic_genome_conditioning=_strict_text(
+                config_payload.get("critic_genome_conditioning"),
+                "critic_genome_conditioning",
+            ),
+            value_trunk_gradient=_strict_text(
+                config_payload.get("value_trunk_gradient"),
+                "value_trunk_gradient",
             ),
         )
     except ValueError as exc:
@@ -1318,7 +1623,15 @@ def _validate_and_decode(
         if not bool(np.isfinite(values).all()):
             raise RecurrentArtifactError(f"tensor {name} contains a non-finite value")
         copied = np.array(values, dtype=np.float32, copy=True).reshape(shape)
-        state_dict[name] = torch.from_numpy(copied)
+        decoded_tensor = torch.from_numpy(copied)
+        if name in _GENOME_FILM_BUFFER_NAMES and not torch.equal(
+            decoded_tensor,
+            expected_state[name],
+        ):
+            raise RecurrentArtifactError(
+                f"fixed genome conditioning buffer {name} drifted"
+            )
+        state_dict[name] = decoded_tensor
         validated_records.append(dict(record))
     if observed_names != expected_names:
         raise RecurrentArtifactError(

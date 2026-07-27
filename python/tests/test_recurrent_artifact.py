@@ -21,8 +21,11 @@ if torch is not None:
     from evolution_sim.env.world import SimulationWorld
     from evolution_sim.mind.recurrent_actor_critic import (
         ACTION_COUNT,
+        CRITIC_GENOME_CONDITIONING_FILM_V1,
+        GENOME_CONDITIONING_ACTOR_FILM_V1,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PUBLIC_INPUT_SIZE,
+        VALUE_TRUNK_GRADIENT_STOP_V1,
         PublicInputError,
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
@@ -73,6 +76,18 @@ class RecurrentArtifactTests(unittest.TestCase):
         )
         self.assertEqual(artifact["model"]["public_input_size"], 541)
         self.assertEqual(artifact["model"]["learned_encoder_input_size"], 604)
+        self.assertEqual(
+            artifact["model"]["config"]["genome_conditioning_mode"],
+            "disabled",
+        )
+        self.assertEqual(
+            artifact["model"]["config"]["critic_genome_conditioning"],
+            "none",
+        )
+        self.assertEqual(
+            artifact["model"]["config"]["value_trunk_gradient"],
+            "shared",
+        )
         self.assertEqual(artifact["model"]["action_ordering"], list(ACTION_NAMES))
         self.assertEqual(artifact["serialization"]["tensor_dtype"], "float32_le")
         self.assertEqual(artifact["serialization"]["tensor_byte_order"], "little")
@@ -121,6 +136,55 @@ class RecurrentArtifactTests(unittest.TestCase):
         torch.testing.assert_close(
             original.next_state, loaded.next_state, rtol=0, atol=0
         )
+
+    def test_enabled_artifact_round_trip_binds_config_buffers_and_inference(
+        self,
+    ) -> None:
+        model = self._enabled_model()
+        artifact = self._artifact(model=model)
+        loaded_model = model_from_recurrent_artifact(artifact)
+        config = artifact["model"]["config"]
+        tensor_names = {record["name"] for record in artifact["tensors"]}
+        observations, masks, feedback = self._inputs(batch_size=8)
+        genomes = self._genome_values(batch_size=8)
+
+        self.assertEqual(
+            config["genome_conditioning_mode"],
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        self.assertEqual(
+            config["critic_genome_conditioning"],
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        )
+        self.assertEqual(
+            config["value_trunk_gradient"],
+            VALUE_TRUNK_GRADIENT_STOP_V1,
+        )
+        self.assertIn("_genome_film_scale_coefficients", tensor_names)
+        self.assertIn("_genome_film_bias_coefficients", tensor_names)
+        self.assertEqual(
+            loaded_model.config.genome_conditioning_mode,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        with torch.no_grad():
+            original = model.act(
+                observations,
+                masks,
+                feedback,
+                genome_values=genomes,
+                deterministic=True,
+            )
+            loaded = loaded_model.act(
+                observations,
+                masks,
+                feedback,
+                genome_values=genomes,
+                deterministic=True,
+            )
+        self.assertTrue(torch.equal(original.raw_logits, loaded.raw_logits))
+        self.assertTrue(torch.equal(original.values, loaded.values))
+        self.assertTrue(torch.equal(original.actions, loaded.actions))
+        self.assertTrue(torch.equal(original.next_state, loaded.next_state))
 
     def test_token_aware_artifact_round_trip_binds_shape_and_base_mismatch_fails(
         self,
@@ -323,7 +387,7 @@ class RecurrentArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(RecurrentArtifactError, "duplicate"):
                 load_recurrent_artifact(path)
 
-    def test_frozen_policy_v2_binds_exact_hashes_and_executes_cpu_probe(self) -> None:
+    def test_frozen_policy_v4_binds_exact_hashes_and_executes_cpu_probe(self) -> None:
         artifact = self._frozen_artifact()
 
         self.assertEqual(
@@ -376,6 +440,137 @@ class RecurrentArtifactTests(unittest.TestCase):
         torch.testing.assert_close(original.values, restored.values, rtol=0, atol=0)
         torch.testing.assert_close(original.actions, restored.actions, rtol=0, atol=0)
 
+    def test_enabled_frozen_probe_replays_nonzero_and_zero_neutral_genomes(
+        self,
+    ) -> None:
+        model = self._enabled_model()
+        artifact = self._frozen_artifact(model=model)
+        probe = artifact["verification"]["probe"]
+        zero_evidence = probe["zero_genome_evidence"]
+        genomes = self._decode_float32_record(probe["genome_values"])
+        zero_genomes = self._decode_float32_record(zero_evidence["genome_values"])
+
+        self.assertEqual(probe["genome_values"]["shape"], [4, 16])
+        self.assertTrue(bool((genomes != 0.0).any().item()))
+        self.assertTrue(torch.equal(zero_genomes, torch.zeros_like(zero_genomes)))
+        self.assertIs(zero_evidence["neutral_against_disabled_path"], True)
+        self.assertEqual(
+            artifact["verification"]["probe_input_sha256"],
+            hashlib.sha256(
+                self._canonical_json(self._probe_input_payload(probe))
+            ).hexdigest(),
+        )
+        self.assertEqual(
+            artifact["verification"]["probe_output_sha256"],
+            hashlib.sha256(
+                self._canonical_json(self._probe_output_payload(probe))
+            ).hexdigest(),
+        )
+        validate_frozen_recurrent_policy_artifact(artifact)
+        loaded = model_from_frozen_recurrent_policy_artifact(artifact)
+        observations = self._decode_float32_record(probe["observations"])
+        feedback = self._decode_float32_record(probe["previous_feedback"])
+        masks = torch.tensor(probe["action_masks"], dtype=torch.bool)
+        with torch.no_grad():
+            restored = loaded.act(
+                observations,
+                masks,
+                feedback,
+                genome_values=genomes,
+                deterministic=True,
+            )
+        expected_logits = self._decode_float32_record(probe["expected_raw_logits"])
+        expected_values = self._decode_float32_record(probe["expected_values"])
+        self.assertTrue(torch.equal(restored.raw_logits, expected_logits))
+        self.assertTrue(torch.equal(restored.values, expected_values))
+
+    def test_enabled_artifact_missing_or_tampered_genome_contract_fails_closed(
+        self,
+    ) -> None:
+        model = self._enabled_model()
+
+        missing_config = self._artifact(model=model)
+        del missing_config["model"]["config"]["genome_conditioning_mode"]
+        self._refresh_artifact_digest(missing_config)
+        with self.assertRaisesRegex(RecurrentArtifactError, "model.config keys"):
+            validate_recurrent_artifact(missing_config)
+
+        missing_buffer = self._artifact(model=model)
+        missing_buffer["tensors"] = [
+            record
+            for record in missing_buffer["tensors"]
+            if record["name"] != "_genome_film_bias_coefficients"
+        ]
+        missing_buffer["serialization"]["tensor_count"] = len(missing_buffer["tensors"])
+        missing_buffer["serialization"]["whole_model_sha256"] = (
+            self._whole_model_sha256(missing_buffer["tensors"])
+        )
+        self._refresh_artifact_digest(missing_buffer)
+        with self.assertRaisesRegex(RecurrentArtifactError, "tensor names"):
+            validate_recurrent_artifact(missing_buffer)
+
+        changed_buffer = self._artifact(model=model)
+        buffer_record = next(
+            record
+            for record in changed_buffer["tensors"]
+            if record["name"] == "_genome_film_scale_coefficients"
+        )
+        self._change_first_float(buffer_record, delta=0.01)
+        changed_buffer["serialization"]["whole_model_sha256"] = (
+            self._whole_model_sha256(changed_buffer["tensors"])
+        )
+        self._refresh_artifact_digest(changed_buffer)
+        with self.assertRaisesRegex(
+            RecurrentArtifactError,
+            "fixed genome conditioning buffer",
+        ):
+            validate_recurrent_artifact(changed_buffer)
+
+        missing_probe_genome = self._frozen_artifact(model=model)
+        probe = missing_probe_genome["verification"]["probe"]
+        probe["genome_values"] = None
+        missing_probe_genome["verification"]["probe_input_sha256"] = hashlib.sha256(
+            self._canonical_json(self._probe_input_payload(probe))
+        ).hexdigest()
+        self._refresh_artifact_digest(missing_probe_genome)
+        with self.assertRaisesRegex(RecurrentArtifactError, "requires explicit"):
+            validate_frozen_recurrent_policy_artifact(missing_probe_genome)
+
+        changed_probe_genome = self._frozen_artifact(model=model)
+        probe = changed_probe_genome["verification"]["probe"]
+        self._change_first_float(probe["genome_values"], delta=0.01)
+        changed_probe_genome["verification"]["probe_input_sha256"] = hashlib.sha256(
+            self._canonical_json(self._probe_input_payload(probe))
+        ).hexdigest()
+        self._refresh_artifact_digest(changed_probe_genome)
+        with self.assertRaisesRegex(RecurrentArtifactError, "canonical nonzero"):
+            validate_frozen_recurrent_policy_artifact(changed_probe_genome)
+
+        frozen_missing_config = self._frozen_artifact(model=model)
+        del frozen_missing_config["model"]["config"]["critic_genome_conditioning"]
+        self._refresh_artifact_digest(frozen_missing_config)
+        with self.assertRaisesRegex(RecurrentArtifactError, "model.config keys"):
+            validate_frozen_recurrent_policy_artifact(frozen_missing_config)
+
+        frozen_missing_buffer = self._frozen_artifact(model=model)
+        frozen_missing_buffer["tensors"] = [
+            record
+            for record in frozen_missing_buffer["tensors"]
+            if record["name"] != "_genome_film_scale_coefficients"
+        ]
+        frozen_missing_buffer["serialization"]["tensor_count"] = len(
+            frozen_missing_buffer["tensors"]
+        )
+        frozen_missing_buffer["serialization"]["whole_model_sha256"] = (
+            self._whole_model_sha256(frozen_missing_buffer["tensors"])
+        )
+        frozen_missing_buffer["integrity"]["parameters_sha256"] = frozen_missing_buffer[
+            "serialization"
+        ]["whole_model_sha256"]
+        self._refresh_artifact_digest(frozen_missing_buffer)
+        with self.assertRaisesRegex(RecurrentArtifactError, "tensor names"):
+            validate_frozen_recurrent_policy_artifact(frozen_missing_buffer)
+
     def test_frozen_policy_atomic_round_trip_preserves_verification(self) -> None:
         artifact = self._frozen_artifact()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -407,14 +602,7 @@ class RecurrentArtifactTests(unittest.TestCase):
         probe = probe_tamper["verification"]["probe"]
         probe["expected_actions"][0] = (probe["expected_actions"][0] + 1) % ACTION_COUNT
         probe_tamper["verification"]["probe_output_sha256"] = hashlib.sha256(
-            self._canonical_json(
-                {
-                    "expected_raw_logits": probe["expected_raw_logits"],
-                    "expected_values": probe["expected_values"],
-                    "expected_actions": probe["expected_actions"],
-                    "expected_next_state": probe["expected_next_state"],
-                }
-            )
+            self._canonical_json(self._probe_output_payload(probe))
         ).hexdigest()
         self._refresh_artifact_digest(probe_tamper)
         with self.assertRaisesRegex(RecurrentArtifactError, "CPU replay probe actions"):
@@ -453,14 +641,7 @@ class RecurrentArtifactTests(unittest.TestCase):
         probe = artifact["verification"]["probe"]
         probe["action_masks"][0] = True
         artifact["verification"]["probe_input_sha256"] = hashlib.sha256(
-            self._canonical_json(
-                {
-                    "deterministic": probe["deterministic"],
-                    "observations": probe["observations"],
-                    "action_masks": probe["action_masks"],
-                    "previous_feedback": probe["previous_feedback"],
-                }
-            )
+            self._canonical_json(self._probe_input_payload(probe))
         ).hexdigest()
         self._refresh_artifact_digest(artifact)
         with self.assertRaisesRegex(RecurrentArtifactError, "fixed-width boolean"):
@@ -554,6 +735,43 @@ class RecurrentArtifactTests(unittest.TestCase):
                 rng_state={},
             )
 
+    def test_enabled_crash_checkpoint_round_trip_preserves_config_and_buffers(
+        self,
+    ) -> None:
+        model = self._enabled_model()
+        checkpoint = self._checkpoint(
+            model=model,
+            optimizer_state={"state": {}, "param_groups": []},
+            rng_state={"torch_cpu": torch.get_rng_state()},
+        )
+        tensor_names = {record["name"] for record in checkpoint["model_tensors"]}
+
+        self.assertEqual(
+            checkpoint["configuration"]["model_config"]["genome_conditioning_mode"],
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        self.assertIn("_genome_film_scale_coefficients", tensor_names)
+        self.assertIn("_genome_film_bias_coefficients", tensor_names)
+        validate_recurrent_training_crash_checkpoint(checkpoint)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "enabled-checkpoint.json"
+            write_recurrent_training_crash_checkpoint(path, checkpoint)
+            loaded = load_recurrent_training_crash_checkpoint(path)
+        self.assertEqual(
+            loaded.model.config.genome_conditioning_mode,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        for name in (
+            "_genome_film_scale_coefficients",
+            "_genome_film_bias_coefficients",
+        ):
+            self.assertTrue(
+                torch.equal(
+                    loaded.model.state_dict()[name],
+                    model.state_dict()[name],
+                )
+            )
+
     def _artifact(
         self,
         *,
@@ -561,19 +779,24 @@ class RecurrentArtifactTests(unittest.TestCase):
     ) -> dict[str, object]:
         return build_recurrent_artifact(model or self.model, **self._metadata())
 
-    def _frozen_artifact(self) -> dict[str, object]:
+    def _frozen_artifact(
+        self,
+        *,
+        model: PublicRecurrentActorCritic | None = None,
+    ) -> dict[str, object]:
         return build_frozen_recurrent_policy_artifact(
-            self.model, **self._frozen_metadata()
+            model or self.model, **self._frozen_metadata()
         )
 
     def _checkpoint(
         self,
         *,
+        model: PublicRecurrentActorCritic | None = None,
         optimizer_state: dict[object, object],
         rng_state: dict[object, object],
     ) -> dict[str, object]:
         return build_recurrent_training_crash_checkpoint(
-            self.model,
+            model or self.model,
             optimizer_state=optimizer_state,
             rng_state=rng_state,
             optimizer_type="torch.optim.Adam",
@@ -585,6 +808,21 @@ class RecurrentArtifactTests(unittest.TestCase):
             completed_updates=7,
             run_id="scale-development-run-01",
         )
+
+    @staticmethod
+    def _enabled_model() -> PublicRecurrentActorCritic:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=16,
+                hidden_size=16,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+            ),
+            initialization_seed=77,
+        )
+        model.eval()
+        return model
 
     @staticmethod
     def _metadata() -> dict[str, object]:
@@ -650,6 +888,30 @@ class RecurrentArtifactTests(unittest.TestCase):
         feedback = torch.zeros(batch_size, PREVIOUS_PUBLIC_FEEDBACK_SIZE)
         return observations, masks, feedback
 
+    @staticmethod
+    def _genome_values(batch_size: int) -> torch.Tensor:
+        return torch.linspace(-1.0, 1.0, batch_size * 16).reshape(batch_size, 16)
+
+    @staticmethod
+    def _decode_float32_record(record: dict[str, object]) -> torch.Tensor:
+        raw = base64.b64decode(record["data"], validate=True)
+        return (
+            torch.frombuffer(
+                bytearray(raw),
+                dtype=torch.float32,
+            )
+            .clone()
+            .reshape(record["shape"])
+        )
+
+    @staticmethod
+    def _change_first_float(record: dict[str, object], *, delta: float) -> None:
+        raw = bytearray(base64.b64decode(record["data"], validate=True))
+        value = struct.unpack("<f", raw[:4])[0]
+        raw[:4] = struct.pack("<f", value + delta)
+        record["data"] = base64.b64encode(raw).decode("ascii")
+        record["sha256"] = hashlib.sha256(raw).hexdigest()
+
     @classmethod
     def _whole_model_sha256(cls, records: list[dict[str, object]]) -> str:
         digest = hashlib.sha256()
@@ -692,6 +954,46 @@ class RecurrentArtifactTests(unittest.TestCase):
         checkpoint["checkpoint_sha256"] = hashlib.sha256(
             cls._canonical_json(payload)
         ).hexdigest()
+
+    @staticmethod
+    def _probe_input_payload(probe: dict[str, object]) -> dict[str, object]:
+        zero_evidence = probe.get("zero_genome_evidence")
+        return {
+            "deterministic": probe.get("deterministic"),
+            "observations": probe.get("observations"),
+            "action_masks": probe.get("action_masks"),
+            "previous_feedback": probe.get("previous_feedback"),
+            "genome_values": probe.get("genome_values"),
+            "zero_genome_values": (
+                zero_evidence.get("genome_values")
+                if isinstance(zero_evidence, dict)
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _probe_output_payload(probe: dict[str, object]) -> dict[str, object]:
+        zero_evidence = probe.get("zero_genome_evidence")
+        return {
+            "expected_raw_logits": probe.get("expected_raw_logits"),
+            "expected_values": probe.get("expected_values"),
+            "expected_actions": probe.get("expected_actions"),
+            "expected_next_state": probe.get("expected_next_state"),
+            "zero_genome_evidence": (
+                {
+                    key: zero_evidence.get(key)
+                    for key in (
+                        "expected_raw_logits",
+                        "expected_values",
+                        "expected_actions",
+                        "expected_next_state",
+                        "neutral_against_disabled_path",
+                    )
+                }
+                if isinstance(zero_evidence, dict)
+                else None
+            ),
+        }
 
     @staticmethod
     def _canonical_json(value: object) -> bytes:
