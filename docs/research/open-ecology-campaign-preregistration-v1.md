@@ -139,13 +139,18 @@ agent decisions, trajectory rows, or PPO minibatches.
 
 Thus the learning work contains 6,144 preregistered training worlds, of which
 4,096 belong to the selected configuration trained again from scratch. No
-phase-A weights are carried into phase B. Phase-A selection adds 2,560
-development-only executions (16 artifacts × 32 environments × four stochastic
-tapes plus argmax), each 512 ticks. Phase-B terminal selection adds 1,280
-executions (eight artifacts × 32 environments × the same five-policy
-convention), each 2,000 ticks. Phase C has exactly the 192 executions shown in
-the table and no additional argmax copy. These executions are part of the
-resource projection even though they never update a model.
+phase-A weights are carried into phase B. Phase-A selection contains 2,560
+primary development-only executions (16 artifacts × 32 environments × four
+stochastic tapes plus argmax), each 512 ticks, and an equal 2,560 independent
+replay executions. It therefore costs 5,120 physical world runs. Phase-B
+terminal selection contains 1,280 primary executions (eight artifacts × 32
+environments × the same five-policy convention), each 2,000 ticks, plus 1,280
+independent replay executions, for 2,560 physical world runs. “Execution” in a
+scientific report means a primary policy execution; resource accounting must
+separately record primary, replay, and total physical world-run counts. Phase C
+has exactly the 192 executions shown in the table and no additional argmax
+copy. All physical executions are part of the resource projection even though
+they never update a model.
 
 ### Phase A: critic access crossed with value-gradient boundary
 
@@ -386,9 +391,20 @@ one full-shaped 16-world update, 128 rollout ticks, and both `heritable` and
 observation encoding, policy sampling, ordered worker merge, GAE, and PPO. A
 worker topology is eligible only when its final model-state and semantic-
 evidence digests exactly match the one-worker case. The fastest eligible
-topology is frozen for phases A and B, and its measured rate must project all
-training and selection executions inside the recorded resource envelope. A
-dirty-source smoke result may guide engineering but cannot satisfy this gate.
+topology is frozen for phases A and B. This benchmark may project training
+cost, but its 128-tick rate is not authoritative for selection because
+population size and interaction cost can grow over 512- and 2,000-tick worlds.
+
+The same exact source and selected topology must therefore run a separate
+long-horizon selection resource benchmark at both 512 and 2,000 ticks. It must
+exercise the real observation, policy, world, evidence, and independent-replay
+paths, record primary and replay wall time separately, and conservatively
+project all 5,120 phase-A and 2,560 phase-B physical selection world runs.
+Phase A remains blocked until the sum of the measured training projection and
+this measured selection projection fits the recorded resource envelope. A
+training-rate extrapolation may be shown as a planning proxy but cannot pass
+the launch gate. A dirty-source smoke result may guide engineering but cannot
+satisfy either benchmark gate.
 
 Before any of the 48 primary islands starts, the final exact source SHA must run
 an end-to-end resource benchmark on every intended host class. It uses one
@@ -522,10 +538,12 @@ implemented and behaviorally proved:
 9. A machine-readable preregistration builder and validator must reproduce
    every matrix row, seed assignment, configuration and evidence digest in this
    document, then fail closed on unknown, dirty, or stale inputs.
-10. The exact-SHA end-to-end benchmark, multi-host equivalence checks, output
-    lock, Google Drive quota check, immutable uploader, verification-before-
-    prune path, and terminal aggregate validator must pass from a fresh clean
-    checkout. Torch tests must be non-optional in CI for this lane.
+10. The exact-SHA end-to-end training benchmark, separate 512/2,000-tick
+    primary-plus-replay selection benchmark, multi-host equivalence checks,
+    output lock, Google Drive quota check, immutable uploader,
+    verification-before-prune path, and terminal aggregate validator must pass
+    from a fresh clean checkout. Torch tests must be non-optional in CI for
+    this lane.
 
 Only after those dependencies and the resource gate are closed does this
 document authorize phase A.

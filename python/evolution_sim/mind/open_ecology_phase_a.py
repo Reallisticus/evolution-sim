@@ -71,10 +71,10 @@ OPEN_ECOLOGY_PHASE_A_TASK_SCHEMA_VERSION = (
 )
 OPEN_ECOLOGY_PHASE_A_RUNTIME_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_runtime_v1"
 OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_throughput_gate_v1"
+    "mind_v3_open_ecology_phase_a_throughput_gate_v2"
 )
 OPEN_ECOLOGY_PHASE_A_RESOURCE_PROJECTION_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_resource_projection_v1"
+    "mind_v3_open_ecology_phase_a_resource_projection_v2"
 )
 OPEN_ECOLOGY_PHASE_A_RESOURCE_ENVELOPE_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_resource_envelope_v1"
@@ -102,7 +102,7 @@ OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH = (
     "docs/research/open-ecology-campaign-preregistration-v1.md"
 )
 OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256 = (
-    "1059463020839fd923216cfd26e44e0c9caf6834ea583ce37e6543b2fb8a109e"
+    "08bdfd64caccaffa1eabaa8ab4b943097ec5195c1a14ba0fa7e15b0688cf5618"
 )
 
 OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT = 8
@@ -132,8 +132,18 @@ OPEN_ECOLOGY_PHASE_A_ALL_TRAINING_WORLDS = 6_144
 OPEN_ECOLOGY_PHASE_A_MATRIX_TRAINING_WORLDS = 2_048
 OPEN_ECOLOGY_PHASE_B_MATRIX_TRAINING_WORLDS = 4_096
 OPEN_ECOLOGY_PHASE_B_ROLLOUT_TICKS = 256
-OPEN_ECOLOGY_PHASE_A_SELECTION_EXECUTIONS = 2_560
-OPEN_ECOLOGY_PHASE_B_SELECTION_EXECUTIONS = 1_280
+OPEN_ECOLOGY_PHASE_A_PRIMARY_SELECTION_EXECUTIONS = 2_560
+OPEN_ECOLOGY_PHASE_A_REPLAY_SELECTION_EXECUTIONS = 2_560
+OPEN_ECOLOGY_PHASE_A_PHYSICAL_SELECTION_EXECUTIONS = (
+    OPEN_ECOLOGY_PHASE_A_PRIMARY_SELECTION_EXECUTIONS
+    + OPEN_ECOLOGY_PHASE_A_REPLAY_SELECTION_EXECUTIONS
+)
+OPEN_ECOLOGY_PHASE_B_PRIMARY_SELECTION_EXECUTIONS = 1_280
+OPEN_ECOLOGY_PHASE_B_REPLAY_SELECTION_EXECUTIONS = 1_280
+OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS = (
+    OPEN_ECOLOGY_PHASE_B_PRIMARY_SELECTION_EXECUTIONS
+    + OPEN_ECOLOGY_PHASE_B_REPLAY_SELECTION_EXECUTIONS
+)
 OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES = tuple(
     f"readiness_dependency_{index:02d}" for index in range(1, 11)
 )
@@ -142,6 +152,7 @@ OPEN_ECOLOGY_PHASE_A_AUTHORIZATION_BLOCKERS = (
     *OPEN_ECOLOGY_PHASE_A_READINESS_DEPENDENCIES,
     "dependency_specific_behavioral_evidence_parsers",
     "throughput_attestation_parser",
+    "long_horizon_selection_throughput_benchmark_and_parser",
     "storage_attestation_parser",
     "output_lock_attestation_parser",
     "immutable_uploader_attestation_parser",
@@ -491,7 +502,9 @@ def build_open_ecology_phase_a_throughput_gate(
         },
         "selected_rollout_workers": selected_workers,
         "resource_projection": projection,
-        "gate_passed": True,
+        "training_topology_gate_passed": True,
+        "selection_resource_gate_passed": False,
+        "gate_passed": False,
     }
     gate["exact_digest"] = stable_payload_digest(gate)
     validate_open_ecology_phase_a_throughput_gate(gate)
@@ -512,18 +525,24 @@ def validate_open_ecology_phase_a_throughput_gate(
             "median_elapsed_ns_by_mode_and_workers",
             "selected_rollout_workers",
             "resource_projection",
+            "training_topology_gate_passed",
+            "selection_resource_gate_passed",
             "gate_passed",
             "exact_digest",
         },
         field="Phase A throughput gate",
     )
     _validate_signed_payload(gate, field="Phase A throughput gate")
+    if gate.get("schema_version") != OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION:
+        raise OpenEcologyPhaseAError("Phase A throughput gate schema drifted")
     if (
-        gate.get("schema_version")
-        != OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION
-        or gate.get("gate_passed") is not True
+        gate.get("training_topology_gate_passed") is not True
+        or gate.get("selection_resource_gate_passed") is not False
+        or gate.get("gate_passed") is not False
     ):
-        raise OpenEcologyPhaseAError("Phase A throughput gate is not passed")
+        raise OpenEcologyPhaseAError(
+            "Phase A preliminary throughput gate status drifted"
+        )
     commit = _git_sha(gate.get("source_commit"))
     benchmark_contract = _mapping(
         gate.get("benchmark_contract"),
@@ -769,9 +788,12 @@ def validate_open_ecology_phase_a_launch_authorization(
         preregistration.get("throughput_gate"),
         field="throughput_gate",
     )
-    if throughput.get("passed") is not True or throughput.get(
-        "throughput_gate_digest"
-    ) != expected_throughput.get("exact_digest"):
+    if (
+        expected_throughput.get("gate_passed") is not True
+        or throughput.get("passed") is not True
+        or throughput.get("throughput_gate_digest")
+        != expected_throughput.get("exact_digest")
+    ):
         raise OpenEcologyPhaseAError("Phase A throughput launch proof failed")
     _verify_evidence_references(
         throughput.get("evidence"),
@@ -1035,9 +1057,21 @@ def build_open_ecology_phase_a_preregistration(
                 for index in range(OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT)
             ],
             "argmax_diagnostic": True,
-            "executions_per_artifact": (
+            "primary_executions_per_artifact": (
                 OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
                 * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+            ),
+            "independent_replay_executions_per_artifact": (
+                OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
+                * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+            ),
+            "physical_world_runs_per_artifact": (
+                2
+                * OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
+                * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+            ),
+            "execution_count_semantics": (
+                "primary_policy_executions_plus_equal_independent_replay_runs"
             ),
             "fixtures": [],
             "causal_genome": {
@@ -1335,9 +1369,21 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
             for index in range(OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT)
         ],
         "argmax_diagnostic": True,
-        "executions_per_artifact": (
+        "primary_executions_per_artifact": (
             OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
             * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+        ),
+        "independent_replay_executions_per_artifact": (
+            OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
+            * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+        ),
+        "physical_world_runs_per_artifact": (
+            2
+            * OPEN_ECOLOGY_PHASE_A_SELECTION_SEED_COUNT
+            * (OPEN_ECOLOGY_PHASE_A_STOCHASTIC_TAPE_COUNT + 1)
+        ),
+        "execution_count_semantics": (
+            "primary_policy_executions_plus_equal_independent_replay_runs"
         ),
         "fixtures": [],
         "causal_genome": {
@@ -2686,20 +2732,22 @@ def _build_phase_a_resource_projection(
     )
     training_seconds = training_world_ticks / conservative_world_ticks_per_second
     selection_world_ticks = (
-        OPEN_ECOLOGY_PHASE_A_SELECTION_EXECUTIONS * OPEN_ECOLOGY_PHASE_A_SELECTION_TICKS
-        + OPEN_ECOLOGY_PHASE_B_SELECTION_EXECUTIONS * 2_000
+        OPEN_ECOLOGY_PHASE_A_PHYSICAL_SELECTION_EXECUTIONS
+        * OPEN_ECOLOGY_PHASE_A_SELECTION_TICKS
+        + OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS * 2_000
     )
-    selection_seconds = selection_world_ticks / conservative_world_ticks_per_second
-    projected_total_seconds = training_seconds + selection_seconds
-    if projected_total_seconds > maximum_wall_seconds:
-        raise OpenEcologyPhaseAError(
-            "Phase A/B training and selection exceed the resource envelope"
-        )
+    selection_seconds_proxy = (
+        selection_world_ticks / conservative_world_ticks_per_second
+    )
+    projected_total_seconds_proxy = training_seconds + selection_seconds_proxy
+    proxy_inside_recorded_resource_envelope = (
+        projected_total_seconds_proxy <= maximum_wall_seconds
+    )
     return {
         "schema_version": OPEN_ECOLOGY_PHASE_A_RESOURCE_PROJECTION_SCHEMA_VERSION,
         "method": (
-            "worst_h_or_z_selected_worker_full_update_rate_applied_to_all_"
-            "training_and_selection_world_ticks_v1"
+            "training_from_worst_h_or_z_full_update_rate_with_non_authoritative_"
+            "selection_tick_rate_proxy_v2"
         ),
         "selected_rollout_workers": selected_workers,
         "worst_mode_median_update_elapsed_ns": worst_mode_median_ns,
@@ -2709,13 +2757,37 @@ def _build_phase_a_resource_projection(
         "training_update_count": training_update_count,
         "training_world_ticks": training_world_ticks,
         "projected_training_seconds": training_seconds,
-        "phase_a_selection_executions": OPEN_ECOLOGY_PHASE_A_SELECTION_EXECUTIONS,
-        "phase_b_selection_executions": OPEN_ECOLOGY_PHASE_B_SELECTION_EXECUTIONS,
+        "phase_a_primary_selection_executions": (
+            OPEN_ECOLOGY_PHASE_A_PRIMARY_SELECTION_EXECUTIONS
+        ),
+        "phase_a_replay_selection_executions": (
+            OPEN_ECOLOGY_PHASE_A_REPLAY_SELECTION_EXECUTIONS
+        ),
+        "phase_a_physical_selection_executions": (
+            OPEN_ECOLOGY_PHASE_A_PHYSICAL_SELECTION_EXECUTIONS
+        ),
+        "phase_b_primary_selection_executions": (
+            OPEN_ECOLOGY_PHASE_B_PRIMARY_SELECTION_EXECUTIONS
+        ),
+        "phase_b_replay_selection_executions": (
+            OPEN_ECOLOGY_PHASE_B_REPLAY_SELECTION_EXECUTIONS
+        ),
+        "phase_b_physical_selection_executions": (
+            OPEN_ECOLOGY_PHASE_B_PHYSICAL_SELECTION_EXECUTIONS
+        ),
         "selection_world_ticks": selection_world_ticks,
-        "projected_selection_seconds": selection_seconds,
-        "projected_total_seconds": projected_total_seconds,
+        "selection_rate_source": (
+            "training_update_tick_rate_proxy_non_authoritative"
+        ),
+        "projected_selection_seconds_proxy": selection_seconds_proxy,
+        "projected_total_seconds_proxy": projected_total_seconds_proxy,
+        "proxy_inside_recorded_resource_envelope": (
+            proxy_inside_recorded_resource_envelope
+        ),
+        "selection_projection_authoritative": False,
+        "long_horizon_selection_benchmark_required": True,
         "resource_envelope": envelope,
-        "inside_recorded_resource_envelope": True,
+        "inside_recorded_resource_envelope": False,
     }
 
 

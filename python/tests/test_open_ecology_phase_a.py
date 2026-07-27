@@ -253,6 +253,56 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             projection["training_world_ticks"],
             2_048 * 129 + 4_096 * 257,
         )
+        self.assertEqual(
+            projection["phase_a_primary_selection_executions"],
+            2_560,
+        )
+        self.assertEqual(
+            projection["phase_a_replay_selection_executions"],
+            2_560,
+        )
+        self.assertEqual(
+            projection["phase_a_physical_selection_executions"],
+            5_120,
+        )
+        self.assertEqual(
+            projection["phase_b_primary_selection_executions"],
+            1_280,
+        )
+        self.assertEqual(
+            projection["phase_b_replay_selection_executions"],
+            1_280,
+        )
+        self.assertEqual(
+            projection["phase_b_physical_selection_executions"],
+            2_560,
+        )
+        self.assertEqual(
+            projection["selection_world_ticks"],
+            5_120 * 512 + 2_560 * 2_000,
+        )
+        self.assertIs(projection["selection_projection_authoritative"], False)
+        self.assertIs(
+            projection["long_horizon_selection_benchmark_required"],
+            True,
+        )
+        self.assertIs(projection["inside_recorded_resource_envelope"], False)
+        self.assertIs(
+            self.campaign["throughput_gate"]["training_topology_gate_passed"],
+            True,
+        )
+        self.assertIs(
+            self.campaign["throughput_gate"]["selection_resource_gate_passed"],
+            False,
+        )
+        self.assertIs(self.campaign["throughput_gate"]["gate_passed"], False)
+        selection = self.campaign["selection"]
+        self.assertEqual(selection["primary_executions_per_artifact"], 160)
+        self.assertEqual(
+            selection["independent_replay_executions_per_artifact"],
+            160,
+        )
+        self.assertEqual(selection["physical_world_runs_per_artifact"], 320)
         tampered = json.loads(json.dumps(self.campaign))
         tampered["architecture"]["hidden_size"] = 512
         tampered["configuration_sha256"] = stable_payload_digest(
@@ -346,6 +396,22 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             with self.assertRaisesRegex(
                 phase_a.OpenEcologyPhaseAError,
                 "behavioral proof producers",
+            ):
+                phase_a.validate_open_ecology_phase_a_launch_authorization(
+                    authorization,
+                    preregistration=self.campaign,
+                    authorization_path=authorization_path,
+                )
+            with (
+                patch.object(
+                    phase_a,
+                    "open_ecology_phase_a_launch_readiness",
+                    return_value={"phase_a_training_authorized": True},
+                ),
+                self.assertRaisesRegex(
+                    phase_a.OpenEcologyPhaseAError,
+                    "throughput launch proof failed",
+                ),
             ):
                 phase_a.validate_open_ecology_phase_a_launch_authorization(
                     authorization,
