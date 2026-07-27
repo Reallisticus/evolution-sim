@@ -419,6 +419,7 @@ class SimulationWorld:
             ),
             animal_resource_presence_this_tick=self._animal_resource_presence_this_tick,
             decay_recent_diet=self._decay_recent_diet,
+            stage_policy_tick_start=self._stage_policy_tick_start,
             choose_action=self._choose_action,
             action_mask=self._action_mask,
             action_resolution_context=self._action_resolution_context,
@@ -2932,6 +2933,21 @@ class SimulationWorld:
             else None
         )
         return decision.requested_action
+
+    def _stage_policy_tick_start(
+        self,
+        tick: int,
+        ordered_agent_ids: tuple[int, ...],
+        observations_by_agent: dict[int, dict[str, object]],
+    ) -> None:
+        stage = getattr(self.policy, "stage_tick_start_batch", None)
+        if callable(stage):
+            stage(
+                tick=tick,
+                ordered_agent_ids=ordered_agent_ids,
+                observations_by_agent=observations_by_agent,
+            )
+
     def _action_scoring_context(
         self,
         agent: Agent,

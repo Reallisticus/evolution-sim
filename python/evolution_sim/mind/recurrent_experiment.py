@@ -64,10 +64,13 @@ from evolution_sim.mind.recurrent_rollout import (
     MAX_RECURRENT_POLICY_SAMPLING_SEED,
     RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
     RECURRENT_GENOME_CONDITIONING_DISABLED,
+    OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+    RECURRENT_FIXED_BATCH_RELEASE_STATUS,
     RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
     RECURRENT_REWARD_COMPONENTS,
     RECURRENT_ROLLOUT_ACTIONS,
     RecurrentOnPolicyCollector,
+    RecurrentFixedBatchRuntimeContract,
     RecurrentRolloutBuffer,
     RecurrentRolloutStep,
     TorchRecurrentPolicyCore,
@@ -81,6 +84,9 @@ from evolution_sim.mind.recurrent_seed_registry import (
 
 
 RECURRENT_EXPERIMENT_CONTRACT_VERSION = "mind_public_recurrent_ippo_experiment_v5"
+RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION = (
+    "mind_public_recurrent_ippo_experiment_fixed_batch_v1"
+)
 RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_public_recurrent_training_seed_provenance_v1"
 )
@@ -217,6 +223,7 @@ _OPEN_ECOLOGY_TASK_PROVENANCE_KEYS = frozenset(
 
 _WORKER_BEHAVIOR_MODEL: PublicRecurrentActorCritic | None = None
 _WORKER_FEED_FORWARD_HISTORY_ABLATION: bool | None = None
+_WORKER_FIXED_BATCH_CONTRACT: RecurrentFixedBatchRuntimeContract | None = None
 
 
 class RecurrentExperimentError(ValueError):
@@ -587,9 +594,7 @@ class OpenEcologyRolloutTask(RecurrentRolloutTask):
             raise RecurrentExperimentError(
                 "open-ecology rollout tasks require heritable or zero_all genomes"
             )
-        training_phase = _open_ecology_training_phase(
-            self.open_ecology_training_phase
-        )
+        training_phase = _open_ecology_training_phase(self.open_ecology_training_phase)
         update_index = _nonnegative_int(
             self.open_ecology_update_index,
             field="open_ecology_update_index",
@@ -1128,12 +1133,42 @@ def build_recurrent_counterfactual_collection_tasks(
     return tuple(collection_tasks)
 
 
+def _fixed_batch_contract_for_tasks(
+    tasks: Sequence[RecurrentRolloutTask],
+    *,
+    fixed_batch_capacity: int | None,
+) -> RecurrentFixedBatchRuntimeContract | None:
+    if fixed_batch_capacity is None:
+        return None
+    open_ecology = any(isinstance(task, OpenEcologyRolloutTask) for task in tasks)
+    if open_ecology:
+        if not all(isinstance(task, OpenEcologyRolloutTask) for task in tasks):
+            raise RecurrentExperimentError(
+                "fixed recurrent rollout batching cannot mix open-ecology and "
+                "legacy tasks"
+            )
+        resolved_capacity = _positive_int(
+            fixed_batch_capacity,
+            field="fixed_batch_capacity",
+        )
+        if resolved_capacity != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY:
+            raise RecurrentExperimentError(
+                "open-ecology rollout batching requires the preregistered "
+                f"capacity {OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY}"
+            )
+        return RecurrentFixedBatchRuntimeContract(batch_capacity=resolved_capacity)
+    raise RecurrentExperimentError(
+        "fixed recurrent rollout batching is currently restricted to open-ecology tasks"
+    )
+
+
 def collect_recurrent_rollout_batch(
     model: PublicRecurrentActorCritic,
     tasks: Sequence[RecurrentRolloutTask],
     *,
     feed_forward_history_ablation: bool = False,
     rollout_workers: int = 1,
+    fixed_batch_capacity: int | None = None,
 ) -> tuple[RecurrentRolloutBuffer, RecurrentRolloutBatchDiagnostics]:
     """Collect one frozen-policy batch from real canonical simulator worlds."""
 
@@ -1154,14 +1189,27 @@ def collect_recurrent_rollout_batch(
         raise RecurrentExperimentError("rollout task ids must be unique")
     _validate_rollout_task_genome_bindings(model=model, tasks=task_tuple)
     _validate_rollout_task_treatment_bindings(model=model, tasks=task_tuple)
+    fixed_batch_contract = _fixed_batch_contract_for_tasks(
+        task_tuple,
+        fixed_batch_capacity=fixed_batch_capacity,
+    )
 
     behavior_model = frozen_cpu_model_copy(model)
-    if rollout_workers == 1 or len(task_tuple) == 1:
+    if fixed_batch_contract is not None:
+        task_results = _collect_recurrent_rollout_tasks_parallel(
+            behavior_model,
+            task_tuple,
+            feed_forward_history_ablation=feed_forward_history_ablation,
+            rollout_workers=rollout_workers,
+            fixed_batch_contract=fixed_batch_contract,
+        )
+    elif rollout_workers == 1 or len(task_tuple) == 1:
         task_results = tuple(
             _collect_recurrent_rollout_task(
                 behavior_model,
                 task,
                 feed_forward_history_ablation=feed_forward_history_ablation,
+                fixed_batch_contract=fixed_batch_contract,
             )
             for task in task_tuple
         )
@@ -1171,6 +1219,7 @@ def collect_recurrent_rollout_batch(
             task_tuple,
             feed_forward_history_ablation=feed_forward_history_ablation,
             rollout_workers=rollout_workers,
+            fixed_batch_contract=fixed_batch_contract,
         )
     if len(task_results) != len(task_tuple):
         raise RecurrentExperimentError(
@@ -1186,6 +1235,7 @@ def collect_recurrent_rollout_batch(
             summary=summary,
             steps=steps,
             genome_conditioning_mode=model.config.genome_conditioning_mode,
+            expected_fixed_batch_contract=fixed_batch_contract,
         )
         genome_registration: dict[str, object] = {}
         if task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value:
@@ -1202,10 +1252,16 @@ def collect_recurrent_rollout_batch(
                     "genome_population_pre_founder_state_sha256"
                 ],
             }
+        fixed_batch_registration: dict[str, object] = {}
+        if "fixed_batch_runtime" in worker_provenance:
+            fixed_batch_registration = {
+                "fixed_batch_runtime": worker_provenance["fixed_batch_runtime"]
+            }
         buffer.register_world(
             task.task_id,
             environment_seed=task.environment_seed,
             policy_sampling_seed=task.policy_sampling_seed,
+            **fixed_batch_registration,
             **genome_registration,
         )
         for step in steps:
@@ -1240,6 +1296,7 @@ def _collect_recurrent_rollout_task(
     task: RecurrentRolloutTask,
     *,
     feed_forward_history_ablation: bool,
+    fixed_batch_contract: RecurrentFixedBatchRuntimeContract | None = None,
 ) -> tuple[tuple[RecurrentRolloutStep, ...], dict[str, object]]:
     """Collect one isolated world so sequential and worker paths share code."""
 
@@ -1249,6 +1306,7 @@ def _collect_recurrent_rollout_task(
         core,
         buffer=task_buffer,
         reset_recurrent_state_each_decision=feed_forward_history_ablation,
+        fixed_batch_contract=fixed_batch_contract,
     )
     collector.start_world(
         world_id=task.task_id,
@@ -1290,6 +1348,7 @@ def _collect_recurrent_rollout_tasks_parallel(
     *,
     feed_forward_history_ablation: bool,
     rollout_workers: int,
+    fixed_batch_contract: RecurrentFixedBatchRuntimeContract | None,
 ) -> tuple[tuple[tuple[RecurrentRolloutStep, ...], dict[str, object]], ...]:
     """Run independent real worlds in spawned workers and merge by task order.
 
@@ -1305,6 +1364,11 @@ def _collect_recurrent_rollout_tasks_parallel(
         for name, tensor in behavior_model.state_dict().items()
     }
     context = mp.get_context(RECURRENT_ROLLOUT_WORKER_START_METHOD)
+    fixed_batch_torch_runtime = (
+        _fixed_batch_worker_torch_runtime_contract()
+        if fixed_batch_contract is not None
+        else None
+    )
     try:
         with ProcessPoolExecutor(
             max_workers=worker_count,
@@ -1314,6 +1378,8 @@ def _collect_recurrent_rollout_tasks_parallel(
                 behavior_model.config,
                 model_state,
                 feed_forward_history_ablation,
+                fixed_batch_contract,
+                fixed_batch_torch_runtime,
             ),
         ) as executor:
             results = tuple(executor.map(_collect_recurrent_rollout_worker, tasks))
@@ -1332,13 +1398,19 @@ def _initialize_recurrent_rollout_worker(
     model_config: RecurrentActorCriticConfig,
     model_state: dict[str, torch.Tensor],
     feed_forward_history_ablation: bool,
+    fixed_batch_contract: RecurrentFixedBatchRuntimeContract | None,
+    fixed_batch_torch_runtime: Mapping[str, object] | None,
 ) -> None:
     """Initialize one inference-only CPU model and bounded Torch thread pool."""
 
     global _WORKER_BEHAVIOR_MODEL
     global _WORKER_FEED_FORWARD_HISTORY_ABLATION
-    torch.set_num_threads(RECURRENT_ROLLOUT_WORKER_TORCH_THREADS)
-    torch.set_num_interop_threads(RECURRENT_ROLLOUT_WORKER_TORCH_THREADS)
+    global _WORKER_FIXED_BATCH_CONTRACT
+    if fixed_batch_contract is not None:
+        _apply_torch_determinism_runtime_state(fixed_batch_torch_runtime)
+    else:
+        torch.set_num_threads(RECURRENT_ROLLOUT_WORKER_TORCH_THREADS)
+        torch.set_num_interop_threads(RECURRENT_ROLLOUT_WORKER_TORCH_THREADS)
     model = PublicRecurrentActorCritic(
         model_config,
         initialization_seed=1,
@@ -1349,6 +1421,7 @@ def _initialize_recurrent_rollout_worker(
         parameter.requires_grad_(False)
     _WORKER_BEHAVIOR_MODEL = model
     _WORKER_FEED_FORWARD_HISTORY_ABLATION = feed_forward_history_ablation
+    _WORKER_FIXED_BATCH_CONTRACT = fixed_batch_contract
 
 
 def _collect_recurrent_rollout_worker(
@@ -1356,12 +1429,14 @@ def _collect_recurrent_rollout_worker(
 ) -> tuple[tuple[RecurrentRolloutStep, ...], dict[str, object]]:
     model = _WORKER_BEHAVIOR_MODEL
     ablation = _WORKER_FEED_FORWARD_HISTORY_ABLATION
+    fixed_batch_contract = _WORKER_FIXED_BATCH_CONTRACT
     if model is None or type(ablation) is not bool:
         raise RecurrentExperimentError("recurrent rollout worker was not initialized")
     return _collect_recurrent_rollout_task(
         model,
         task,
         feed_forward_history_ablation=ablation,
+        fixed_batch_contract=fixed_batch_contract,
     )
 
 
@@ -1376,12 +1451,21 @@ class RecurrentExperimentRunner:
         model_config: RecurrentActorCriticConfig | None = None,
         ppo_config: RecurrentPPOConfig | None = None,
         rollout_workers: int = 1,
+        fixed_batch_capacity: int | None = None,
         counterfactual_config: RecurrentCounterfactualExperimentConfig | None = None,
     ) -> None:
         _positive_seed(learner_seed, field="learner_seed")
         self.learner_seed = learner_seed
         self.device = torch.device(device)
         self.rollout_workers = _rollout_worker_count(rollout_workers)
+        self.fixed_batch_capacity = (
+            None
+            if fixed_batch_capacity is None
+            else _positive_int(
+                fixed_batch_capacity,
+                field="fixed_batch_capacity",
+            )
+        )
         configure_recurrent_training_determinism(
             learner_seed=learner_seed,
             device=self.device,
@@ -1657,6 +1741,7 @@ class RecurrentExperimentRunner:
                 self.ppo_config.feed_forward_history_ablation
             ),
             rollout_workers=self.rollout_workers,
+            fixed_batch_capacity=self.fixed_batch_capacity,
         )
         sequences = ppo_sequences_from_rollout_buffer(
             buffer,
@@ -1875,13 +1960,36 @@ class RecurrentExperimentRunner:
                 "treatment_schema_version": OPEN_ECOLOGY_TREATMENT_SCHEMA_VERSION,
                 "broad_world_only": True,
                 "full_task_worker_merge_diagnostic_provenance": True,
+                "fixed_batch_runtime_contract": (
+                    None
+                    if self.fixed_batch_capacity is None
+                    else RecurrentFixedBatchRuntimeContract(
+                        batch_capacity=self.fixed_batch_capacity,
+                    ).as_contract()
+                ),
+                "fixed_batch_execution_scope": (
+                    None
+                    if self.fixed_batch_capacity is None
+                    else (
+                        "experimental_opt_in_intra_world_cpu_worker_only_"
+                        "cross_world_gpu_batching_excluded_v1"
+                    )
+                ),
+                "fixed_batch_enabled": self.fixed_batch_capacity is not None,
+                "fixed_batch_default_enabled": False,
+                "fixed_batch_release_status": RECURRENT_FIXED_BATCH_RELEASE_STATUS,
+                "fixed_batch_authoritative_launch_gate_satisfied": False,
                 "treatments": unique_treatments,
                 "treatment_runtime_ready": True,
                 "authoritative_campaign_launch_claimed": False,
                 "launch_dependencies": asdict(OpenEcologyLaunchDependencies()),
             }
         return RecurrentTrainingRunResult(
-            contract_version=RECURRENT_EXPERIMENT_CONTRACT_VERSION,
+            contract_version=(
+                RECURRENT_EXPERIMENT_CONTRACT_VERSION
+                if self.fixed_batch_capacity is None
+                else RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION
+            ),
             learner_seed=self.learner_seed,
             device=str(self.device),
             deterministic_algorithms_enabled=(
@@ -2506,7 +2614,12 @@ def _summary_world_seed_provenance(
         raise RecurrentExperimentError(
             "conditioned rollout worker provenance must be a mapping"
         )
-    if set(raw_provenance) != _CONDITIONED_WORLD_SEED_PROVENANCE_KEYS:
+    observed_provenance_keys = set(raw_provenance)
+    expected_provenance_keys = _CONDITIONED_WORLD_SEED_PROVENANCE_KEYS
+    fixed_batch_provenance_keys = expected_provenance_keys | {"fixed_batch_runtime"}
+    if observed_provenance_keys != expected_provenance_keys and (
+        not open_ecology or observed_provenance_keys != fixed_batch_provenance_keys
+    ):
         raise RecurrentExperimentError(
             "conditioned rollout worker provenance fields do not match the "
             "exact contract"
@@ -2543,6 +2656,7 @@ def _summary_world_seed_provenance(
             genome_population_pre_founder_state_sha256=raw_provenance.get(
                 "genome_population_pre_founder_state_sha256"
             ),
+            fixed_batch_runtime=raw_provenance.get("fixed_batch_runtime"),
         )
         probe.finalize_world_genome_provenance(
             world_id,
@@ -2563,6 +2677,15 @@ def _summary_world_seed_provenance(
             "conditioned rollout worker provenance is not canonical"
         )
     if open_ecology:
+        fixed_batch_runtime = provenance.get("fixed_batch_runtime")
+        if fixed_batch_runtime is not None and (
+            not isinstance(fixed_batch_runtime, Mapping)
+            or fixed_batch_runtime.get("batch_capacity")
+            != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology rollout worker fixed batch capacity drifted"
+            )
         provenance["open_ecology_task_provenance"] = (
             _open_ecology_task_provenance_from_payload(
                 summary.get("open_ecology_task_provenance"),
@@ -2580,6 +2703,7 @@ def _validate_rollout_worker_result(
     summary: Mapping[str, object],
     steps: Sequence[RecurrentRolloutStep],
     genome_conditioning_mode: str,
+    expected_fixed_batch_contract: RecurrentFixedBatchRuntimeContract | None,
 ) -> dict[str, object]:
     provenance = _summary_world_seed_provenance(summary)
     exact_task_fields = {
@@ -2637,6 +2761,29 @@ def _validate_rollout_worker_result(
         raise RecurrentExperimentError(
             "rollout worker result contains an invalid rollout step"
         )
+    fixed_batch_runtime = provenance.get("fixed_batch_runtime")
+    if expected_fixed_batch_contract is None:
+        if fixed_batch_runtime is not None:
+            raise RecurrentExperimentError(
+                "scalar rollout worker unexpectedly used fixed batching"
+            )
+    elif not open_ecology:
+        raise RecurrentExperimentError(
+            "legacy rollout worker cannot use open-ecology fixed batching"
+        )
+    elif not isinstance(fixed_batch_runtime, Mapping):
+        raise RecurrentExperimentError(
+            "fixed-batch rollout worker omitted its runtime provenance"
+        )
+    elif (
+        fixed_batch_runtime.get("batch_capacity")
+        != expected_fixed_batch_contract.batch_capacity
+        or fixed_batch_runtime.get("contract")
+        != expected_fixed_batch_contract.as_contract()
+    ):
+        raise RecurrentExperimentError(
+            "fixed-batch rollout worker runtime disagrees with the requested contract"
+        )
     for step in steps:
         if (
             step.world_id != task.task_id
@@ -2655,7 +2802,113 @@ def _validate_rollout_worker_result(
             raise RecurrentExperimentError(
                 "rollout worker step genome stream seed drifted"
             )
+        if expected_fixed_batch_contract is not None:
+            if not isinstance(fixed_batch_runtime, Mapping):
+                raise AssertionError("validated fixed-batch runtime disappeared")
+            if (
+                step.fixed_batch_runtime_sha256
+                != fixed_batch_runtime.get("exact_digest")
+                or step.fixed_batch_capacity
+                != expected_fixed_batch_contract.batch_capacity
+            ):
+                raise RecurrentExperimentError(
+                    "open-ecology rollout worker step fixed batch provenance drifted"
+                )
+        elif step.fixed_batch_runtime_sha256 is not None:
+            raise RecurrentExperimentError(
+                "rollout worker step unexpectedly used fixed batching"
+            )
     return provenance
+
+
+def _torch_determinism_runtime_state() -> dict[str, object]:
+    return {
+        "deterministic_algorithms_enabled": (
+            torch.are_deterministic_algorithms_enabled()
+        ),
+        "cudnn_benchmark": bool(
+            getattr(getattr(torch.backends, "cudnn", object()), "benchmark", False)
+        ),
+        "cudnn_deterministic": bool(
+            getattr(
+                getattr(torch.backends, "cudnn", object()),
+                "deterministic",
+                False,
+            )
+        ),
+        "cudnn_allow_tf32": bool(
+            getattr(getattr(torch.backends, "cudnn", object()), "allow_tf32", False)
+        ),
+        "cuda_matmul_allow_tf32": bool(
+            getattr(
+                getattr(getattr(torch.backends, "cuda", object()), "matmul", object()),
+                "allow_tf32",
+                False,
+            )
+        ),
+    }
+
+
+def _fixed_batch_worker_torch_runtime_contract() -> dict[str, object]:
+    return {
+        **_torch_determinism_runtime_state(),
+        "torch_num_threads": RECURRENT_ROLLOUT_WORKER_TORCH_THREADS,
+        "torch_num_interop_threads": RECURRENT_ROLLOUT_WORKER_TORCH_THREADS,
+    }
+
+
+def _observed_fixed_batch_worker_torch_runtime() -> dict[str, object]:
+    return {
+        **_torch_determinism_runtime_state(),
+        "torch_num_threads": int(torch.get_num_threads()),
+        "torch_num_interop_threads": int(torch.get_num_interop_threads()),
+    }
+
+
+def _apply_torch_determinism_runtime_state(
+    value: Mapping[str, object] | None,
+) -> None:
+    boolean_keys = {
+        "deterministic_algorithms_enabled",
+        "cudnn_benchmark",
+        "cudnn_deterministic",
+        "cudnn_allow_tf32",
+        "cuda_matmul_allow_tf32",
+    }
+    integer_keys = {
+        "torch_num_threads",
+        "torch_num_interop_threads",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != boolean_keys | integer_keys
+        or any(type(value[key]) is not bool for key in boolean_keys)
+        or any(
+            isinstance(value[key], bool)
+            or not isinstance(value[key], int)
+            or int(value[key]) <= 0
+            for key in integer_keys
+        )
+    ):
+        raise RecurrentExperimentError(
+            "fixed-batch worker Torch runtime binding is invalid"
+        )
+    torch.set_num_threads(int(value["torch_num_threads"]))
+    torch.set_num_interop_threads(int(value["torch_num_interop_threads"]))
+    torch.use_deterministic_algorithms(
+        bool(value["deterministic_algorithms_enabled"]),
+        warn_only=False,
+    )
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = bool(value["cudnn_benchmark"])
+        torch.backends.cudnn.deterministic = bool(value["cudnn_deterministic"])
+        torch.backends.cudnn.allow_tf32 = bool(value["cudnn_allow_tf32"])
+    if hasattr(torch.backends, "cuda"):
+        torch.backends.cuda.matmul.allow_tf32 = bool(value["cuda_matmul_allow_tf32"])
+    if _observed_fixed_batch_worker_torch_runtime() != dict(value):
+        raise RecurrentExperimentError(
+            "fixed-batch worker Torch runtime binding could not be applied"
+        )
 
 
 def configure_recurrent_training_determinism(
@@ -2706,10 +2959,7 @@ def configure_recurrent_training_determinism(
         raise RecurrentExperimentError(
             "cuDNN deterministic runtime flags did not match the contract"
         )
-    if (
-        hasattr(torch.backends, "cuda")
-        and torch.backends.cuda.matmul.allow_tf32
-    ):
+    if hasattr(torch.backends, "cuda") and torch.backends.cuda.matmul.allow_tf32:
         raise RecurrentExperimentError(
             "CUDA matrix multiplication TF32 remained enabled"
         )
@@ -2905,6 +3155,21 @@ def _rollout_diagnostics(
         ):
             raise RecurrentExperimentError(
                 "rollout step genome stream seed does not match its world summary"
+            )
+        fixed_batch_runtime = provenance.get("fixed_batch_runtime")
+        if fixed_batch_runtime is None:
+            if step.fixed_batch_runtime_sha256 is not None:
+                raise RecurrentExperimentError(
+                    "rollout step fixed batch provenance has no world binding"
+                )
+        elif (
+            not isinstance(fixed_batch_runtime, Mapping)
+            or step.fixed_batch_runtime_sha256
+            != fixed_batch_runtime.get("exact_digest")
+            or step.fixed_batch_capacity != fixed_batch_runtime.get("batch_capacity")
+        ):
+            raise RecurrentExperimentError(
+                "rollout step fixed batch provenance does not match world summary"
             )
     buffer_provenance = buffer.world_seed_provenance
     if set(buffer_provenance) != set(world_seed_provenance):
@@ -3208,6 +3473,7 @@ __all__ = [
     "RECURRENT_BROAD_SCENARIO",
     "RECURRENT_COUNTERFACTUAL_COLLECTION_TASK_IDENTITY_VERSION",
     "RECURRENT_EXPERIMENT_CONTRACT_VERSION",
+    "RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION",
     "MAX_RECURRENT_ROLLOUT_WORKERS",
     "RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE",
     "RECURRENT_POLICY_SAMPLING_TASK_IDENTITY_VERSION",

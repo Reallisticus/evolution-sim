@@ -29,6 +29,10 @@ class TickPhaseContext:
     animal_resource_reachability_by_meat_mode: Callable[..., dict[str, dict[str, int]]]
     animal_resource_presence_this_tick: Callable[[], dict[str, bool]]
     decay_recent_diet: Callable[[Any], None]
+    stage_policy_tick_start: Callable[
+        [int, tuple[int, ...], dict[int, dict[str, object]]],
+        None,
+    ]
     choose_action: Callable[[Any, dict[str, object] | None], str]
     action_mask: Callable[[Any], dict[str, bool]]
     action_resolution_context: Callable[[Any], runtime_actions.ActionResolutionContext]
@@ -99,6 +103,11 @@ def run_tick(
         tick=world.tick,
     )
     world.tick_action_order = list(action_order)
+    tick_context.stage_policy_tick_start(
+        world.tick,
+        action_order,
+        observation_snapshots,
+    )
     pending_trajectory_records: list[dict[str, object]] = []
     acted_trajectory_agent_ids: set[int] = set()
     lifecycle_context = tick_context.lifecycle_context
