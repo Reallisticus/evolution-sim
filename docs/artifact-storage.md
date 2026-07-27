@@ -133,3 +133,17 @@ Use a new immutable archive name for every campaign or cleanup pass. Never
 overwrite an earlier evidence bundle. Record the source commit and archive
 object names in the experiment report, and retain at least the remote archive,
 manifest, and SHA sidecar together.
+
+## Verified initial migration
+
+On 2026-07-27, the pre-open-ecology `output/` tree was archived as
+`20260727T123500Z-evolution-output-pre-open-ecology.tar.zst`. The source
+snapshot contained 2,812 files and 10,210,110,929 bytes. Its compressed archive
+is 1,271,366,930 bytes with SHA256
+`113703bd1d076e85755794cb29f60aba52b017136400b8236dc0813c77846a8a`.
+
+The archive, manifest, and SHA sidecar were uploaded to
+`gdrive:evolution-sim-backups/archives`, streamed back through SHA256 by the
+archival tool, and independently checked with `rclone check` as three matching
+objects with zero differences. Only then were the manifested local contents
+pruned. The local `output/` directory itself remains present for new runs.
