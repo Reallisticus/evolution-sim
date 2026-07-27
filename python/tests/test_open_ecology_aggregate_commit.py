@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -33,6 +34,12 @@ from evolution_sim.io.open_ecology_rotating_writer import (
     RotatingEvidenceConfig,
     RotatingOpenEcologyEvidenceWriter,
     load_open_ecology_evidence_manifest,
+)
+
+_TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
+_RUNTIME_BINDING_SCHEMA = "open_ecology_runtime_checkpoint_binding_v2"
+_RUNTIME_EVIDENCE_ADAPTER_SCHEMA = (
+    "open_ecology_evidence_writer_continuation_adapter_v1"
 )
 
 
@@ -492,6 +499,81 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
                     previous=None,
                 )
 
+    @unittest.skipUnless(_TORCH_AVAILABLE, "runtime adapter requires torch")
+    def test_runtime_adapter_continuation_is_strictly_extracted_and_bound(
+        self,
+    ) -> None:
+        cases = {
+            "valid": (0, None),
+            "valid_lag": (1, None),
+            "stale_schema": (0, "schema is unsupported"),
+            "wrong_binding": (0, "does not match checkpoint"),
+            "malformed_continuation": (
+                0,
+                "runtime evidence adapter is invalid",
+            ),
+        }
+        for case, (checkpoint_tick, expected_error) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmpdir:
+                fixture = self._fixture(Path(tmpdir))
+                writer = RotatingOpenEcologyEvidenceWriter(
+                    fixture.evidence,
+                    run_id="persistent-island-0",
+                    source_contract=fixture.source_contract,
+                    config=fixture.writer_config,
+                    continuation_state=fixture.continuation,
+                )
+                writer.append(
+                    BirthEvidence(
+                        tick=0,
+                        event_index=0,
+                        event_id="birth:adapter:0",
+                        child_agent_id=9,
+                        parent_agent_ids=(1, 2),
+                        lineage_id="lineage-9",
+                        genome_sha256="e" * 64,
+                    )
+                )
+                fixture.continuation = writer.checkpoint()
+                checkpoint, identity = self._checkpoint(
+                    fixture.root.parent / "checkpoint-0.json",
+                    continuation=fixture.continuation,
+                    simulation_generation_index=0,
+                    tick=checkpoint_tick,
+                    runtime_adapter_case=case,
+                )
+                manifest = load_open_ecology_evidence_manifest(
+                    fixture.evidence,
+                    verify_shards=True,
+                    expected_status="open",
+                )
+                if expected_error is None:
+                    published = self._publish(
+                        fixture,
+                        aggregate_generation_index=0,
+                        checkpoint=checkpoint,
+                        identity=identity,
+                        manifest=manifest,
+                        previous=None,
+                    )
+                    self.assertEqual(
+                        published["commit"]["evidence"]["continuation_state_sha256"],
+                        fixture.continuation["state_sha256"],
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        OpenEcologyAggregateCommitError,
+                        expected_error,
+                    ):
+                        self._publish(
+                            fixture,
+                            aggregate_generation_index=0,
+                            checkpoint=checkpoint,
+                            identity=identity,
+                            manifest=manifest,
+                            previous=None,
+                        )
+
     def _fixture(
         self,
         root: Path,
@@ -660,19 +742,63 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
         continuation: dict[str, object],
         simulation_generation_index: int,
         tick: int,
+        runtime_adapter_case: str | None = None,
     ) -> tuple[dict[str, object], OpenEcologyAggregateIdentityPins]:
         state = self._state
+        config_contract = state(
+            "open_ecology_world_config_v1",
+            self._config_payload(),
+        )
+        seed_contract = state(
+            "open_ecology_seed_contract_v1",
+            self._seed_payload(),
+        )
+        evidence_state = state(
+            OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA,
+            continuation,
+        )
+        if runtime_adapter_case is not None:
+            binding_payload: dict[str, object] = {
+                "schema_version": _RUNTIME_BINDING_SCHEMA,
+                "source_git_sha": self._source_sha(),
+                "source_manifest_sha256": "f" * 64,
+                "config_contract_sha256": self._state_digest(
+                    config_contract.schema_version,
+                    dict(config_contract.payload),
+                ),
+                "seed_contract_sha256": self._state_digest(
+                    seed_contract.schema_version,
+                    dict(seed_contract.payload),
+                ),
+                "run_generation_id": self._run_generation_id(),
+                "island_id": "island-0",
+                "generation_index": simulation_generation_index,
+                "completed_tick": tick,
+            }
+            nested_continuation: object = continuation
+            adapter_schema = _RUNTIME_EVIDENCE_ADAPTER_SCHEMA
+            if runtime_adapter_case == "stale_schema":
+                adapter_schema = "open_ecology_evidence_writer_continuation_adapter_v0"
+            elif runtime_adapter_case == "wrong_binding":
+                binding_payload["source_git_sha"] = "b" * 40
+            elif runtime_adapter_case == "malformed_continuation":
+                nested_continuation = {}
+            elif runtime_adapter_case not in {"valid", "valid_lag"}:
+                raise AssertionError(
+                    f"unknown runtime adapter test case: {runtime_adapter_case}"
+                )
+            evidence_state = state(
+                adapter_schema,
+                {
+                    "binding": binding_payload,
+                    "state": {"continuation_state": nested_continuation},
+                },
+            )
         checkpoint = write_open_ecology_checkpoint(
             path,
             source_git_sha=self._source_sha(),
-            config_contract=state(
-                "open_ecology_world_config_v1",
-                self._config_payload(),
-            ),
-            seed_contract=state(
-                "open_ecology_seed_contract_v1",
-                self._seed_payload(),
-            ),
+            config_contract=config_contract,
+            seed_contract=seed_contract,
             run_generation_id=self._run_generation_id(),
             island_id="island-0",
             generation_index=simulation_generation_index,
@@ -701,10 +827,7 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
                 "recurrent_genome_population_v1",
                 {"agent_genomes": {"7": "2" * 64}},
             ),
-            evidence_writer_continuation_state=state(
-                OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA,
-                continuation,
-            ),
+            evidence_writer_continuation_state=evidence_state,
         )
         source = checkpoint["source"]
         generation_identity = checkpoint["generation_identity"]
@@ -823,7 +946,12 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
         return "a" * 40
 
     def _config_payload(self) -> dict[str, object]:
-        return {"height": 32, "island_count": 1, "width": 48}
+        return {
+            "height": 32,
+            "island_count": 1,
+            "source_manifest_sha256": "f" * 64,
+            "width": 48,
+        }
 
     def _seed_payload(self) -> dict[str, object]:
         return {

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
-from typing import Iterator, Mapping
+from typing import TYPE_CHECKING, Iterator, Mapping
 
 from evolution_sim.io.open_ecology_checkpoint import (
     OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
@@ -25,6 +25,11 @@ from evolution_sim.io.open_ecology_rotating_writer import (
     load_open_ecology_evidence_manifest,
     validate_open_ecology_evidence_continuation_state,
 )
+
+if TYPE_CHECKING:
+    from evolution_sim.io.open_ecology_runtime_checkpoint import (
+        ExtractedRuntimeEvidenceContinuation,
+    )
 
 
 OPEN_ECOLOGY_AGGREGATE_COMMIT_SCHEMA = (
@@ -65,6 +70,9 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _MAX_JSON_NESTING_DEPTH = 128
+_OPEN_ECOLOGY_RUNTIME_EVIDENCE_ADAPTER_SCHEMA_VERSION = (
+    "open_ecology_evidence_writer_continuation_adapter_v1"
+)
 _GENERATION_FILES = frozenset(
     {
         OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME,
@@ -1396,17 +1404,39 @@ def _checkpoint_evidence_continuation(
         components["evidence_writer_continuation_state"],
         field="checkpoint evidence continuation envelope",
     )
-    if (
-        envelope["present"] is not True
-        or envelope["schema_version"] != OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA
-    ):
+    if envelope["present"] is not True:
         raise OpenEcologyAggregateCommitError(
-            "checkpoint must contain a rotating-writer continuation envelope"
+            "checkpoint must contain an evidence continuation envelope"
         )
     payload = _mapping(
         envelope["payload"],
         field="checkpoint evidence continuation payload",
     )
+    schema_version = envelope["schema_version"]
+    if schema_version == _OPEN_ECOLOGY_RUNTIME_EVIDENCE_ADAPTER_SCHEMA_VERSION:
+        from evolution_sim.io.open_ecology_runtime_checkpoint import (
+            OpenEcologyRuntimeCheckpointError,
+            extract_open_ecology_runtime_evidence_continuation,
+        )
+
+        try:
+            extracted = extract_open_ecology_runtime_evidence_continuation(
+                adapter_schema_version=schema_version,
+                payload=payload,
+            )
+        except OpenEcologyRuntimeCheckpointError as error:
+            raise OpenEcologyAggregateCommitError(
+                f"checkpoint runtime evidence adapter is invalid: {error}"
+            ) from error
+        _bind_runtime_evidence_adapter_to_checkpoint(
+            extracted,
+            checkpoint=checkpoint,
+        )
+        return extracted.continuation_state
+    if schema_version != OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA:
+        raise OpenEcologyAggregateCommitError(
+            "checkpoint evidence continuation schema is unsupported"
+        )
     try:
         continuation = validate_open_ecology_evidence_continuation_state(payload)
     except ValueError as error:
@@ -1414,6 +1444,61 @@ def _checkpoint_evidence_continuation(
             f"checkpoint evidence continuation is invalid: {error}"
         ) from error
     return continuation
+
+
+def _bind_runtime_evidence_adapter_to_checkpoint(
+    extracted: ExtractedRuntimeEvidenceContinuation,
+    *,
+    checkpoint: Mapping[str, object],
+) -> None:
+    source = _mapping(checkpoint["source"], field="checkpoint.source")
+    config_contract = _mapping(
+        source["config_contract"],
+        field="checkpoint.source.config_contract",
+    )
+    seed_contract = _mapping(
+        source["seed_contract"],
+        field="checkpoint.source.seed_contract",
+    )
+    generation_identity = _mapping(
+        checkpoint["generation_identity"],
+        field="checkpoint.generation_identity",
+    )
+    binding = extracted.binding
+    comparisons = {
+        "source_git_sha": (binding.source_git_sha, source["git_sha"]),
+        "config_contract_sha256": (
+            binding.config_contract_sha256,
+            config_contract["state_sha256"],
+        ),
+        "seed_contract_sha256": (
+            binding.seed_contract_sha256,
+            seed_contract["state_sha256"],
+        ),
+        "run_generation_id": (
+            binding.run_generation_id,
+            generation_identity["run_generation_id"],
+        ),
+        "island_id": (binding.island_id, generation_identity["island_id"]),
+        "generation_index": (
+            binding.generation_index,
+            generation_identity["generation_index"],
+        ),
+        "completed_tick": (binding.completed_tick, checkpoint["tick"]),
+    }
+    for field_name, (observed, expected) in comparisons.items():
+        if observed != expected:
+            raise OpenEcologyAggregateCommitError(
+                f"runtime evidence adapter {field_name} does not match checkpoint"
+            )
+    config_payload = _mapping(
+        config_contract["payload"],
+        field="checkpoint.source.config_contract.payload",
+    )
+    if config_payload.get("source_manifest_sha256") != (binding.source_manifest_sha256):
+        raise OpenEcologyAggregateCommitError(
+            "runtime evidence adapter source manifest does not match checkpoint"
+        )
 
 
 def _bind_continuation_to_manifest(
