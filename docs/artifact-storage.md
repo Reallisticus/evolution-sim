@@ -116,6 +116,13 @@ recorded object paths and digests, and only then schedule a separate,
 explicitly scoped server cleanup. This separation ensures a transfer bug can
 never silently turn into source deletion.
 
+The path was exercised from clean source commit
+`563604b1f77db0103ada5416df690d53fc7599d0` on `gpu4070`. The remote test
+archive was streamed directly to Drive and read back with matching SHA256
+`80ea6479d0aef58abe08f185969fd507f8d822d7df4457d8d6de3c783f5d1e32`;
+the manifest and sidecar also matched their independently computed source
+digests. Neither source nor remote staging was pruned by the test.
+
 ## Restore
 
 Download all three objects into a new empty directory:

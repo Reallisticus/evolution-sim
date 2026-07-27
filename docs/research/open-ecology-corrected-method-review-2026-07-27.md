@@ -244,6 +244,38 @@ persisted requested actions. Policy reproduction is a separate same-contract
 check; cross-device CPU reevaluation is a fresh evaluation, not a claim of
 bitwise trajectory identity.
 
+## Frontier follow-up: measure organization without prescribing society
+
+A June 2026 preprint proposes Multi-Scale Path Divergence (MSPD), a
+population-level finite-resolution measure of how heterogeneous local
+transition laws organize across time scales, and evaluates it both as a search
+objective and as a post-hoc trajectory lens
+([Akhtyrchenko et al., 2026](https://arxiv.org/abs/2606.17091)). The post-hoc
+use is relevant here; the fitness use is not. Optimizing MSPD in the first
+campaign would replace open ecological selection with another researcher
+chosen complexity objective. If the simulator can expose a defensible local
+transition-law representation, MSPD may be added later as an exploratory
+streaming statistic, frozen before reading island outcomes, and reported
+beside rather than substituted for the preregistered MODES, lineage, ecology,
+and social time series. Until that estimator is independently reproduced, it
+must not become an acceptance gate or reward.
+
+The social-learning evidence points in the same conservative direction.
+Independent model-free agents often fail to exploit social cues; a model-based
+auxiliary can induce generalized social learning
+([Ndousse et al., 2021](https://proceedings.mlr.press/v139/ndousse21a.html)).
+Causal-influence rewards can also promote coordination and meaningful
+communication
+([Jaques et al., 2019](https://proceedings.mlr.press/v97/jaques19a.html)).
+Both methods are informative future ablations, but adding either now would
+bias the phenomenon the user explicitly wants to leave emergent. The first
+campaign therefore keeps individual Foundation rewards unchanged and uses
+counterfactual signal ablation only as an evaluator: it asks whether another
+agent listened, without paying either agent to communicate. If the unforced
+treatment yields no causal signal use, that is a valid result and a later
+preregistered auxiliary-learning arm—not a reason to rewrite the completed
+run.
+
 ## Implementation and campaign consequence
 
 The implementation order follows the dependencies: first make Torch CI
