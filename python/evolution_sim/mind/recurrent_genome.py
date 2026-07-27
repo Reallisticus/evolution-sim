@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -28,6 +29,7 @@ RECURRENT_CONTROLLER_DEFAULT_MUTATION_MAX_STEP = 0.08
 RECURRENT_CONTROLLER_MAX_MUTATION_STEP = 0.50
 RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT = 0.25
 RECURRENT_CONTROLLER_FILM_BIAS_LIMIT = 0.25
+RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE = 1.0e-6
 RECURRENT_CONTROLLER_MAX_HIDDEN_DIMENSION = 4096
 
 _TOP_LEVEL_KEYS = frozenset(
@@ -142,6 +144,44 @@ class FilmDevelopment:
 
 
 @dataclass(frozen=True, slots=True)
+class FilmDevelopmentCoefficients:
+    """Immutable SHA-derived dense projections shared by scalar and tensor paths."""
+
+    contract_version: str
+    hidden_dimension: int
+    genome_size: int
+    scale: tuple[tuple[float, ...], ...]
+    bias: tuple[tuple[float, ...], ...]
+
+    def __post_init__(self) -> None:
+        if self.contract_version != RECURRENT_CONTROLLER_DEVELOPMENT_MAP_VERSION:
+            raise RecurrentGenomeError("FiLM coefficient contract is stale")
+        _validate_hidden_dimension(self.hidden_dimension)
+        if self.genome_size != RECURRENT_CONTROLLER_GENOME_SIZE:
+            raise RecurrentGenomeError("FiLM coefficient genome_size is stale")
+        for channel_name, channel in (("scale", self.scale), ("bias", self.bias)):
+            if len(channel) != self.hidden_dimension:
+                raise RecurrentGenomeError(
+                    f"FiLM {channel_name} coefficients have invalid hidden shape"
+                )
+            for hidden_index, row in enumerate(channel):
+                if len(row) != RECURRENT_CONTROLLER_GENOME_SIZE:
+                    raise RecurrentGenomeError(
+                        f"FiLM {channel_name}[{hidden_index}] has invalid genome shape"
+                    )
+                for locus, raw_value in enumerate(row):
+                    value = _strict_finite_float(
+                        raw_value,
+                        field=f"{channel_name}[{hidden_index}][{locus}]",
+                    )
+                    if not -1.0 <= value <= 1.0:
+                        raise RecurrentGenomeError(
+                            f"FiLM {channel_name}[{hidden_index}][{locus}] "
+                            "is out of bounds"
+                        )
+
+
+@dataclass(frozen=True, slots=True)
 class GenomeSwapEffect:
     left_genome_sha256: str
     right_genome_sha256: str
@@ -182,7 +222,25 @@ def recurrent_genome_development_contract(
             RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
         ],
         "birth_state_policy": "external_zero_initialization_required",
+        "vectorized_development_absolute_tolerance": (
+            RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE
+        ),
     }
+
+
+def recurrent_genome_development_coefficients(
+    *,
+    hidden_dimension: int,
+) -> FilmDevelopmentCoefficients:
+    """Return immutable fixed coefficients for scalar or vectorized FiLM.
+
+    Coefficients depend only on the versioned development-map contract and
+    requested hidden width. They may therefore be materialized once as model
+    buffers; no genome-row identity or hashing is needed during inference.
+    """
+
+    parsed_hidden_dimension = _validate_hidden_dimension(hidden_dimension)
+    return _cached_recurrent_genome_development_coefficients(parsed_hidden_dimension)
 
 
 def founder_recurrent_genome(*, seed: int) -> RecurrentControllerGenome:
@@ -341,21 +399,32 @@ def develop_recurrent_genome(
     """Develop a compact genome into bounded FiLM scale and bias vectors."""
     parsed = _require_genome(genome, field="genome")
     parsed_hidden_dimension = _validate_hidden_dimension(hidden_dimension)
+    coefficients = recurrent_genome_development_coefficients(
+        hidden_dimension=parsed_hidden_dimension
+    )
     normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
     scale: list[float] = []
     bias: list[float] = []
     for hidden_index in range(parsed_hidden_dimension):
         scale_projection = (
             sum(
-                _development_coefficient("scale", hidden_index, locus) * value
-                for locus, value in enumerate(parsed.values)
+                coefficient * value
+                for coefficient, value in zip(
+                    coefficients.scale[hidden_index],
+                    parsed.values,
+                    strict=True,
+                )
             )
             / normalization
         )
         bias_projection = (
             sum(
-                _development_coefficient("bias", hidden_index, locus) * value
-                for locus, value in enumerate(parsed.values)
+                coefficient * value
+                for coefficient, value in zip(
+                    coefficients.bias[hidden_index],
+                    parsed.values,
+                    strict=True,
+                )
             )
             / normalization
         )
@@ -596,6 +665,31 @@ def _development_coefficient(
     ).encode("ascii")
     integer = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
     return 2.0 * (integer / 2**64) - 1.0
+
+
+@lru_cache(maxsize=None)
+def _cached_recurrent_genome_development_coefficients(
+    hidden_dimension: int,
+) -> FilmDevelopmentCoefficients:
+    return FilmDevelopmentCoefficients(
+        contract_version=RECURRENT_CONTROLLER_DEVELOPMENT_MAP_VERSION,
+        hidden_dimension=hidden_dimension,
+        genome_size=RECURRENT_CONTROLLER_GENOME_SIZE,
+        scale=tuple(
+            tuple(
+                _development_coefficient("scale", hidden_index, locus)
+                for locus in range(RECURRENT_CONTROLLER_GENOME_SIZE)
+            )
+            for hidden_index in range(hidden_dimension)
+        ),
+        bias=tuple(
+            tuple(
+                _development_coefficient("bias", hidden_index, locus)
+                for locus in range(RECURRENT_CONTROLLER_GENOME_SIZE)
+            )
+            for hidden_index in range(hidden_dimension)
+        ),
+    )
 
 
 def _clamp_genome_value(value: float) -> float:

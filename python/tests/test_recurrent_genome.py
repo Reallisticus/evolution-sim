@@ -14,7 +14,9 @@ from evolution_sim.mind.recurrent_genome import (
     RECURRENT_CONTROLLER_GENOME_MIN,
     RECURRENT_CONTROLLER_GENOME_SCHEMA_VERSION,
     RECURRENT_CONTROLLER_GENOME_SIZE,
+    RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE,
     FilmDevelopment,
+    FilmDevelopmentCoefficients,
     RecurrentControllerGenome,
     RecurrentGenomeError,
     RecurrentGenomeMutationConfig,
@@ -28,6 +30,7 @@ from evolution_sim.mind.recurrent_genome import (
     recombine_recurrent_genomes,
     recurrent_genome_artifact,
     recurrent_genome_contract,
+    recurrent_genome_development_coefficients,
     recurrent_genome_development_contract,
     recurrent_genome_mean_absolute_distance,
     serialize_recurrent_genome,
@@ -334,6 +337,71 @@ class RecurrentGenomeTests(unittest.TestCase):
             seed_42_film.bias,
             (0.01870591, -0.03845304, 0.02578422, -0.00340162),
         )
+
+    def test_public_film_coefficients_are_cached_and_match_scalar_development(
+        self,
+    ) -> None:
+        coefficients = recurrent_genome_development_coefficients(hidden_dimension=7)
+        repeated = recurrent_genome_development_coefficients(hidden_dimension=7)
+        genome = founder_recurrent_genome(seed=777)
+        development = develop_recurrent_genome(genome, hidden_dimension=7)
+        normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
+
+        self.assertIs(coefficients, repeated)
+        self.assertEqual(coefficients.hidden_dimension, 7)
+        self.assertEqual(coefficients.genome_size, RECURRENT_CONTROLLER_GENOME_SIZE)
+        self.assertEqual(len(coefficients.scale), 7)
+        self.assertEqual(len(coefficients.bias), 7)
+        for hidden_index in range(7):
+            scale_projection = (
+                sum(
+                    coefficient * value
+                    for coefficient, value in zip(
+                        coefficients.scale[hidden_index],
+                        genome.values,
+                        strict=True,
+                    )
+                )
+                / normalization
+            )
+            bias_projection = (
+                sum(
+                    coefficient * value
+                    for coefficient, value in zip(
+                        coefficients.bias[hidden_index],
+                        genome.values,
+                        strict=True,
+                    )
+                )
+                / normalization
+            )
+            expected_scale = 1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT * (
+                scale_projection / (1.0 + abs(scale_projection))
+            )
+            expected_bias = RECURRENT_CONTROLLER_FILM_BIAS_LIMIT * (
+                bias_projection / (1.0 + abs(bias_projection))
+            )
+            self.assertAlmostEqual(
+                development.scale[hidden_index],
+                expected_scale,
+                delta=(RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE),
+            )
+            self.assertAlmostEqual(
+                development.bias[hidden_index],
+                expected_bias,
+                delta=(RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE),
+            )
+
+        with self.assertRaises(RecurrentGenomeError):
+            recurrent_genome_development_coefficients(hidden_dimension=True)
+        with self.assertRaises(RecurrentGenomeError):
+            FilmDevelopmentCoefficients(
+                contract_version=RECURRENT_CONTROLLER_DEVELOPMENT_MAP_VERSION,
+                hidden_dimension=1,
+                genome_size=RECURRENT_CONTROLLER_GENOME_SIZE,
+                scale=((0.0,) * (RECURRENT_CONTROLLER_GENOME_SIZE - 1),),
+                bias=((0.0,) * RECURRENT_CONTROLLER_GENOME_SIZE,),
+            )
 
     def test_bounded_perturbation_and_swap_hold_activations_fixed(self) -> None:
         original = founder_recurrent_genome(seed=55)

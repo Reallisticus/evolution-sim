@@ -17,10 +17,17 @@ if torch is not None:
     from evolution_sim.mind.recurrent_actor_critic import (
         ACTION_COUNT,
         BackendStableLayerNorm,
+        CRITIC_GENOME_CONDITIONING_FILM_V1,
+        CRITIC_GENOME_CONDITIONING_NONE,
+        GENOME_CONDITIONING_ACTOR_FILM_V1,
+        GENOME_CONDITIONING_DISABLED,
         LEARNED_ENCODER_INPUT_SIZE,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
         PUBLIC_INPUT_SIZE,
+        VALUE_TRUNK_GRADIENT_SHARED,
+        VALUE_TRUNK_GRADIENT_STOP_V1,
         ActionMaskError,
+        GenomeConditioningError,
         PerAgentRecurrentStateStore,
         PreviousPublicFeedbackInput,
         PublicInputError,
@@ -34,6 +41,12 @@ if torch is not None:
         recurrent_actor_critic_contract,
         seeded_torch_generator,
         strict_action_mask_tensor,
+    )
+    from evolution_sim.mind.recurrent_genome import (
+        RECURRENT_CONTROLLER_GENOME_SIZE,
+        RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE,
+        develop_recurrent_genome,
+        founder_recurrent_genome,
     )
 
 
@@ -62,8 +75,72 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
             contract["architecture"]["learned_encoder_input_size"],
             604,
         )
+        self.assertEqual(
+            self.model.config.genome_conditioning_mode,
+            GENOME_CONDITIONING_DISABLED,
+        )
+        self.assertEqual(
+            self.model.config.critic_genome_conditioning,
+            CRITIC_GENOME_CONDITIONING_NONE,
+        )
+        self.assertEqual(
+            self.model.config.value_trunk_gradient,
+            VALUE_TRUNK_GRADIENT_SHARED,
+        )
+        self.assertEqual(
+            contract["architecture"]["genome_conditioning"]["required_input"],
+            "forbidden",
+        )
+        self.assertIsNone(
+            contract["architecture"]["genome_conditioning"]["development"]
+        )
         self.assertFalse(contract["runtime_integrated"])
         self.assertFalse(contract["heuristic_action_source"])
+
+    def test_genome_and_critic_ablation_config_modes_fail_closed(self) -> None:
+        enabled = RecurrentActorCriticConfig(
+            encoder_size=8,
+            hidden_size=8,
+            genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+            value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+        )
+        contract = recurrent_actor_critic_contract(enabled)
+
+        self.assertEqual(
+            contract["architecture"]["genome_conditioning"]["mode"],
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        self.assertEqual(
+            contract["architecture"]["genome_conditioning"][
+                "critic_genome_conditioning"
+            ],
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        )
+        self.assertEqual(
+            contract["architecture"]["genome_conditioning"]["value_trunk_gradient"],
+            VALUE_TRUNK_GRADIENT_STOP_V1,
+        )
+        self.assertEqual(
+            contract["architecture"]["genome_conditioning"]["development"][
+                "hidden_dimension"
+            ],
+            8,
+        )
+
+        invalid_cases = (
+            {"genome_conditioning_mode": "film"},
+            {"critic_genome_conditioning": "actor_film_v1"},
+            {"value_trunk_gradient": "separate_critic"},
+            {
+                "genome_conditioning_mode": GENOME_CONDITIONING_DISABLED,
+                "critic_genome_conditioning": (CRITIC_GENOME_CONDITIONING_FILM_V1),
+            },
+        )
+        for kwargs in invalid_cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    RecurrentActorCriticConfig(**kwargs)
 
     def test_token_aware_contract_binds_expanded_public_input_shape(self) -> None:
         config = RecurrentActorCriticConfig.for_signal_config(
@@ -331,6 +408,239 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         self.assertTrue(torch.isneginf(output.masked_logits[~masks]).all())
         self.assertTrue(torch.isfinite(output.masked_logits[masks]).all())
 
+    def test_actor_film_requires_exact_explicit_genome_tensors(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=17,
+        )
+        observations = self._observations(time_steps=2, batch_size=3)
+        masks = self._masks(time_steps=2, batch_size=3)
+        feedback = self._feedback(time_steps=2, batch_size=3)
+
+        with self.assertRaisesRegex(GenomeConditioningError, "requires explicit"):
+            model.forward_sequence(observations, masks, feedback)
+        with self.assertRaisesRegex(GenomeConditioningError, "requires explicit"):
+            model.evaluate_sequence(
+                observations,
+                masks,
+                feedback,
+                torch.full(
+                    (2, 3),
+                    ACTION_NAMES.index("eat"),
+                    dtype=torch.long,
+                ),
+            )
+
+        invalid_cases: tuple[tuple[str, object], ...] = (
+            ("shape", torch.zeros(2, 3, RECURRENT_CONTROLLER_GENOME_SIZE - 1)),
+            ("shape", torch.zeros(3, RECURRENT_CONTROLLER_GENOME_SIZE)),
+            (
+                "dtype",
+                torch.zeros(
+                    2,
+                    3,
+                    RECURRENT_CONTROLLER_GENOME_SIZE,
+                    dtype=torch.float64,
+                ),
+            ),
+            (
+                "finite",
+                torch.full(
+                    (2, 3, RECURRENT_CONTROLLER_GENOME_SIZE),
+                    float("nan"),
+                ),
+            ),
+            (
+                "finite",
+                torch.full(
+                    (2, 3, RECURRENT_CONTROLLER_GENOME_SIZE),
+                    float("inf"),
+                ),
+            ),
+            (
+                "bounds",
+                torch.full(
+                    (2, 3, RECURRENT_CONTROLLER_GENOME_SIZE),
+                    1.0001,
+                ),
+            ),
+            (
+                "bounds",
+                torch.full(
+                    (2, 3, RECURRENT_CONTROLLER_GENOME_SIZE),
+                    -1.0001,
+                ),
+            ),
+            (
+                "device",
+                torch.zeros(
+                    2,
+                    3,
+                    RECURRENT_CONTROLLER_GENOME_SIZE,
+                    device="meta",
+                ),
+            ),
+            ("torch.Tensor", object()),
+        )
+        for expected, genome_values in invalid_cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(GenomeConditioningError, expected):
+                    model.forward_sequence(
+                        observations,
+                        masks,
+                        feedback,
+                        genome_values=genome_values,  # type: ignore[arg-type]
+                    )
+
+        single_observation = observations[0, 0]
+        single_mask = masks[0, 0]
+        single_feedback = feedback[0, 0]
+        with self.assertRaisesRegex(GenomeConditioningError, "requires explicit"):
+            model.act(
+                single_observation,
+                single_mask,
+                single_feedback,
+                deterministic=True,
+            )
+        with self.assertRaisesRegex(GenomeConditioningError, "act genome"):
+            model.act(
+                single_observation,
+                single_mask,
+                single_feedback,
+                genome_values=torch.zeros(1, RECURRENT_CONTROLLER_GENOME_SIZE),
+                deterministic=True,
+            )
+        selection = model.act(
+            single_observation,
+            single_mask,
+            single_feedback,
+            genome_values=self._founder_genome_tensor(seed=17),
+            deterministic=True,
+        )
+        self.assertEqual(tuple(selection.raw_logits.shape), (1, ACTION_COUNT))
+
+        batched_selection = model.act(
+            observations[0],
+            masks[0],
+            feedback[0],
+            genome_values=self._genomes(time_steps=1, batch_size=3).squeeze(0),
+            deterministic=True,
+        )
+        self.assertEqual(tuple(batched_selection.raw_logits.shape), (3, ACTION_COUNT))
+        evaluation = model.evaluate_sequence(
+            observations,
+            masks,
+            feedback,
+            torch.full(
+                (2, 3),
+                ACTION_NAMES.index("eat"),
+                dtype=torch.long,
+            ),
+            genome_values=self._genomes(time_steps=2, batch_size=3, seed=18),
+        )
+        self.assertEqual(tuple(evaluation.log_probs.shape), (2, 3))
+
+    def test_zero_genome_is_neutral_and_swap_changes_actor_only(self) -> None:
+        disabled = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=16, hidden_size=16),
+            initialization_seed=701,
+        )
+        conditioned = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=16,
+                hidden_size=16,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+            ),
+            initialization_seed=701,
+        )
+        observations = self._observations(time_steps=3, batch_size=2)
+        masks = self._masks(time_steps=3, batch_size=2)
+        feedback = self._feedback(time_steps=3, batch_size=2)
+        zero_genomes = self._genomes(time_steps=3, batch_size=2)
+        nonzero_genomes = self._genomes(
+            time_steps=3,
+            batch_size=2,
+            seed=702,
+        )
+
+        for left, right in zip(
+            disabled.parameters(),
+            conditioned.parameters(),
+            strict=True,
+        ):
+            self.assertTrue(torch.equal(left, right))
+        self.assertFalse(
+            any("genome" in name for name, _ in conditioned.named_parameters())
+        )
+        self.assertEqual(
+            {name for name, _ in conditioned.named_buffers() if "genome" in name},
+            {
+                "_genome_film_scale_coefficients",
+                "_genome_film_bias_coefficients",
+            },
+        )
+
+        baseline = disabled.forward_sequence(observations, masks, feedback)
+        neutral = conditioned.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=zero_genomes,
+        )
+        swapped = conditioned.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=nonzero_genomes,
+        )
+
+        self.assertTrue(torch.equal(neutral.raw_logits, baseline.raw_logits))
+        self.assertTrue(torch.equal(neutral.values, baseline.values))
+        self.assertTrue(torch.equal(neutral.final_state, baseline.final_state))
+        self.assertFalse(torch.equal(swapped.raw_logits, neutral.raw_logits))
+        self.assertTrue(torch.equal(swapped.values, neutral.values))
+        self.assertTrue(torch.equal(swapped.final_state, neutral.final_state))
+
+    def test_vectorized_film_matches_scalar_sha_development(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=7,
+                hidden_size=7,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=31,
+        ).double()
+        scalar_genomes = (
+            founder_recurrent_genome(seed=31),
+            founder_recurrent_genome(seed=32),
+        )
+        genomes = torch.tensor(
+            [genome.values for genome in scalar_genomes],
+            dtype=torch.float64,
+        ).reshape(1, 2, RECURRENT_CONTROLLER_GENOME_SIZE)
+
+        scale, bias = model._develop_genome_film(genomes)
+
+        for row, genome in enumerate(scalar_genomes):
+            developed = develop_recurrent_genome(genome, hidden_dimension=7)
+            torch.testing.assert_close(
+                scale[0, row],
+                torch.tensor(developed.scale, dtype=torch.float64),
+                rtol=0.0,
+                atol=(RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE),
+            )
+            torch.testing.assert_close(
+                bias[0, row],
+                torch.tensor(developed.bias, dtype=torch.float64),
+                rtol=0.0,
+                atol=(RECURRENT_CONTROLLER_VECTORIZED_DEVELOPMENT_ABSOLUTE_TOLERANCE),
+            )
+
     def test_episode_start_reset_matches_fresh_segment_evaluation(self) -> None:
         observations = self._observations(time_steps=6, batch_size=1)
         masks = self._masks(time_steps=6, batch_size=1)
@@ -387,6 +697,284 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                 feedback,
                 illegal_actions,
             )
+
+    def test_actor_and_unconditioned_critic_gradient_routes_are_distinct(
+        self,
+    ) -> None:
+        config = RecurrentActorCriticConfig(
+            encoder_size=12,
+            hidden_size=12,
+            genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+        )
+        observations = self._observations(time_steps=3, batch_size=2)
+        masks = self._masks(time_steps=3, batch_size=2)
+        feedback = self._feedback(time_steps=3, batch_size=2)
+
+        actor_model = PublicRecurrentActorCritic(
+            config,
+            initialization_seed=810,
+        )
+        actor_genomes = self._genomes(
+            time_steps=3,
+            batch_size=2,
+            seed=811,
+        ).requires_grad_()
+        actor_output = actor_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=actor_genomes,
+        )
+        actor_output.raw_logits[..., ACTION_NAMES.index("eat")].sum().backward()
+
+        self.assertIsNotNone(actor_genomes.grad)
+        self.assertGreater(float(actor_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNotNone(actor_model.recurrent.weight_ih_l0.grad)
+        self.assertGreater(
+            float(actor_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
+            0.0,
+        )
+        self.assertIsNone(actor_model.value.weight.grad)
+
+        value_model = PublicRecurrentActorCritic(
+            config,
+            initialization_seed=810,
+        )
+        value_genomes = self._genomes(
+            time_steps=3,
+            batch_size=2,
+            seed=811,
+        ).requires_grad_()
+        value_output = value_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=value_genomes,
+        )
+        value_output.values.sum().backward()
+
+        self.assertIsNone(value_genomes.grad)
+        self.assertIsNotNone(value_model.value.weight.grad)
+        self.assertGreater(
+            float(value_model.value.weight.grad.abs().sum().item()),
+            0.0,
+        )
+        self.assertIsNotNone(value_model.recurrent.weight_ih_l0.grad)
+        self.assertGreater(
+            float(value_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
+            0.0,
+        )
+        self.assertIsNone(value_model.actor.weight.grad)
+
+    def test_critic_film_and_stop_gradient_route_value_loss_exactly(self) -> None:
+        observations = self._observations(time_steps=3, batch_size=2)
+        masks = self._masks(time_steps=3, batch_size=2)
+        feedback = self._feedback(time_steps=3, batch_size=2)
+
+        shared_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_trunk_gradient=VALUE_TRUNK_GRADIENT_SHARED,
+            ),
+            initialization_seed=820,
+        )
+        shared_genomes = self._genomes(
+            time_steps=3,
+            batch_size=2,
+            seed=821,
+        ).requires_grad_()
+        shared_output = shared_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=shared_genomes,
+        )
+        shared_output.values.sum().backward()
+
+        self.assertIsNotNone(shared_genomes.grad)
+        self.assertGreater(float(shared_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNotNone(shared_model.recurrent.weight_ih_l0.grad)
+        self.assertGreater(
+            float(shared_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
+            0.0,
+        )
+        self.assertIsNotNone(shared_model.value.weight.grad)
+
+        stopped_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+            ),
+            initialization_seed=820,
+        )
+        stopped_genomes = self._genomes(
+            time_steps=3,
+            batch_size=2,
+            seed=821,
+        ).requires_grad_()
+        stopped_output = stopped_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=stopped_genomes,
+        )
+        stopped_output.values.sum().backward()
+
+        self.assertIsNone(stopped_genomes.grad)
+        self.assertIsNone(stopped_model.encoder[0].weight.grad)
+        self.assertIsNone(stopped_model.recurrent.weight_ih_l0.grad)
+        self.assertIsNotNone(stopped_model.value.weight.grad)
+        self.assertGreater(
+            float(stopped_model.value.weight.grad.abs().sum().item()),
+            0.0,
+        )
+
+        stopped_model.zero_grad(set_to_none=True)
+        stopped_genomes.grad = None
+        stopped_actor_output = stopped_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=stopped_genomes,
+        )
+        stopped_actor_output.raw_logits[..., ACTION_NAMES.index("eat")].sum().backward()
+        self.assertIsNotNone(stopped_genomes.grad)
+        self.assertGreater(float(stopped_genomes.grad.abs().sum().item()), 0.0)
+        self.assertIsNotNone(stopped_model.recurrent.weight_ih_l0.grad)
+        self.assertGreater(
+            float(stopped_model.recurrent.weight_ih_l0.grad.abs().sum().item()),
+            0.0,
+        )
+        self.assertIsNone(stopped_model.value.weight.grad)
+
+        disabled_stopped_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                value_trunk_gradient=VALUE_TRUNK_GRADIENT_STOP_V1,
+            ),
+            initialization_seed=820,
+        )
+        disabled_stopped_output = disabled_stopped_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+        )
+        disabled_stopped_output.values.sum().backward()
+        self.assertIsNone(disabled_stopped_model.recurrent.weight_ih_l0.grad)
+        self.assertIsNotNone(disabled_stopped_model.value.weight.grad)
+
+    def test_critic_film_is_orthogonal_to_actor_film(self) -> None:
+        actor_only = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+            ),
+            initialization_seed=830,
+        )
+        actor_and_critic = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+            ),
+            initialization_seed=830,
+        )
+        observations = self._observations(time_steps=3, batch_size=2)
+        masks = self._masks(time_steps=3, batch_size=2)
+        feedback = self._feedback(time_steps=3, batch_size=2)
+        genomes = self._genomes(time_steps=3, batch_size=2, seed=831)
+        zero_genomes = self._genomes(time_steps=3, batch_size=2)
+
+        actor_only_output = actor_only.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=genomes,
+        )
+        actor_and_critic_output = actor_and_critic.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=genomes,
+        )
+        actor_only_zero = actor_only.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=zero_genomes,
+        )
+        actor_and_critic_zero = actor_and_critic.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=zero_genomes,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                actor_only_output.raw_logits,
+                actor_and_critic_output.raw_logits,
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                actor_only_output.final_state,
+                actor_and_critic_output.final_state,
+            )
+        )
+        self.assertFalse(
+            torch.equal(actor_only_output.values, actor_and_critic_output.values)
+        )
+        self.assertTrue(
+            torch.equal(actor_only_zero.values, actor_and_critic_zero.values)
+        )
+
+    def test_token_aware_actor_film_sequence_and_act_are_compatible(self) -> None:
+        config = RecurrentActorCriticConfig.for_signal_config(
+            SignalConfig(communication_signal_emission_enabled=True),
+            encoder_size=12,
+            hidden_size=12,
+            genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        model = PublicRecurrentActorCritic(config, initialization_seed=840)
+        observations = torch.linspace(
+            -1.0,
+            1.0,
+            config.public_input_size,
+        ).repeat(2, 2, 1)
+        masks = self._masks(time_steps=2, batch_size=2)
+        feedback = self._feedback(time_steps=2, batch_size=2)
+        genomes = self._genomes(time_steps=2, batch_size=2, seed=841)
+
+        output = model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=genomes,
+        )
+        selection = model.act(
+            observations[0],
+            masks[0],
+            feedback[0],
+            genome_values=genomes[0],
+            deterministic=True,
+        )
+
+        self.assertEqual(config.public_input_size, 645)
+        self.assertEqual(tuple(output.raw_logits.shape), (2, 2, ACTION_COUNT))
+        self.assertEqual(tuple(output.values.shape), (2, 2))
+        self.assertEqual(tuple(selection.actions.shape), (2,))
 
     def test_seeded_sampling_is_repeatable_and_never_escapes_mask(self) -> None:
         observations = self._observations(time_steps=1, batch_size=64).squeeze(0)
@@ -447,6 +1035,85 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         ):
             torch.testing.assert_close(first_parameter, second_parameter)
 
+    def test_disabled_conditioning_is_rng_neutral_and_bit_identical(self) -> None:
+        default_model = PublicRecurrentActorCritic(initialization_seed=606)
+        explicit_disabled = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                genome_conditioning_mode=GENOME_CONDITIONING_DISABLED,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_NONE,
+                value_trunk_gradient=VALUE_TRUNK_GRADIENT_SHARED,
+            ),
+            initialization_seed=606,
+        )
+        observations = self._observations(time_steps=3, batch_size=2)
+        masks = self._masks(time_steps=3, batch_size=2)
+        feedback = self._feedback(time_steps=3, batch_size=2)
+
+        self.assertEqual(
+            tuple(default_model.state_dict()),
+            tuple(explicit_disabled.state_dict()),
+        )
+        self.assertFalse(
+            any("genome" in name for name, _ in default_model.named_parameters())
+        )
+        self.assertFalse(
+            any("genome" in name for name, _ in default_model.named_buffers())
+        )
+        for left, right in zip(
+            default_model.parameters(),
+            explicit_disabled.parameters(),
+            strict=True,
+        ):
+            self.assertTrue(torch.equal(left, right))
+
+        default_output = default_model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+        )
+        explicit_output = explicit_disabled.forward_sequence(
+            observations,
+            masks,
+            feedback,
+        )
+        self.assertTrue(
+            torch.equal(default_output.raw_logits, explicit_output.raw_logits)
+        )
+        self.assertTrue(torch.equal(default_output.values, explicit_output.values))
+        self.assertTrue(
+            torch.equal(default_output.final_state, explicit_output.final_state)
+        )
+        with self.assertRaisesRegex(GenomeConditioningError, "forbidden"):
+            default_model.forward_sequence(
+                observations,
+                masks,
+                feedback,
+                genome_values=self._genomes(time_steps=3, batch_size=2),
+            )
+        with self.assertRaisesRegex(GenomeConditioningError, "forbidden"):
+            default_model.act(
+                observations[0],
+                masks[0],
+                feedback[0],
+                genome_values=self._genomes(
+                    time_steps=1,
+                    batch_size=2,
+                ).squeeze(0),
+                deterministic=True,
+            )
+
+        torch.manual_seed(911)
+        PublicRecurrentActorCritic()
+        default_next = torch.rand(4)
+        torch.manual_seed(911)
+        PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                genome_conditioning_mode=GENOME_CONDITIONING_DISABLED
+            )
+        )
+        explicit_next = torch.rand(4)
+        self.assertTrue(torch.equal(default_next, explicit_next))
+
     def test_per_agent_store_zeroes_birth_and_discards_death_or_world_state(
         self,
     ) -> None:
@@ -492,6 +1159,28 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                 feedback,
                 episode_starts=bad_starts,
             )
+
+    @staticmethod
+    def _founder_genome_tensor(*, seed: int) -> torch.Tensor:
+        return torch.tensor(
+            founder_recurrent_genome(seed=seed).values,
+            dtype=torch.float32,
+        )
+
+    @classmethod
+    def _genomes(
+        cls,
+        *,
+        time_steps: int,
+        batch_size: int,
+        seed: int | None = None,
+    ) -> torch.Tensor:
+        values = (
+            torch.zeros(RECURRENT_CONTROLLER_GENOME_SIZE)
+            if seed is None
+            else cls._founder_genome_tensor(seed=seed)
+        )
+        return values.repeat(time_steps, batch_size, 1)
 
     @staticmethod
     def _observations(*, time_steps: int, batch_size: int) -> torch.Tensor:
