@@ -63,8 +63,9 @@ from evolution_sim.io.open_ecology_archive_authority import (  # noqa: E402
     load_archive_tool_authority,
     minimal_subprocess_env,
     parse_ssh_connection_identity,
-    verify_pinned_file,
+    verify_effective_ssh_config,
     verify_local_authority_files,
+    verify_pinned_file,
 )
 from evolution_sim.io.open_ecology_bounded_subprocess import (  # noqa: E402
     OpenEcologyProcessGroupError,
@@ -1951,20 +1952,10 @@ def _load_and_validate_authority(
 
 def _require_effective_ssh_endpoint(authority: ArchiveToolAuthority) -> None:
     ssh_pin = authority.local_tool("ssh")
-    completed = _run_pinned(
-        (
-            ssh_pin.path,
-            "-G",
-            *SEALED_SSH_OPTIONS,
-            authority.ssh_target,
-        ),
-        pin=ssh_pin,
-    )
-    observed = hashlib.sha256(completed.stdout).hexdigest()
-    if observed != authority.ssh_effective_config_sha256:
-        raise OpenEcologyArchiveError(
-            "effective SSH endpoint/config differs from external authority pin"
-        )
+    try:
+        verify_effective_ssh_config(authority, run_pinned=_run_pinned)
+    except ArchiveAuthorityError as exc:
+        raise OpenEcologyArchiveError(str(exc)) from exc
     verbose = _run_pinned(
         (
             ssh_pin.path,

@@ -435,6 +435,7 @@ def evaluate_recurrent_artifact(
     return _evaluate_frozen_model(
         candidate_model=loaded.model,
         policy_digest_label=artifact_digest,
+        trusted_artifact_path=Path(artifact_path),
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
         artifact_evidence=_bound_source_pinned_artifact_evidence(
@@ -599,6 +600,7 @@ def evaluate_frozen_recurrent_policy_artifact(
     return _evaluate_frozen_model(
         candidate_model=loaded.model,
         policy_digest_label=artifact_digest,
+        trusted_artifact_path=Path(artifact_path),
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
         artifact_evidence=_bound_source_pinned_artifact_evidence(
@@ -712,6 +714,7 @@ def evaluate_recurrent_model(
     return _evaluate_frozen_model(
         candidate_model=model,
         policy_digest_label=digest_label,
+        trusted_artifact_path=None,
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
         artifact_evidence=None,
@@ -761,6 +764,7 @@ def _evaluate_frozen_model(
     *,
     candidate_model: PublicRecurrentActorCritic,
     policy_digest_label: str,
+    trusted_artifact_path: Path | None,
     seed_plan: RecurrentEvaluationSeedPlan,
     selected_fixtures: Sequence[str],
     artifact_evidence: Mapping[str, object] | None,
@@ -778,6 +782,7 @@ def _evaluate_frozen_model(
         return _evaluate_frozen_model_impl(
             candidate_model=candidate_model,
             policy_digest_label=policy_digest_label,
+            trusted_artifact_path=trusted_artifact_path,
             seed_plan=seed_plan,
             selected_fixtures=selected_fixtures,
             artifact_evidence=artifact_evidence,
@@ -796,6 +801,7 @@ def _evaluate_frozen_model_impl(
     *,
     candidate_model: PublicRecurrentActorCritic,
     policy_digest_label: str,
+    trusted_artifact_path: Path | None,
     seed_plan: RecurrentEvaluationSeedPlan,
     selected_fixtures: Sequence[str],
     artifact_evidence: Mapping[str, object] | None,
@@ -1035,7 +1041,7 @@ def _evaluate_frozen_model_impl(
             "checks": replay_checks,
         },
     }
-    _validate_report(report)
+    _validate_report(report, trusted_artifact_path=trusted_artifact_path)
     return report
 
 
@@ -2689,6 +2695,7 @@ def _validate_source_pinned_artifact_identity(
     provenance: Mapping[str, object],
     *,
     seed_plan: RecurrentEvaluationSeedPlan,
+    trusted_artifact_path: str | Path | None,
 ) -> str:
     common_fields = {
         "path",
@@ -2749,6 +2756,10 @@ def _validate_source_pinned_artifact_identity(
     path = artifact.get("path")
     if not isinstance(path, str) or not path:
         raise RecurrentEvaluationError("artifact path must be a non-empty string")
+    if trusted_artifact_path is None:
+        raise RecurrentEvaluationError(
+            "source-pinned validation requires an explicit trusted artifact path"
+        )
     _validated_sha256(
         artifact.get("artifact_sha256"),
         field="artifact.artifact_sha256",
@@ -2813,9 +2824,9 @@ def _validate_source_pinned_artifact_identity(
     try:
         loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact
         if mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
-            loaded = load_frozen_recurrent_policy_artifact(path)
+            loaded = load_frozen_recurrent_policy_artifact(trusted_artifact_path)
         else:
-            loaded = load_recurrent_artifact(path)
+            loaded = load_recurrent_artifact(trusted_artifact_path)
     except RecurrentArtifactError as error:
         raise RecurrentEvaluationError(
             "source-pinned artifact bytes are missing, invalid, or stale"
@@ -2880,7 +2891,11 @@ def _validate_source_pinned_artifact_identity(
     return genome_conditioning_mode
 
 
-def _validate_report(report: Mapping[str, object]) -> None:
+def _validate_report(
+    report: Mapping[str, object],
+    *,
+    trusted_artifact_path: str | Path | None = None,
+) -> None:
     _reject_ambiguous_v3_terminal_fields(report, field="report")
     report_schema = report.get("schema_version")
     if report_schema == LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION:
@@ -3019,6 +3034,7 @@ def _validate_report(report: Mapping[str, object]) -> None:
             artifact,
             provenance,
             seed_plan=seed_plan,
+            trusted_artifact_path=trusted_artifact_path,
         )
         if (
             artifact_genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1
@@ -3257,17 +3273,21 @@ def _validate_report(report: Mapping[str, object]) -> None:
         )
 
 
-def validate_recurrent_evaluation_report(report: Mapping[str, object]) -> None:
-    """Validate v5 structure and re-open every claimed source-pinned artifact.
+def validate_recurrent_evaluation_report(
+    report: Mapping[str, object],
+    *,
+    trusted_artifact_path: str | Path | None = None,
+) -> None:
+    """Validate v5 structure and trusted source-pinned artifact bytes.
 
-    Source-pinned reports fail when their referenced artifact bytes are absent.
-    The appropriate strict loader revalidates the artifact digest and, for a
-    frozen policy, executes its exact CPU replay probe. This proves consistency
-    between locally available bytes and the report; trust in an externally
-    supplied report still requires a trusted report or artifact digest pin.
+    A source-pinned report never chooses the filesystem object that validation
+    opens. Its embedded path remains descriptive evidence, while the caller
+    must supply the independently trusted local artifact path. The strict
+    loader revalidates that object's digest and, for a frozen policy, executes
+    its exact CPU replay probe.
     """
 
-    _validate_report(report)
+    _validate_report(report, trusted_artifact_path=trusted_artifact_path)
 
 
 def _training_seed_set_for_plan(

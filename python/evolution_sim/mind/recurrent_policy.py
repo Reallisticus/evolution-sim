@@ -993,9 +993,9 @@ class DeterministicPublicRecurrentPolicy:
                     "recurrent genome population reset state digest mismatch"
                 )
             self._last_world_genome_provenance = provenance
-            if self._sampling_generator is not None:
-                assert self._sampling_seed is not None
-                self._sampling_generator.manual_seed(self._sampling_seed)
+        if self._sampling_generator is not None:
+            assert self._sampling_seed is not None
+            self._sampling_generator.manual_seed(self._sampling_seed)
         self._state_by_agent.clear()
         self._feedback_by_agent.clear()
         self._public_history_by_agent.clear()

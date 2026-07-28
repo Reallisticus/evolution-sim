@@ -28,24 +28,8 @@ from evolution_sim.io.open_ecology_campaign_storage import (
     canonical_json_bytes,
     seal_closed_bundle,
 )
-from evolution_sim.mind.open_ecology_campaign_coordinator import (
-    OpenEcologyCampaignCoordinator,
+from evolution_sim.mind.open_ecology_campaign_contract import (
     OpenEcologyCampaignCoordinatorError,
-    build_static_worker_assignments,
-    load_campaign_frontier_receipt,
-    restore_campaign_runners_from_receipt,
-)
-from evolution_sim.mind.open_ecology_persistent_island import (
-    PersistentArtifactBinding,
-    PersistentIslandRunner,
-    build_persistent_island_task_matrix,
-)
-from evolution_sim.mind.open_ecology_process_workers import (
-    OpenEcologyProcessWorkerError,
-    PersistentProcessWorkerLauncher,
-    build_process_worker_slots,
-    process_worker_assignment_sha256,
-    strict_open_ecology_source_snapshot,
 )
 
 
@@ -183,6 +167,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.command == "status":
+        from evolution_sim.mind.open_ecology_campaign_coordinator import (
+            load_campaign_frontier_receipt,
+        )
+
         receipt = load_campaign_frontier_receipt(arguments.receipt)
         payload = {
             "campaign_id": receipt.payload.get("campaign_id"),
@@ -217,6 +205,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             bundle_dir=arguments.bundle_dir,
             bundle_id=arguments.bundle_id,
         )
+    from evolution_sim.mind.open_ecology_campaign_coordinator import (
+        OpenEcologyCampaignCoordinator,
+        build_static_worker_assignments,
+        restore_campaign_runners_from_receipt,
+    )
+    from evolution_sim.mind.open_ecology_persistent_island import (
+        PersistentArtifactBinding,
+        PersistentIslandRunner,
+        build_persistent_island_task_matrix,
+    )
+    from evolution_sim.mind.open_ecology_process_workers import (
+        PersistentProcessWorkerLauncher,
+        build_process_worker_slots,
+        process_worker_assignment_sha256,
+    )
+
     bindings = tuple(
         PersistentArtifactBinding(**artifact) for artifact in _artifact_bindings(spec)
     )
@@ -1091,6 +1095,11 @@ def _campaign_source_snapshot(
     git_executable: Path,
     git_executable_sha256: str,
 ) -> Mapping[str, object]:
+    from evolution_sim.mind.open_ecology_process_workers import (
+        OpenEcologyProcessWorkerError,
+        strict_open_ecology_source_snapshot,
+    )
+
     try:
         return strict_open_ecology_source_snapshot(
             repository_root=repository_root,

@@ -165,8 +165,12 @@ non-canonical paths, or malformed digests fail closed. Its shape is:
   },
   "remote_helpers": {
     "python/evolution_sim/io/open_ecology_archive_authority.py": "<64-hex>",
+    "python/evolution_sim/io/open_ecology_bounded_subprocess.py": "<64-hex>",
     "python/evolution_sim/io/open_ecology_campaign_storage.py": "<64-hex>",
+    "python/evolution_sim/io/open_ecology_runtime_venv_authority.py": "<64-hex>",
     "python/evolution_sim/io/source_manifest.py": "<64-hex>",
+    "python/evolution_sim/mind/open_ecology_phase_a_guardian.py": "<64-hex>",
+    "python/evolution_sim/cli/open_ecology_phase_a_guardian.py": "<64-hex>",
     "scripts/archive_evolution_outputs.py": "<64-hex>",
     "scripts/archive_open_ecology_campaign.py": "<64-hex>"
   },

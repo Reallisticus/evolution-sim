@@ -5,6 +5,8 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -26,6 +28,7 @@ from evolution_sim.mind.open_ecology_phase_a_behavioral_evidence import (
     _run_cross_surface_probe,
     _run_fixed_batch_probe,
     _run_runtime_genome_probe,
+    _run_viewer_validator_process,
     _runtime_genome_facts,
     _viewer_surface_probe,
     produce_cross_surface_and_self_echo_report,
@@ -161,10 +164,24 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
     def test_d1_broken_stdin_hanging_validator_is_killed_promptly(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             hostile_node = Path(temporary) / "hostile-node"
+            child_pid_path = Path(temporary) / "child.pid"
+            child_body = (
+                "import signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "while True: time.sleep(1)\n"
+            )
             hostile_node.write_text(
                 f"#!{sys.executable}\n"
                 "import os\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
                 "import time\n"
+                "child=subprocess.Popen("
+                f"[sys.executable,'-c',{child_body!r}],"
+                "stdin=subprocess.DEVNULL)\n"
+                f"Path({str(child_pid_path)!r}).write_text("
+                "str(child.pid),encoding='ascii')\n"
                 "os.close(0)\n"
                 "time.sleep(60)\n",
                 encoding="utf-8",
@@ -181,6 +198,118 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
             ):
                 _viewer_surface_probe({"padding": "x" * (900 * 1024)})
             self.assertLess(time.monotonic() - started, 5.0)
+            _assert_process_gone(self, child_pid_path)
+
+    def test_d1_nonreader_stdin_stall_is_bounded_and_closes_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_path = Path(temporary) / "child.pid"
+            child_body = (
+                "import signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "while True: time.sleep(1)\n"
+            )
+            parent_body = (
+                "from pathlib import Path\n"
+                "import signal\n"
+                "import subprocess\n"
+                "import sys\n"
+                "import time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "child=subprocess.Popen("
+                f"[sys.executable,'-c',{child_body!r}],"
+                "stdin=subprocess.DEVNULL)\n"
+                f"Path({str(child_pid_path)!r}).write_text("
+                "str(child.pid),encoding='ascii')\n"
+                "while True: time.sleep(1)\n"
+            )
+            process = _start_hostile_validator(parent_body)
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    _run_viewer_validator_process(
+                        process,
+                        input_bytes=b"x" * (900 * 1024),
+                        maximum_output_bytes=256 * 1024,
+                        timeout_seconds=0.5,
+                    )
+                self.assertLess(time.monotonic() - started, 3.0)
+                self.assertIsNotNone(process.returncode)
+                _assert_process_gone(self, child_pid_path)
+            finally:
+                _force_process_group_closed(process)
+
+    def test_d1_successful_leader_exit_still_closes_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_path = Path(temporary) / "child.pid"
+            child_body = (
+                "import signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "while True: time.sleep(1)\n"
+            )
+            parent_body = (
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                "child=subprocess.Popen("
+                f"[sys.executable,'-c',{child_body!r}],"
+                "stdin=subprocess.DEVNULL)\n"
+                f"Path({str(child_pid_path)!r}).write_text("
+                "str(child.pid),encoding='ascii')\n"
+                "payload=sys.stdin.buffer.read()\n"
+                "sys.stdout.buffer.write(b'accepted:'+payload)\n"
+            )
+            process = _start_hostile_validator(parent_body)
+            try:
+                returncode, stdout, stderr = _run_viewer_validator_process(
+                    process,
+                    input_bytes=b"replay",
+                    maximum_output_bytes=256 * 1024,
+                    timeout_seconds=2.0,
+                )
+                self.assertEqual(returncode, 0)
+                self.assertEqual(stdout, b"accepted:replay")
+                self.assertEqual(stderr, b"")
+                self.assertIsNotNone(process.returncode)
+                _assert_process_gone(self, child_pid_path)
+            finally:
+                _force_process_group_closed(process)
+
+    def test_d1_zero_exit_before_complete_input_is_rejected_and_closes_group(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_path = Path(temporary) / "child.pid"
+            child_body = (
+                "import signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "while True: time.sleep(1)\n"
+            )
+            parent_body = (
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                "child=subprocess.Popen("
+                f"[sys.executable,'-c',{child_body!r}])\n"
+                f"Path({str(child_pid_path)!r}).write_text("
+                "str(child.pid),encoding='ascii')\n"
+                "sys.stdout.buffer.write(b'premature-success')\n"
+            )
+            process = _start_hostile_validator(parent_body)
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "before consuming the complete replay",
+                ):
+                    _run_viewer_validator_process(
+                        process,
+                        input_bytes=b"x" * (900 * 1024),
+                        maximum_output_bytes=256 * 1024,
+                        timeout_seconds=2.0,
+                    )
+                self.assertIsNotNone(process.returncode)
+                _assert_process_gone(self, child_pid_path)
+            finally:
+                _force_process_group_closed(process)
 
     def test_d2_actual_world_hooks_runtime_and_snapshot_replay_repeat(self) -> None:
         first = _run_runtime_genome_probe()
@@ -950,6 +1079,55 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
                     self.preregistration,
                     None,
                 )
+
+
+def _start_hostile_validator(code: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        bufsize=0,
+    )
+
+
+def _force_process_group_closed(process: subprocess.Popen[bytes]) -> None:
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=2.0)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None and not stream.closed:
+            stream.close()
+
+
+def _assert_process_gone(
+    case: unittest.TestCase,
+    child_pid_path: Path,
+) -> None:
+    case.assertTrue(child_pid_path.is_file(), "validator descendant did not start")
+    child_pid = int(child_pid_path.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 3.0
+    state = ""
+    while time.monotonic() < deadline:
+        completed = subprocess.run(
+            ("ps", "-p", str(child_pid), "-o", "stat="),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        state = completed.stdout.strip()
+        if not state or state.startswith("Z"):
+            break
+        time.sleep(0.05)
+    case.assertTrue(
+        not state or state.startswith("Z"),
+        f"D1 viewer validator descendant survived cleanup: {state}",
+    )
 
 
 if __name__ == "__main__":

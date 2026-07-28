@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import pickle
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -17,9 +20,13 @@ import unittest
 from unittest import mock
 
 from evolution_sim.cli import open_ecology_phase_a_guardian as guardian_cli
+from evolution_sim.io import open_ecology_archive_authority as archive_authority
 from evolution_sim.io import open_ecology_runtime_venv_authority as runtime_authority
 from evolution_sim.mind import open_ecology_phase_a_guardian as guardian
+from evolution_sim.mind import open_ecology_phase_a_qualification as qualification
 
+
+REQUIRES_MIND_ML = True
 
 _SHA = "a" * 64
 _GIT_SHA = "b" * 40
@@ -50,7 +57,184 @@ def _preregistration() -> dict[str, object]:
     }
 
 
+def _observe_host(_campaign_root: Path) -> dict[str, object]:
+    return {"injected": True}
+
+
 class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
+    def test_coordinator_default_timeout_covers_full_live_d10_budget(self) -> None:
+        d10_torch_budget_seconds = 30 * 60.0
+        minimum_live_d10_budget = (
+            2 * qualification.BENCHMARK_TIMEOUT_SECONDS + d10_torch_budget_seconds
+        )
+        arguments = guardian_cli.build_parser().parse_args(
+            [
+                "coordinate",
+                "--local-preregistration",
+                "/local/preregistration.json",
+                "--local-launch-authorization",
+                "/local/authorization.json",
+                "--remote-preregistration",
+                "/remote/preregistration.json",
+                "--remote-launch-authorization",
+                "/remote/authorization.json",
+                "--remote-output-root",
+                "/remote/output",
+                "--archive-tool-authority",
+                "/local/archive-authority.json",
+                "--expected-archive-tool-authority-sha256",
+                "a" * 64,
+                "--remote-runtime-venv-authority",
+                "/remote/runtime-authority.json",
+                "--expected-remote-runtime-venv-authority-sha256",
+                "b" * 64,
+                "--github-token-stdin",
+                "--transcript",
+                "/local/transcript.json",
+            ]
+        )
+
+        self.assertEqual(
+            guardian.DEFAULT_GUARDIAN_READY_TIMEOUT_SECONDS,
+            50_400.0,
+        )
+        self.assertGreater(
+            guardian.DEFAULT_GUARDIAN_READY_TIMEOUT_SECONDS,
+            minimum_live_d10_budget,
+        )
+        self.assertEqual(guardian.DEFAULT_CELL_TIMEOUT_SECONDS, 86_400.0)
+        self.assertEqual(
+            arguments.ready_timeout_seconds,
+            guardian.DEFAULT_GUARDIAN_READY_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            arguments.cell_timeout_seconds,
+            guardian.DEFAULT_CELL_TIMEOUT_SECONDS,
+        )
+
+    def test_effective_ssh_user_or_identity_drift_fails_closed(self) -> None:
+        sealed = (
+            b"host trainer-node\n"
+            b"hostname 192.0.2.40\n"
+            b"user train\n"
+            b"identityfile /keys/sealed_ed25519\n"
+        )
+        authority = mock.Mock()
+        authority.ssh_target = "trainer-node"
+        authority.ssh_effective_config_sha256 = hashlib.sha256(sealed).hexdigest()
+        ssh_pin = archive_authority.FilePin(
+            path="/canonical/ssh",
+            sha256="a" * 64,
+        )
+        authority.local_tool.return_value = ssh_pin
+
+        for field, observed in (
+            ("User", sealed.replace(b"user train", b"user replacement")),
+            (
+                "IdentityFile",
+                sealed.replace(
+                    b"identityfile /keys/sealed_ed25519",
+                    b"identityfile /keys/replacement_ed25519",
+                ),
+            ),
+        ):
+            commands: list[tuple[str, ...]] = []
+
+            def run_pinned(
+                command: Sequence[str],
+                *,
+                pin: archive_authority.FilePin,
+            ) -> subprocess.CompletedProcess[bytes]:
+                self.assertEqual(pin, ssh_pin)
+                commands.append(tuple(command))
+                return subprocess.CompletedProcess(
+                    tuple(command),
+                    0,
+                    observed,
+                    b"",
+                )
+
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(
+                    archive_authority.ArchiveAuthorityError,
+                    "effective SSH endpoint/config differs",
+                ),
+            ):
+                archive_authority.verify_effective_ssh_config(
+                    authority,
+                    run_pinned=run_pinned,
+                )
+            self.assertEqual(
+                commands,
+                [
+                    (
+                        ssh_pin.path,
+                        "-G",
+                        *archive_authority.SEALED_SSH_OPTIONS,
+                        authority.ssh_target,
+                    )
+                ],
+            )
+
+    @unittest.skipUnless(shutil.which("yes"), "yes is required")
+    def test_default_effective_ssh_probe_caps_stdout_and_kills_group(self) -> None:
+        executable = Path(shutil.which("yes") or "").resolve(strict=True)
+        pin = archive_authority.measure_canonical_file(
+            executable,
+            executable=True,
+            require_nonempty=True,
+        )
+
+        with (
+            mock.patch.object(
+                archive_authority,
+                "_EFFECTIVE_SSH_CONFIG_STDOUT_LIMIT_BYTES",
+                1024,
+            ),
+            self.assertRaisesRegex(
+                archive_authority.ArchiveAuthorityError,
+                "stdout exceeded its byte ceiling",
+            ),
+        ):
+            archive_authority._run_effective_ssh_config_probe(
+                (pin.path,),
+                pin=pin,
+            )
+
+    def test_successful_effective_ssh_probe_kills_lingering_descendant(self) -> None:
+        executable = Path(sys.executable).resolve(strict=True)
+        pin = archive_authority.measure_canonical_file(
+            executable,
+            executable=True,
+            require_nonempty=True,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "descendant-survived"
+            child_code = (
+                "import pathlib,signal,time\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "time.sleep(0.5)\n"
+                f"pathlib.Path({str(marker)!r}).write_text('bad')\n"
+            )
+            parent_code = (
+                "import subprocess,sys\n"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+                "print('leader-complete')\n"
+            )
+
+            completed = archive_authority._run_effective_ssh_config_probe(
+                (pin.path, "-c", parent_code),
+                pin=pin,
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, b"leader-complete\n")
+            self.assertEqual(completed.stderr, b"")
+            time.sleep(0.7)
+            self.assertFalse(marker.exists())
+
     def test_public_serve_revalidates_runtime_before_process_or_live_gates(
         self,
     ) -> None:
@@ -120,6 +304,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             bindings=_bindings(),
             channel=channel,
             source_probe=lambda: source_calls.append("source"),
+            host_observer=_observe_host,
             verifiers=verifiers,
         )
         token = bytearray(b"g" * 32)
@@ -170,6 +355,50 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             )
         self.assertEqual(calls, ["d10", "throughput", "output_lock"])
         self.assertEqual(termination, [])
+
+    def test_default_throughput_verifier_receives_cli_host_observer(self) -> None:
+        channel = guardian.GuardianChannelLiveness(terminate=lambda _reason: None)
+        reports = {
+            name: Path(f"/tmp/{name}.json")
+            for name in ("d10", "throughput", "output_lock")
+        }
+        with (
+            mock.patch.object(
+                guardian,
+                "live_verify_exact_sha_phase_a_training_and_torch_ci_report",
+                return_value={"gate": "d10"},
+            ),
+            mock.patch.object(
+                guardian,
+                "live_verify_phase_a_training_throughput_report",
+                return_value={"gate": "throughput"},
+            ) as throughput,
+            mock.patch.object(
+                guardian,
+                "live_verify_output_lock_contention_report",
+                return_value={"gate": "output_lock"},
+            ),
+        ):
+            authority = guardian.RemoteGuardianAuthority(
+                bindings=_bindings(),
+                channel=channel,
+                source_probe=lambda: None,
+                host_observer=_observe_host,
+            )
+            capability = authority.activate(
+                report_paths=reports,
+                preregistration=_preregistration(),
+                authorization_time=None,
+                github_token=bytearray(b"g" * 32),
+            )
+            capability.close()
+
+        throughput.assert_called_once_with(
+            reports["throughput"],
+            _preregistration(),
+            None,
+            host_observer=_observe_host,
+        )
 
     def test_forged_persisted_capability_and_missing_storage_fail_closed(self) -> None:
         with self.assertRaisesRegex(
@@ -328,6 +557,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                     output_root=Path("/remote/output"),
                     expected_bindings=bindings,
                     channel=channel,
+                    host_observer=_observe_host,
                 )
             except BaseException as error:
                 errors.append(error)
@@ -456,6 +686,24 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             )
         self.assertLess(time.monotonic() - started, 0.5)
 
+    def test_local_guardian_authority_wraps_effective_config_drift(self) -> None:
+        authority = mock.Mock()
+        with (
+            mock.patch.object(guardian, "verify_local_authority_files"),
+            mock.patch.object(
+                guardian,
+                "verify_effective_ssh_config",
+                side_effect=archive_authority.ArchiveAuthorityError(
+                    "effective SSH endpoint/config differs after IdentityFile drift"
+                ),
+            ),
+            self.assertRaisesRegex(
+                guardian.OpenEcologyTwoPartyAuthorityError,
+                "IdentityFile drift",
+            ),
+        ):
+            guardian._revalidate_local_guardian_authority(authority)
+
     def test_endpoint_is_authenticated_before_the_mac_live_storage_gate(
         self,
     ) -> None:
@@ -515,7 +763,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             ),
             mock.patch.object(
                 guardian,
-                "verify_local_authority_files",
+                "_revalidate_local_guardian_authority",
                 side_effect=lambda _authority: events.append("archive"),
             ),
             mock.patch.object(
@@ -547,6 +795,8 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                 popen=lambda *_args, **_kwargs: events.append("popen") or Process(),
                 storage_authority_factory=lambda **_kwargs: Storage(),
             )
+        self.assertLess(events.index("archive"), events.index("command"))
+        self.assertLess(events.index("archive"), events.index("popen"))
         self.assertLess(events.index("endpoint"), events.index("storage"))
         self.assertEqual(Process.stdin.getvalue(), b"")
         self.assertEqual(token, bytearray(len(token)))
@@ -741,10 +991,12 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
         }
 
         def factory(**kwargs: object) -> guardian.RemoteGuardianAuthority:
+            self.assertIs(kwargs["host_observer"], _observe_host)
             return guardian.RemoteGuardianAuthority(
                 bindings=bindings,
                 channel=channel,
                 source_probe=lambda: events.append("source"),
+                host_observer=_observe_host,
                 verifiers={
                     name: (
                         lambda *_args, name=name: (
@@ -799,6 +1051,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                         output_root=Path("/remote/output"),
                         expected_bindings=bindings,
                         channel=channel,
+                        host_observer=_observe_host,
                         run_cell=run_cell,
                         remote_authority_factory=factory,
                     )
@@ -925,6 +1178,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             bindings=expected,
             channel=guardian.GuardianChannelLiveness(terminate=lambda _reason: None),
             source_probe=lambda: None,
+            host_observer=_observe_host,
             verifiers={
                 name: (lambda *_args, name=name: calls.append(name) or {"gate": name})
                 for name in ("d10", "throughput", "output_lock")

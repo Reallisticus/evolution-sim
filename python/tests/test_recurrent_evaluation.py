@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 import tempfile
 from pathlib import Path
@@ -379,6 +380,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 artifact_evidence,
                 candidate_provenance,
                 seed_plan=plan,
+                trusted_artifact_path=artifact_path,
             )
             evidence = artifact_evidence["training_seed_evidence"]
             self.assertEqual(
@@ -1341,6 +1343,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             artifact_evidence,
             provenance,
             seed_plan=selection_plan,
+            trusted_artifact_path=artifact_path,
         )
 
         self.assertFalse(provenance["promotion_evidence_eligible_from_provenance"])
@@ -1388,6 +1391,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 converted_evidence,
                 converted_provenance,
                 seed_plan=selection_plan,
+                trusted_artifact_path=artifact_path,
             )
         converted_evidence["artifact_evidence_sha256"] = (
             _source_pinned_artifact_evidence_sha256(converted_evidence)
@@ -1400,6 +1404,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 converted_evidence,
                 converted_provenance,
                 seed_plan=selection_plan,
+                trusted_artifact_path=artifact_path,
             )
 
     def test_verified_frozen_artifact_runs_real_broad_and_carrion_120_tick_controls(
@@ -1589,8 +1594,16 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         self.assertEqual(runtime["resolved_device"], "cpu")
         self.assertTrue(runtime["platform"]["platform_string"])
 
+        def validate_source_pinned(candidate: Mapping[str, object]) -> None:
+            _validate_report(candidate, trusted_artifact_path=artifact_path)
+
         frozen_v4_report = copy.deepcopy(report)
-        _validate_report(frozen_v4_report)
+        validate_source_pinned(frozen_v4_report)
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "explicit trusted artifact path",
+        ):
+            _validate_report(frozen_v4_report)
 
         stale_v4_evaluation = copy.deepcopy(frozen_v4_report)
         stale_v4_evaluation["schema_version"] = (
@@ -1600,20 +1613,26 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "schema v4 is stale",
         ):
-            _validate_report(stale_v4_evaluation)
+            validate_source_pinned(stale_v4_evaluation)
 
-        missing_artifact_bytes = copy.deepcopy(frozen_v4_report)
-        missing_artifact_bytes["artifact"]["path"] = str(
+        untrusted_embedded_path = copy.deepcopy(frozen_v4_report)
+        untrusted_embedded_path["artifact"]["path"] = str(
             Path(temporary.name) / "missing-frozen-candidate.json"
         )
-        missing_artifact_bytes["artifact"]["artifact_evidence_sha256"] = (
-            _source_pinned_artifact_evidence_sha256(missing_artifact_bytes["artifact"])
+        untrusted_embedded_path["artifact"]["artifact_evidence_sha256"] = (
+            _source_pinned_artifact_evidence_sha256(untrusted_embedded_path["artifact"])
         )
+        validate_source_pinned(untrusted_embedded_path)
         with self.assertRaisesRegex(
             RecurrentEvaluationError,
             "artifact bytes are missing, invalid, or stale",
         ):
-            _validate_report(missing_artifact_bytes)
+            _validate_report(
+                frozen_v4_report,
+                trusted_artifact_path=(
+                    Path(temporary.name) / "missing-frozen-candidate.json"
+                ),
+            )
 
         unbound_frozen_identity = copy.deepcopy(frozen_v4_report)
         unbound_frozen_identity["artifact"]["replay_probe_verified_on_device"] = "cuda"
@@ -1621,7 +1640,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "artifact evidence SHA256 mismatch",
         ):
-            _validate_report(unbound_frozen_identity)
+            validate_source_pinned(unbound_frozen_identity)
 
         stale_frozen_mode = copy.deepcopy(frozen_v4_report)
         stale_frozen_mode["candidate_provenance"]["mode"] = (
@@ -1631,7 +1650,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "mode is missing, stale, or unsupported",
         ):
-            _validate_report(stale_frozen_mode)
+            validate_source_pinned(stale_frozen_mode)
 
         stale_frozen_schema = copy.deepcopy(frozen_v4_report)
         stale_frozen_schema["artifact"]["schema_version"] = (
@@ -1644,7 +1663,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "identity or schema is missing or stale",
         ):
-            _validate_report(stale_frozen_schema)
+            validate_source_pinned(stale_frozen_schema)
 
         stale_cpu_probe = copy.deepcopy(frozen_v4_report)
         stale_cpu_probe["artifact"]["replay_probe_contract_version"] = (
@@ -1657,7 +1676,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "CPU replay-probe evidence is missing or stale",
         ):
-            _validate_report(stale_cpu_probe)
+            validate_source_pinned(stale_cpu_probe)
 
         stale_v3_report = copy.deepcopy(report)
         stale_v3_report["carrion_fixture_terminal_survivor_count"] = (
@@ -1667,7 +1686,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "ambiguous v3 terminal fields",
         ):
-            _validate_report(stale_v3_report)
+            validate_source_pinned(stale_v3_report)
 
         forged_eligibility = copy.deepcopy(report)
         forged_eligibility["candidate_provenance"][
@@ -1677,7 +1696,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "promotion eligibility differs",
         ):
-            _validate_report(forged_eligibility)
+            validate_source_pinned(forged_eligibility)
 
         contract_ticks = copy.deepcopy(report)
         contract_ticks["evaluation_contract"]["ticks"] = 999
@@ -1685,7 +1704,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "canonical contract drifted",
         ):
-            _validate_report(contract_ticks)
+            validate_source_pinned(contract_ticks)
 
         factory_seed_leak = copy.deepcopy(report)
         factory_seed_leak["evaluation_contract"][
@@ -1695,7 +1714,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "canonical contract drifted",
         ):
-            _validate_report(factory_seed_leak)
+            validate_source_pinned(factory_seed_leak)
 
         erased_paired_deltas = copy.deepcopy(report)
         erased_paired_deltas["broad"]["paired_deltas"] = {}
@@ -1703,7 +1722,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "paired deltas differ",
         ):
-            _validate_report(erased_paired_deltas)
+            validate_source_pinned(erased_paired_deltas)
 
         forged_candidate_grid = copy.deepcopy(report)
         forged_grid_run = forged_candidate_grid["broad"]["policies"][
@@ -1717,7 +1736,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "candidate identity grid differs",
         ):
-            _validate_report(forged_candidate_grid)
+            validate_source_pinned(forged_candidate_grid)
 
         forged_replay_digest = copy.deepcopy(report)
         forged_replay_digest["replay_verification"]["checks"][0]["digest"] = "0" * 64
@@ -1725,7 +1744,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "replay identities or digests differ",
         ):
-            _validate_report(forged_replay_digest)
+            validate_source_pinned(forged_replay_digest)
 
         coherently_rehashed_outcome = copy.deepcopy(report)
         rehashed_run = coherently_rehashed_outcome["broad"]["policies"][
@@ -1739,7 +1758,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "replay identities or digests differ",
         ):
-            _validate_report(coherently_rehashed_outcome)
+            validate_source_pinned(coherently_rehashed_outcome)
 
     def test_passive_terminal_stay_is_not_counted_as_a_policy_action(self) -> None:
         reward_components = {component: 0.0 for component in REWARD_COMPONENT_BOUNDS}
@@ -2093,7 +2112,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 "binding differs from its task",
             ),
         ):
-            _validate_report(tampered)
+            _validate_report(tampered, trusted_artifact_path=artifact_path)
 
     def test_spawn_parallel_evaluation_is_exactly_sequential_equivalent(
         self,

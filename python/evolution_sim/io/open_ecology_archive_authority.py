@@ -8,14 +8,25 @@ fails closed before any upload is attempted.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import selectors
 import stat
-from typing import Final
+import subprocess
+import time
+from typing import Final, Protocol
+
+from evolution_sim.io.open_ecology_bounded_subprocess import (
+    OpenEcologyProcessGroupError,
+    leader_exit_observed_without_reaping,
+    terminate_process_group_before_reap,
+    wait_for_leader_exit_without_reaping,
+)
 
 
 ARCHIVE_TOOL_AUTHORITY_SCHEMA_VERSION: Final = "open_ecology_archive_tool_authority_v1"
@@ -75,6 +86,11 @@ _SSH_AUTHENTICATED_LINE = re.compile(
     r'using "(?P<authentication>[^"\r\n]+)"\.$'
 )
 _READ_CHUNK_SIZE = 1024 * 1024
+_EFFECTIVE_SSH_CONFIG_TIMEOUT_SECONDS = 30.0
+_EFFECTIVE_SSH_CONFIG_STDOUT_LIMIT_BYTES = 1024 * 1024
+_EFFECTIVE_SSH_CONFIG_STDERR_LIMIT_BYTES = 256 * 1024
+_EFFECTIVE_SSH_CONFIG_READ_CHUNK_BYTES = 64 * 1024
+_EFFECTIVE_SSH_CONFIG_KILL_TIMEOUT_SECONDS = 5.0
 
 
 class ArchiveAuthorityError(RuntimeError):
@@ -89,6 +105,15 @@ class FilePin:
 
     def receipt_record(self) -> dict[str, str]:
         return {"path": self.path, "sha256": self.sha256}
+
+
+class _PinnedCommandRunner(Protocol):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        pin: FilePin,
+    ) -> subprocess.CompletedProcess[bytes]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +305,180 @@ def verify_local_authority_files(authority: ArchiveToolAuthority) -> None:
         executable=False,
         require_nonempty=True,
     )
+
+
+def verify_effective_ssh_config(
+    authority: ArchiveToolAuthority,
+    *,
+    run_pinned: _PinnedCommandRunner | None = None,
+) -> None:
+    """Reexecute pinned ``ssh -G`` and require the sealed effective config."""
+
+    ssh_pin = authority.local_tool("ssh")
+    command = (
+        ssh_pin.path,
+        "-G",
+        *SEALED_SSH_OPTIONS,
+        authority.ssh_target,
+    )
+    if run_pinned is None:
+        completed = _run_effective_ssh_config_probe(command, pin=ssh_pin)
+    else:
+        completed = run_pinned(command, pin=ssh_pin)
+    if completed.returncode != 0:
+        raise ArchiveAuthorityError(
+            f"pinned effective SSH config probe failed with exit {completed.returncode}"
+        )
+    if not isinstance(completed.stdout, bytes):
+        raise ArchiveAuthorityError(
+            "effective SSH config probe did not return byte output"
+        )
+    observed = hashlib.sha256(completed.stdout).hexdigest()
+    if observed != authority.ssh_effective_config_sha256:
+        raise ArchiveAuthorityError(
+            "effective SSH endpoint/config differs from external authority pin"
+        )
+
+
+def _run_effective_ssh_config_probe(
+    command: Sequence[str],
+    *,
+    pin: FilePin,
+) -> subprocess.CompletedProcess[bytes]:
+    if not command or command[0] != pin.path:
+        raise ArchiveAuthorityError(
+            "effective SSH config probe does not use its pinned executable"
+        )
+    verify_pinned_file(pin, executable=True, require_nonempty=True)
+    try:
+        process = subprocess.Popen(
+            tuple(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=minimal_subprocess_env(),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise ArchiveAuthorityError(
+            f"cannot execute pinned effective SSH config probe: {exc}"
+        ) from exc
+    group_cleanup_attempted = False
+    try:
+        stdout, stderr = _read_bounded_effective_ssh_config_output(process)
+        try:
+            wait_for_leader_exit_without_reaping(
+                process,
+                deadline=(
+                    time.monotonic() + _EFFECTIVE_SSH_CONFIG_KILL_TIMEOUT_SECONDS
+                ),
+            )
+        except TimeoutError as exc:
+            raise ArchiveAuthorityError(
+                "effective SSH config probe leader exceeded its exit ceiling"
+            ) from exc
+        group_cleanup_attempted = True
+        returncode = _terminate_effective_ssh_config_probe(
+            process,
+            leader_exit_observed=True,
+        )
+    except BaseException:
+        if not group_cleanup_attempted:
+            _terminate_effective_ssh_config_probe(process)
+        verify_pinned_file(pin, executable=True, require_nonempty=True)
+        raise
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+    verify_pinned_file(pin, executable=True, require_nonempty=True)
+    if returncode != 0:
+        raise ArchiveAuthorityError(
+            f"pinned effective SSH config probe failed with exit {returncode}"
+        )
+    return subprocess.CompletedProcess(tuple(command), returncode, stdout, stderr)
+
+
+def _read_bounded_effective_ssh_config_output(
+    process: subprocess.Popen[bytes],
+) -> tuple[bytes, bytes]:
+    if process.stdout is None or process.stderr is None:
+        raise ArchiveAuthorityError(
+            "effective SSH config probe did not expose bounded output pipes"
+        )
+    selector = selectors.DefaultSelector()
+    outputs = {
+        "stdout": bytearray(),
+        "stderr": bytearray(),
+    }
+    limits = {
+        "stdout": _EFFECTIVE_SSH_CONFIG_STDOUT_LIMIT_BYTES,
+        "stderr": _EFFECTIVE_SSH_CONFIG_STDERR_LIMIT_BYTES,
+    }
+    streams = {
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+    }
+    deadline = time.monotonic() + _EFFECTIVE_SSH_CONFIG_TIMEOUT_SECONDS
+    try:
+        for name, stream in streams.items():
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, data=name)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ArchiveAuthorityError(
+                    "effective SSH config probe exceeded its time ceiling"
+                )
+            events = selector.select(remaining)
+            if not events:
+                raise ArchiveAuthorityError(
+                    "effective SSH config probe exceeded its time ceiling"
+                )
+            for key, _mask in events:
+                stream = key.fileobj
+                name = str(key.data)
+                try:
+                    chunk = os.read(
+                        key.fd,
+                        _EFFECTIVE_SSH_CONFIG_READ_CHUNK_BYTES,
+                    )
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    streams[name].close()
+                    continue
+                output = outputs[name]
+                if len(output) + len(chunk) > limits[name]:
+                    raise ArchiveAuthorityError(
+                        f"effective SSH config probe {name} exceeded its byte ceiling"
+                    )
+                output.extend(chunk)
+    finally:
+        selector.close()
+    return bytes(outputs["stdout"]), bytes(outputs["stderr"])
+
+
+def _terminate_effective_ssh_config_probe(
+    process: subprocess.Popen[bytes],
+    *,
+    leader_exit_observed: bool | None = None,
+) -> int:
+    try:
+        leader_exited = (
+            leader_exit_observed_without_reaping(process)
+            if leader_exit_observed is None
+            else leader_exit_observed
+        )
+        return terminate_process_group_before_reap(
+            process,
+            wait_timeout_seconds=_EFFECTIVE_SSH_CONFIG_KILL_TIMEOUT_SECONDS,
+            leader_exit_observed=leader_exited,
+        )
+    except (OSError, OpenEcologyProcessGroupError) as exc:
+        raise ArchiveAuthorityError(
+            "effective SSH config probe process group could not be proven closed"
+        ) from exc
 
 
 def read_pinned_file(

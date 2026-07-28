@@ -95,6 +95,12 @@ campaigns.
 
 ## Storage and deletion boundary
 
+This section explicitly supersedes the base protocol's
+verification-before-prune requirement and every base-protocol clause that
+would permit local pruning after upload. The base document remains frozen as
+the historical scientific protocol; this prospective amendment is the adopted
+storage authority for the campaign.
+
 Drive upload authority proves immutable names, deterministic bundle bytes,
 stream readback SHA-256, an independent `rclone check` with zero differences,
 and retention of the local source bytes. This version exposes no local pruning

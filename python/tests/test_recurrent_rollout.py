@@ -18,7 +18,6 @@ from evolution_sim.config import (
 )
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
-import evolution_sim.mind.open_ecology_selection as open_ecology_selection
 from evolution_sim.env.runtime.state import (
     RunMode,
     empty_mind_inheritance_metadata,
@@ -50,6 +49,8 @@ from evolution_sim.mind.recurrent_rollout import (
 )
 
 if torch is not None:
+    import evolution_sim.mind.open_ecology_selection as open_ecology_selection
+
     from evolution_sim.mind.recurrent_actor_critic import (
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
@@ -512,6 +513,10 @@ class RecurrentRolloutTests(unittest.TestCase):
                 reward_components=_reward_components(-1.0),
             )
 
+    @unittest.skipIf(
+        torch is None,
+        "optional Mind ML dependency torch is not installed",
+    )
     def test_selection_passive_death_target_matches_training_boundary_math(
         self,
     ) -> None:

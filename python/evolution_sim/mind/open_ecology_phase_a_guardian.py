@@ -36,9 +36,11 @@ import torch
 
 from evolution_sim.io.open_ecology_archive_authority import (
     SEALED_SSH_OPTIONS,
+    ArchiveAuthorityError,
     ArchiveToolAuthority,
     load_archive_tool_authority,
     parse_ssh_connection_identity,
+    verify_effective_ssh_config,
     verify_local_authority_files,
     verify_pinned_file,
 )
@@ -72,7 +74,7 @@ TWO_PARTY_TRANSCRIPT_SCHEMA_VERSION: Final = (
 )
 MAX_PROTOCOL_FRAME_BYTES: Final = 256 * 1024
 MAX_SSH_STDERR_BYTES: Final = 4 * 1024 * 1024
-DEFAULT_GUARDIAN_READY_TIMEOUT_SECONDS: Final = 8 * 60 * 60.0
+DEFAULT_GUARDIAN_READY_TIMEOUT_SECONDS: Final = 14 * 60 * 60.0
 DEFAULT_CELL_TIMEOUT_SECONDS: Final = 24 * 60 * 60.0
 _CAPABILITY_BYTES: Final = 32
 _REMOTE_CHALLENGE_BYTES: Final = 32
@@ -436,6 +438,7 @@ class RemoteGuardianAuthority:
         bindings: PhaseAAuthorityBindings,
         channel: GuardianChannelLiveness,
         source_probe: Callable[[], None],
+        host_observer: Callable[[Path], Mapping[str, object]],
         verifiers: Mapping[
             str,
             Callable[
@@ -445,6 +448,18 @@ class RemoteGuardianAuthority:
         ]
         | None = None,
     ) -> None:
+        def verify_throughput(
+            report_path: Path,
+            preregistration: Mapping[str, object],
+            authorization_time: datetime | None,
+        ) -> Mapping[str, object]:
+            return live_verify_phase_a_training_throughput_report(
+                report_path,
+                preregistration,
+                authorization_time,
+                host_observer=host_observer,
+            )
+
         self.bindings = bindings
         self.channel = channel
         self._source_probe = source_probe
@@ -452,7 +467,7 @@ class RemoteGuardianAuthority:
             verifiers
             or {
                 "d10": live_verify_exact_sha_phase_a_training_and_torch_ci_report,
-                "throughput": live_verify_phase_a_training_throughput_report,
+                "throughput": verify_throughput,
                 "output_lock": live_verify_output_lock_contention_report,
             }
         )
@@ -669,6 +684,7 @@ def run_remote_guardian_session(
     output_root: Path,
     expected_bindings: PhaseAAuthorityBindings,
     channel: GuardianChannelLiveness,
+    host_observer: Callable[[Path], Mapping[str, object]],
     device: torch.device | str = "cuda",
     run_cell: Callable[..., Mapping[str, object]] = run_open_ecology_phase_a_cell,
     remote_authority_factory: Callable[..., RemoteGuardianAuthority] = (
@@ -743,6 +759,7 @@ def run_remote_guardian_session(
             bindings=bindings,
             channel=channel,
             source_probe=lambda: _require_live_source(preregistration),
+            host_observer=host_observer,
         )
         capability = remote.activate(
             report_paths={name: reports[name] for name in _REMOTE_GATE_NAMES},
@@ -894,7 +911,7 @@ def run_mac_coordinator(
     completed: list[dict[str, object]] = []
     try:
         _require_github_token(github_token)
-        verify_local_authority_files(authority)
+        _revalidate_local_guardian_authority(authority)
         command = _remote_guardian_ssh_command(
             authority=authority,
             remote_runtime_venv_authority_path=(remote_runtime_venv_authority_path),
@@ -986,7 +1003,7 @@ def run_mac_coordinator(
             _canonical_phase_a_matrix(),
             start=1,
         ):
-            verify_local_authority_files(authority)
+            _revalidate_local_guardian_authority(authority)
             _require_live_source(preregistration)
             request = {
                 "cell_id": cell_id,
@@ -1061,7 +1078,7 @@ def run_mac_coordinator(
                 f"remote guardian exited with status {return_code}"
             )
         ssh_process.stdin.close()
-        verify_local_authority_files(authority)
+        _revalidate_local_guardian_authority(authority)
         _require_live_source(preregistration)
         transcript = _write_compact_transcript(
             transcript_path,
@@ -1100,6 +1117,18 @@ def run_mac_coordinator(
                 ssh_process.wait(timeout=10.0)
         if stderr_capture is not None:
             stderr_capture.join(timeout=5.0)
+
+
+def _revalidate_local_guardian_authority(
+    authority: ArchiveToolAuthority,
+) -> None:
+    try:
+        verify_local_authority_files(authority)
+        verify_effective_ssh_config(authority)
+    except ArchiveAuthorityError as error:
+        raise OpenEcologyTwoPartyAuthorityError(
+            f"local guardian archive authority drifted: {error}"
+        ) from error
 
 
 def install_guardian_process_safety(

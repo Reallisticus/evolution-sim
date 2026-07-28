@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -31,11 +32,8 @@ from evolution_sim.io.open_ecology_campaign_storage import (
     DEFAULT_REMOTE_FREE_BYTES,
     CampaignStorageError,
 )
-from evolution_sim.mind.open_ecology_campaign_coordinator import (
+from evolution_sim.mind.open_ecology_campaign_contract import (
     OpenEcologyCampaignCoordinatorError,
-)
-from evolution_sim.mind.open_ecology_process_workers import (
-    local_process_worker_host_identity,
 )
 
 _BASELINE_SHA256 = "d" * 64
@@ -1109,7 +1107,7 @@ class OpenEcologyCampaignCliTests(unittest.TestCase):
     @staticmethod
     def _process_worker_payload() -> dict[str, object]:
         return {
-            "host_identity": local_process_worker_host_identity(),
+            "host_identity": socket.gethostname(),
             "device_kind": "cpu",
             "device_index": None,
             "torch_threads_per_worker": 1,

@@ -20,6 +20,9 @@ on:
   schedule:
     - cron: "0 8 * * 1"
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -27,6 +30,8 @@ jobs:
       PYTHONHASHSEED: "0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14.3"
@@ -71,6 +76,8 @@ jobs:
       PYTHONPATH: python
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14.3"
@@ -101,6 +108,8 @@ jobs:
       PYTHONHASHSEED: "0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14.3"

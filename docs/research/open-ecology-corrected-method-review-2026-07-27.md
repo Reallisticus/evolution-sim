@@ -12,7 +12,7 @@ copying any paper or the prior synthesis literally. The defensible first system
 is a recurrent, individually selfish actor with a small heritable controller
 genome; a value pathway with an explicit, evidence-selected gradient boundary;
 persistent multi-generation
-islands; a bounded diversity archive used for migration and recovery; optional
+islands; a bounded observational diversity archive; optional
 opaque communication; and synchronous fixed-shape inference batches. None of
 these ingredients guarantees society or open-ended evolution. Together they
 make those outcomes possible and measurable without naming cooperation,
@@ -162,8 +162,12 @@ Persistent worlds are necessary for the requested phenomenon. Resetting every
 short episode erases resource history, repeated relationships, spatial
 inheritance, constructed traces, and within-world frequency-dependent
 selection. An archive cannot reconstruct those causal histories. It should
-preserve viable alternatives and supply bounded migrants or extinction
-recovery, while the islands preserve ecology.
+preserve viable alternatives for observation while the islands preserve
+ecology. For the first Phase-D campaign it is evidence only: it may not inject
+migrants, replace organisms, or recover an extinct island. Migration and
+archive-seeded recovery remain future treatments that require a new
+preregistered causal comparison rather than an unrecorded intervention in the
+primary islands.
 
 MAP-Elites demonstrates why retaining diverse high-quality solutions can avoid
 the single-winner bottleneck

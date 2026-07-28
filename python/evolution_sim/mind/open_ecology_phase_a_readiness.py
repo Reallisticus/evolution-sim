@@ -25,6 +25,10 @@ import tempfile
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from evolution_sim.mind.open_ecology_phase_a_contract import (
+    OpenEcologyPhaseAError,
+    require_lowercase_sha256,
+)
 from evolution_sim.mind.provenance import stable_payload_digest
 
 if TYPE_CHECKING:
@@ -846,6 +850,7 @@ def produce_phase_a_training_throughput_report(
     *,
     output_directory: str | Path,
     host_class: str,
+    host_observer: Callable[[Path], Mapping[str, object]],
 ) -> dict[str, object]:
     """Rerun both full benchmark arms under live resource sampling."""
 
@@ -857,6 +862,7 @@ def produce_phase_a_training_throughput_report(
             preregistration,
             output_directory=staging,
             host_class=host_class,
+            host_observer=host_observer,
             _precreated_root=True,
         ),
     )
@@ -867,6 +873,7 @@ def _produce_phase_a_training_throughput_in_directory(
     *,
     output_directory: str | Path,
     host_class: str,
+    host_observer: Callable[[Path], Mapping[str, object]],
     _precreated_root: bool = False,
 ) -> dict[str, object]:
     from evolution_sim.mind import open_ecology_phase_a_qualification as qualification
@@ -915,6 +922,7 @@ def _produce_phase_a_training_throughput_in_directory(
         ),
         host_class=parsed_host_class,
         campaign_root=root,
+        host_observer=host_observer,
     )
     reports = _mapping(fresh["benchmark_reports"], field="fresh benchmark reports")
     telemetry = dict(fresh)
@@ -1274,6 +1282,8 @@ def live_verify_phase_a_training_throughput_report(
     report_path: Path,
     preregistration: Mapping[str, object],
     authorization_time: datetime | None,
+    *,
+    host_observer: Callable[[Path], Mapping[str, object]],
 ) -> Mapping[str, object]:
     _report, manifest, captures = _capture_authority_report_bundle(
         report_path,
@@ -1304,6 +1314,7 @@ def live_verify_phase_a_training_throughput_report(
             preregistration,
             output_directory=fresh_root,
             host_class=_host_class(captured_facts["measured_host_class"]),
+            host_observer=host_observer,
         )
         _fresh_report, fresh_manifest, fresh_captures = (
             _capture_authority_report_bundle(
@@ -7431,8 +7442,7 @@ def _positive_number(value: object, *, field: str) -> float:
 
 
 def _sha256(value: object, *, field: str) -> str:
-    contract = _contract()
-    return contract._sha256(value, field=field)
+    return require_lowercase_sha256(value, field=field)
 
 
 def _parse_utc(value: object, *, field: str) -> datetime:
@@ -7484,7 +7494,7 @@ def _require_live_source_twice(
 
 
 def _error(message: str) -> Exception:
-    return _contract().OpenEcologyPhaseAError(message)
+    return OpenEcologyPhaseAError(message)
 
 
 def _contract() -> "phase_a_contract":

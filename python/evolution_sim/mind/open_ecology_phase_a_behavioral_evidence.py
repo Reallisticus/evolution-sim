@@ -18,12 +18,11 @@ import json
 import math
 import os
 from pathlib import Path
+import selectors
 import shutil
-import signal
 import statistics
 import stat
 import subprocess
-import threading
 import time
 from typing import Any
 
@@ -46,6 +45,7 @@ from evolution_sim.genome import Genome, ReproductiveGenome
 from evolution_sim.genome.species import genome_vector
 from evolution_sim.io.open_ecology_bounded_subprocess import (
     OpenEcologyProcessGroupError,
+    leader_exit_observed_without_reaping,
     terminate_process_group_before_reap,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
@@ -129,7 +129,10 @@ _D4_NUMERIC_RTOL = 1e-5
 _D4_NUMERIC_ATOL = 1e-6
 _D4_MODEL_PROOF_SEED_INDEX = 0
 _D4_GENOME_PROOF_SEED_INDEX = 1
+_VIEWER_PROCESS_TIMEOUT_SECONDS = 30.0
 _VIEWER_PROCESS_GROUP_WAIT_SECONDS = 5.0
+_VIEWER_PROCESS_POLL_SECONDS = 0.05
+_VIEWER_IO_CHUNK_BYTES = 64 * 1024
 
 
 def _readiness() -> Any:
@@ -377,90 +380,12 @@ def _viewer_surface_probe(replay: Mapping[str, object]) -> dict[str, object]:
             env={"LANG": "C", "LC_ALL": "C"},
             start_new_session=True,
         )
-        captured: dict[str, bytes] = {}
-        capture_errors: list[BaseException] = []
-        output_overflow = threading.Event()
-
-        def capture_bounded(name: str, stream: Any) -> None:
-            payload = bytearray()
-            try:
-                while True:
-                    chunk = stream.read(64 * 1024)
-                    if not chunk:
-                        break
-                    remaining = maximum_output_bytes + 1 - len(payload)
-                    if remaining > 0:
-                        payload.extend(chunk[:remaining])
-                    if len(payload) > maximum_output_bytes:
-                        output_overflow.set()
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        break
-            except BaseException as error:
-                capture_errors.append(error)
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            finally:
-                captured[name] = bytes(payload)
-                stream.close()
-
-        if process.stdout is None or process.stderr is None or process.stdin is None:
-            raise RuntimeError("D1 viewer validator pipes were not created")
-        readers = [
-            threading.Thread(
-                target=capture_bounded,
-                args=("stdout", process.stdout),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=capture_bounded,
-                args=("stderr", process.stderr),
-                daemon=True,
-            ),
-        ]
-        for reader in readers:
-            reader.start()
-        try:
-            process.stdin.write(replay_bytes)
-            process.stdin.close()
-            process.wait(timeout=30)
-        except subprocess.TimeoutExpired as error:
-            _terminate_viewer_process_group(process)
-            raise RuntimeError("D1 viewer validator timed out") from error
-        except BrokenPipeError as error:
-            _terminate_viewer_process_group(process)
-            raise RuntimeError(
-                "D1 viewer validator closed stdin before consuming the replay"
-            ) from error
-        except BaseException:
-            _terminate_viewer_process_group(process)
-            raise
-        finally:
-            if process.stdin is not None and not process.stdin.closed:
-                try:
-                    process.stdin.close()
-                except OSError:
-                    pass
-            for reader in readers:
-                reader.join(timeout=5)
-        if any(reader.is_alive() for reader in readers):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            raise RuntimeError("D1 viewer validator output readers did not close")
-        if capture_errors:
-            raise RuntimeError("D1 viewer validator output capture failed") from (
-                capture_errors[0]
-            )
-        if output_overflow.is_set():
-            raise RuntimeError("D1 viewer validator output exceeded its bound")
-        stdout = captured.get("stdout", b"")
-        stderr = captured.get("stderr", b"")
+        returncode, stdout, stderr = _run_viewer_validator_process(
+            process,
+            input_bytes=replay_bytes,
+            maximum_output_bytes=maximum_output_bytes,
+            timeout_seconds=_VIEWER_PROCESS_TIMEOUT_SECONDS,
+        )
         _require_stable_open_file(
             node_fd,
             node_path,
@@ -478,7 +403,7 @@ def _viewer_surface_probe(replay: Mapping[str, object]) -> dict[str, object]:
     finally:
         os.close(node_fd)
         os.close(validator_fd)
-    if process.returncode != 0:
+    if returncode != 0:
         raise RuntimeError(
             "D1 viewer validator rejected the production trajectory contract: "
             + stderr.decode("utf-8", errors="replace")[:2_000]
@@ -510,17 +435,166 @@ def _viewer_surface_probe(replay: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _terminate_viewer_process_group(process: subprocess.Popen[bytes]) -> None:
-    """Bound cleanup of a validator that cannot complete its input contract."""
+def _run_viewer_validator_process(
+    process: subprocess.Popen[bytes],
+    *,
+    input_bytes: bytes,
+    maximum_output_bytes: int,
+    timeout_seconds: float,
+) -> tuple[int, bytes, bytes]:
+    """Exchange bounded bytes and close the original process group before reap."""
 
-    if process.returncode is not None:
-        return
+    if timeout_seconds <= 0 or not math.isfinite(timeout_seconds):
+        raise ValueError("D1 viewer validator timeout must be finite and positive")
+    if maximum_output_bytes <= 0:
+        raise ValueError("D1 viewer validator output bound must be positive")
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        _terminate_viewer_process_group(process)
+        raise RuntimeError("D1 viewer validator pipes were not created")
+    selector: selectors.BaseSelector | None = None
+    streams = {
+        "stdin": process.stdin,
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+    }
+    outputs = {
+        "stdout": bytearray(),
+        "stderr": bytearray(),
+    }
+    pending_input = memoryview(input_bytes)
+    deadline = time.monotonic() + timeout_seconds
+    group_cleanup_attempted = False
+    leader_exit_observed = False
     try:
-        terminate_process_group_before_reap(
+        selector = selectors.DefaultSelector()
+        for name, stream in streams.items():
+            descriptor = stream.fileno()
+            os.set_blocking(descriptor, False)
+            events = selectors.EVENT_WRITE if name == "stdin" else selectors.EVENT_READ
+            selector.register(stream, events, data=name)
+        if not pending_input:
+            selector.unregister(process.stdin)
+            process.stdin.close()
+
+        while not leader_exit_observed:
+            leader_exit_observed = leader_exit_observed_without_reaping(process)
+            if leader_exit_observed:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("D1 viewer validator timed out")
+            events = selector.select(
+                timeout=min(remaining, _VIEWER_PROCESS_POLL_SECONDS)
+            )
+            for key, _mask in events:
+                name = str(key.data)
+                stream = key.fileobj
+                if name == "stdin":
+                    try:
+                        written = os.write(
+                            key.fd,
+                            pending_input[:_VIEWER_IO_CHUNK_BYTES],
+                        )
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError as error:
+                        raise RuntimeError(
+                            "D1 viewer validator closed stdin before consuming "
+                            "the replay"
+                        ) from error
+                    pending_input = pending_input[written:]
+                    if not pending_input:
+                        selector.unregister(stream)
+                        streams["stdin"].close()
+                    continue
+                try:
+                    chunk = os.read(key.fd, _VIEWER_IO_CHUNK_BYTES)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    streams[name].close()
+                    continue
+                output = outputs[name]
+                output.extend(chunk)
+                if len(output) > maximum_output_bytes:
+                    raise RuntimeError("D1 viewer validator output exceeded its bound")
+
+        if pending_input:
+            raise RuntimeError(
+                "D1 viewer validator exited before consuming the complete replay"
+            )
+        group_cleanup_attempted = True
+        returncode = _terminate_viewer_process_group(
+            process,
+            leader_exit_observed=True,
+        )
+        if not streams["stdin"].closed:
+            try:
+                selector.unregister(streams["stdin"])
+            except KeyError:
+                pass
+            streams["stdin"].close()
+        while any(not streams[name].closed for name in ("stdout", "stderr")):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("D1 viewer validator timed out")
+            events = selector.select(
+                timeout=min(remaining, _VIEWER_PROCESS_POLL_SECONDS)
+            )
+            for key, _mask in events:
+                name = str(key.data)
+                if name == "stdin":
+                    continue
+                stream = key.fileobj
+                try:
+                    chunk = os.read(key.fd, _VIEWER_IO_CHUNK_BYTES)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    streams[name].close()
+                    continue
+                output = outputs[name]
+                output.extend(chunk)
+                if len(output) > maximum_output_bytes:
+                    raise RuntimeError("D1 viewer validator output exceeded its bound")
+        return returncode, bytes(outputs["stdout"]), bytes(outputs["stderr"])
+    finally:
+        if not group_cleanup_attempted:
+            _terminate_viewer_process_group(
+                process,
+                leader_exit_observed=(True if leader_exit_observed else None),
+            )
+        if selector is not None:
+            selector.close()
+        for stream in streams.values():
+            if not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+def _terminate_viewer_process_group(
+    process: subprocess.Popen[bytes],
+    *,
+    leader_exit_observed: bool | None = None,
+) -> int:
+    """Bound cleanup of a validator group before its leader can be reaped."""
+
+    try:
+        observed = (
+            leader_exit_observed_without_reaping(process)
+            if leader_exit_observed is None
+            else leader_exit_observed
+        )
+        return terminate_process_group_before_reap(
             process,
             wait_timeout_seconds=_VIEWER_PROCESS_GROUP_WAIT_SECONDS,
+            leader_exit_observed=observed,
         )
-    except OpenEcologyProcessGroupError as error:
+    except (OSError, OpenEcologyProcessGroupError) as error:
         raise RuntimeError(
             "D1 viewer validator process group survived termination"
         ) from error

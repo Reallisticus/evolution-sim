@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -15,6 +16,11 @@ from evolution_sim.io import open_ecology_archive_authority as authority
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "archive_evolution_outputs.py"
+)
+STORAGE_GATE_DOCUMENT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "open-ecology-campaign-storage-gate.md"
 )
 SPEC = importlib.util.spec_from_file_location(
     "open_ecology_pinned_archive_producer",
@@ -32,6 +38,18 @@ class RemoteHelperAuthorityTests(unittest.TestCase):
             "python/evolution_sim/io/open_ecology_bounded_subprocess.py",
             authority.REMOTE_HELPER_PATHS,
         )
+
+    def test_storage_runbook_lists_exact_remote_helper_contract(self) -> None:
+        document = STORAGE_GATE_DOCUMENT_PATH.read_text(encoding="utf-8")
+        helper_example = document.split('"remote_helpers": {', maxsplit=1)[1].split(
+            '"remote_tools": {',
+            maxsplit=1,
+        )[0]
+        documented_paths = tuple(
+            re.findall(r'^    "([^"]+)": "<64-hex>"', helper_example, re.MULTILINE)
+        )
+
+        self.assertEqual(documented_paths, authority.REMOTE_HELPER_PATHS)
 
 
 class SshConnectionIdentityTests(unittest.TestCase):

@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import sys
 
+from evolution_sim.cli.open_ecology_health import collect_host_observations
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -55,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     coordinate.add_argument(
         "--ready-timeout-seconds",
         type=float,
-        default=8 * 60 * 60.0,
+        default=14 * 60 * 60.0,
     )
     coordinate.add_argument(
         "--cell-timeout-seconds",
@@ -153,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 ssh_target=args.ssh_target,
             ),
             channel=liveness,
+            host_observer=collect_host_observations,
             device=args.device,
         )
         if len(result["completed"]) != 16:

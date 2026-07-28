@@ -9,6 +9,7 @@ import tempfile
 
 import torch
 
+from evolution_sim.cli.open_ecology_health import collect_host_observations
 from evolution_sim.io.open_ecology_git_authority import (
     OpenEcologyGitAuthorityError,
     PinnedGitExecutable,
@@ -550,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_strict_json(args.preregistration),
             output_directory=args.output_directory,
             host_class=args.host_class,
+            host_observer=collect_host_observations,
         )
         print(
             "open_ecology_training_throughput_proved "

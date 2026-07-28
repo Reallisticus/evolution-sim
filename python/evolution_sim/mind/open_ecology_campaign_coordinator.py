@@ -47,6 +47,9 @@ from evolution_sim.io.open_ecology_campaign_storage import (
     _normalize_real_tree_path as _normalize_storage_real_tree_path,
     _open_real_directory_tree as _open_storage_real_directory_tree,
 )
+from evolution_sim.mind.open_ecology_campaign_contract import (
+    OpenEcologyCampaignCoordinatorError,
+)
 from evolution_sim.mind.open_ecology_persistent_island import (
     OPEN_ECOLOGY_PHASE_D_ARM_ORDER,
     OPEN_ECOLOGY_PHASE_D_ISLAND_COUNT,
@@ -104,10 +107,6 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _OUTPUT_LOCK_NAME = ".open-ecology-coordinator.lock"
 _OUTPUT_LOCK_MAX_BYTES = 16 * 1024
-
-
-class OpenEcologyCampaignCoordinatorError(RuntimeError):
-    """A campaign scheduling, resume, or frontier invariant failed closed."""
 
 
 class CampaignRunner(Protocol):

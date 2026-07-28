@@ -36,6 +36,10 @@ from evolution_sim.mind.open_ecology_seed_registry import (
     OPEN_ECOLOGY_SEED_REGISTRY,
     OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
 )
+from evolution_sim.mind.open_ecology_phase_a_contract import (
+    OpenEcologyPhaseAError,
+    require_lowercase_sha256,
+)
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_actor_critic import (
     CRITIC_GENOME_CONDITIONING_FILM_V1,
@@ -153,7 +157,7 @@ OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH = (
     "docs/research/open-ecology-launch-authority-amendment-v2.md"
 )
 OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256 = (
-    "1164e32edc8a14e3f62ed94ccb6cbe0d1fae110b4f58b2db5380dbbde6704c13"
+    "80e5185ffedf2edd4f4850c7b475fabbaff9c192fcd4b70228477f0f5e0ebfd3"
 )
 
 OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT = 8
@@ -244,7 +248,6 @@ OPEN_ECOLOGY_PHASE_A_CELLS: Mapping[str, tuple[str, str]] = {
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUN_DIRECTORY_RE = re.compile(r"^phase-a-(a[0-3])-learner-([0-3])-([1-9][0-9]*)$")
 _UPDATE_DIRECTORY_RE = re.compile(r"^update-([0-9]{4})$")
 _UPDATE_STAGING_DIRECTORY_RE = re.compile(
@@ -255,10 +258,6 @@ _TERMINAL_STAGING_DIRECTORY_RE = re.compile(
 )
 _COMMON_PARAMETER_EXCLUSIONS = ("critic_genome_",)
 _MAX_SELECTION_AUTHORIZATION_BYTES = 16 * 1024 * 1024
-
-
-class OpenEcologyPhaseAError(ValueError):
-    """Raised when Phase A differs from its sealed causal-ablation contract."""
 
 
 def _open_ecology_staged_launch_authority() -> dict[str, object]:
@@ -5044,9 +5043,7 @@ def _git_sha(value: object) -> str:
 
 
 def _sha256(value: object, *, field: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise OpenEcologyPhaseAError(f"{field} must be lowercase SHA-256")
-    return value
+    return require_lowercase_sha256(value, field=field)
 
 
 def _finite(value: object, *, field: str) -> float:

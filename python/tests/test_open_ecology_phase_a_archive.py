@@ -24,6 +24,8 @@ from evolution_sim.mind.open_ecology_phase_a_readiness import (
 from evolution_sim.mind.provenance import stable_payload_digest
 
 
+REQUIRES_MIND_ML = True
+
 _GIT_SHA = "a" * 40
 _MANIFEST_SHA = "b" * 64
 _CONFIGURATION_SHA = "c" * 64

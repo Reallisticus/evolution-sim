@@ -746,8 +746,6 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
             )
 
     def test_benchmark_health_samples_bracket_child_execution(self) -> None:
-        from evolution_sim.cli import open_ecology_health
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             events: list[str] = []
@@ -772,23 +770,17 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                 events.append("health")
                 return host
 
-            with (
-                patch.object(
-                    qualification,
-                    "_run_bounded_subprocess",
-                    side_effect=fake_process,
-                ),
-                patch.object(
-                    open_ecology_health,
-                    "_collect_host_observations",
-                    side_effect=observe_host,
-                ),
+            with patch.object(
+                qualification,
+                "_run_bounded_subprocess",
+                side_effect=fake_process,
             ):
                 _receipt, report, samples = qualification._run_monitored_benchmark(
                     (sys.executable, "-c", "raise SystemExit(0)"),
                     cwd=root,
                     campaign_root=root,
                     population_mode="heritable",
+                    host_observer=observe_host,
                 )
             self.assertEqual(events, ["health", "spawn-and-exit", "health"])
             self.assertEqual(report, {})
@@ -2114,15 +2106,20 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
             root = Path(temporary).resolve()
             benchmark_call_count = 0
 
+            def observe_host(_root: Path) -> dict[str, object]:
+                return {"injected": True}
+
             def fresh_benchmarks(
                 _repository_root: Path,
                 *,
                 source_commit: str,
                 host_class: str,
                 campaign_root: Path,
+                host_observer: qualification.HostObserver,
             ) -> dict[str, object]:
                 nonlocal benchmark_call_count
                 del campaign_root
+                self.assertIs(host_observer, observe_host)
                 benchmark_call_count += 1
                 reports = self.campaign["throughput_gate"]["reports"]
                 receipts: dict[str, object] = {}
@@ -2189,6 +2186,7 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                     self.campaign,
                     output_directory=bundle,
                     host_class="trainer-class-a",
+                    host_observer=observe_host,
                 )
                 captured_reconstruction = (
                     readiness.verify_phase_a_training_throughput_report(
@@ -2203,6 +2201,7 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                         bundle / "report.json",
                         self.campaign,
                         None,
+                        host_observer=observe_host,
                     )
                 )
 
@@ -2227,6 +2226,7 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                     bundle / "report.json",
                     self.campaign,
                     None,
+                    host_observer=observe_host,
                 )
 
             tampered = _copy_bundle(bundle, root / "throughput-tampered")

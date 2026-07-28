@@ -366,6 +366,36 @@ class DeterministicPublicRecurrentPolicyTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreater(len(set(first)), 1)
 
+    def test_disabled_genome_reset_rewinds_sampling_stream_for_exact_reuse(
+        self,
+    ) -> None:
+        policy = DeterministicPublicRecurrentPolicy(
+            PublicRecurrentActorCritic(initialization_seed=49),
+            artifact_digest="e" * 64,
+            sampling_seed=993,
+        )
+
+        def run_once() -> tuple[str, ...]:
+            world = SimulationWorld(
+                WorldConfig(seed=29, max_ticks=8),
+                policy=policy,
+            )
+            world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+            actions = tuple(
+                str(record["requested_action"])
+                for record in world.trajectory_records
+                if record["action_source"] == RECURRENT_ROLLOUT_ACTION_SOURCE
+            )
+            policy.reset_world()
+            return actions
+
+        first = run_once()
+        second = run_once()
+
+        self.assertTrue(first)
+        self.assertEqual(first, second)
+        self.assertGreater(len(set(first)), 1)
+
     def test_single_valid_action_excludes_normalized_entropy_and_top_two_margin(
         self,
     ) -> None:

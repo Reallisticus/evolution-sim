@@ -7,7 +7,7 @@ threshold logic lives in :mod:`open_ecology_phase_a_readiness`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 import contextvars
 from datetime import datetime, timezone
@@ -81,6 +81,7 @@ _EPHEMERAL_GITHUB_CREDENTIAL: contextvars.ContextVar[
     "open_ecology_ephemeral_github_credential",
     default=None,
 )
+HostObserver = Callable[[Path], Mapping[str, object]]
 
 
 class _OneShotGithubCredential:
@@ -441,6 +442,7 @@ def run_fresh_phase_a_benchmarks(
     source_commit: str,
     host_class: str,
     campaign_root: str | Path,
+    host_observer: HostObserver,
 ) -> dict[str, object]:
     """Run both full-shaped benchmark arms while sampling live host health."""
 
@@ -461,6 +463,7 @@ def run_fresh_phase_a_benchmarks(
             cwd=root,
             campaign_root=sample_root,
             population_mode=mode,
+            host_observer=host_observer,
         )
         benchmark_receipts[mode] = receipt
         benchmark_reports[mode] = report
@@ -851,9 +854,8 @@ def _run_monitored_benchmark(
     cwd: Path,
     campaign_root: Path,
     population_mode: str,
+    host_observer: HostObserver,
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
-    from evolution_sim.cli import open_ecology_health
-
     started_at = _utc_now()
     started_ns = time.monotonic_ns()
     samples: list[dict[str, object]] = []
@@ -863,7 +865,7 @@ def _run_monitored_benchmark(
             {
                 "population_mode": population_mode,
                 "sampled_at_utc": _utc_now(),
-                "host": open_ecology_health._collect_host_observations(campaign_root),
+                "host": dict(host_observer(campaign_root)),
             }
         )
 
@@ -1283,6 +1285,7 @@ __all__ = [
     "COMMAND_RECEIPT_SCHEMA_VERSION",
     "GITHUB_REPOSITORY",
     "GITHUB_TORCH_CHECK_NAME",
+    "HostObserver",
     "OUTPUT_LOCK_PROBE_SCHEMA_VERSION",
     "REMOTE_STORAGE_PROBE_SCHEMA_VERSION",
     "RESOURCE_TELEMETRY_SCHEMA_VERSION",

@@ -546,6 +546,12 @@ def check_campaign_health(
     return snapshot
 
 
+def collect_host_observations(campaign_root: Path) -> dict[str, object]:
+    """Collect one live host snapshot for an injected research consumer."""
+
+    return _collect_host_observations(campaign_root)
+
+
 def _collect_host_observations(
     campaign_root: Path,
     *,

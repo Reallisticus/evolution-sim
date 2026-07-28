@@ -18,6 +18,7 @@ from evolution_sim.cli.open_ecology_health import (
     OPEN_ECOLOGY_FATAL_WORKER_MARKER_NAME,
     OpenEcologyHealthError,
     build_health_probe_wrapper,
+    collect_host_observations,
     main as health_main,
     _parse_temperature_report,
     _pin_command_executable,
@@ -71,6 +72,18 @@ class OpenEcologyHealthTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_public_host_observer_delegates_to_health_collector(self) -> None:
+        observations = self._observations()
+        with patch(
+            "evolution_sim.cli.open_ecology_health._collect_host_observations",
+            return_value=observations,
+        ) as collect:
+            self.assertIs(
+                collect_host_observations(self.campaign_root),
+                observations,
+            )
+        collect.assert_called_once_with(self.campaign_root)
 
     def test_immutable_baseline_and_healthy_snapshot_bind_exact_frontier(self) -> None:
         observations = self._observations()
@@ -651,7 +664,7 @@ GPU 00000000:01:00.0
         hostile_python.chmod(0o500)
         os.replace(hostile_python, python_copy)
         from evolution_sim.cli.open_ecology_campaign import _command_health_probe
-        from evolution_sim.mind.open_ecology_campaign_coordinator import (
+        from evolution_sim.mind.open_ecology_campaign_contract import (
             OpenEcologyCampaignCoordinatorError,
         )
 
