@@ -49,9 +49,7 @@ class ArchiveEvolutionOutputsTests(unittest.TestCase):
             ["nested", "nested/a.txt", "z.json"],
         )
         file_records = {
-            record["path"]: record
-            for record in records
-            if record["type"] == "file"
+            record["path"]: record for record in records if record["type"] == "file"
         }
         self.assertEqual(
             file_records["nested/a.txt"]["sha256"],
@@ -198,8 +196,7 @@ class ArchiveEvolutionOutputsTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["file_count"], 1)
 
-    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
-    def test_remote_failure_never_prunes_input(self) -> None:
+    def test_prune_request_fails_closed_before_archive_or_upload(self) -> None:
         with TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             root = base / "evidence"
@@ -213,25 +210,19 @@ class ArchiveEvolutionOutputsTests(unittest.TestCase):
                 prune_after_verify=True,
             )
 
-            with patch.object(
-                archive_outputs,
-                "_require_program",
-            ), patch.object(
-                archive_outputs,
-                "_upload_and_verify",
-                side_effect=archive_outputs.ArchiveError("remote mismatch"),
-            ):
+            with patch.object(archive_outputs, "_upload_and_verify") as upload:
                 with self.assertRaisesRegex(
                     archive_outputs.ArchiveError,
-                    "remote mismatch",
+                    "automatic pruning could delete a racing replacement",
                 ):
                     archive_outputs.execute(options)
 
+            upload.assert_not_called()
             self.assertTrue(evidence.exists())
             self.assertEqual(evidence.read_text(encoding="utf-8"), "{}\n")
+            self.assertFalse(output.exists())
 
-    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
-    def test_explicit_prune_occurs_only_after_remote_verification(self) -> None:
+    def test_prune_request_never_removes_nested_input(self) -> None:
         with TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             root = base / "evidence"
@@ -245,22 +236,18 @@ class ArchiveEvolutionOutputsTests(unittest.TestCase):
                 prune_after_verify=True,
             )
 
-            with patch.object(
-                archive_outputs,
-                "_require_program",
-            ), patch.object(
-                archive_outputs,
-                "_upload_and_verify",
-                return_value=("remote/archive", "remote/manifest", "remote/sha"),
+            with self.assertRaisesRegex(
+                archive_outputs.ArchiveError,
+                "--prune-after-verify is disabled",
             ):
-                result = archive_outputs.execute(options)
+                archive_outputs.execute(options)
 
-            self.assertTrue(root.exists())
-            self.assertEqual(list(root.iterdir()), [])
-            self.assertTrue(result["remote_verified"])
-            self.assertTrue(result["pruned"])
+            self.assertEqual(
+                (root / "nested" / "report.json").read_text(encoding="utf-8"),
+                "{}\n",
+            )
 
-    def test_manifest_drift_blocks_exact_prune(self) -> None:
+    def test_manifest_drift_blocks_archival_continuation(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "evidence"
             root.mkdir()

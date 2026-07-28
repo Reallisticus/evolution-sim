@@ -18,6 +18,7 @@ from evolution_sim.config import (
 )
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 import evolution_sim.env.runtime.reproduction as runtime_reproduction
+import evolution_sim.mind.open_ecology_selection as open_ecology_selection
 from evolution_sim.env.runtime.state import (
     RunMode,
     empty_mind_inheritance_metadata,
@@ -204,6 +205,150 @@ class RecurrentRolloutTests(unittest.TestCase):
                     previous.reward,
                 )
 
+    def test_action_free_bootstrap_matches_legacy_extra_tick_without_sampling(
+        self,
+    ) -> None:
+        legacy = RecurrentOnPolicyCollector(_RecordingCore())
+        legacy.start_world(
+            world_id="legacy-extra-tick",
+            environment_seed=7,
+            policy_sampling_seed=17,
+            rollout_ticks=2,
+        )
+        SimulationWorld(
+            WorldConfig(seed=7, max_ticks=3),
+            policy=legacy,
+        ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        legacy_evidence = legacy.last_bootstrap_evidence
+        legacy.finish_world()
+
+        action_free = RecurrentOnPolicyCollector(_RecordingCore())
+        action_free.start_world(
+            world_id="action-free-boundary",
+            environment_seed=7,
+            policy_sampling_seed=17,
+            rollout_ticks=2,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=7, max_ticks=2),
+            policy=action_free,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        decision_count_before = action_free._decision_index
+        policy_rng_before = copy.deepcopy(action_free._rng.getstate())
+        environment_rng_before = copy.deepcopy(world.rng.getstate())
+        runtime_cost_before = copy.deepcopy(world.runtime_cost_counters)
+        completed_tick_before = world.tick
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=2)
+        action_free_evidence = action_free.finalize_action_free_bootstrap(
+            tick=2,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+
+        self.assertEqual(
+            [
+                (row["agent_id"], row["policy_input_sha256"], row["value"])
+                for row in action_free_evidence["values"]
+            ],
+            [
+                (row["agent_id"], row["policy_input_sha256"], row["value"])
+                for row in legacy_evidence["values"]
+            ],
+        )
+        self.assertEqual(action_free._decision_index, decision_count_before)
+        self.assertEqual(action_free._rng.getstate(), policy_rng_before)
+        self.assertEqual(world.rng.getstate(), environment_rng_before)
+        self.assertEqual(world.runtime_cost_counters, runtime_cost_before)
+        self.assertEqual(world.tick, completed_tick_before)
+        self.assertEqual(
+            len(world.policy_update_trace_records),
+            len(action_free.buffer.steps),
+        )
+        self.assertTrue(
+            all(
+                record["phase"] == "rollout"
+                for record in world.policy_update_trace_records
+            )
+        )
+        action_free.finish_world()
+
+    def test_action_free_bootstrap_keeps_final_tick_newborn_as_evidence_only(
+        self,
+    ) -> None:
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id="final-tick-newborn",
+            environment_seed=59,
+            policy_sampling_seed=67,
+            rollout_ticks=1,
+            genome_stream_seed=61,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=59, max_ticks=1),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        founder.age = 10
+        founder.energy = founder.genome.max_energy * 1.25
+        founder.hydration = founder.genome.max_hydration
+        founder.health = founder.max_health
+        founder.last_reproduction_tick = -10_000
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        children = [
+            agent
+            for agent in world.alive_agents()
+            if agent.parent_id == founder.agent_id
+        ]
+        self.assertEqual(len(children), 1)
+        child = children[0]
+        decision_count_before = collector._decision_index
+        population_state_before = (
+            collector._require_genome_population_manager().state_sha256
+        )
+        environment_rng_before = copy.deepcopy(world.rng.getstate())
+        runtime_cost_before = copy.deepcopy(world.runtime_cost_counters)
+        completed_tick_before = world.tick
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=1)
+        evidence = collector.finalize_action_free_bootstrap(
+            tick=1,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+
+        self.assertEqual(evidence["alive_agent_count"], 2)
+        self.assertEqual(evidence["target_eligible_agent_count"], 1)
+        self.assertEqual(evidence["zero_decision_alive_agent_count"], 1)
+        self.assertEqual(evidence["zero_decision_alive_agent_ids"], [child.agent_id])
+        self.assertEqual(
+            {row["agent_id"] for row in evidence["values"]},
+            {founder.agent_id, child.agent_id},
+        )
+        self.assertEqual(
+            {
+                row["agent_id"]
+                for row in evidence["values"]
+                if row["target_eligible"] is True
+            },
+            {founder.agent_id},
+        )
+        self.assertEqual(collector._decision_index, decision_count_before)
+        self.assertEqual(world.rng.getstate(), environment_rng_before)
+        self.assertEqual(world.runtime_cost_counters, runtime_cost_before)
+        self.assertEqual(world.tick, completed_tick_before)
+        self.assertEqual(
+            collector._require_genome_population_manager().state_sha256,
+            population_state_before,
+        )
+        self.assertEqual(
+            {step.agent_id for step in collector.buffer.steps},
+            {founder.agent_id},
+        )
+        self.assertTrue(collector.buffer.steps[-1].truncated)
+        collector.finish_world()
+
     def test_seeded_sampling_and_hidden_state_reset_across_worlds(self) -> None:
         core = _RecordingCore()
         collector = RecurrentOnPolicyCollector(core)
@@ -321,7 +466,7 @@ class RecurrentRolloutTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RecurrentRolloutError,
-            "run one bootstrap tick beyond rollout_ticks",
+            "action-free policy-visible tick-start bootstrap",
         ):
             collector.finish_world()
 
@@ -366,6 +511,50 @@ class RecurrentRolloutTests(unittest.TestCase):
                 reward=-1.0,
                 reward_components=_reward_components(-1.0),
             )
+
+    def test_selection_passive_death_target_matches_training_boundary_math(
+        self,
+    ) -> None:
+        gamma = 0.9
+        buffer = RecurrentRolloutBuffer()
+        buffer.register_world("selection-passive-equivalence")
+        buffer.append(
+            _step(
+                world_id="selection-passive-equivalence",
+                reward=0.2,
+                value=0.1,
+            )
+        )
+        buffer.mark_passive_terminal(
+            world_id="selection-passive-equivalence",
+            agent_id=4,
+            tick=1,
+            reward=-1.0,
+            reward_components=_reward_components(-1.0),
+        )
+        training = buffer.compute_gae(gamma=gamma, gae_lambda=1.0)[0]
+
+        normalized, value_rmse, advantage_variance = (
+            open_ecology_selection._selection_metrics(
+                rewards_by_agent={4: [0.2]},
+                values_by_agent={4: [0.1]},
+                terminal_bootstrap_values_by_agent={},
+                passive_terminal_rewards_by_agent={4: -1.0},
+                discount=gamma,
+            )
+        )
+
+        self.assertAlmostEqual(
+            value_rmse,
+            abs(training.return_target - 0.1),
+            places=12,
+        )
+        self.assertEqual(advantage_variance, 0.0)
+        self.assertAlmostEqual(
+            normalized,
+            (-0.8 / open_ecology_selection._REWARD_NORMALIZATION_SCALE),
+            places=12,
+        )
 
     def test_passive_death_on_bootstrap_tick_is_terminal_not_truncated(self) -> None:
         collector = RecurrentOnPolicyCollector(_RecordingCore())
@@ -698,6 +887,37 @@ class RecurrentRolloutTests(unittest.TestCase):
         self.assertEqual(
             provenance["genome_population_reset_state_sha256"],
             provenance["genome_population_pre_founder_state_sha256"],
+        )
+
+    def test_distinct_evidence_worlds_can_share_one_paired_genome_world_identity(
+        self,
+    ) -> None:
+        paired_identity = "phase-a-paired-learner-0-update-0-world-0"
+        founders: list[dict[str, object]] = []
+        provenances: list[dict[str, object]] = []
+        for world_id in ("phase-a-a0-task", "phase-a-a3-task"):
+            collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+            collector.start_world(
+                world_id=world_id,
+                genome_world_identity=paired_identity,
+                environment_seed=7,
+                policy_sampling_seed=17,
+                rollout_ticks=1,
+                genome_stream_seed=1776,
+                genome_population_mode="heritable",
+            )
+            founders.append(collector.contextual_founder_metadata(agent_id=1))
+            provenances.append(collector.buffer.world_seed_provenance[world_id])
+            collector.finish_world()
+
+        self.assertEqual(
+            founders[0]["population_binding_sha256"],
+            founders[1]["population_binding_sha256"],
+        )
+        self.assertEqual(founders[0]["genome_sha256"], founders[1]["genome_sha256"])
+        self.assertEqual(
+            {row["genome_world_identity"] for row in provenances},
+            {paired_identity},
         )
 
     def test_conditioned_collection_fails_closed_on_missing_duplicate_and_tamper(

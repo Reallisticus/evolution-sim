@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+import copy
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
-from enum import StrEnum
+from dataclasses import dataclass, fields, is_dataclass
+from enum import Enum, StrEnum
 import hashlib
 import heapq
 import json
@@ -12,7 +13,6 @@ import math
 import multiprocessing
 from pathlib import Path
 from statistics import median
-import subprocess
 from typing import Any
 
 import torch
@@ -26,6 +26,11 @@ from evolution_sim.env.runtime.trajectory import (
 )
 from evolution_sim.env.runtime.observations import encode_observation_input
 from evolution_sim.env.world import SimulationWorld
+from evolution_sim.io.open_ecology_git_authority import (
+    OpenEcologyGitAuthorityError,
+    discover_pinned_git_executable,
+    run_pinned_git,
+)
 from evolution_sim.mind.open_ecology_seed_registry import (
     OPEN_ECOLOGY_CANONICAL_SHA256,
     OPEN_ECOLOGY_SEED_REGISTRY,
@@ -46,6 +51,9 @@ from evolution_sim.mind.recurrent_actor_critic import (
     RecurrentActorCriticConfig,
     VALUE_SHARED_TRUNK_GRADIENT_SHARED,
     VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+    previous_public_feedback_tensor,
+    public_policy_tensor_from_observation_input,
+    strict_action_mask_tensor,
 )
 from evolution_sim.mind.recurrent_artifact import (
     FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
@@ -92,25 +100,25 @@ from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifes
 
 
 OPEN_ECOLOGY_SELECTION_EVIDENCE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_selection_evidence_v1"
+    "mind_v3_open_ecology_selection_evidence_v3"
 )
 OPEN_ECOLOGY_SELECTION_RUN_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_selection_run_evidence_v1"
+    "mind_v3_open_ecology_selection_run_evidence_v3"
 )
 OPEN_ECOLOGY_SELECTION_ENVIRONMENT_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_selection_environment_evidence_v1"
+    "mind_v3_open_ecology_selection_environment_evidence_v3"
 )
 OPEN_ECOLOGY_SELECTION_CAUSAL_GENOME_SCHEMA_VERSION = (
     "mind_v3_open_ecology_causal_genome_battery_v1"
 )
 OPEN_ECOLOGY_SELECTION_ARTIFACT_BINDING_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_selection_artifact_binding_v2"
+    "mind_v3_open_ecology_selection_artifact_binding_v3"
 )
 OPEN_ECOLOGY_PHASE_A_LEARNER_EVIDENCE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_learner_selection_evidence_v2"
+    "mind_v3_open_ecology_phase_a_learner_selection_evidence_v4"
 )
 OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_terminal_selection_authority_v1"
+    "mind_v3_open_ecology_terminal_selection_authority_v2"
 )
 OPEN_ECOLOGY_CAPTURE_NONINTERFERENCE_SCHEMA_VERSION = (
     "mind_v3_open_ecology_capture_noninterference_proof_v1"
@@ -132,10 +140,17 @@ OPEN_ECOLOGY_SELECTION_CAUSAL_INTERVENTION_VERSION = (
     "mind_v3_open_ecology_genome_zero_donor_locus_intervention_v1"
 )
 OPEN_ECOLOGY_SELECTION_METRIC_CONTRACT_VERSION = (
-    "mind_v3_open_ecology_selection_metrics_v1"
+    "mind_v3_open_ecology_selection_metrics_v3"
+)
+OPEN_ECOLOGY_SELECTION_TERMINAL_BOOTSTRAP_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_fixed_horizon_alive_value_bootstrap_v2"
+)
+OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION = (
+    "discounted_gamma_0.997_exact_tick_t_action_free_alive_value_"
+    "bootstrap_passive_terminal_reward_at_gamma_boundary_death_zero_v3"
 )
 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_VERSION = (
-    "mind_v3_open_ecology_action_collapse_nonoverlap_windows_v1"
+    "mind_v3_open_ecology_action_collapse_rolling_3000_decisions_v2"
 )
 
 OPEN_ECOLOGY_SELECTION_SEED_ROLE = "open_ecology_selection"
@@ -148,6 +163,10 @@ OPEN_ECOLOGY_SELECTION_CAUSAL_STATE_COUNT = (
 )
 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW = 1_000
 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_CONSECUTIVE_WINDOWS = 3
+OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN = (
+    OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW
+    * OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_CONSECUTIVE_WINDOWS
+)
 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_ACTION_SHARE = 0.80
 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_LINEAGE_SHARE = 0.90
 OPEN_ECOLOGY_SELECTION_DONOR_JS_STATE_THRESHOLD = 0.01
@@ -165,6 +184,22 @@ _PHASE_A_LEARNER_COUNT = 4
 _PHASE_B_LEARNER_COUNT = 8
 _SHA256_CHARACTERS = frozenset("0123456789abcdef")
 _REWARD_NORMALIZATION_SCALE = max(abs(value) for value in REWARD_TOTAL_BOUNDS)
+_SELECTION_BOUNDARY_NONAUTHORITATIVE_WORLD_FIELDS = frozenset(
+    {
+        "config",
+        "rng",
+        "policy",
+        "trajectory_sink",
+        "runtime_cost_counters",
+        "events",
+        "viewer_frames",
+        "trajectory_records",
+        "tick_trajectory_records",
+        "policy_decision_diagnostics_records",
+        "policy_update_trace_records",
+        "policy_update_trace_records_by_trajectory_record",
+    }
+)
 _PHASE_A_CELL_MODEL_CONTRACTS = {
     "A0": (
         CRITIC_GENOME_CONDITIONING_NONE,
@@ -186,6 +221,7 @@ _PHASE_A_CELL_MODEL_CONTRACTS = {
 
 _PARALLEL_PRIMARY_MODEL: PublicRecurrentActorCritic | None = None
 _PARALLEL_REPLAY_MODEL: PublicRecurrentActorCritic | None = None
+_PARALLEL_BASELINE_MODEL: PublicRecurrentActorCritic | None = None
 _PARALLEL_ARTIFACT_BINDING: dict[str, object] | None = None
 _PARALLEL_SOURCE_REQUEST: OpenEcologySelectionRequest | None = None
 
@@ -364,6 +400,7 @@ class _EnvironmentTask:
     cell_id: str
     learner_index: int
     artifact_sha256: str
+    initialized_baseline_model_state_sha256: str
     local_environment_index: int
     environment_seed_index: int
     environment_seed: int
@@ -567,10 +604,23 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
     _require_live_selection_source(request)
     plan = OpenEcologySelectionPlan.for_phase(request.phase)
     primary, _replay, artifact_binding = _load_bound_artifact(request)
+    baseline = _reconstruct_initialized_baseline_model(
+        config=primary.config,
+        learner_seed=request.learner_seed,
+    )
+    baseline_sha = _sha256(
+        artifact_binding.get("initialized_baseline_model_state_sha256"),
+        field="artifact initialized baseline model state",
+    )
+    if recurrent_model_state_sha256(baseline) != baseline_sha:
+        raise OpenEcologySelectionError(
+            "initialized baseline reconstruction changed before evaluation"
+        )
     tasks = tuple(
         _environment_task(
             request=request,
             plan=plan,
+            initialized_baseline_model_state_sha256=baseline_sha,
             local_environment_index=local_index,
         )
         for local_index in range(OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT)
@@ -582,6 +632,7 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
                 task,
                 primary_model=primary,
                 replay_model=None,
+                baseline_model=baseline,
             )
             for task in tasks
         )
@@ -614,7 +665,15 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
     _require_live_selection_source(request)
     causal = _aggregate_causal_genome_evidence(environments)
     metrics = _aggregate_learner_metrics(environments)
-    gates = _learner_gates(environments=environments, causal=causal)
+    initialized_baseline = _aggregate_initialized_baseline(
+        environments,
+        baseline_model_state_sha256=baseline_sha,
+    )
+    gates = _learner_gates(
+        environments=environments,
+        causal=causal,
+        initialized_baseline=initialized_baseline,
+    )
     report: dict[str, object] = {
         "schema_version": OPEN_ECOLOGY_SELECTION_EVIDENCE_SCHEMA_VERSION,
         "phase": request.phase.value,
@@ -642,8 +701,16 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
             "stochastic_tape_identities": list(plan.stochastic_tape_identities),
             "argmax_diagnostic": True,
             "primary_metric_tapes": "four_stochastic_tapes_only",
+            "initialized_baseline_tapes": (
+                "same_four_stochastic_tapes_only_no_duplicate_argmax"
+            ),
             "aggregation_order": (
-                "runs_within_environment_then_equal_weight_environments_within_learner"
+                "paired_four_tape_median_within_environment_then_equal_weight_"
+                "median_across_32_environments"
+            ),
+            "target_contract": OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION,
+            "finite_horizon_bootstrap": (
+                "exact_tick_t_policy_visible_state_on_clone_action_free_v2"
             ),
             "density_cycle": list(plan.density_cycle),
             "max_agents": OPEN_ECOLOGY_MAX_AGENTS,
@@ -662,9 +729,9 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
             ),
             "action_collapse_contract": {
                 "schema_version": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_VERSION),
-                "window_decisions": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW),
-                "consecutive_windows": (
-                    OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_CONSECUTIVE_WINDOWS
+                "rolling_span_decisions": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN),
+                "minimum_decisions_for_eligibility": (
+                    OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN
                 ),
                 "requested_action_share_threshold": (
                     OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_ACTION_SHARE
@@ -682,6 +749,7 @@ def _evaluate_open_ecology_selection_artifact_single_thread(
         ),
         "environments": list(environments),
         "causal_genome": causal,
+        "initialized_baseline": initialized_baseline,
         "gates": gates,
         "metrics": metrics,
         "lifecycle": {
@@ -747,6 +815,9 @@ def _verify_open_ecology_selection_report_by_reexecution(
         expected_learner_seed=report["learner_seed"],
         expected_run_contract_file_sha256=str(artifact["run_contract_file_sha256"]),
         expected_model_state_sha256=str(artifact["model_state_sha256"]),
+        expected_initial_model_state_sha256=str(
+            artifact["initialized_baseline_model_state_sha256"]
+        ),
     )
     if (
         report.get("campaign_digest") != request.campaign_digest
@@ -800,6 +871,14 @@ def _phase_a_learner_evidence_from_verified_selection_report(
     authorization_accounting = _authorization_execution_accounting(execution)
     gates = _mapping(report.get("gates"), field="gates")
     metrics = _mapping(report.get("metrics"), field="metrics")
+    initialized_baseline = _mapping(
+        report.get("initialized_baseline"),
+        field="initialized_baseline",
+    )
+    paired_baseline = _mapping(
+        initialized_baseline.get("paired_normalized_return"),
+        field="initialized_baseline.paired_normalized_return",
+    )
     authoritative_gates = dict(gates)
     authoritative_gates["exact_same_contract_replay"] = True
     authoritative_gates["eligible"] = all(
@@ -829,8 +908,20 @@ def _phase_a_learner_evidence_from_verified_selection_report(
             "selection_report_exact_digest": report["exact_digest"],
             "artifact_file_sha256": artifact["file_sha256"],
             "per_environment_then_per_learner_aggregation": True,
+            "paired_return_aggregation": (
+                "four_tapes_within_environment_then_equal_weight_32_environment_median"
+            ),
             "authoritative_full_artifact_reexecution_verified": True,
             "authorization_verification_exact_digest": verification["exact_digest"],
+            "initialized_baseline_model_state_sha256": initialized_baseline[
+                "model_state_sha256"
+            ],
+            "initialized_baseline_report_exact_digest": initialized_baseline[
+                "exact_digest"
+            ],
+            "initialized_baseline_execution_count": initialized_baseline[
+                "execution_count"
+            ],
             **authorization_accounting,
         },
         "causal_genome": {
@@ -852,6 +943,16 @@ def _phase_a_learner_evidence_from_verified_selection_report(
             ],
             "heldout_value_rmse": metrics["heldout_value_rmse"],
             "advantage_variance": metrics["advantage_variance"],
+            "initialized_baseline_median_normalized_return": (
+                initialized_baseline["baseline_median_normalized_return"]
+            ),
+            "paired_median_normalized_return_improvement": (
+                paired_baseline["paired_median_normalized_return_improvement"]
+            ),
+            "target_contract": OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION,
+            "paired_return_aggregation": (
+                "four_tapes_within_environment_then_equal_weight_32_environment_median"
+            ),
         },
         "lifecycle": {
             "development_only": True,
@@ -1102,6 +1203,7 @@ def _validate_training_authority_binding(
     expected_learner_seed: object,
     expected_run_contract_file_sha256: str | None = None,
     expected_model_state_sha256: str | None = None,
+    expected_initial_model_state_sha256: str | None = None,
 ) -> None:
     _require_exact_keys(
         authority,
@@ -1119,6 +1221,10 @@ def _validate_training_authority_binding(
             "terminal_file_sha256",
             "final_prefix_commit_exact_digest",
             "terminal_checkpoint_model_state_sha256",
+            "initial_model_state_sha256",
+            "initial_to_terminal_model_changed",
+            "cumulative_accepted_ppo_minibatches",
+            "cumulative_post_step_kl_rejected_steps",
             "run_contract_logical_name",
             "run_contract_exact_digest",
             "run_contract_file_sha256",
@@ -1142,6 +1248,7 @@ def _validate_training_authority_binding(
         "terminal_file_sha256",
         "final_prefix_commit_exact_digest",
         "terminal_checkpoint_model_state_sha256",
+        "initial_model_state_sha256",
         "run_contract_exact_digest",
         "run_contract_file_sha256",
         "artifact_sha256",
@@ -1164,6 +1271,27 @@ def _validate_training_authority_binding(
         or authority.get("run_contract_logical_name") != "run-contract.json"
         or authority.get("artifact_logical_name") != "terminal-training-artifact.json"
         or authority.get("selection_binding_required") is not True
+        or authority.get("initial_to_terminal_model_changed") is not True
+        or authority.get("initial_model_state_sha256")
+        == authority.get("terminal_checkpoint_model_state_sha256")
+        or isinstance(
+            authority.get("cumulative_accepted_ppo_minibatches"),
+            bool,
+        )
+        or not isinstance(
+            authority.get("cumulative_accepted_ppo_minibatches"),
+            int,
+        )
+        or authority.get("cumulative_accepted_ppo_minibatches", 0) <= 0
+        or isinstance(
+            authority.get("cumulative_post_step_kl_rejected_steps"),
+            bool,
+        )
+        or not isinstance(
+            authority.get("cumulative_post_step_kl_rejected_steps"),
+            int,
+        )
+        or authority.get("cumulative_post_step_kl_rejected_steps", -1) < 0
     ):
         raise OpenEcologySelectionError(
             "training authority differs from its terminal selection request"
@@ -1181,6 +1309,14 @@ def _validate_training_authority_binding(
     ):
         raise OpenEcologySelectionError(
             "training authority model differs from the loaded artifact"
+        )
+    if (
+        expected_initial_model_state_sha256 is not None
+        and authority.get("initial_model_state_sha256")
+        != expected_initial_model_state_sha256
+    ):
+        raise OpenEcologySelectionError(
+            "training authority initialized model differs from the run contract"
         )
     run_id = authority.get("run_id")
     if not isinstance(run_id, str) or not run_id or run_id != run_id.strip():
@@ -1326,6 +1462,15 @@ def _load_bound_artifact(
         raise OpenEcologySelectionError(
             "independent artifact reconstructions changed model state"
         )
+    initialized_baseline = _reconstruct_initialized_baseline_model(
+        config=config,
+        learner_seed=request.learner_seed,
+    )
+    initialized_baseline_sha = recurrent_model_state_sha256(initialized_baseline)
+    if run_contract.get("initial_full_model_sha256") != initialized_baseline_sha:
+        raise OpenEcologySelectionError(
+            "run contract initialized baseline model SHA does not reconstruct"
+        )
     file_sha = _file_sha256(request.artifact_path)
     if request.training_authority is not None:
         _validate_training_authority_binding(
@@ -1341,6 +1486,7 @@ def _load_bound_artifact(
             expected_learner_seed=request.learner_seed,
             expected_run_contract_file_sha256=run_contract_file_sha256,
             expected_model_state_sha256=primary_sha,
+            expected_initial_model_state_sha256=initialized_baseline_sha,
         )
     binding: dict[str, object] = {
         "schema_version": OPEN_ECOLOGY_SELECTION_ARTIFACT_BINDING_SCHEMA_VERSION,
@@ -1349,6 +1495,7 @@ def _load_bound_artifact(
         "artifact_schema_version": schema,
         "artifact_sha256": artifact_sha,
         "model_state_sha256": primary_sha,
+        "initialized_baseline_model_state_sha256": initialized_baseline_sha,
         "source_commit": request.expected_source_commit,
         "source_manifest_sha256": request.expected_source_manifest_sha256,
         "seed_registry_sha256": OPEN_ECOLOGY_CANONICAL_SHA256,
@@ -1383,10 +1530,24 @@ def _load_bound_artifact(
     )
 
 
+def _reconstruct_initialized_baseline_model(
+    *,
+    config: RecurrentActorCriticConfig,
+    learner_seed: int,
+) -> PublicRecurrentActorCritic:
+    model = PublicRecurrentActorCritic(
+        config,
+        initialization_seed=learner_seed,
+    ).to(device="cpu", dtype=torch.float32)
+    model.eval()
+    return frozen_cpu_model_copy(model)
+
+
 def _environment_task(
     *,
     request: OpenEcologySelectionRequest,
     plan: OpenEcologySelectionPlan,
+    initialized_baseline_model_state_sha256: str,
     local_environment_index: int,
 ) -> _EnvironmentTask:
     local = _bounded_index(
@@ -1399,6 +1560,10 @@ def _environment_task(
         cell_id=request.cell_id,
         learner_index=request.learner_index,
         artifact_sha256=request.expected_artifact_sha256,
+        initialized_baseline_model_state_sha256=_sha256(
+            initialized_baseline_model_state_sha256,
+            field="initialized baseline model state",
+        ),
         local_environment_index=local,
         environment_seed_index=plan.environment_seed_indices[local],
         environment_seed=plan.environment_seeds[local],
@@ -1415,12 +1580,24 @@ def _initialize_selection_worker(request: OpenEcologySelectionRequest) -> None:
     global _PARALLEL_ARTIFACT_BINDING
     global _PARALLEL_PRIMARY_MODEL
     global _PARALLEL_REPLAY_MODEL
+    global _PARALLEL_BASELINE_MODEL
     global _PARALLEL_SOURCE_REQUEST
     torch.set_num_threads(1)
     _require_live_selection_source(request)
     primary, replay, binding = _load_bound_artifact(request)
+    baseline = _reconstruct_initialized_baseline_model(
+        config=primary.config,
+        learner_seed=request.learner_seed,
+    )
+    if recurrent_model_state_sha256(baseline) != binding.get(
+        "initialized_baseline_model_state_sha256"
+    ):
+        raise OpenEcologySelectionError(
+            "selection worker initialized baseline reconstruction drifted"
+        )
     _PARALLEL_PRIMARY_MODEL = primary
     _PARALLEL_REPLAY_MODEL = replay
+    _PARALLEL_BASELINE_MODEL = baseline
     _PARALLEL_ARTIFACT_BINDING = binding
     _PARALLEL_SOURCE_REQUEST = request
 
@@ -1437,26 +1614,18 @@ def _require_live_selection_source(request: OpenEcologySelectionRequest) -> None
             "selection implementation was imported from a different checkout"
         )
     try:
-        commit = subprocess.run(
-            ("git", "-C", str(root), "rev-parse", "HEAD"),
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            (
-                "git",
-                "-C",
-                str(root),
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-            ),
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as error:
+        git_authority = discover_pinned_git_executable()
+        commit = run_pinned_git(
+            git_authority,
+            repository_root=root,
+            arguments=("rev-parse", "HEAD"),
+        )
+        status = run_pinned_git(
+            git_authority,
+            repository_root=root,
+            arguments=("status", "--porcelain", "--untracked-files=all"),
+        )
+    except OpenEcologyGitAuthorityError as error:
         raise OpenEcologySelectionError(
             "failed to inspect authoritative selection source"
         ) from error
@@ -1474,6 +1643,25 @@ def _require_live_selection_source(request: OpenEcologySelectionRequest) -> None
         raise OpenEcologySelectionError(
             "authoritative selection source manifest drifted"
         )
+    try:
+        final_commit = run_pinned_git(
+            git_authority,
+            repository_root=root,
+            arguments=("rev-parse", "HEAD"),
+        )
+        final_status = run_pinned_git(
+            git_authority,
+            repository_root=root,
+            arguments=("status", "--porcelain", "--untracked-files=all"),
+        )
+    except OpenEcologyGitAuthorityError as error:
+        raise OpenEcologySelectionError(
+            "failed to reinspect authoritative selection source"
+        ) from error
+    if final_commit != commit or final_status != status:
+        raise OpenEcologySelectionError(
+            "authoritative selection source changed during verification"
+        )
 
 
 def _evaluate_environment_task_in_worker(
@@ -1482,6 +1670,7 @@ def _evaluate_environment_task_in_worker(
     if (
         _PARALLEL_PRIMARY_MODEL is None
         or _PARALLEL_REPLAY_MODEL is None
+        or _PARALLEL_BASELINE_MODEL is None
         or _PARALLEL_ARTIFACT_BINDING is None
         or _PARALLEL_SOURCE_REQUEST is None
     ):
@@ -1495,6 +1684,7 @@ def _evaluate_environment_task_in_worker(
         task,
         primary_model=_PARALLEL_PRIMARY_MODEL,
         replay_model=None,
+        baseline_model=_PARALLEL_BASELINE_MODEL,
     )
     _require_live_selection_source(_PARALLEL_SOURCE_REQUEST)
     return result
@@ -1505,8 +1695,17 @@ def _evaluate_environment_task(
     *,
     primary_model: PublicRecurrentActorCritic,
     replay_model: PublicRecurrentActorCritic | None,
+    baseline_model: PublicRecurrentActorCritic,
 ) -> dict[str, object]:
+    if (
+        recurrent_model_state_sha256(baseline_model)
+        != task.initialized_baseline_model_state_sha256
+    ):
+        raise OpenEcologySelectionError(
+            "initialized baseline model differs from its environment task"
+        )
     executions: list[dict[str, object]] = []
+    baseline_executions: list[dict[str, object]] = []
     for tape_identity in (*task.stochastic_tape_identities, "argmax"):
         sampling_seed = (
             None
@@ -1552,11 +1751,66 @@ def _evaluate_environment_task(
             }
         execution["exact_digest"] = stable_payload_digest(execution)
         executions.append(execution)
+        if tape_identity != "argmax":
+            baseline_run, baseline_captures = _run_selection_world(
+                model=baseline_model,
+                task=task,
+                tape_identity=tape_identity,
+                sampling_seed=sampling_seed,
+                capture_causal_states=False,
+                artifact_digest=(task.initialized_baseline_model_state_sha256),
+            )
+            if baseline_captures:
+                raise OpenEcologySelectionError(
+                    "initialized baseline unexpectedly captured causal states"
+                )
+            baseline_execution = dict(baseline_run)
+            baseline_execution["exact_replay"] = {
+                "verified": False,
+                "independent_artifact_reload": False,
+                "replay_full_behavior_sha256": None,
+                "replay_run_evidence_sha256": None,
+            }
+            baseline_execution["exact_digest"] = stable_payload_digest(
+                baseline_execution
+            )
+            baseline_executions.append(baseline_execution)
         if tape_identity == "argmax":
             causal_states = captured_states
     if "causal_states" not in locals():
         raise AssertionError("argmax causal capture was not run")
     stochastic = tuple(executions[:OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT])
+    baseline_stochastic = tuple(baseline_executions)
+    paired_return = _paired_normalized_return_evidence(
+        trained_normalized_returns=tuple(
+            _finite(
+                _mapping(run.get("metrics"), field="trained metrics").get(
+                    "normalized_return"
+                ),
+                field="trained normalized return",
+            )
+            for run in stochastic
+        ),
+        baseline_normalized_returns=tuple(
+            _finite(
+                _mapping(run.get("metrics"), field="baseline metrics").get(
+                    "normalized_return"
+                ),
+                field="baseline normalized return",
+            )
+            for run in baseline_stochastic
+        ),
+    )
+    initialized_baseline: dict[str, object] = {
+        "schema_version": ("mind_v3_open_ecology_initialized_baseline_environment_v2"),
+        "model_state_sha256": (task.initialized_baseline_model_state_sha256),
+        "execution_count": len(baseline_stochastic),
+        "stochastic_tape_identities": list(task.stochastic_tape_identities),
+        "executions": list(baseline_stochastic),
+        "stochastic_tape_aggregate": _aggregate_stochastic_runs(baseline_stochastic),
+        "paired_normalized_return": paired_return,
+    }
+    initialized_baseline["exact_digest"] = stable_payload_digest(initialized_baseline)
     causal = _evaluate_causal_genome_states(
         primary_model,
         causal_states,
@@ -1588,6 +1842,7 @@ def _evaluate_environment_task(
         ),
         "executions": executions,
         "stochastic_tape_aggregate": _aggregate_stochastic_runs(stochastic),
+        "initialized_baseline": initialized_baseline,
         "causal_genome": causal,
         "gates": {
             "finite_outputs": all(
@@ -1617,6 +1872,13 @@ def _evaluate_environment_task(
             "no_global_action_collapse": all(
                 _mapping(execution["gates"], field="execution.gates")[
                     "no_global_action_collapse"
+                ]
+                is True
+                for execution in executions
+            ),
+            "action_collapse_evidence_sufficient": all(
+                _mapping(execution["gates"], field="execution.gates")[
+                    "action_collapse_evidence_sufficient"
                 ]
                 is True
                 for execution in executions
@@ -1657,7 +1919,9 @@ def _run_selection_world(
     tape_identity: str,
     sampling_seed: int | None,
     capture_causal_states: bool,
+    artifact_digest: str | None = None,
 ) -> tuple[dict[str, object], tuple[_CausalPolicyState, ...]]:
+    resolved_artifact_digest = artifact_digest or task.artifact_sha256
     if capture_causal_states:
         if sampling_seed is not None or tape_identity != "argmax":
             raise OpenEcologySelectionError(
@@ -1665,13 +1929,13 @@ def _run_selection_world(
             )
         policy: DeterministicPublicRecurrentPolicy = _CausalStateCapturePolicy(
             model,
-            artifact_digest=task.artifact_sha256,
+            artifact_digest=resolved_artifact_digest,
             environment_seed=task.environment_seed,
         )
     else:
         policy = DeterministicPublicRecurrentPolicy(
             model,
-            artifact_digest=task.artifact_sha256,
+            artifact_digest=resolved_artifact_digest,
             copy_to_cpu=False,
             reset_recurrent_state_each_decision=False,
             sampling_seed=sampling_seed,
@@ -1695,6 +1959,16 @@ def _run_selection_world(
             policy=policy,
         )
         result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        terminal_bootstrap = _terminal_alive_agent_bootstrap_values(
+            world=world,
+            policy=policy,
+            tick=task.ticks,
+            target_eligible_agent_ids={
+                _positive_int(record.get("agent_id"), field="record.agent_id")
+                for record in world.trajectory_records
+                if record.get("action_source") != "passive"
+            },
+        )
         captured = (
             policy.captured_states
             if isinstance(policy, _CausalStateCapturePolicy)
@@ -1738,8 +2012,356 @@ def _run_selection_world(
         records=records,
         diagnostics=diagnostics,
         genome_provenance=provenance,
+        terminal_bootstrap=terminal_bootstrap,
     )
     return evidence, captured
+
+
+def _terminal_alive_agent_bootstrap_values(
+    *,
+    world: SimulationWorld,
+    policy: DeterministicPublicRecurrentPolicy,
+    tick: int,
+    target_eligible_agent_ids: set[int],
+) -> dict[str, object]:
+    """Evaluate exact tick-T V(s_T) on a clone without selecting an action."""
+
+    boundary_tick = _nonnegative_int(tick, field="terminal bootstrap tick")
+    if not isinstance(target_eligible_agent_ids, set) or any(
+        isinstance(agent_id, bool) or not isinstance(agent_id, int) or agent_id <= 0
+        for agent_id in target_eligible_agent_ids
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap target eligibility must be a positive-ID set"
+        )
+    state_before = _selection_boundary_authority_state(world=world, policy=policy)
+    live_agent_ids = tuple(sorted(agent.agent_id for agent in world.alive_agents()))
+    if live_agent_ids:
+        if world.tick + 1 != boundary_tick:
+            raise OpenEcologySelectionError(
+                "living selection world did not complete the fixed horizon"
+            )
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=boundary_tick)
+        if set(prepared.ordered_agent_ids) != set(live_agent_ids):
+            raise OpenEcologySelectionError(
+                "tick-T preparation changed the living agent set"
+            )
+        observations_by_agent = prepared.observation_snapshots
+    else:
+        observations_by_agent = {}
+
+    reference = next(policy.model.parameters())
+    manager = policy._require_genome_population_manager()  # type: ignore[attr-defined]
+    rows: list[dict[str, object]] = []
+    with torch.no_grad():
+        for agent_id in live_agent_ids:
+            observation = observations_by_agent[agent_id]
+            encoded = encode_observation_input(observation)
+            public_values = tuple(ecological_policy_input_values(encoded))
+            observation_tensor = public_policy_tensor_from_observation_input(
+                encoded,
+                expected_schema_version=(
+                    policy.model.config.public_input_schema_version
+                ),
+                expected_size=policy.model.config.public_input_size,
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            action_mask = strict_action_mask_tensor(
+                _mapping(
+                    observation.get("action_mask"),
+                    field="terminal bootstrap action_mask",
+                ),
+                device=reference.device,
+            )
+            feedback = policy._feedback_by_agent.get(  # type: ignore[attr-defined]
+                agent_id,
+                PreviousPublicFeedbackInput.zero(),
+            )
+            feedback_tensor = previous_public_feedback_tensor(
+                feedback,
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            recurrent_state = policy._state_by_agent.get(  # type: ignore[attr-defined]
+                agent_id
+            )
+            if recurrent_state is None:
+                recurrent_state = policy.model.initial_state(1)
+            binding = manager.genome_binding_for_agent(agent_id)
+            genome_tensor = torch.tensor(
+                binding.genome.values,
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            output = policy.model.forward_sequence(
+                observation_tensor.reshape(1, 1, -1),
+                action_mask.reshape(1, 1, -1),
+                feedback_tensor.reshape(1, 1, -1),
+                genome_values=genome_tensor.reshape(1, 1, -1),
+                initial_state=recurrent_state,
+            )
+            value = float(output.values[0, 0].item())
+            if not math.isfinite(value):
+                raise OpenEcologySelectionError(
+                    "terminal alive-agent bootstrap value is non-finite"
+                )
+            row: dict[str, object] = {
+                "agent_id": agent_id,
+                "policy_input_sha256": stable_payload_digest(public_values),
+                "value_input_sha256": stable_payload_digest(
+                    {
+                        "public_observation": public_values,
+                        "action_mask": [
+                            bool(action_mask[index].item())
+                            for index in range(len(ACTION_NAMES))
+                        ],
+                        "previous_feedback": tuple(feedback.values()),
+                        "recurrent_state": tuple(
+                            float(component)
+                            for component in recurrent_state.detach()
+                            .cpu()
+                            .reshape(-1)
+                            .tolist()
+                        ),
+                        "genome_sha256": binding.genome_sha256,
+                    }
+                ),
+                "value": round(value, 12),
+                "target_eligible": agent_id in target_eligible_agent_ids,
+                "genome_sha256": binding.genome_sha256,
+            }
+            row["exact_digest"] = stable_payload_digest(row)
+            rows.append(row)
+    state_after = _selection_boundary_authority_state(world=world, policy=policy)
+    if state_after != state_before:
+        raise OpenEcologySelectionError(
+            "tick-T bootstrap mutated authoritative world or policy state"
+        )
+    zero_decision_ids = [
+        int(row["agent_id"]) for row in rows if row["target_eligible"] is False
+    ]
+    invariance = {
+        "schema_version": ("mind_v3_open_ecology_tick_t_bootstrap_state_invariance_v1"),
+        "original_world_state_before_sha256": state_before["world_state_sha256"],
+        "original_world_state_after_sha256": state_after["world_state_sha256"],
+        "environment_rng_before_sha256": state_before["environment_rng_sha256"],
+        "environment_rng_after_sha256": state_after["environment_rng_sha256"],
+        "runtime_cost_counters_before_sha256": state_before[
+            "runtime_cost_counters_sha256"
+        ],
+        "runtime_cost_counters_after_sha256": state_after[
+            "runtime_cost_counters_sha256"
+        ],
+        "policy_state_before_sha256": state_before["policy_state_sha256"],
+        "policy_state_after_sha256": state_after["policy_state_sha256"],
+        "policy_sampling_rng_before_sha256": state_before["policy_sampling_rng_sha256"],
+        "policy_sampling_rng_after_sha256": state_after["policy_sampling_rng_sha256"],
+        "model_state_before_sha256": state_before["model_state_sha256"],
+        "model_state_after_sha256": state_after["model_state_sha256"],
+        "genome_population_before_sha256": state_before["genome_population_sha256"],
+        "genome_population_after_sha256": state_after["genome_population_sha256"],
+        "original_state_unchanged": True,
+    }
+    invariance["exact_digest"] = stable_payload_digest(invariance)
+    evidence: dict[str, object] = {
+        "schema_version": OPEN_ECOLOGY_SELECTION_TERMINAL_BOOTSTRAP_SCHEMA_VERSION,
+        "tick": boundary_tick,
+        "evaluation_semantics": (
+            "exact_tick_start_ecology_action_free_value_evaluation_v2"
+        ),
+        "boundary": (
+            "exact_policy_visible_tick_start_before_action_v1"
+            if live_agent_ids
+            else "terminal_before_horizon_no_bootstrap_v1"
+        ),
+        "action_sampled": False,
+        "action_committed": False,
+        "action_resolved": False,
+        "alive_agents_bootstrap_from_value": True,
+        "dead_agents_bootstrap_zero": True,
+        "alive_agent_count": len(rows),
+        "target_eligible_agent_count": len(rows) - len(zero_decision_ids),
+        "zero_decision_alive_agent_count": len(zero_decision_ids),
+        "zero_decision_alive_agent_ids": zero_decision_ids,
+        "values": rows,
+        "state_invariance": invariance,
+    }
+    evidence["exact_digest"] = stable_payload_digest(evidence)
+    return evidence
+
+
+def _selection_boundary_authority_state(
+    *,
+    world: SimulationWorld,
+    policy: DeterministicPublicRecurrentPolicy,
+) -> dict[str, str | None]:
+    """Canonical projection proving the bootstrap probe is observational."""
+
+    if policy._pending_by_agent:  # type: ignore[attr-defined]
+        raise OpenEcologySelectionError(
+            "terminal bootstrap cannot begin with pending policy decisions"
+        )
+    world_attributes = {
+        key: value
+        for key, value in world.__dict__.items()
+        if key not in _SELECTION_BOUNDARY_NONAUTHORITATIVE_WORLD_FIELDS
+    }
+    world_state_sha256 = stable_payload_digest(
+        {
+            "config": world.config.to_dict(),
+            "attributes": _selection_state_json_value(world_attributes),
+        }
+    )
+    generator = policy._sampling_generator  # type: ignore[attr-defined]
+    sampling_rng_sha256 = (
+        None
+        if generator is None
+        else hashlib.sha256(
+            bytes(generator.get_state().detach().cpu().tolist())
+        ).hexdigest()
+    )
+    manager = policy._require_genome_population_manager()  # type: ignore[attr-defined]
+    hidden_rows = [
+        {
+            "agent_id": agent_id,
+            "shape": list(state.shape),
+            "dtype": str(state.dtype),
+            "values": state.detach().cpu().tolist(),
+        }
+        for agent_id, state in sorted(
+            policy._state_by_agent.items()  # type: ignore[attr-defined]
+        )
+    ]
+    feedback_rows = [
+        {
+            "agent_id": agent_id,
+            "values": list(feedback.values()),
+        }
+        for agent_id, feedback in sorted(
+            policy._feedback_by_agent.items()  # type: ignore[attr-defined]
+        )
+    ]
+    history_rows = [
+        {
+            "agent_id": agent_id,
+            "records": copy.deepcopy(records),
+        }
+        for agent_id, records in sorted(
+            policy._public_history_by_agent.items()  # type: ignore[attr-defined]
+        )
+    ]
+    capture_state: dict[str, object] | None = None
+    if isinstance(policy, _CausalStateCapturePolicy):
+        capture_state = {
+            "seen": policy._capture_seen,
+            "retained": [
+                {
+                    "priority": state.priority,
+                    "decision_index": state.decision_index,
+                    "agent_id": state.agent_id,
+                }
+                for state in policy.captured_states
+            ],
+        }
+    policy_state_sha256 = stable_payload_digest(
+        {
+            "decision_index": policy._decision_index,  # type: ignore[attr-defined]
+            "hidden": hidden_rows,
+            "feedback": feedback_rows,
+            "public_history": history_rows,
+            "pending_agent_ids": sorted(
+                policy._pending_by_agent  # type: ignore[attr-defined]
+            ),
+        }
+    )
+    return {
+        "world_state_sha256": world_state_sha256,
+        "environment_rng_sha256": stable_payload_digest(world.rng.getstate()),
+        "runtime_cost_counters_sha256": stable_payload_digest(
+            world.runtime_cost_counters
+        ),
+        "policy_state_sha256": policy_state_sha256,
+        # Capture is a read-only diagnostic adapter.  Bind it for the local
+        # before/after mutation check, but keep it out of the public policy
+        # digest so captured and ordinary executions retain identical
+        # scientific run evidence.
+        "policy_observer_state_sha256": stable_payload_digest(capture_state),
+        "policy_sampling_rng_sha256": sampling_rng_sha256,
+        "model_state_sha256": recurrent_model_state_sha256(policy.model),
+        "genome_population_sha256": manager.state_sha256,
+    }
+
+
+def _selection_state_json_value(value: object, *, depth: int = 0) -> object:
+    if depth > 128:
+        raise OpenEcologySelectionError("selection authority state nesting is too deep")
+    if value is None or type(value) in {bool, str, int}:
+        return value
+    if type(value) is float:
+        return _finite(value, field="selection authority state float")
+    if isinstance(value, Enum):
+        return {
+            "__selection_state_type__": (
+                f"{type(value).__module__}.{type(value).__qualname__}"
+            ),
+            "value": _selection_state_json_value(value.value, depth=depth + 1),
+        }
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            "__selection_state_type__": (
+                f"{type(value).__module__}.{type(value).__qualname__}"
+            ),
+            "fields": {
+                field.name: _selection_state_json_value(
+                    getattr(value, field.name),
+                    depth=depth + 1,
+                )
+                for field in fields(value)
+            },
+        }
+    if isinstance(value, Mapping):
+        rows = [
+            [
+                _selection_state_json_value(key, depth=depth + 1),
+                _selection_state_json_value(item, depth=depth + 1),
+            ]
+            for key, item in value.items()
+        ]
+        rows.sort(
+            key=lambda row: json.dumps(
+                row[0],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return {"__selection_state_type__": "mapping", "items": rows}
+    if isinstance(value, (list, tuple, deque)):
+        return {
+            "__selection_state_type__": type(value).__name__,
+            "items": [
+                _selection_state_json_value(item, depth=depth + 1) for item in value
+            ],
+        }
+    if isinstance(value, (set, frozenset)):
+        items = [_selection_state_json_value(item, depth=depth + 1) for item in value]
+        items.sort(
+            key=lambda item: json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return {
+            "__selection_state_type__": type(value).__name__,
+            "items": items,
+        }
+    if isinstance(value, bytes):
+        return {"__selection_state_type__": "bytes", "hex": value.hex()}
+    raise OpenEcologySelectionError(
+        "selection authority state contains unsupported type "
+        f"{type(value).__module__}.{type(value).__qualname__}"
+    )
 
 
 def _capture_noninterference_cases() -> tuple[dict[str, object], ...]:
@@ -2228,6 +2850,7 @@ def _build_selection_run_evidence(
     records: Sequence[Mapping[str, object]],
     diagnostics: Sequence[Mapping[str, object] | None],
     genome_provenance: Mapping[str, object],
+    terminal_bootstrap: Mapping[str, object],
 ) -> dict[str, object]:
     requested_counts: Counter[str] = Counter()
     action_source_counts: Counter[str] = Counter()
@@ -2344,12 +2967,93 @@ def _build_selection_run_evidence(
         raise OpenEcologySelectionError(
             "selection value targets differ from active agent histories"
         )
-    for agent_id, passive_reward in passive_rewards.items():
-        if agent_id in rewards_by_agent and passive_reward:
-            rewards_by_agent[agent_id][-1] += passive_reward
+    bootstrap_values: dict[int, float] = {}
+    bootstrap_agent_ids: list[int] = []
+    zero_decision_bootstrap_ids: list[int] = []
+    bootstrap_rows = terminal_bootstrap.get("values")
+    if not isinstance(bootstrap_rows, Sequence) or isinstance(
+        bootstrap_rows,
+        (str, bytes),
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap values must be a canonical sequence"
+        )
+    for row in bootstrap_rows:
+        parsed = _mapping(row, field="terminal bootstrap value")
+        agent_id = _positive_int(parsed.get("agent_id"), field="bootstrap agent_id")
+        if agent_id in bootstrap_agent_ids:
+            raise OpenEcologySelectionError(
+                "terminal bootstrap repeats one alive agent"
+            )
+        _require_exact_keys(
+            parsed,
+            {
+                "agent_id",
+                "policy_input_sha256",
+                "value_input_sha256",
+                "value",
+                "target_eligible",
+                "genome_sha256",
+                "exact_digest",
+            },
+            field="terminal bootstrap value",
+        )
+        unsigned_row = dict(parsed)
+        row_digest = _sha256(
+            unsigned_row.pop("exact_digest"),
+            field="terminal bootstrap value exact digest",
+        )
+        if stable_payload_digest(unsigned_row) != row_digest:
+            raise OpenEcologySelectionError("terminal bootstrap value digest changed")
+        _sha256(
+            parsed.get("policy_input_sha256"),
+            field="bootstrap policy input",
+        )
+        _sha256(
+            parsed.get("value_input_sha256"),
+            field="bootstrap value input",
+        )
+        _sha256(parsed.get("genome_sha256"), field="bootstrap genome")
+        value = _finite(parsed.get("value"), field="bootstrap value")
+        target_eligible = _exact_bool(
+            parsed.get("target_eligible"),
+            field="bootstrap target_eligible",
+        )
+        bootstrap_agent_ids.append(agent_id)
+        if target_eligible:
+            bootstrap_values[agent_id] = value
+        else:
+            zero_decision_bootstrap_ids.append(agent_id)
+    if bootstrap_agent_ids != sorted(bootstrap_agent_ids):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap agents are not in canonical order"
+        )
+    if (
+        terminal_bootstrap.get("alive_agent_count") != len(bootstrap_agent_ids)
+        or terminal_bootstrap.get("target_eligible_agent_count")
+        != len(bootstrap_values)
+        or terminal_bootstrap.get("zero_decision_alive_agent_count")
+        != len(zero_decision_bootstrap_ids)
+        or terminal_bootstrap.get("zero_decision_alive_agent_ids")
+        != zero_decision_bootstrap_ids
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap target eligibility counts changed"
+        )
+    if set(bootstrap_values) - set(rewards_by_agent):
+        raise OpenEcologySelectionError(
+            "eligible terminal bootstrap contains an agent without held-out history"
+        )
+    if set(zero_decision_bootstrap_ids).intersection(rewards_by_agent):
+        raise OpenEcologySelectionError(
+            "zero-decision terminal bootstrap agent has held-out target history"
+        )
     normalized_return, value_rmse, advantage_variance = _selection_metrics(
         rewards_by_agent=rewards_by_agent,
         values_by_agent=values_by_agent,
+        terminal_bootstrap_values_by_agent=bootstrap_values,
+        passive_terminal_rewards_by_agent=passive_rewards,
+        discount=OPEN_ECOLOGY_SELECTION_DISCOUNT,
     )
     collapse = _action_collapse_evidence(active_rows)
     active_count = len(active_rows)
@@ -2409,10 +3113,9 @@ def _build_selection_run_evidence(
             "normalized_return": normalized_return,
             "heldout_value_rmse": value_rmse,
             "advantage_variance": advantage_variance,
-            "target_contract": (
-                "discounted_gamma_0.997_finite_world_zero_bootstrap_per_agent_v1"
-            ),
+            "target_contract": (OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION),
         },
+        "terminal_bootstrap": dict(terminal_bootstrap),
         "action_collapse": collapse,
         "genome_population_provenance": dict(genome_provenance),
         "gates": {
@@ -2430,6 +3133,9 @@ def _build_selection_run_evidence(
                 == active_count
             ),
             "no_global_action_collapse": collapse["collapsed"] is False,
+            "action_collapse_evidence_sufficient": (
+                collapse["evidence_sufficient"] is True
+            ),
         },
     }
     behavior_payload = {
@@ -2446,6 +3152,7 @@ def _build_selection_run_evidence(
         "trajectory_records": list(records),
         "policy_decision_diagnostics": list(diagnostics),
         "genome_population_provenance": dict(genome_provenance),
+        "terminal_bootstrap": dict(terminal_bootstrap),
     }
     compact["full_behavior_sha256"] = stable_payload_digest(behavior_payload)
     compact["run_evidence_sha256"] = stable_payload_digest(compact)
@@ -2456,7 +3163,22 @@ def _selection_metrics(
     *,
     rewards_by_agent: Mapping[int, Sequence[float]],
     values_by_agent: Mapping[int, Sequence[float]],
+    terminal_bootstrap_values_by_agent: Mapping[int, float],
+    passive_terminal_rewards_by_agent: Mapping[int, float] | None = None,
+    discount: float = OPEN_ECOLOGY_SELECTION_DISCOUNT,
 ) -> tuple[float, float, float]:
+    parsed_discount = _finite(discount, field="selection discount")
+    if not 0.0 <= parsed_discount <= 1.0:
+        raise OpenEcologySelectionError("selection discount must be in [0, 1]")
+    passive_terminal_rewards_by_agent = (
+        {}
+        if passive_terminal_rewards_by_agent is None
+        else passive_terminal_rewards_by_agent
+    )
+    if set(passive_terminal_rewards_by_agent) - set(rewards_by_agent):
+        raise OpenEcologySelectionError(
+            "passive terminal reward has no preceding policy decision"
+        )
     returns: list[float] = []
     values: list[float] = []
     normalized_individual_returns: list[float] = []
@@ -2467,14 +3189,21 @@ def _selection_metrics(
             raise OpenEcologySelectionError(
                 "selection rewards and values have different lengths"
             )
+        passive_terminal_reward = _finite(
+            passive_terminal_rewards_by_agent.get(agent_id, 0.0),
+            field="passive terminal reward",
+        )
         normalized_individual_returns.append(
-            sum(float(reward) for reward in rewards)
+            (sum(float(reward) for reward in rewards) + passive_terminal_reward)
             / (len(rewards) * max(_REWARD_NORMALIZATION_SCALE, 1.0))
         )
-        running = 0.0
+        running = float(terminal_bootstrap_values_by_agent.get(agent_id, 0.0))
         reversed_returns: list[float] = []
-        for reward in reversed(rewards):
-            running = float(reward) + OPEN_ECOLOGY_SELECTION_DISCOUNT * running
+        for reverse_index, reward in enumerate(reversed(rewards)):
+            effective_reward = float(reward)
+            if reverse_index == 0:
+                effective_reward += parsed_discount * passive_terminal_reward
+            running = effective_reward + parsed_discount * running
             reversed_returns.append(running)
         returns.extend(reversed(reversed_returns))
         values.extend(float(value) for value in agent_values)
@@ -2504,68 +3233,105 @@ def _dominant_count(counts: Mapping[str, int]) -> tuple[str | None, int]:
 def _action_collapse_evidence(
     active_rows: Sequence[tuple[str, int]],
 ) -> dict[str, object]:
-    summaries: list[dict[str, object]] = []
-    longest = 0
-    current_action: str | None = None
-    current_length = 0
-    collapsed = False
-    for start in range(
-        0,
-        len(active_rows) - OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW + 1,
-        OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW,
-    ):
-        window = active_rows[
-            start : start + OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW
-        ]
-        counts = Counter(action for action, _ in window)
-        dominant, dominant_count = _dominant_count(counts)
-        lineage_counts: dict[int, Counter[str]] = {}
-        for action, lineage_id in window:
-            lineage_counts.setdefault(lineage_id, Counter())[action] += 1
-        represented = len(lineage_counts)
-        lineage_dominant_count = sum(
-            int(_dominant_count(lineage_action_counts)[0] == dominant)
-            for lineage_action_counts in lineage_counts.values()
+    decision_count = len(active_rows)
+    span = OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN
+    evidence_sufficient = decision_count >= span
+    rolling_window_count = max(0, decision_count - span + 1)
+    first_collapsed_span_start: int | None = None
+    maximum_action_share = 0.0
+    maximum_lineage_share = 0.0
+    action_index = {action: index for index, action in enumerate(ACTION_NAMES)}
+    action_counts = [0] * len(ACTION_NAMES)
+    lineage_counts: dict[int, list[int]] = {}
+    lineage_sizes: dict[int, int] = {}
+    lineage_dominants: dict[int, int] = {}
+    lineage_dominant_counts = [0] * len(ACTION_NAMES)
+
+    def add(row: tuple[str, int]) -> None:
+        action, lineage_id = row
+        index = action_index[action]
+        action_counts[index] += 1
+        per_lineage = lineage_counts.setdefault(
+            lineage_id,
+            [0] * len(ACTION_NAMES),
         )
-        action_share = dominant_count / len(window)
+        previous_dominant = lineage_dominants.get(lineage_id)
+        per_lineage[index] += 1
+        lineage_sizes[lineage_id] = lineage_sizes.get(lineage_id, 0) + 1
+        current_dominant = per_lineage.index(max(per_lineage))
+        if previous_dominant != current_dominant:
+            if previous_dominant is not None:
+                lineage_dominant_counts[previous_dominant] -= 1
+            lineage_dominant_counts[current_dominant] += 1
+            lineage_dominants[lineage_id] = current_dominant
+
+    def remove(row: tuple[str, int]) -> None:
+        action, lineage_id = row
+        index = action_index[action]
+        action_counts[index] -= 1
+        per_lineage = lineage_counts[lineage_id]
+        previous_dominant = lineage_dominants[lineage_id]
+        per_lineage[index] -= 1
+        lineage_sizes[lineage_id] -= 1
+        if lineage_sizes[lineage_id] == 0:
+            del lineage_counts[lineage_id]
+            del lineage_sizes[lineage_id]
+            del lineage_dominants[lineage_id]
+            current_dominant = None
+        else:
+            current_dominant = per_lineage.index(max(per_lineage))
+        if previous_dominant != current_dominant:
+            lineage_dominant_counts[previous_dominant] -= 1
+            if current_dominant is not None:
+                lineage_dominant_counts[current_dominant] += 1
+                lineage_dominants[lineage_id] = current_dominant
+
+    for row in active_rows[:span]:
+        add(row)
+    for start in range(rolling_window_count):
+        dominant_count = max(action_counts)
+        dominant = action_counts.index(dominant_count)
+        represented = len(lineage_counts)
+        lineage_dominant_count = lineage_dominant_counts[dominant]
+        action_share = dominant_count / span
         lineage_share = lineage_dominant_count / represented if represented else 0.0
         qualifies = (
             action_share >= OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_ACTION_SHARE
             and lineage_share >= OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_LINEAGE_SHARE
         )
-        if qualifies and dominant == current_action:
-            current_length += 1
-        elif qualifies:
-            current_action = dominant
-            current_length = 1
-        else:
-            current_action = None
-            current_length = 0
-        longest = max(longest, current_length)
-        collapsed = collapsed or (
-            current_length >= OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_CONSECUTIVE_WINDOWS
-        )
-        summaries.append(
-            {
-                "window_index": len(summaries),
-                "dominant_action": dominant,
-                "dominant_action_share": round(action_share, 12),
-                "represented_lineage_count": represented,
-                "dominant_across_lineage_share": round(lineage_share, 12),
-                "qualifies": qualifies,
-            }
-        )
+        if qualifies and first_collapsed_span_start is None:
+            first_collapsed_span_start = start
+        maximum_action_share = max(maximum_action_share, action_share)
+        maximum_lineage_share = max(maximum_lineage_share, lineage_share)
+        if start + span < decision_count:
+            remove(active_rows[start])
+            add(active_rows[start + span])
+    scan_summary = {
+        "decision_count": decision_count,
+        "rolling_span_decisions": span,
+        "rolling_window_count": rolling_window_count,
+        "first_collapsed_span_start": first_collapsed_span_start,
+        "maximum_dominant_action_share": round(maximum_action_share, 12),
+        "maximum_dominant_across_lineage_share": round(
+            maximum_lineage_share,
+            12,
+        ),
+    }
     return {
         "schema_version": OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_VERSION,
-        "window_decisions": OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW,
-        "complete_window_count": len(summaries),
-        "trailing_decision_count": (
-            len(active_rows)
-            - len(summaries) * OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW
+        "decision_count": decision_count,
+        "required_decision_count": span,
+        "evidence_sufficient": evidence_sufficient,
+        "rolling_span_decisions": span,
+        "rolling_window_count": rolling_window_count,
+        "first_collapsed_span_start": first_collapsed_span_start,
+        "maximum_dominant_action_share": round(maximum_action_share, 12),
+        "maximum_dominant_across_lineage_share": round(
+            maximum_lineage_share,
+            12,
         ),
-        "longest_consecutive_qualifying_windows_same_action": longest,
-        "collapsed": collapsed,
-        "window_summaries_sha256": stable_payload_digest(summaries),
+        "collapsed": first_collapsed_span_start is not None,
+        "rolling_scan_sha256": stable_payload_digest(scan_summary),
     }
 
 
@@ -2976,19 +3742,124 @@ def _aggregate_stochastic_runs(
     return aggregate
 
 
+def _paired_normalized_return_evidence(
+    *,
+    trained_normalized_returns: Sequence[float],
+    baseline_normalized_returns: Sequence[float],
+) -> dict[str, object]:
+    if (
+        len(trained_normalized_returns) != len(baseline_normalized_returns)
+        or not trained_normalized_returns
+    ):
+        raise OpenEcologySelectionError(
+            "paired initialized-baseline evidence requires equal non-empty tapes"
+        )
+    trained = tuple(
+        _finite(value, field="trained normalized return")
+        for value in trained_normalized_returns
+    )
+    baseline = tuple(
+        _finite(value, field="baseline normalized return")
+        for value in baseline_normalized_returns
+    )
+    improvements = tuple(
+        round(trained_value - baseline_value, 12)
+        for trained_value, baseline_value in zip(trained, baseline, strict=True)
+    )
+    paired_median = round(median(improvements), 12)
+    evidence: dict[str, object] = {
+        "schema_version": (
+            "mind_v3_open_ecology_initialized_baseline_paired_return_v1"
+        ),
+        "pair_count": len(improvements),
+        "trained_normalized_returns": list(trained),
+        "baseline_normalized_returns": list(baseline),
+        "paired_normalized_return_improvements": list(improvements),
+        "paired_median_normalized_return_improvement": paired_median,
+        "positive_paired_median_improvement": paired_median > 0.0,
+    }
+    evidence["exact_digest"] = stable_payload_digest(evidence)
+    return evidence
+
+
+def _aggregate_environment_paired_normalized_return_evidence(
+    *,
+    environment_paired_deltas: Sequence[Sequence[float]],
+) -> dict[str, object]:
+    if len(environment_paired_deltas) != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT:
+        raise OpenEcologySelectionError(
+            "initialized-baseline learner comparison requires exactly 32 "
+            "equal-weight environments"
+        )
+    parsed: list[list[float]] = []
+    environment_medians: list[float] = []
+    for environment_index, raw_deltas in enumerate(environment_paired_deltas):
+        if (
+            not isinstance(raw_deltas, Sequence)
+            or isinstance(raw_deltas, (str, bytes))
+            or len(raw_deltas) != OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT
+        ):
+            raise OpenEcologySelectionError(
+                "initialized-baseline environment comparison requires exactly "
+                "four paired tapes"
+            )
+        deltas = [
+            _finite(
+                value,
+                field=(
+                    f"initialized baseline paired delta environment={environment_index}"
+                ),
+            )
+            for value in raw_deltas
+        ]
+        parsed.append(deltas)
+        environment_medians.append(round(median(deltas), 12))
+    paired_median = round(median(environment_medians), 12)
+    evidence: dict[str, object] = {
+        "schema_version": (
+            "mind_v3_open_ecology_initialized_baseline_hierarchical_paired_return_v2"
+        ),
+        "environment_count": len(parsed),
+        "tapes_per_environment": OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT,
+        "aggregation_order": (
+            "paired_tape_median_within_environment_then_equal_weight_"
+            "median_across_environments"
+        ),
+        "environment_paired_normalized_return_improvements": parsed,
+        "environment_paired_median_normalized_return_improvements": (
+            environment_medians
+        ),
+        "paired_median_normalized_return_improvement": paired_median,
+        "positive_paired_median_improvement": paired_median > 0.0,
+    }
+    evidence["exact_digest"] = stable_payload_digest(evidence)
+    return evidence
+
+
 def _selection_execution_accounting(
     environments: Sequence[Mapping[str, object]],
     *,
     workers_requested: int,
     workers_used: int,
 ) -> dict[str, object]:
-    primary_count = sum(
+    trained_count = sum(
         _nonnegative_int(
             environment.get("execution_count"),
             field="environment.execution_count",
         )
         for environment in environments
     )
+    baseline_count = sum(
+        _nonnegative_int(
+            _mapping(
+                environment.get("initialized_baseline"),
+                field="environment.initialized_baseline",
+            ).get("execution_count"),
+            field="environment initialized baseline execution_count",
+        )
+        for environment in environments
+    )
+    primary_count = trained_count + baseline_count
     replay_count = sum(
         _nonnegative_int(
             environment.get("exact_replay_execution_count"),
@@ -2998,6 +3869,8 @@ def _selection_execution_accounting(
     )
     return {
         "environment_count": len(environments),
+        "trained_policy_evaluation_count": trained_count,
+        "initialized_baseline_evaluation_count": baseline_count,
         "primary_evaluation_count": primary_count,
         "replay_evaluation_count": replay_count,
         "physical_world_run_count": primary_count + replay_count,
@@ -3031,10 +3904,22 @@ def _authorization_execution_accounting(
         producer_execution.get("physical_world_run_count"),
         field="producer physical_world_run_count",
     )
-    expected = OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT * (
+    trained_expected = OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT * (
         OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1
     )
-    if primary != expected or replay != 0 or physical != expected:
+    baseline_expected = (
+        OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
+        * OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT
+    )
+    expected = trained_expected + baseline_expected
+    if (
+        producer_execution.get("trained_policy_evaluation_count") != trained_expected
+        or producer_execution.get("initialized_baseline_evaluation_count")
+        != baseline_expected
+        or primary != expected
+        or replay != 0
+        or physical != expected
+    ):
         raise OpenEcologySelectionError(
             "authorization requires one provisional primary pass only"
         )
@@ -3087,10 +3972,117 @@ def _aggregate_learner_metrics(
     }
 
 
+def _aggregate_initialized_baseline(
+    environments: Sequence[Mapping[str, object]],
+    *,
+    baseline_model_state_sha256: str,
+) -> dict[str, object]:
+    if len(environments) != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT:
+        raise OpenEcologySelectionError(
+            "initialized baseline requires exactly 32 environment pairs"
+        )
+    trained_returns: list[float] = []
+    baseline_returns: list[float] = []
+    environment_paired_deltas: list[list[float]] = []
+    environment_digests: list[str] = []
+    for environment in environments:
+        trained_executions = environment.get("executions")
+        baseline = _mapping(
+            environment.get("initialized_baseline"),
+            field="environment.initialized_baseline",
+        )
+        baseline_executions = baseline.get("executions")
+        if (
+            not isinstance(trained_executions, Sequence)
+            or isinstance(trained_executions, (str, bytes))
+            or not isinstance(baseline_executions, Sequence)
+            or isinstance(baseline_executions, (str, bytes))
+            or len(trained_executions)
+            != OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1
+            or len(baseline_executions) != OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT
+            or baseline.get("model_state_sha256") != baseline_model_state_sha256
+        ):
+            raise OpenEcologySelectionError(
+                "initialized baseline environment pairing drifted"
+            )
+        environment_deltas: list[float] = []
+        for trained, initialized in zip(
+            trained_executions[:OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT],
+            baseline_executions,
+            strict=True,
+        ):
+            trained_row = _mapping(trained, field="trained execution")
+            baseline_row = _mapping(initialized, field="baseline execution")
+            if trained_row.get("tape_identity") != baseline_row.get(
+                "tape_identity"
+            ) or trained_row.get("policy_sampling_seed") != baseline_row.get(
+                "policy_sampling_seed"
+            ):
+                raise OpenEcologySelectionError(
+                    "initialized baseline is not paired to the exact selection tape"
+                )
+            trained_return = _finite(
+                _mapping(
+                    trained_row.get("metrics"),
+                    field="trained metrics",
+                ).get("normalized_return"),
+                field="trained normalized return",
+            )
+            baseline_return = _finite(
+                _mapping(
+                    baseline_row.get("metrics"),
+                    field="baseline metrics",
+                ).get("normalized_return"),
+                field="baseline normalized return",
+            )
+            trained_returns.append(trained_return)
+            baseline_returns.append(baseline_return)
+            environment_deltas.append(round(trained_return - baseline_return, 12))
+        environment_paired_deltas.append(environment_deltas)
+        environment_digests.append(
+            _sha256(
+                baseline.get("exact_digest"),
+                field="initialized baseline environment exact digest",
+            )
+        )
+    paired = _aggregate_environment_paired_normalized_return_evidence(
+        environment_paired_deltas=environment_paired_deltas,
+    )
+    evidence: dict[str, object] = {
+        "schema_version": ("mind_v3_open_ecology_initialized_baseline_learner_v2"),
+        "model_state_sha256": _sha256(
+            baseline_model_state_sha256,
+            field="baseline_model_state_sha256",
+        ),
+        "environment_count": len(environments),
+        "execution_count": len(baseline_returns),
+        "selection_tape_pairing": (
+            "same_environment_seed_genome_stream_and_policy_sampling_seed"
+        ),
+        "paired_return_aggregation": (
+            "four_tapes_within_environment_then_equal_weight_32_environment_median"
+        ),
+        "argmax_or_causal_duplicate_execution_count": 0,
+        "baseline_median_normalized_return": round(
+            median(baseline_returns),
+            12,
+        ),
+        "trained_median_normalized_return": round(
+            median(trained_returns),
+            12,
+        ),
+        "paired_normalized_return": paired,
+        "environment_evidence_sha256": stable_payload_digest(environment_digests),
+    }
+    evidence["exact_digest"] = stable_payload_digest(evidence)
+    return evidence
+
+
 def _learner_gates(
     *,
     environments: Sequence[Mapping[str, object]],
     causal: Mapping[str, object],
+    initialized_baseline: Mapping[str, object],
 ) -> dict[str, object]:
     environment_gates = [
         _mapping(environment.get("gates"), field="environment.gates")
@@ -3105,11 +4097,19 @@ def _learner_gates(
             "exact_same_contract_replay",
             "no_heuristic_action_source",
             "no_global_action_collapse",
+            "action_collapse_evidence_sufficient",
         )
     }
     gates["causal_genome_use"] = causal_gates.get("causal_genome_use") is True
     gates["bounded_single_locus_perturbation"] = (
         causal_gates.get("bounded_single_locus_perturbation") is True
+    )
+    paired_baseline = _mapping(
+        initialized_baseline.get("paired_normalized_return"),
+        field="initialized_baseline.paired_normalized_return",
+    )
+    gates["positive_paired_initialized_baseline_improvement"] = (
+        paired_baseline.get("positive_paired_median_improvement") is True
     )
     gates["eligible"] = all(value is True for value in gates.values())
     return gates
@@ -3146,6 +4146,7 @@ def validate_open_ecology_selection_report(
             "execution",
             "environments",
             "causal_genome",
+            "initialized_baseline",
             "gates",
             "metrics",
             "lifecycle",
@@ -3226,7 +4227,10 @@ def validate_open_ecology_selection_report(
             "stochastic_tape_identities",
             "argmax_diagnostic",
             "primary_metric_tapes",
+            "initialized_baseline_tapes",
             "aggregation_order",
+            "target_contract",
+            "finite_horizon_bootstrap",
             "density_cycle",
             "max_agents",
             "fixture_names",
@@ -3255,8 +4259,17 @@ def validate_open_ecology_selection_report(
         != list(plan.stochastic_tape_identities)
         or contract.get("argmax_diagnostic") is not True
         or contract.get("primary_metric_tapes") != "four_stochastic_tapes_only"
+        or contract.get("initialized_baseline_tapes")
+        != "same_four_stochastic_tapes_only_no_duplicate_argmax"
         or contract.get("aggregation_order")
-        != ("runs_within_environment_then_equal_weight_environments_within_learner")
+        != (
+            "paired_four_tape_median_within_environment_then_equal_weight_"
+            "median_across_32_environments"
+        )
+        or contract.get("target_contract")
+        != OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION
+        or contract.get("finite_horizon_bootstrap")
+        != "exact_tick_t_policy_visible_state_on_clone_action_free_v2"
         or contract.get("density_cycle") != list(plan.density_cycle)
         or contract.get("max_agents") != OPEN_ECOLOGY_MAX_AGENTS
         or contract.get("fixture_names") != []
@@ -3278,9 +4291,9 @@ def validate_open_ecology_selection_report(
         )
         != {
             "schema_version": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_VERSION),
-            "window_decisions": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_WINDOW),
-            "consecutive_windows": (
-                OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_CONSECUTIVE_WINDOWS
+            "rolling_span_decisions": (OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN),
+            "minimum_decisions_for_eligibility": (
+                OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN
             ),
             "requested_action_share_threshold": (
                 OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_ACTION_SHARE
@@ -3344,9 +4357,29 @@ def validate_open_ecology_selection_report(
         raise OpenEcologySelectionError(
             "selection metrics do not match per-environment aggregation"
         )
+    expected_initialized_baseline = _aggregate_initialized_baseline(
+        environments,
+        baseline_model_state_sha256=_sha256(
+            artifact.get("initialized_baseline_model_state_sha256"),
+            field="artifact initialized baseline model state",
+        ),
+    )
+    if (
+        dict(
+            _mapping(
+                report.get("initialized_baseline"),
+                field="initialized_baseline",
+            )
+        )
+        != expected_initialized_baseline
+    ):
+        raise OpenEcologySelectionError(
+            "selection initialized baseline aggregate changed"
+        )
     expected_gates = _learner_gates(
         environments=environments,
         causal=expected_causal,
+        initialized_baseline=expected_initialized_baseline,
     )
     if dict(_mapping(report.get("gates"), field="gates")) != expected_gates:
         raise OpenEcologySelectionError(
@@ -3355,13 +4388,19 @@ def validate_open_ecology_selection_report(
     execution = _mapping(report.get("execution"), field="execution")
     if (
         execution.get("environment_count") != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
-        or execution.get("primary_evaluation_count")
+        or execution.get("trained_policy_evaluation_count")
         != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
         * (OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1)
+        or execution.get("initialized_baseline_evaluation_count")
+        != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
+        * OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT
+        or execution.get("primary_evaluation_count")
+        != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
+        * (2 * OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1)
         or execution.get("replay_evaluation_count") != 0
         or execution.get("physical_world_run_count")
         != OPEN_ECOLOGY_SELECTION_ENVIRONMENT_COUNT
-        * (OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1)
+        * (2 * OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT + 1)
         or dict(
             _mapping(
                 execution.get("numerical_runtime_contract"),
@@ -3413,6 +4452,7 @@ def _validate_artifact_binding(
             "artifact_schema_version",
             "artifact_sha256",
             "model_state_sha256",
+            "initialized_baseline_model_state_sha256",
             "source_commit",
             "source_manifest_sha256",
             "seed_registry_sha256",
@@ -3447,6 +4487,10 @@ def _validate_artifact_binding(
         or binding.get("seed_registry_sha256") != OPEN_ECOLOGY_CANONICAL_SHA256
     ):
         raise OpenEcologySelectionError("artifact binding context changed")
+    initialized_baseline_sha = _sha256(
+        binding.get("initialized_baseline_model_state_sha256"),
+        field="artifact binding initialized baseline model state",
+    )
     if (
         not run_contract_path.is_file()
         or run_contract_path.is_symlink()
@@ -3466,6 +4510,10 @@ def _validate_artifact_binding(
     ):
         raise OpenEcologySelectionError(
             "bound run-contract digest changed after evaluation"
+        )
+    if run_contract.get("initial_full_model_sha256") != initialized_baseline_sha:
+        raise OpenEcologySelectionError(
+            "artifact binding initialized baseline differs from run contract"
         )
     if not artifact_path.is_file() or artifact_path.is_symlink():
         raise OpenEcologySelectionError(
@@ -3497,6 +4545,7 @@ def _validate_artifact_binding(
             expected_cell_id=expected_cell_id,
             expected_learner_index=expected_learner_index,
             expected_learner_seed=expected_learner_seed,
+            expected_initial_model_state_sha256=initialized_baseline_sha,
         )
     schema = binding.get("artifact_schema_version")
     try:
@@ -3574,6 +4623,7 @@ def _validate_environment_evidence(
             "exact_replay_execution_count",
             "executions",
             "stochastic_tape_aggregate",
+            "initialized_baseline",
             "causal_genome",
             "gates",
             "exact_digest",
@@ -3648,6 +4698,7 @@ def _validate_environment_evidence(
                 "action_source_counts",
                 "policy_id_counts",
                 "metrics",
+                "terminal_bootstrap",
                 "action_collapse",
                 "genome_population_provenance",
                 "gates",
@@ -3702,6 +4753,12 @@ def _validate_environment_evidence(
                     cell_id=str(environment["cell_id"]),
                     learner_index=int(environment["learner_index"]),
                     artifact_sha256=str(environment["artifact_sha256"]),
+                    initialized_baseline_model_state_sha256=str(
+                        _mapping(
+                            environment.get("initialized_baseline"),
+                            field="environment.initialized_baseline",
+                        ).get("model_state_sha256")
+                    ),
                     local_environment_index=int(environment["local_environment_index"]),
                     environment_seed_index=int(environment["environment_seed_index"]),
                     environment_seed=int(environment["environment_seed"]),
@@ -3767,12 +4824,80 @@ def _validate_environment_evidence(
                 "exact_action_mask_legality",
                 "no_heuristic_action_source",
                 "no_global_action_collapse",
+                "action_collapse_evidence_sufficient",
             },
             field="execution.gates",
         )
         collapse = _mapping(
             execution.get("action_collapse"),
             field="execution.action_collapse",
+        )
+        _require_exact_keys(
+            collapse,
+            {
+                "schema_version",
+                "decision_count",
+                "required_decision_count",
+                "evidence_sufficient",
+                "rolling_span_decisions",
+                "rolling_window_count",
+                "first_collapsed_span_start",
+                "maximum_dominant_action_share",
+                "maximum_dominant_across_lineage_share",
+                "collapsed",
+                "rolling_scan_sha256",
+            },
+            field="execution.action_collapse",
+        )
+        if (
+            collapse.get("schema_version")
+            != OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_VERSION
+            or collapse.get("required_decision_count")
+            != OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN
+            or collapse.get("rolling_span_decisions")
+            != OPEN_ECOLOGY_SELECTION_ACTION_COLLAPSE_SPAN
+        ):
+            raise OpenEcologySelectionError(
+                "execution action-collapse contract drifted"
+            )
+        expected_scan_sha256 = stable_payload_digest(
+            {
+                "decision_count": collapse.get("decision_count"),
+                "rolling_span_decisions": collapse.get("rolling_span_decisions"),
+                "rolling_window_count": collapse.get("rolling_window_count"),
+                "first_collapsed_span_start": collapse.get(
+                    "first_collapsed_span_start"
+                ),
+                "maximum_dominant_action_share": collapse.get(
+                    "maximum_dominant_action_share"
+                ),
+                "maximum_dominant_across_lineage_share": collapse.get(
+                    "maximum_dominant_across_lineage_share"
+                ),
+            }
+        )
+        if collapse.get("rolling_scan_sha256") != expected_scan_sha256:
+            raise OpenEcologySelectionError(
+                "execution action-collapse rolling scan digest changed"
+            )
+        terminal_bootstrap = _mapping(
+            execution.get("terminal_bootstrap"),
+            field="execution.terminal_bootstrap",
+        )
+        terminal_summary = _mapping(
+            execution.get("terminal"),
+            field="execution.terminal",
+        )
+        _validate_terminal_bootstrap_evidence(
+            terminal_bootstrap,
+            terminal_summary=terminal_summary,
+            ticks_per_execution=_positive_int(
+                execution.get("ticks_per_execution"),
+                field="execution ticks_per_execution",
+            ),
+        )
+        _validate_selection_execution_metrics(
+            _mapping(execution.get("metrics"), field="execution.metrics")
         )
         policy_decision_count = _nonnegative_int(
             execution.get("policy_decision_count"),
@@ -3846,6 +4971,8 @@ def _validate_environment_evidence(
             is not (execution.get("heuristic_action_source_count") == 0)
             or run_gates.get("no_global_action_collapse")
             is not (collapse.get("collapsed") is False)
+            or run_gates.get("action_collapse_evidence_sufficient")
+            is not (collapse.get("evidence_sufficient") is True)
         ):
             raise OpenEcologySelectionError(
                 "execution gates differ from their evidence"
@@ -3855,6 +4982,12 @@ def _validate_environment_evidence(
             cell_id=str(environment["cell_id"]),
             learner_index=int(environment["learner_index"]),
             artifact_sha256=str(environment["artifact_sha256"]),
+            initialized_baseline_model_state_sha256=str(
+                _mapping(
+                    environment.get("initialized_baseline"),
+                    field="environment.initialized_baseline",
+                ).get("model_state_sha256")
+            ),
             local_environment_index=int(environment["local_environment_index"]),
             environment_seed_index=int(environment["environment_seed_index"]),
             environment_seed=int(environment["environment_seed"]),
@@ -3896,6 +5029,15 @@ def _validate_environment_evidence(
         raise OpenEcologySelectionError(
             "environment stochastic aggregate does not match its tapes"
         )
+    _validate_initialized_baseline_environment(
+        _mapping(
+            environment.get("initialized_baseline"),
+            field="environment.initialized_baseline",
+        ),
+        trained_executions=executions[:OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT],
+        expected_tapes=expected_tapes[:-1],
+        environment=environment,
+    )
     causal = _mapping(
         environment.get("causal_genome"),
         field="environment.causal_genome",
@@ -3933,6 +5075,13 @@ def _validate_environment_evidence(
             is True
             for execution in executions
         ),
+        "action_collapse_evidence_sufficient": all(
+            _mapping(execution["gates"], field="execution.gates")[
+                "action_collapse_evidence_sufficient"
+            ]
+            is True
+            for execution in executions
+        ),
     }
     if (
         dict(_mapping(environment.get("gates"), field="environment.gates"))
@@ -3940,6 +5089,381 @@ def _validate_environment_evidence(
     ):
         raise OpenEcologySelectionError(
             "environment gates differ from execution evidence"
+        )
+
+
+def _validate_terminal_bootstrap_evidence(
+    terminal_bootstrap: Mapping[str, object],
+    *,
+    terminal_summary: Mapping[str, object],
+    ticks_per_execution: int,
+) -> None:
+    _require_exact_keys(
+        terminal_bootstrap,
+        {
+            "schema_version",
+            "tick",
+            "evaluation_semantics",
+            "boundary",
+            "action_sampled",
+            "action_committed",
+            "action_resolved",
+            "alive_agents_bootstrap_from_value",
+            "dead_agents_bootstrap_zero",
+            "alive_agent_count",
+            "target_eligible_agent_count",
+            "zero_decision_alive_agent_count",
+            "zero_decision_alive_agent_ids",
+            "values",
+            "state_invariance",
+            "exact_digest",
+        },
+        field="execution.terminal_bootstrap",
+    )
+    unsigned = dict(terminal_bootstrap)
+    supplied_digest = _sha256(
+        unsigned.pop("exact_digest", None),
+        field="terminal bootstrap exact digest",
+    )
+    if stable_payload_digest(unsigned) != supplied_digest:
+        raise OpenEcologySelectionError("terminal bootstrap exact digest changed")
+    alive_count = _nonnegative_int(
+        terminal_bootstrap.get("alive_agent_count"),
+        field="terminal bootstrap alive_agent_count",
+    )
+    target_count = _nonnegative_int(
+        terminal_bootstrap.get("target_eligible_agent_count"),
+        field="terminal bootstrap target_eligible_agent_count",
+    )
+    zero_count = _nonnegative_int(
+        terminal_bootstrap.get("zero_decision_alive_agent_count"),
+        field="terminal bootstrap zero_decision_alive_agent_count",
+    )
+    if (
+        terminal_bootstrap.get("schema_version")
+        != OPEN_ECOLOGY_SELECTION_TERMINAL_BOOTSTRAP_SCHEMA_VERSION
+        or terminal_bootstrap.get("tick") != ticks_per_execution
+        or terminal_bootstrap.get("evaluation_semantics")
+        != "exact_tick_start_ecology_action_free_value_evaluation_v2"
+        or any(
+            terminal_bootstrap.get(field) is not False
+            for field in ("action_sampled", "action_committed", "action_resolved")
+        )
+        or terminal_bootstrap.get("alive_agents_bootstrap_from_value") is not True
+        or terminal_bootstrap.get("dead_agents_bootstrap_zero") is not True
+        or alive_count != terminal_summary.get("alive_agents")
+        or target_count + zero_count != alive_count
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap evidence differs from the fixed horizon"
+        )
+    expected_boundary = (
+        "exact_policy_visible_tick_start_before_action_v1"
+        if alive_count
+        else "terminal_before_horizon_no_bootstrap_v1"
+    )
+    if terminal_bootstrap.get("boundary") != expected_boundary:
+        raise OpenEcologySelectionError(
+            "terminal bootstrap boundary differs from terminal state"
+        )
+    raw_rows = terminal_bootstrap.get("values")
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes)):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap values must be a canonical sequence"
+        )
+    agent_ids: list[int] = []
+    eligible_ids: list[int] = []
+    for raw_row in raw_rows:
+        row = _mapping(raw_row, field="terminal bootstrap value")
+        _require_exact_keys(
+            row,
+            {
+                "agent_id",
+                "policy_input_sha256",
+                "value_input_sha256",
+                "value",
+                "target_eligible",
+                "genome_sha256",
+                "exact_digest",
+            },
+            field="terminal bootstrap value",
+        )
+        unsigned_row = dict(row)
+        row_digest = _sha256(
+            unsigned_row.pop("exact_digest", None),
+            field="terminal bootstrap value exact digest",
+        )
+        if stable_payload_digest(unsigned_row) != row_digest:
+            raise OpenEcologySelectionError("terminal bootstrap value digest changed")
+        agent_id = _positive_int(
+            row.get("agent_id"),
+            field="terminal bootstrap agent_id",
+        )
+        _sha256(
+            row.get("policy_input_sha256"),
+            field="terminal bootstrap policy input",
+        )
+        _sha256(
+            row.get("value_input_sha256"),
+            field="terminal bootstrap value input",
+        )
+        _sha256(
+            row.get("genome_sha256"),
+            field="terminal bootstrap genome",
+        )
+        _finite(row.get("value"), field="terminal bootstrap value")
+        target_eligible = _exact_bool(
+            row.get("target_eligible"),
+            field="terminal bootstrap target_eligible",
+        )
+        agent_ids.append(agent_id)
+        if target_eligible:
+            eligible_ids.append(agent_id)
+    if agent_ids != sorted(set(agent_ids)) or len(agent_ids) != alive_count:
+        raise OpenEcologySelectionError("terminal bootstrap value row coverage changed")
+    zero_ids = [agent_id for agent_id in agent_ids if agent_id not in set(eligible_ids)]
+    if (
+        len(eligible_ids) != target_count
+        or len(zero_ids) != zero_count
+        or terminal_bootstrap.get("zero_decision_alive_agent_ids") != zero_ids
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap zero-decision newborn binding changed"
+        )
+    invariance = _mapping(
+        terminal_bootstrap.get("state_invariance"),
+        field="terminal bootstrap state_invariance",
+    )
+    _require_exact_keys(
+        invariance,
+        {
+            "schema_version",
+            "original_world_state_before_sha256",
+            "original_world_state_after_sha256",
+            "environment_rng_before_sha256",
+            "environment_rng_after_sha256",
+            "runtime_cost_counters_before_sha256",
+            "runtime_cost_counters_after_sha256",
+            "policy_state_before_sha256",
+            "policy_state_after_sha256",
+            "policy_sampling_rng_before_sha256",
+            "policy_sampling_rng_after_sha256",
+            "model_state_before_sha256",
+            "model_state_after_sha256",
+            "genome_population_before_sha256",
+            "genome_population_after_sha256",
+            "original_state_unchanged",
+            "exact_digest",
+        },
+        field="terminal bootstrap state_invariance",
+    )
+    unsigned_invariance = dict(invariance)
+    invariance_digest = _sha256(
+        unsigned_invariance.pop("exact_digest", None),
+        field="terminal bootstrap invariance exact digest",
+    )
+    if stable_payload_digest(unsigned_invariance) != invariance_digest:
+        raise OpenEcologySelectionError("terminal bootstrap invariance digest changed")
+    if (
+        invariance.get("schema_version")
+        != "mind_v3_open_ecology_tick_t_bootstrap_state_invariance_v1"
+        or invariance.get("original_state_unchanged") is not True
+    ):
+        raise OpenEcologySelectionError(
+            "terminal bootstrap invariance contract changed"
+        )
+    invariant_pairs = (
+        ("original_world_state_before_sha256", "original_world_state_after_sha256"),
+        ("environment_rng_before_sha256", "environment_rng_after_sha256"),
+        (
+            "runtime_cost_counters_before_sha256",
+            "runtime_cost_counters_after_sha256",
+        ),
+        ("policy_state_before_sha256", "policy_state_after_sha256"),
+        (
+            "policy_sampling_rng_before_sha256",
+            "policy_sampling_rng_after_sha256",
+        ),
+        ("model_state_before_sha256", "model_state_after_sha256"),
+        (
+            "genome_population_before_sha256",
+            "genome_population_after_sha256",
+        ),
+    )
+    for before_field, after_field in invariant_pairs:
+        before = invariance.get(before_field)
+        after = invariance.get(after_field)
+        if before != after:
+            raise OpenEcologySelectionError(
+                "terminal bootstrap mutated authoritative state"
+            )
+        if before is not None:
+            _sha256(before, field=f"terminal bootstrap {before_field}")
+
+
+def _validate_selection_execution_metrics(
+    metrics: Mapping[str, object],
+) -> None:
+    _require_exact_keys(
+        metrics,
+        {
+            "normalized_return",
+            "heldout_value_rmse",
+            "advantage_variance",
+            "target_contract",
+        },
+        field="execution.metrics",
+    )
+    _finite(metrics.get("normalized_return"), field="metrics.normalized_return")
+    _finite(metrics.get("heldout_value_rmse"), field="metrics.heldout_value_rmse")
+    _finite(metrics.get("advantage_variance"), field="metrics.advantage_variance")
+    if metrics.get("target_contract") != OPEN_ECOLOGY_SELECTION_TARGET_CONTRACT_VERSION:
+        raise OpenEcologySelectionError("selection metric target contract changed")
+
+
+def _validate_initialized_baseline_environment(
+    baseline: Mapping[str, object],
+    *,
+    trained_executions: Sequence[Mapping[str, object]],
+    expected_tapes: Sequence[str],
+    environment: Mapping[str, object],
+) -> None:
+    _require_exact_keys(
+        baseline,
+        {
+            "schema_version",
+            "model_state_sha256",
+            "execution_count",
+            "stochastic_tape_identities",
+            "executions",
+            "stochastic_tape_aggregate",
+            "paired_normalized_return",
+            "exact_digest",
+        },
+        field="environment initialized baseline",
+    )
+    unsigned = dict(baseline)
+    supplied = _sha256(
+        unsigned.pop("exact_digest", None),
+        field="environment initialized baseline exact digest",
+    )
+    if (
+        stable_payload_digest(unsigned) != supplied
+        or baseline.get("schema_version")
+        != "mind_v3_open_ecology_initialized_baseline_environment_v2"
+        or baseline.get("execution_count")
+        != OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT
+        or baseline.get("stochastic_tape_identities") != list(expected_tapes)
+    ):
+        raise OpenEcologySelectionError(
+            "environment initialized baseline contract drifted"
+        )
+    _sha256(
+        baseline.get("model_state_sha256"),
+        field="environment initialized baseline model state",
+    )
+    raw_executions = baseline.get("executions")
+    if not isinstance(raw_executions, Sequence) or isinstance(
+        raw_executions,
+        (str, bytes),
+    ):
+        raise OpenEcologySelectionError(
+            "environment initialized baseline executions must be a sequence"
+        )
+    baseline_executions = tuple(
+        _mapping(value, field="initialized baseline execution")
+        for value in raw_executions
+    )
+    if len(baseline_executions) != OPEN_ECOLOGY_SELECTION_STOCHASTIC_TAPE_COUNT:
+        raise OpenEcologySelectionError(
+            "environment initialized baseline execution count drifted"
+        )
+    for trained, initialized, tape in zip(
+        trained_executions,
+        baseline_executions,
+        expected_tapes,
+        strict=True,
+    ):
+        if (
+            initialized.get("schema_version")
+            != OPEN_ECOLOGY_SELECTION_RUN_SCHEMA_VERSION
+            or initialized.get("phase") != environment.get("phase")
+            or initialized.get("environment_seed_index")
+            != environment.get("environment_seed_index")
+            or initialized.get("environment_seed")
+            != environment.get("environment_seed")
+            or initialized.get("tape_identity") != tape
+            or initialized.get("policy_sampling_seed")
+            != trained.get("policy_sampling_seed")
+            or initialized.get("action_selection") != PUBLIC_RECURRENT_SAMPLED_SELECTION
+        ):
+            raise OpenEcologySelectionError(
+                "initialized baseline execution is not paired to its trained tape"
+            )
+        initialized_unsigned = dict(initialized)
+        initialized_digest = _sha256(
+            initialized_unsigned.pop("exact_digest", None),
+            field="initialized baseline execution exact digest",
+        )
+        if stable_payload_digest(initialized_unsigned) != initialized_digest:
+            raise OpenEcologySelectionError(
+                "initialized baseline execution exact digest changed"
+            )
+        replay = _mapping(
+            initialized.get("exact_replay"),
+            field="initialized baseline exact replay",
+        )
+        if replay != {
+            "verified": False,
+            "independent_artifact_reload": False,
+            "replay_full_behavior_sha256": None,
+            "replay_run_evidence_sha256": None,
+        }:
+            raise OpenEcologySelectionError(
+                "initialized baseline duplicated replay or argmax work"
+            )
+    expected_aggregate = _aggregate_stochastic_runs(baseline_executions)
+    if (
+        dict(
+            _mapping(
+                baseline.get("stochastic_tape_aggregate"),
+                field="initialized baseline stochastic aggregate",
+            )
+        )
+        != expected_aggregate
+    ):
+        raise OpenEcologySelectionError(
+            "initialized baseline stochastic aggregate changed"
+        )
+    trained_returns = [
+        _finite(
+            _mapping(row.get("metrics"), field="trained metrics").get(
+                "normalized_return"
+            ),
+            field="trained normalized return",
+        )
+        for row in trained_executions
+    ]
+    baseline_returns = [
+        _finite(
+            _mapping(row.get("metrics"), field="baseline metrics").get(
+                "normalized_return"
+            ),
+            field="baseline normalized return",
+        )
+        for row in baseline_executions
+    ]
+    if dict(
+        _mapping(
+            baseline.get("paired_normalized_return"),
+            field="initialized baseline paired return",
+        )
+    ) != _paired_normalized_return_evidence(
+        trained_normalized_returns=trained_returns,
+        baseline_normalized_returns=baseline_returns,
+    ):
+        raise OpenEcologySelectionError(
+            "initialized baseline paired return evidence changed"
         )
 
 

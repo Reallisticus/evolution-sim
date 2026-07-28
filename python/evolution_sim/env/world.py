@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import copy
 from math import cos, pi, sin
 from random import Random
 
@@ -8,7 +9,7 @@ from evolution_sim.config import WorldConfig
 from evolution_sim.env.contracts import VIEWER_AGENT_ENCODING
 from evolution_sim.env.events import Event, EventType
 from evolution_sim.env.fields import EnvironmentFieldMaps, generate_environment_fields
-from evolution_sim.env.runtime.actions import DecisionContext, build_decision_context
+from evolution_sim.env.runtime.actions import DecisionContext
 import evolution_sim.env.runtime.action_space as runtime_action_space
 import evolution_sim.env.runtime.actions as runtime_actions
 import evolution_sim.env.runtime.feeding as runtime_feeding
@@ -27,7 +28,10 @@ from evolution_sim.env.runtime.biotic import (
     diffuse_biotic_field as diffuse_runtime_biotic_field,
     invalidate_biotic_state as invalidate_runtime_biotic_state,
 )
-from evolution_sim.env.runtime.bootstrap import build_static_topology, terrain_neighbor_ratio
+from evolution_sim.env.runtime.bootstrap import (
+    build_static_topology,
+    terrain_neighbor_ratio,
+)
 from evolution_sim.env.runtime.collectors import CollectorContext, collector_for_mode
 from evolution_sim.env.runtime.costs import (
     empty_runtime_cost_counters,
@@ -45,7 +49,6 @@ from evolution_sim.env.runtime.reporting import (
     build_replay_analytics,
     build_species_metrics as build_shared_species_metrics,
     empty_carcass_totals,
-    empty_combat_totals,
     empty_fresh_kill_totals,
     empty_hydrology_exposure_counts,
     empty_terrain_occupancy,
@@ -242,8 +245,7 @@ class SimulationWorld:
             if role != "none"
         }
         self.run_reproduction_blocked_counts_by_meat_mode = {
-            mode: self._empty_reproduction_blocked_counts()
-            for mode in MEAT_MODE_CODES
+            mode: self._empty_reproduction_blocked_counts() for mode in MEAT_MODE_CODES
         }
         self.run_reproduction_mate_search_counts = (
             runtime_reproduction.empty_reproduction_mate_search_counts()
@@ -266,7 +268,9 @@ class SimulationWorld:
         self.cached_climate_tick: int | None = None
         self.cached_climate_state: dict[str, object] | None = None
         self.cached_effective_fields_tick: int | None = None
-        self.cached_effective_fields_grid: list[list[tuple[float, float, float]]] | None = None
+        self.cached_effective_fields_grid: (
+            list[list[tuple[float, float, float]]] | None
+        ) = None
         self.cached_habitat_tick: int | None = None
         self.cached_habitat_grid: list[list[str]] | None = None
         self.cached_habitat_counts: dict[str, int] | None = None
@@ -320,16 +324,19 @@ class SimulationWorld:
         previous_retain_trajectory_records = self.retain_trajectory_records
         previous_trajectory_sink = self.trajectory_sink
         should_record_trajectory = (
-            mode == RunMode.FULL_REPLAY if record_trajectory is None else record_trajectory
+            mode == RunMode.FULL_REPLAY
+            if record_trajectory is None
+            else record_trajectory
         )
         if trajectory_sink is not None:
             should_record_trajectory = True
         self.record_events = mode == RunMode.FULL_REPLAY
-        self.record_tick_details = mode == RunMode.FULL_REPLAY or should_record_trajectory
+        self.record_tick_details = (
+            mode == RunMode.FULL_REPLAY or should_record_trajectory
+        )
         self.record_trajectory = should_record_trajectory
-        self.retain_trajectory_records = (
-            mode == RunMode.FULL_REPLAY
-            or (should_record_trajectory and trajectory_sink is None)
+        self.retain_trajectory_records = mode == RunMode.FULL_REPLAY or (
+            should_record_trajectory and trajectory_sink is None
         )
         self.trajectory_sink = trajectory_sink
         collector = collector_for_mode(mode)
@@ -394,6 +401,78 @@ class SimulationWorld:
             tick_context=self._tick_phase_context(),
         )
 
+    def prepare_policy_visible_tick_start(
+        self,
+        *,
+        tick: int,
+    ) -> runtime_ticks.PreparedTickStart:
+        """Advance only the exact tick-start ecology needed to observe s_T.
+
+        This one-shot boundary performs no action selection or resolution.
+        Runtime cost counters and record-retention flags are instrumentation,
+        not policy-visible state, so they are restored after observations are
+        materialized.
+        """
+
+        if not self._has_run:
+            raise RuntimeError(
+                "policy-visible bootstrap requires a completed scored world run"
+            )
+        if isinstance(tick, bool) or not isinstance(tick, int):
+            raise TypeError("policy-visible bootstrap tick must be an integer")
+        if tick != self.tick + 1:
+            raise RuntimeError(
+                "policy-visible bootstrap tick must immediately follow the "
+                f"completed world tick: completed={self.tick} requested={tick}"
+            )
+        previous_runtime_cost_counters = self.runtime_cost_counters.copy()
+        previous_record_events = self.record_events
+        previous_record_tick_details = self.record_tick_details
+        previous_record_trajectory = self.record_trajectory
+        previous_retain_trajectory_records = self.retain_trajectory_records
+        previous_trajectory_sink = self.trajectory_sink
+        self.record_events = False
+        self.record_tick_details = False
+        self.record_trajectory = False
+        self.retain_trajectory_records = False
+        self.trajectory_sink = None
+        self.tick = tick
+        try:
+            return runtime_ticks.prepare_tick_start(
+                self,
+                meat_mode_codes=MEAT_MODE_CODES,
+                tick_context=self._tick_phase_context(),
+                stage_policy=False,
+            )
+        finally:
+            self.runtime_cost_counters = previous_runtime_cost_counters
+            self.record_events = previous_record_events
+            self.record_tick_details = previous_record_tick_details
+            self.record_trajectory = previous_record_trajectory
+            self.retain_trajectory_records = previous_retain_trajectory_records
+            self.trajectory_sink = previous_trajectory_sink
+
+    def prepare_policy_visible_tick_start_on_clone(
+        self,
+        *,
+        tick: int,
+    ) -> runtime_ticks.PreparedTickStart:
+        """Materialize the action-free boundary without mutating this world."""
+
+        clone_memo: dict[int, object] = {id(self.policy): self.policy}
+        for field_name in (
+            "events",
+            "viewer_frames",
+            "trajectory_records",
+            "policy_decision_diagnostics_records",
+            "policy_update_trace_records",
+            "policy_update_trace_records_by_trajectory_record",
+        ):
+            retained_evidence = getattr(self, field_name)
+            clone_memo[id(retained_evidence)] = retained_evidence
+        boundary_world = copy.deepcopy(self, memo=clone_memo)
+        return boundary_world.prepare_policy_visible_tick_start(tick=tick)
+
     def _collector_context(self) -> CollectorContext:
         return CollectorContext(
             config=self.config,
@@ -449,8 +528,12 @@ class SimulationWorld:
                 fertility = self._base_tile_fertility(x, y, terrain)
                 moisture = self._base_tile_moisture(x, y, terrain)
                 heat = self._base_tile_heat(x, y, terrain)
-                vegetation = self._base_tile_vegetation(terrain, fertility, moisture, heat)
-                shelter = self._base_tile_shelter(x, y, terrain, fertility, moisture, heat, vegetation)
+                vegetation = self._base_tile_vegetation(
+                    terrain, fertility, moisture, heat
+                )
+                shelter = self._base_tile_shelter(
+                    x, y, terrain, fertility, moisture, heat, vegetation
+                )
                 recovery_debt = self._base_tile_recovery_debt(
                     terrain,
                     fertility,
@@ -510,7 +593,8 @@ class SimulationWorld:
 
     def _build_terrain_map(self) -> list[list[str]]:
         terrain_map = [
-            ["plain" for _ in range(self.config.width)] for _ in range(self.config.height)
+            ["plain" for _ in range(self.config.width)]
+            for _ in range(self.config.height)
         ]
         total_tiles = self.config.width * self.config.height
         target_counts = {
@@ -586,7 +670,9 @@ class SimulationWorld:
                     continue
                 candidates.append(
                     (
-                        self._wetland_terrain_score(x, y, terrain_map, water_distance_map),
+                        self._wetland_terrain_score(
+                            x, y, terrain_map, water_distance_map
+                        ),
                         x,
                         y,
                     )
@@ -596,13 +682,20 @@ class SimulationWorld:
         for _, x, y in candidates[:target_count]:
             terrain_map[y][x] = "wetland"
 
-    def _water_terrain_score(self, x: int, y: int, terrain_map: list[list[str]]) -> float:
+    def _water_terrain_score(
+        self, x: int, y: int, terrain_map: list[list[str]]
+    ) -> float:
         moisture = self.environment_fields.moisture[y][x]
         fertility = self.environment_fields.fertility[y][x]
         heat = self.environment_fields.heat[y][x]
         edge_distance = min(x, y, self.config.width - 1 - x, self.config.height - 1 - y)
         interior_bias = min(edge_distance, 3) / 3
-        return moisture * 0.7 + (1.0 - fertility) * 0.16 + (1.0 - heat) * 0.06 + interior_bias * 0.08
+        return (
+            moisture * 0.7
+            + (1.0 - fertility) * 0.16
+            + (1.0 - heat) * 0.06
+            + interior_bias * 0.08
+        )
 
     def _wetland_terrain_score(
         self,
@@ -631,19 +724,33 @@ class SimulationWorld:
             + shoreline_bias
         )
 
-    def _forest_terrain_score(self, x: int, y: int, terrain_map: list[list[str]]) -> float:
+    def _forest_terrain_score(
+        self, x: int, y: int, terrain_map: list[list[str]]
+    ) -> float:
         moisture = self.environment_fields.moisture[y][x]
         fertility = self.environment_fields.fertility[y][x]
         heat = self.environment_fields.heat[y][x]
         water_proximity = self._terrain_water_proximity(x, y, terrain_map)
-        return fertility * 0.5 + moisture * 0.21 + (1.0 - heat) * 0.21 + water_proximity * 0.08
+        return (
+            fertility * 0.5
+            + moisture * 0.21
+            + (1.0 - heat) * 0.21
+            + water_proximity * 0.08
+        )
 
-    def _rocky_terrain_score(self, x: int, y: int, terrain_map: list[list[str]]) -> float:
+    def _rocky_terrain_score(
+        self, x: int, y: int, terrain_map: list[list[str]]
+    ) -> float:
         moisture = self.environment_fields.moisture[y][x]
         fertility = self.environment_fields.fertility[y][x]
         heat = self.environment_fields.heat[y][x]
         water_proximity = self._terrain_water_proximity(x, y, terrain_map)
-        return heat * 0.42 + (1.0 - moisture) * 0.26 + (1.0 - fertility) * 0.36 - water_proximity * 0.08
+        return (
+            heat * 0.42
+            + (1.0 - moisture) * 0.26
+            + (1.0 - fertility) * 0.36
+            - water_proximity * 0.08
+        )
 
     def _terrain_water_proximity(
         self,
@@ -731,15 +838,19 @@ class SimulationWorld:
             max(
                 18,
                 min(
-                    int(len(shoreline_tiles) * self.config.environment.shoreline_reserve_ratio),
-                    max(0, len(shoreline_tiles) - max(int(wetland_target_count * 0.45), 12)),
+                    int(
+                        len(shoreline_tiles)
+                        * self.config.environment.shoreline_reserve_ratio
+                    ),
+                    max(
+                        0,
+                        len(shoreline_tiles)
+                        - max(int(wetland_target_count * 0.45), 12),
+                    ),
                 ),
             ),
         )
-        reserved = {
-            (x, y)
-            for _, x, y in shoreline_tiles[:reserve_target]
-        }
+        reserved = {(x, y) for _, x, y in shoreline_tiles[:reserve_target]}
         return reserved
 
     def _shoreline_reservation_score(self, x: int, y: int) -> float:
@@ -922,9 +1033,7 @@ class SimulationWorld:
                 child_agent_id=child_agent_id,
                 primary_parent_id=primary_parent.agent_id,
                 secondary_parent_id=(
-                    secondary_parent.agent_id
-                    if secondary_parent is not None
-                    else None
+                    secondary_parent.agent_id if secondary_parent is not None else None
                 ),
             )
             if isinstance(metadata, dict):
@@ -1013,7 +1122,9 @@ class SimulationWorld:
         return runtime_feeding.empty_diet_totals()
 
     @staticmethod
-    def _empty_grouped_diet_totals(groups: list[str] | dict[str, int]) -> dict[str, dict[str, float]]:
+    def _empty_grouped_diet_totals(
+        groups: list[str] | dict[str, int],
+    ) -> dict[str, dict[str, float]]:
         return runtime_feeding.empty_grouped_diet_totals(groups)
 
     @staticmethod
@@ -1094,7 +1205,9 @@ class SimulationWorld:
     def _species_id_for_agent(self, agent_id: int | None) -> int | None:
         if agent_id is None:
             return None
-        return self.current_species_map.get(agent_id, self.agent_last_species_map.get(agent_id))
+        return self.current_species_map.get(
+            agent_id, self.agent_last_species_map.get(agent_id)
+        )
 
     @staticmethod
     def _prune_fresh_kill_deposits(tile: Tile) -> None:
@@ -1120,7 +1233,9 @@ class SimulationWorld:
         )
 
     @staticmethod
-    def _merge_fresh_kill_deposit_group(deposits: list[FreshKillDeposit]) -> FreshKillDeposit:
+    def _merge_fresh_kill_deposit_group(
+        deposits: list[FreshKillDeposit],
+    ) -> FreshKillDeposit:
         return runtime_resources.merge_fresh_kill_deposit_group(deposits)
 
     def _carcass_freshness_bucket(self, freshness: float) -> int:
@@ -1159,7 +1274,9 @@ class SimulationWorld:
         return runtime_resources.fresh_kill_source_breakdown(deposits)
 
     @staticmethod
-    def _resolved_source_species(source_breakdown: list[dict[str, object]]) -> int | None:
+    def _resolved_source_species(
+        source_breakdown: list[dict[str, object]],
+    ) -> int | None:
         return runtime_resources.resolved_source_species(source_breakdown)
 
     def _carcass_tile_state(self, tile: Tile) -> dict[str, object]:
@@ -1171,7 +1288,9 @@ class SimulationWorld:
     def _carcass_tile_summary_for_position(self, x: int, y: int) -> dict[str, object]:
         return runtime_resources.carcass_tile_summary_for_position(self, x, y)
 
-    def _fresh_kill_tile_summary_for_position(self, x: int, y: int) -> dict[str, object]:
+    def _fresh_kill_tile_summary_for_position(
+        self, x: int, y: int
+    ) -> dict[str, object]:
         return runtime_resources.fresh_kill_tile_summary_for_position(self, x, y)
 
     def _carcass_patch_summaries(self) -> list[dict[str, object]]:
@@ -1262,7 +1381,9 @@ class SimulationWorld:
             freshness_merge_bucket=self.config.carcasses.freshness_merge_bucket,
         )
 
-    def _consume_carcass_from_tile(self, tile: Tile, requested_amount: float) -> dict[str, object]:
+    def _consume_carcass_from_tile(
+        self, tile: Tile, requested_amount: float
+    ) -> dict[str, object]:
         return runtime_resources.consume_carcass_from_tile(
             tile,
             requested_amount,
@@ -1292,7 +1413,10 @@ class SimulationWorld:
         }
 
     def _climate_state(self) -> dict[str, object]:
-        if self.cached_climate_tick == self.tick and self.cached_climate_state is not None:
+        if (
+            self.cached_climate_tick == self.tick
+            and self.cached_climate_state is not None
+        ):
             return self.cached_climate_state
 
         season = self._season_state()
@@ -1300,7 +1424,9 @@ class SimulationWorld:
         drift_period = max(environment.drift_period_ticks, 1)
         disturbance_period = max(environment.disturbance_period_ticks, 1)
 
-        moisture_front_x = ((self.tick / drift_period) + self.climate_phase["moisture_front"]) % 1.0
+        moisture_front_x = (
+            (self.tick / drift_period) + self.climate_phase["moisture_front"]
+        ) % 1.0
         heat_front_y = (
             (self.tick / (drift_period * 1.18)) + self.climate_phase["heat_front"]
         ) % 1.0
@@ -1321,7 +1447,10 @@ class SimulationWorld:
                 * sin(
                     2
                     * pi
-                    * (disturbance_progress * 0.61 + self.climate_phase["disturbance_strength"])
+                    * (
+                        disturbance_progress * 0.61
+                        + self.climate_phase["disturbance_strength"]
+                    )
                 )
             )
         )
@@ -1353,7 +1482,11 @@ class SimulationWorld:
         return climate_state
 
     def _habitat_state_grid(self) -> tuple[list[list[str]], dict[str, int]]:
-        if self.cached_habitat_tick == self.tick and self.cached_habitat_grid is not None and self.cached_habitat_counts is not None:
+        if (
+            self.cached_habitat_tick == self.tick
+            and self.cached_habitat_grid is not None
+            and self.cached_habitat_counts is not None
+        ):
             return self.cached_habitat_grid, self.cached_habitat_counts
 
         climate_state = self._climate_state()
@@ -1373,12 +1506,12 @@ class SimulationWorld:
                     ):
                         state = "flooded"
                     elif (
-                        tile.terrain != "wetland"
-                        and moisture <= 0.24
-                        and heat >= 0.62
+                        tile.terrain != "wetland" and moisture <= 0.24 and heat >= 0.62
                     ):
                         state = "parched"
-                    elif fertility >= 0.72 and 0.42 <= moisture <= 0.86 and heat <= 0.58:
+                    elif (
+                        fertility >= 0.72 and 0.42 <= moisture <= 0.86 and heat <= 0.58
+                    ):
                         state = "bloom"
                     else:
                         state = "stable"
@@ -1397,7 +1530,9 @@ class SimulationWorld:
 
     def _ecology_state_for_tile(self, tile: Tile) -> str:
         if tile.terrain == "water":
-            raise ValueError("Water tiles do not belong to land ecology state accounting.")
+            raise ValueError(
+                "Water tiles do not belong to land ecology state accounting."
+            )
         if tile.vegetation <= 0.26 and tile.recovery_debt >= 0.58:
             return "depleted"
         if tile.vegetation >= 0.72 and tile.recovery_debt <= 0.24:
@@ -1408,7 +1543,9 @@ class SimulationWorld:
 
     def _ecology_state_at(self, x: int, y: int) -> str:
         tile = self.grid[y][x]
-        return "stable" if tile.terrain == "water" else self._ecology_state_for_tile(tile)
+        return (
+            "stable" if tile.terrain == "water" else self._ecology_state_for_tile(tile)
+        )
 
     def _refuge_score(self, x: int, y: int) -> float:
         tile = self.grid[y][x]
@@ -1418,7 +1555,9 @@ class SimulationWorld:
         if habitat_state in {"parched", "flooded"}:
             return 0.0
         ecology_state = self._ecology_state_at(x, y)
-        forest_density = self._terrain_neighbor_ratio(x, y, terrain_filter={"forest"}, radius=1)
+        forest_density = self._terrain_neighbor_ratio(
+            x, y, terrain_filter={"forest"}, radius=1
+        )
         _, moisture, heat = self._effective_tile_fields(x, y)
         if (
             tile.shelter < 0.56
@@ -1449,7 +1588,10 @@ class SimulationWorld:
         return "canopy_refuge" if self._refuge_score(x, y) >= 0.82 else "none"
 
     def _is_flooded_tile(self, x: int, y: int) -> bool:
-        return self.grid[y][x].terrain != "water" and self._habitat_state_at(x, y) == "flooded"
+        return (
+            self.grid[y][x].terrain != "water"
+            and self._habitat_state_at(x, y) == "flooded"
+        )
 
     def _hydrology_support_code(self, x: int, y: int) -> int:
         tile = self.grid[y][x]
@@ -1479,7 +1621,9 @@ class SimulationWorld:
 
     def _hydrology_snapshot(
         self,
-    ) -> tuple[list[list[int]], list[list[int]], dict[str, int], dict[str, int], dict[str, int]]:
+    ) -> tuple[
+        list[list[int]], list[list[int]], dict[str, int], dict[str, int], dict[str, int]
+    ]:
         primary_codes: list[list[int]] = []
         support_codes: list[list[int]] = []
         primary_counts = {reason: 0 for reason in HYDROLOGY_REASON_CODES}
@@ -1512,7 +1656,13 @@ class SimulationWorld:
                     support_counts["flooded_support"] += 1
             primary_codes.append(primary_row)
             support_codes.append(support_row)
-        return primary_codes, support_codes, primary_counts, support_counts, primary_stats
+        return (
+            primary_codes,
+            support_codes,
+            primary_counts,
+            support_counts,
+            primary_stats,
+        )
 
     def _refuge_snapshot(
         self,
@@ -1543,12 +1693,16 @@ class SimulationWorld:
             score_codes,
             counts,
             {
-                "avg_refuge_score_forest_tiles": round(sum(scores) / max(len(scores), 1), 4),
+                "avg_refuge_score_forest_tiles": round(
+                    sum(scores) / max(len(scores), 1), 4
+                ),
                 "forest_tiles_evaluated": len(scores),
             },
         )
 
-    def _ecology_snapshot(self) -> tuple[list[list[int]], dict[str, int], dict[str, float]]:
+    def _ecology_snapshot(
+        self,
+    ) -> tuple[list[list[int]], dict[str, int], dict[str, float]]:
         codes: list[list[int]] = []
         counts = {state: 0 for state in ECOLOGY_STATE_CODES}
         vegetation_values: list[float] = []
@@ -1569,8 +1723,12 @@ class SimulationWorld:
             codes,
             counts,
             {
-                "avg_vegetation": round(sum(vegetation_values) / max(len(vegetation_values), 1), 4),
-                "avg_recovery_debt": round(sum(recovery_values) / max(len(recovery_values), 1), 4),
+                "avg_vegetation": round(
+                    sum(vegetation_values) / max(len(vegetation_values), 1), 4
+                ),
+                "avg_recovery_debt": round(
+                    sum(recovery_values) / max(len(recovery_values), 1), 4
+                ),
             },
         )
 
@@ -1618,7 +1776,9 @@ class SimulationWorld:
             return "none", 0.0
         return hazard_type, round(hazard_level, 4)
 
-    def _hazard_snapshot(self) -> tuple[list[list[int]], list[list[int]], dict[str, int], dict[str, float]]:
+    def _hazard_snapshot(
+        self,
+    ) -> tuple[list[list[int]], list[list[int]], dict[str, int], dict[str, float]]:
         type_codes: list[list[int]] = []
         level_codes: list[list[int]] = []
         counts = {hazard_type: 0 for hazard_type in HAZARD_TYPE_CODES}
@@ -1644,11 +1804,15 @@ class SimulationWorld:
             counts,
             {
                 "hazardous_tiles": counts["exposure"] + counts["instability"],
-                "avg_hazard_level": round(sum(hazard_values) / max(len(hazard_values), 1), 4),
+                "avg_hazard_level": round(
+                    sum(hazard_values) / max(len(hazard_values), 1), 4
+                ),
             },
         )
 
-    def _carcass_snapshot(self) -> tuple[list[list[int]], list[list[int]], dict[str, float]]:
+    def _carcass_snapshot(
+        self,
+    ) -> tuple[list[list[int]], list[list[int]], dict[str, float]]:
         return runtime_resources.carcass_snapshot(self)
 
     def _fresh_kill_snapshot(self) -> tuple[list[list[int]], dict[str, float]]:
@@ -1758,7 +1922,9 @@ class SimulationWorld:
             + agent.recent_carcass_energy
         )
 
-    def _matched_diet_ratio(self, agent: Agent, profile: TrophicProfile | None = None) -> float:
+    def _matched_diet_ratio(
+        self, agent: Agent, profile: TrophicProfile | None = None
+    ) -> float:
         profile = profile or self._trophic_profile(agent)
         if profile.meat_mode in {"hunter", "scavenger"}:
             # Low-yield plant fallback keeps animal specialists alive, but it should
@@ -1778,13 +1944,11 @@ class SimulationWorld:
             matched_recent = agent.recent_plant_energy
         elif profile.meat_mode == "hunter":
             matched_recent = (
-                agent.recent_fresh_kill_energy
-                + agent.recent_carcass_energy * 0.45
+                agent.recent_fresh_kill_energy + agent.recent_carcass_energy * 0.45
             )
         elif profile.meat_mode == "scavenger":
             matched_recent = (
-                agent.recent_carcass_energy
-                + agent.recent_fresh_kill_energy * 0.55
+                agent.recent_carcass_energy + agent.recent_fresh_kill_energy * 0.55
             )
         else:
             matched_recent = (
@@ -1802,7 +1966,9 @@ class SimulationWorld:
         return self.config.diet_matching.omnivore_threshold
 
     @staticmethod
-    def _record_recent_diet(agent: Agent, food_source: str, gained_energy: float) -> None:
+    def _record_recent_diet(
+        agent: Agent, food_source: str, gained_energy: float
+    ) -> None:
         runtime_feeding.record_recent_diet(agent, food_source, gained_energy)
 
     def _compute_trophic_profile_for_genome(self, genome: Genome) -> TrophicProfile:
@@ -1890,10 +2056,15 @@ class SimulationWorld:
             plant_drive = focused_plant_drive
             animal_drive = focused_animal_drive
 
-        scavenger_drive = animal_drive * (0.22 + scavenger_trait * 0.78) * scavenger_focus
+        scavenger_drive = (
+            animal_drive * (0.22 + scavenger_trait * 0.78) * scavenger_focus
+        )
         hunter_drive = animal_drive * (0.18 + hunter_trait * 0.82) * hunter_focus
 
-        if role == "herbivore" or animal_share < self.config.trophic.animal_channel_threshold:
+        if (
+            role == "herbivore"
+            or animal_share < self.config.trophic.animal_channel_threshold
+        ):
             meat_mode = "none"
         elif scavenger_focus >= 0.66 and scavenger_drive >= hunter_drive * 1.08:
             meat_mode = "scavenger"
@@ -2000,7 +2171,10 @@ class SimulationWorld:
         return self._energy_headroom(agent) >= 0.015
 
     def _animal_intake_useful(self, agent: Agent) -> bool:
-        return self._energy_headroom(agent) >= 0.015 or self._health_headroom(agent) >= 0.03
+        return (
+            self._energy_headroom(agent) >= 0.015
+            or self._health_headroom(agent) >= 0.03
+        )
 
     def _carcass_intake_useful(self, agent: Agent) -> bool:
         if self._animal_intake_useful(agent):
@@ -2027,7 +2201,11 @@ class SimulationWorld:
     ) -> float:
         if tile.terrain == "water":
             return 0.0
-        amount = min(tile.food, self.config.resources.eat_amount) if consumed is None else consumed
+        amount = (
+            min(tile.food, self.config.resources.eat_amount)
+            if consumed is None
+            else consumed
+        )
         if amount <= 0:
             return 0.0
         tile_x = agent.x if x is None else x
@@ -2467,7 +2645,10 @@ class SimulationWorld:
         if tile.occupant_id is not None:
             blockers.add("occupant")
         hazard_type, hazard_level = self._hazard_at(x, y)
-        if hazard_type != "none" and hazard_level >= self.config.hazards.min_hazard_level:
+        if (
+            hazard_type != "none"
+            and hazard_level >= self.config.hazards.min_hazard_level
+        ):
             blockers.add("hazard")
         if not bool(action_mask.get(action, False)) and not blockers:
             blockers.add("movement_mask")
@@ -2633,13 +2814,21 @@ class SimulationWorld:
     ) -> float:
         if profile.role == "herbivore":
             biotic_state = biotic_state or self._current_biotic_state()
-            return -biotic_state.predator_risk[y][x] * self.config.biotic_fields.predator_risk_weight
+            return (
+                -biotic_state.predator_risk[y][x]
+                * self.config.biotic_fields.predator_risk_weight
+            )
 
         biotic_state = biotic_state or self._current_biotic_state()
-        prey_score = biotic_state.prey_biomass[y][x] * self.config.biotic_fields.prey_weight
-        carrion_score = biotic_state.carrion[y][x] * self.config.biotic_fields.carrion_weight
+        prey_score = (
+            biotic_state.prey_biomass[y][x] * self.config.biotic_fields.prey_weight
+        )
+        carrion_score = (
+            biotic_state.carrion[y][x] * self.config.biotic_fields.carrion_weight
+        )
         predator_penalty = (
-            biotic_state.predator_risk[y][x] * self.config.biotic_fields.predator_risk_weight
+            biotic_state.predator_risk[y][x]
+            * self.config.biotic_fields.predator_risk_weight
         )
         vulnerability_bonus = (
             self._local_prey_vulnerability_score(agent, x, y)
@@ -2649,10 +2838,18 @@ class SimulationWorld:
             return prey_score + vulnerability_bonus - predator_penalty
         if profile.meat_mode == "scavenger":
             return carrion_score - predator_penalty
-        hunter_component = (prey_score + vulnerability_bonus) * profile.animal_share * profile.hunter_share
-        scavenger_component = carrion_score * profile.animal_share * profile.scavenger_share
-        return hunter_component + scavenger_component - predator_penalty * (
-            0.7 + profile.plant_share * 0.3
+        hunter_component = (
+            (prey_score + vulnerability_bonus)
+            * profile.animal_share
+            * profile.hunter_share
+        )
+        scavenger_component = (
+            carrion_score * profile.animal_share * profile.scavenger_share
+        )
+        return (
+            hunter_component
+            + scavenger_component
+            - predator_penalty * (0.7 + profile.plant_share * 0.3)
         )
 
     @staticmethod
@@ -2741,13 +2938,33 @@ class SimulationWorld:
             environment.disturbance_radius,
         )
         if climate_state["disturbance_type"] == "storm":
-            moisture += float(climate_state["disturbance_strength"]) * disturbance_influence
-            heat -= float(climate_state["disturbance_strength"]) * 0.62 * disturbance_influence
-            fertility += float(climate_state["disturbance_strength"]) * 0.16 * disturbance_influence
+            moisture += (
+                float(climate_state["disturbance_strength"]) * disturbance_influence
+            )
+            heat -= (
+                float(climate_state["disturbance_strength"])
+                * 0.62
+                * disturbance_influence
+            )
+            fertility += (
+                float(climate_state["disturbance_strength"])
+                * 0.16
+                * disturbance_influence
+            )
         else:
-            moisture -= float(climate_state["disturbance_strength"]) * disturbance_influence
-            heat += float(climate_state["disturbance_strength"]) * 0.75 * disturbance_influence
-            fertility -= float(climate_state["disturbance_strength"]) * 0.18 * disturbance_influence
+            moisture -= (
+                float(climate_state["disturbance_strength"]) * disturbance_influence
+            )
+            heat += (
+                float(climate_state["disturbance_strength"])
+                * 0.75
+                * disturbance_influence
+            )
+            fertility -= (
+                float(climate_state["disturbance_strength"])
+                * 0.18
+                * disturbance_influence
+            )
 
         moisture = self._clamp01(moisture)
         heat = self._clamp01(heat)
@@ -2764,6 +2981,7 @@ class SimulationWorld:
             season,
             resource_context=self._resource_context(),
         )
+
     def _shelter_target(self, x: int, y: int, season: str) -> float:
         return runtime_resources.shelter_target(
             self,
@@ -2772,6 +2990,7 @@ class SimulationWorld:
             season,
             resource_context=self._resource_context(),
         )
+
     def _food_capacity(self, x: int, y: int, season: str) -> float:
         return runtime_resources.food_capacity(
             self,
@@ -2780,6 +2999,7 @@ class SimulationWorld:
             season,
             resource_context=self._resource_context(),
         )
+
     def _field_growth_multiplier(self, x: int, y: int, season: str) -> float:
         return runtime_resources.field_growth_multiplier(
             self,
@@ -2788,6 +3008,7 @@ class SimulationWorld:
             season,
             resource_context=self._resource_context(),
         )
+
     def _field_preference_score(
         self,
         agent: Agent,
@@ -2903,7 +3124,10 @@ class SimulationWorld:
         return max(0.62, modifier)
 
     def _regrow_resources(self) -> None:
-        runtime_resources.regrow_resources(self, resource_context=self._resource_context())
+        runtime_resources.regrow_resources(
+            self, resource_context=self._resource_context()
+        )
+
     def _habitat_regrowth_modifier(self, x: int, y: int) -> float:
         return runtime_resources.habitat_regrowth_modifier(
             self,
@@ -2911,10 +3135,13 @@ class SimulationWorld:
             y,
             resource_context=self._resource_context(),
         )
+
     def _terrain_regrowth_rate(self, terrain: str) -> float:
         return runtime_resources.terrain_regrowth_rate(self, terrain)
+
     def _terrain_growth_modifier(self, terrain: str, season: str) -> float:
         return runtime_resources.terrain_growth_modifier(self, terrain, season)
+
     def _choose_action(
         self,
         agent: Agent,
@@ -3027,21 +3254,19 @@ class SimulationWorld:
             scoring_context=self._action_scoring_context(agent),
         )
 
-    def _action_mask_context(self, agent: Agent) -> runtime_action_space.ActionMaskContext:
+    def _action_mask_context(
+        self, agent: Agent
+    ) -> runtime_action_space.ActionMaskContext:
         profile = self._trophic_profile(agent)
         tile = self.grid[agent.y][agent.x]
 
         plant_intake_useful = self._plant_intake_useful(agent)
         plant_food_value = (
-            self._plant_food_value(agent, tile, profile)
-            if plant_intake_useful
-            else 0.0
+            self._plant_food_value(agent, tile, profile) if plant_intake_useful else 0.0
         )
         can_consume_fresh_kill = self._can_consume_fresh_kill(agent)
         fresh_kill_intake_useful = (
-            self._fresh_kill_intake_useful(agent)
-            if can_consume_fresh_kill
-            else False
+            self._fresh_kill_intake_useful(agent) if can_consume_fresh_kill else False
         )
         fresh_kill_food_value = (
             self._fresh_kill_food_value(agent, tile, profile)
@@ -3050,9 +3275,7 @@ class SimulationWorld:
         )
         can_consume_carcass = self._can_consume_carcass(agent)
         carcass_intake_useful = (
-            self._carcass_intake_useful(agent)
-            if can_consume_carcass
-            else False
+            self._carcass_intake_useful(agent) if can_consume_carcass else False
         )
         carcass_food_value = (
             self._carcass_food_value(agent, tile, profile)
@@ -3113,6 +3336,7 @@ class SimulationWorld:
                 if action.startswith("signal_")
             },
         )
+
     def _action_resolution_context(
         self,
         agent: Agent,
@@ -3174,11 +3398,11 @@ class SimulationWorld:
             attack_action_outcome=attack_action_outcome,
             move_action=move_action,
         )
+
     def _action_mask(self, agent: Agent) -> dict[str, bool]:
         self._record_runtime_cost("action_mask_builds")
-        return runtime_action_space.build_action_mask(
-            self._action_mask_context(agent)
-        )
+        return runtime_action_space.build_action_mask(self._action_mask_context(agent))
+
     def _observation_context(
         self,
         agent: Agent,
@@ -3296,6 +3520,7 @@ class SimulationWorld:
             in_bounds=in_bounds,
             prey_vulnerability=prey_vulnerability,
         )
+
     def _observe_agent(self, agent: Agent) -> dict[str, object]:
         self._record_runtime_cost("observation_builds")
         return runtime_observations.build_observation(
@@ -3303,6 +3528,7 @@ class SimulationWorld:
             agent,
             observation_context=self._observation_context(agent),
         )
+
     def _observation_digest(self, observation: dict[str, object]) -> str:
         return runtime_observations.observation_digest(observation)
 
@@ -3329,7 +3555,9 @@ class SimulationWorld:
                 self.agent_last_ecotype_map.get(agent.agent_id),
             ),
             "observation_metadata": dict(observation["metadata"]),
-            "observation_input": runtime_observations.encode_observation_input(observation),
+            "observation_input": runtime_observations.encode_observation_input(
+                observation
+            ),
             "observation_digest": self._observation_digest(observation),
             "action_mask": dict(observation["action_mask"]),
             "policy_id": None,
@@ -3339,6 +3567,7 @@ class SimulationWorld:
                 context=self._trajectory_state_context(),
             ),
         }
+
     def _finalize_trajectory_decisions(
         self,
         pending_records: list[dict[str, object]],
@@ -3405,13 +3634,19 @@ class SimulationWorld:
         if callable(reconcile):
             reconcile(live_agent_ids=live_agent_ids)
 
-    def _passive_outcome_for_agent(self, agent_id: int, *, acted: bool) -> dict[str, object]:
+    def _passive_outcome_for_agent(
+        self, agent_id: int, *, acted: bool
+    ) -> dict[str, object]:
         damage_events = [
-            event for event in self.tick_damage_events if int(event["agent_id"]) == agent_id
+            event
+            for event in self.tick_damage_events
+            if int(event["agent_id"]) == agent_id
         ]
         damage_taken = sum(float(event["amount"]) for event in damage_events)
         attack_damage_taken = sum(
-            float(event["amount"]) for event in damage_events if event["source"] == "attack"
+            float(event["amount"])
+            for event in damage_events
+            if event["source"] == "attack"
         )
         hazard_damage_taken = sum(
             float(event["amount"])
@@ -3419,7 +3654,11 @@ class SimulationWorld:
             if str(event["source"]).startswith("hazard_")
         )
         death_event = next(
-            (event for event in self.tick_death_events if int(event["agent_id"]) == agent_id),
+            (
+                event
+                for event in self.tick_death_events
+                if int(event["agent_id"]) == agent_id
+            ),
             None,
         )
         killed = death_event is not None
@@ -3434,6 +3673,7 @@ class SimulationWorld:
             "died_before_action": killed and not acted,
             "died_after_action": killed and acted,
         }
+
     def _best_visible_biotic_action(
         self,
         agent: Agent,
@@ -3448,6 +3688,7 @@ class SimulationWorld:
         return runtime_actions.best_visible_biotic_action(
             self, agent, profile=profile, context=decision_context
         )
+
     def _best_visible_fresh_kill_action(
         self,
         agent: Agent,
@@ -3462,6 +3703,7 @@ class SimulationWorld:
         return runtime_actions.best_visible_fresh_kill_action(
             self, agent, profile=profile, context=decision_context
         )
+
     def _best_visible_carrion_action(
         self,
         agent: Agent,
@@ -3476,6 +3718,7 @@ class SimulationWorld:
         return runtime_actions.best_visible_carrion_action(
             self, agent, profile=profile, context=decision_context
         )
+
     def _attack_damage(
         self,
         attacker: Agent,
@@ -3485,13 +3728,18 @@ class SimulationWorld:
         profile = profile or self._trophic_profile(attacker)
         damage = max(
             0.0,
-            self.config.combat.base_attack_damage * self._attack_edge(attacker, target, profile),
+            self.config.combat.base_attack_damage
+            * self._attack_edge(attacker, target, profile),
         )
         if profile.meat_mode in {"hunter", "mixed"}:
-            hunter_weight = 1.0 if profile.meat_mode == "hunter" else profile.hunter_share
-            damage *= 1.0 + (
-                self.config.combat.hunter_mode_attack_damage_multiplier - 1.0
-            ) * hunter_weight
+            hunter_weight = (
+                1.0 if profile.meat_mode == "hunter" else profile.hunter_share
+            )
+            damage *= (
+                1.0
+                + (self.config.combat.hunter_mode_attack_damage_multiplier - 1.0)
+                * hunter_weight
+            )
             damage *= 1.0 + max(0.0, self._prey_vulnerability(target) - 1.25) * (
                 self.config.combat.hunter_wounded_prey_damage_bonus * hunter_weight
             )
@@ -3508,7 +3756,6 @@ class SimulationWorld:
         if damage <= 0:
             return 0.0
         target_health = max(target.health, 1e-9)
-        target_health_ratio = self._health_ratio(target)
         vulnerability = self._prey_vulnerability(target)
         kill_probability = self._clamp01(
             (damage / target_health) ** 0.65 * min(1.35, 0.82 + vulnerability * 0.18)
@@ -3520,15 +3767,20 @@ class SimulationWorld:
         ) * min(1.35, 0.82 + vulnerability * 0.22)
         attack_cost_multiplier = attacker.genome.attack_cost_multiplier
         cost_penalty = (
-            self.config.combat.attack_energy_cost * attack_cost_multiplier / max(attacker.genome.max_energy, 1e-9)
+            self.config.combat.attack_energy_cost
+            * attack_cost_multiplier
+            / max(attacker.genome.max_energy, 1e-9)
             + self.config.combat.attack_hydration_cost
             * attack_cost_multiplier
             / max(attacker.genome.max_hydration, 1e-9)
         )
-        retaliation_risk = max(
-            0.0,
-            target.genome.attack_power - attacker.genome.defense_rating * 0.9,
-        ) * 0.05
+        retaliation_risk = (
+            max(
+                0.0,
+                target.genome.attack_power - attacker.genome.defense_rating * 0.9,
+            )
+            * 0.05
+        )
         return (
             projected_meat_gain * kill_probability
             - cost_penalty * 0.42
@@ -3546,6 +3798,7 @@ class SimulationWorld:
             profile=profile,
             scoring_context=self._action_scoring_context(agent),
         )
+
     def _best_visible_prey_action(
         self,
         agent: Agent,
@@ -3560,6 +3813,7 @@ class SimulationWorld:
         return runtime_actions.best_visible_prey_action(
             self, agent, profile=profile, context=decision_context
         )
+
     def _biotic_opportunity_score(
         self,
         agent: Agent,
@@ -3576,6 +3830,7 @@ class SimulationWorld:
         return runtime_actions.biotic_opportunity_score(
             self, agent, x, y, profile, context=decision_context
         )
+
     def _step_toward_target(
         self,
         agent: Agent,
@@ -3610,6 +3865,7 @@ class SimulationWorld:
             include_animal_signal=include_animal_signal,
             context=decision_context,
         )
+
     def _candidate_tile_score(
         self,
         agent: Agent,
@@ -3643,6 +3899,7 @@ class SimulationWorld:
             context=context,
             scoring_context=self._action_scoring_context(agent),
         )
+
     def _best_visible_action_toward_need(
         self,
         agent: Agent,
@@ -3657,6 +3914,7 @@ class SimulationWorld:
         return runtime_actions.best_visible_action_toward_need(
             self, agent, profile=profile, context=decision_context
         )
+
     def _resolve_action(self, agent: Agent, action: str) -> bool:
         """Apply an action request and return whether it moved the agent."""
         return runtime_actions.resolve_action(
@@ -3744,7 +4002,9 @@ class SimulationWorld:
             and carcass_value >= plant_value * 0.92
         ):
             return self._consume_carcass_outcome(agent, profile=profile)
-        adjacent_carcass_target = self._adjacent_scavenger_carcass_target(agent, profile)
+        adjacent_carcass_target = self._adjacent_scavenger_carcass_target(
+            agent, profile
+        )
         if adjacent_carcass_target is not None:
             return self._consume_carcass_outcome(
                 agent,
@@ -3976,7 +4236,9 @@ class SimulationWorld:
             agent,
             food_source="carcass",
             consumed=consumed,
-            potential_nutrition=self._carcass_nutrition(agent, consumed, freshness, profile),
+            potential_nutrition=self._carcass_nutrition(
+                agent, consumed, freshness, profile
+            ),
             profile=profile,
             x=x,
             y=y,
@@ -4090,7 +4352,9 @@ class SimulationWorld:
             self.config.combat.attack_energy_cost * attack_cost_multiplier
         )
         attacker.energy -= attack_energy_cost
-        attacker.hydration -= self.config.combat.attack_hydration_cost * attack_cost_multiplier
+        attacker.hydration -= (
+            self.config.combat.attack_hydration_cost * attack_cost_multiplier
+        )
         runtime_resources.record_energy_spent(self, "attack", attack_energy_cost)
 
         damage = self._attack_damage(attacker, target, profile)
@@ -4126,7 +4390,9 @@ class SimulationWorld:
         if kill:
             self.run_combat_totals["kills"] += 1
             immediate_feed: dict[str, object] | None = None
-            if self._can_consume_fresh_kill(attacker) and self._fresh_kill_intake_useful(attacker):
+            if self._can_consume_fresh_kill(
+                attacker
+            ) and self._fresh_kill_intake_useful(attacker):
                 immediate_feed = self._consume_fresh_kill_outcome(
                     attacker,
                     profile=profile,
@@ -4185,7 +4451,11 @@ class SimulationWorld:
             attacker.genome.attack_power
             * (0.72 + self._health_ratio(attacker) * 0.28)
             * (0.72 + self._energy_ratio(attacker) * 0.28)
-            * (0.66 + attacker.genome.live_prey_bias * 0.16 + profile.hunter_drive * 0.18)
+            * (
+                0.66
+                + attacker.genome.live_prey_bias * 0.16
+                + profile.hunter_drive * 0.18
+            )
         )
         defense_strength = (
             target.genome.defense_rating
@@ -4202,16 +4472,22 @@ class SimulationWorld:
             lifecycle_context=self._lifecycle_context(),
         )
 
-    def _agent_energy_drain_modifier(self, agent: Agent, season: str | None = None) -> float:
+    def _agent_energy_drain_modifier(
+        self, agent: Agent, season: str | None = None
+    ) -> float:
         terrain = self.grid[agent.y][agent.x].terrain
         season_name = season or self._season_state()["name"]
-        return self._terrain_energy_modifier(agent, terrain) * self._field_energy_modifier(
+        return self._terrain_energy_modifier(
+            agent, terrain
+        ) * self._field_energy_modifier(
             agent.x,
             agent.y,
             season_name,
         )
 
-    def _agent_hydration_drain_modifier(self, agent: Agent, season: str | None = None) -> float:
+    def _agent_hydration_drain_modifier(
+        self, agent: Agent, season: str | None = None
+    ) -> float:
         terrain = self.grid[agent.y][agent.x].terrain
         season_name = season or self._season_state()["name"]
         return (
@@ -4616,8 +4892,10 @@ class SimulationWorld:
 
     def _terrain_food_multiplier(self, agent: Agent, terrain: str) -> float:
         affinity = self._terrain_affinity(agent, terrain)
-        return agent.genome.food_efficiency * TERRAIN_FOOD_BASE.get(terrain, 1.0) * (
-            0.68 + affinity * 0.32
+        return (
+            agent.genome.food_efficiency
+            * TERRAIN_FOOD_BASE.get(terrain, 1.0)
+            * (0.68 + affinity * 0.32)
         )
 
     def _terrain_preference_score(self, agent: Agent, terrain: str) -> float:
@@ -4646,7 +4924,10 @@ class SimulationWorld:
         if season == "dry":
             return max(
                 0.85,
-                1.0 + climate.seasonal_hydration_shift * (2.0 - agent.genome.heat_tolerance) * 4.0,
+                1.0
+                + climate.seasonal_hydration_shift
+                * (2.0 - agent.genome.heat_tolerance)
+                * 4.0,
             )
         return max(
             0.78,
@@ -4680,7 +4961,9 @@ class SimulationWorld:
             centroid = centroid_from_members(members)
             registry = self.species_registry.get(species_id)
             if registry is None:
-                first_seen_tick = min(self.agents[member.agent_id].birth_tick for member in members)
+                first_seen_tick = min(
+                    self.agents[member.agent_id].birth_tick for member in members
+                )
                 registry = {
                     "label": f"L{species_id:03d}",
                     "first_seen_tick": first_seen_tick,
@@ -4704,7 +4987,9 @@ class SimulationWorld:
                     label=registry["label"],
                     member_count=len(members),
                     lineages=[species_id],
-                    centroid={gene: round(value, 4) for gene, value in centroid.items()},
+                    centroid={
+                        gene: round(value, 4) for gene, value in centroid.items()
+                    },
                 )
             )
 
@@ -4712,14 +4997,22 @@ class SimulationWorld:
             if species_id not in members_by_species:
                 registry["current_members"] = 0
 
-        species_records.sort(key=lambda record: (-record.member_count, record.species_id))
+        species_records.sort(
+            key=lambda record: (-record.member_count, record.species_id)
+        )
         return species_map, species_records
 
     def _refresh_population_snapshots(
         self,
         *,
         include_species: bool = True,
-    ) -> tuple[list[Agent], dict[int, int], list[SpeciesRecord], dict[int, int], list[SpeciesRecord]]:
+    ) -> tuple[
+        list[Agent],
+        dict[int, int],
+        list[SpeciesRecord],
+        dict[int, int],
+        list[SpeciesRecord],
+    ]:
         alive = sorted(self.alive_agents(), key=lambda agent: agent.agent_id)
         if include_species:
             species_map, species_records = self._lineage_species_snapshot(alive)
@@ -4804,6 +5097,7 @@ class SimulationWorld:
                 else self._frame_surface_context()
             ),
         )
+
     def _build_agent_frame_telemetry(
         self,
         alive: list[Agent],
@@ -4819,6 +5113,7 @@ class SimulationWorld:
             surfaces=surfaces,
             surface_context=surface_context,
         )
+
     def _capture_frame(self, births_this_tick: int, deaths_this_tick: int) -> None:
         runtime_frames.capture_frame(
             self,
@@ -4908,17 +5203,22 @@ class SimulationWorld:
                 shoreline_support=bool(telemetry[agent.agent_id]["shoreline_support"]),
                 wetland_support=bool(telemetry[agent.agent_id]["wetland_support"]),
                 flooded_support=bool(telemetry[agent.agent_id]["flooded_support"]),
-                refuge_exposed=str(telemetry[agent.agent_id]["soft_refuge_reason"]) != "none",
+                refuge_exposed=str(telemetry[agent.agent_id]["soft_refuge_reason"])
+                != "none",
                 energy_ratio=float(telemetry[agent.agent_id]["energy_ratio"]),
                 hydration_ratio=float(telemetry[agent.agent_id]["hydration_ratio"]),
                 health_ratio=float(telemetry[agent.agent_id]["health_ratio"]),
-                matched_diet_ratio=float(telemetry[agent.agent_id]["matched_diet_ratio"]),
+                matched_diet_ratio=float(
+                    telemetry[agent.agent_id]["matched_diet_ratio"]
+                ),
                 age=float(agent.age),
                 vegetation=float(self.grid[agent.y][agent.x].vegetation),
                 recovery_debt=float(self.grid[agent.y][agent.x].recovery_debt),
                 refuge_score=float(telemetry[agent.agent_id]["refuge_score"]),
                 injury_load=float(agent.injury_load),
-                reproduction_ready=bool(telemetry[agent.agent_id]["reproduction_ready"]),
+                reproduction_ready=bool(
+                    telemetry[agent.agent_id]["reproduction_ready"]
+                ),
             )
             for agent in alive
         )
@@ -5012,9 +5312,15 @@ class SimulationWorld:
             }
         count = len(genomes)
         return {
-            "avg_max_energy": round(sum(genome.max_energy for genome in genomes) / count, 4),
-            "avg_max_health": round(sum(genome.max_health for genome in genomes) / count, 4),
-            "avg_move_cost": round(sum(genome.move_cost for genome in genomes) / count, 4),
+            "avg_max_energy": round(
+                sum(genome.max_energy for genome in genomes) / count, 4
+            ),
+            "avg_max_health": round(
+                sum(genome.max_health for genome in genomes) / count, 4
+            ),
+            "avg_move_cost": round(
+                sum(genome.move_cost for genome in genomes) / count, 4
+            ),
             "avg_heat_tolerance": round(
                 sum(genome.heat_tolerance for genome in genomes) / count, 4
             ),
@@ -5026,12 +5332,16 @@ class SimulationWorld:
                 sum(genome.water_efficiency for genome in genomes) / count,
                 4,
             ),
-            "avg_attack_power": round(sum(genome.attack_power for genome in genomes) / count, 4),
+            "avg_attack_power": round(
+                sum(genome.attack_power for genome in genomes) / count, 4
+            ),
             "avg_meat_efficiency": round(
                 sum(genome.meat_efficiency for genome in genomes) / count,
                 4,
             ),
-            "avg_carrion_bias": round(sum(genome.carrion_bias for genome in genomes) / count, 4),
+            "avg_carrion_bias": round(
+                sum(genome.carrion_bias for genome in genomes) / count, 4
+            ),
             "avg_live_prey_bias": round(
                 sum(genome.live_prey_bias for genome in genomes) / count,
                 4,
@@ -5101,7 +5411,9 @@ class SimulationWorld:
             members = cluster["members"]
             centroid = centroid_from_members(members)
             centroid_vector = vector_from_centroid(centroid)
-            species_id = self._match_or_create_ecotype(centroid_vector, assigned_existing)
+            species_id = self._match_or_create_ecotype(
+                centroid_vector, assigned_existing
+            )
             assigned_existing.add(species_id)
             self._update_ecotype_registry(species_id, centroid, members)
 
@@ -5114,7 +5426,9 @@ class SimulationWorld:
                     label=self.ecotype_registry[species_id]["label"],
                     member_count=len(members),
                     lineages=sorted({member.lineage_id for member in members}),
-                    centroid={gene: round(value, 4) for gene, value in centroid.items()},
+                    centroid={
+                        gene: round(value, 4) for gene, value in centroid.items()
+                    },
                 )
             )
 
@@ -5122,7 +5436,9 @@ class SimulationWorld:
             if species_id not in assigned_existing:
                 registry["current_members"] = 0
 
-        species_records.sort(key=lambda record: (-record.member_count, record.species_id))
+        species_records.sort(
+            key=lambda record: (-record.member_count, record.species_id)
+        )
         return species_map, species_records
 
     def _match_or_create_ecotype(
@@ -5140,7 +5456,10 @@ class SimulationWorld:
                 best_distance = distance
                 best_species_id = species_id
 
-        if best_species_id is not None and best_distance <= self.config.species_distance_threshold * 1.2:
+        if (
+            best_species_id is not None
+            and best_distance <= self.config.species_distance_threshold * 1.2
+        ):
             return best_species_id
 
         species_id = self.next_ecotype_id
@@ -5182,11 +5501,16 @@ class SimulationWorld:
                     [TERRAIN_CODES[tile.terrain] for tile in row] for row in self.grid
                 ],
                 "terrain_legend": {
-                    str(code): terrain for terrain, code in sorted(TERRAIN_CODES.items(), key=lambda item: item[1])
+                    str(code): terrain
+                    for terrain, code in sorted(
+                        TERRAIN_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "hydrology_primary_legend": {
                     str(code): reason
-                    for reason, code in sorted(HYDROLOGY_REASON_CODES.items(), key=lambda item: item[1])
+                    for reason, code in sorted(
+                        HYDROLOGY_REASON_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "hydrology_support_bits": {
                     str(flag): name
@@ -5197,31 +5521,49 @@ class SimulationWorld:
                 },
                 "refuge_legend": {
                     str(code): reason
-                    for reason, code in sorted(SOFT_REFUGE_CODES.items(), key=lambda item: item[1])
+                    for reason, code in sorted(
+                        SOFT_REFUGE_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "hazard_legend": {
                     str(code): hazard_type
-                    for hazard_type, code in sorted(HAZARD_TYPE_CODES.items(), key=lambda item: item[1])
+                    for hazard_type, code in sorted(
+                        HAZARD_TYPE_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "trophic_role_legend": {
                     str(code): role
-                    for role, code in sorted(TROPHIC_ROLE_CODES.items(), key=lambda item: item[1])
+                    for role, code in sorted(
+                        TROPHIC_ROLE_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "meat_mode_legend": {
                     str(code): mode
-                    for mode, code in sorted(MEAT_MODE_CODES.items(), key=lambda item: item[1])
+                    for mode, code in sorted(
+                        MEAT_MODE_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "ecology_legend": {
                     str(code): state
-                    for state, code in sorted(ECOLOGY_STATE_CODES.items(), key=lambda item: item[1])
+                    for state, code in sorted(
+                        ECOLOGY_STATE_CODES.items(), key=lambda item: item[1]
+                    )
                 },
                 "terrain_counts": terrain_counts,
                 "environment_fields": self.environment_fields.to_serializable(),
                 "base_tile_fields": {
-                    "fertility": [[round(tile.fertility, 4) for tile in row] for row in self.grid],
-                    "moisture": [[round(tile.moisture, 4) for tile in row] for row in self.grid],
-                    "heat": [[round(tile.heat, 4) for tile in row] for row in self.grid],
-                    "shelter": [[round(tile.shelter, 4) for tile in row] for row in self.grid],
+                    "fertility": [
+                        [round(tile.fertility, 4) for tile in row] for row in self.grid
+                    ],
+                    "moisture": [
+                        [round(tile.moisture, 4) for tile in row] for row in self.grid
+                    ],
+                    "heat": [
+                        [round(tile.heat, 4) for tile in row] for row in self.grid
+                    ],
+                    "shelter": [
+                        [round(tile.shelter, 4) for tile in row] for row in self.grid
+                    ],
                 },
             },
             "agent_catalog": {
@@ -5240,10 +5582,14 @@ class SimulationWorld:
                     "reproductive_expression": agent.reproductive_expression,
                     "birth_tick": agent.birth_tick,
                     "death_tick": agent.death_tick,
-                    "genome": self._canonical_replay_float_payload(agent.genome.to_dict()),
+                    "genome": self._canonical_replay_float_payload(
+                        agent.genome.to_dict()
+                    ),
                     "mind_inheritance": dict(agent.mind_inheritance_metadata),
                 }
-                for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
+                for agent in sorted(
+                    self.agents.values(), key=lambda item: item.agent_id
+                )
             },
             "reproductive_group_catalog": runtime_reproduction.build_reproductive_group_catalog(
                 self.reproductive_groups,
@@ -5258,7 +5604,9 @@ class SimulationWorld:
                     "species_id": species_id,
                     "label": registry["label"],
                     "first_seen_tick": registry["first_seen_tick"],
-                    "last_seen_tick": registry.get("last_seen_tick", registry["first_seen_tick"]),
+                    "last_seen_tick": registry.get(
+                        "last_seen_tick", registry["first_seen_tick"]
+                    ),
                     "observed_ticks": registry["observed_ticks"],
                     "peak_members": registry["peak_members"],
                     "lineages": sorted(registry["lineages"]),
@@ -5287,7 +5635,9 @@ class SimulationWorld:
                     "ecotype_id": ecotype_id,
                     "label": registry["label"],
                     "first_seen_tick": registry["first_seen_tick"],
-                    "last_seen_tick": registry.get("last_seen_tick", registry["first_seen_tick"]),
+                    "last_seen_tick": registry.get(
+                        "last_seen_tick", registry["first_seen_tick"]
+                    ),
                     "observed_ticks": registry["observed_ticks"],
                     "peak_members": registry["peak_members"],
                     "lineages": sorted(registry["lineages"]),
@@ -5338,6 +5688,7 @@ class SimulationWorld:
             frames=self.viewer_frames,
             species_ids=sorted(self.species_registry),
         )
+
     def _build_trajectory_payload(self) -> dict[str, object]:
         return runtime_trajectory.build_trajectory_payload(
             self.trajectory_records,
@@ -5380,17 +5731,27 @@ class SimulationWorld:
         )
 
     def _field_stats(self) -> dict[str, dict[str, float]]:
-        land_tiles = [tile for row in self.grid for tile in row if tile.terrain != "water"]
-        water_tiles = [tile for row in self.grid for tile in row if tile.terrain == "water"]
+        land_tiles = [
+            tile for row in self.grid for tile in row if tile.terrain != "water"
+        ]
+        water_tiles = [
+            tile for row in self.grid for tile in row if tile.terrain == "water"
+        ]
         return {
-            "land_fertility": self._series_stats([tile.fertility for tile in land_tiles]),
+            "land_fertility": self._series_stats(
+                [tile.fertility for tile in land_tiles]
+            ),
             "land_moisture": self._series_stats([tile.moisture for tile in land_tiles]),
             "land_heat": self._series_stats([tile.heat for tile in land_tiles]),
-            "land_vegetation": self._series_stats([tile.vegetation for tile in land_tiles]),
+            "land_vegetation": self._series_stats(
+                [tile.vegetation for tile in land_tiles]
+            ),
             "land_recovery_debt": self._series_stats(
                 [tile.recovery_debt for tile in land_tiles]
             ),
-            "water_moisture": self._series_stats([tile.moisture for tile in water_tiles]),
+            "water_moisture": self._series_stats(
+                [tile.moisture for tile in water_tiles]
+            ),
             "water_heat": self._series_stats([tile.heat for tile in water_tiles]),
         }
 

@@ -24,7 +24,9 @@ class TickPhaseContext:
     season_state: Callable[[], dict[str, object]]
     emit: Callable[[EventType, int | None, dict[str, object] | None], None]
     regrow_resources: Callable[[], None]
-    population_trophic_counts: Callable[[list[Any]], tuple[dict[str, int], dict[str, int]]]
+    population_trophic_counts: Callable[
+        [list[Any]], tuple[dict[str, int], dict[str, int]]
+    ]
     observe_agent: Callable[[Any], dict[str, object]]
     animal_resource_reachability_by_meat_mode: Callable[..., dict[str, dict[str, int]]]
     animal_resource_presence_this_tick: Callable[[], dict[str, bool]]
@@ -49,14 +51,29 @@ class TickPhaseContext:
     policy_metadata: Callable[[], dict[str, object]]
 
 
-def run_tick(
+@dataclass(frozen=True, slots=True)
+class PreparedTickStart:
+    """Exact policy-visible state after tick-start ecology and before actions."""
+
+    climate_state: dict[str, object]
+    ordered_agent_ids: tuple[int, ...]
+    observation_snapshots: dict[int, dict[str, object]]
+    observation_action_masks: dict[int, dict[str, bool]]
+    trajectory_contexts: dict[int, dict[str, object]]
+    opportunity_meat_mode_counts: dict[str, int]
+    opportunity_resource_presence: dict[str, bool]
+    opportunity_reachability_by_meat_mode: dict[str, dict[str, int]]
+
+
+def prepare_tick_start(
     world: Any,
     *,
     meat_mode_codes: dict[str, int],
     tick_context: TickPhaseContext,
-) -> tuple[int, int]:
-    births_this_tick = 0
-    deaths_before_tick = world.deaths
+    stage_policy: bool = True,
+) -> PreparedTickStart:
+    """Run the existing tick-start prefix exactly once, stopping before actions."""
+
     reset_tick_state(world, meat_mode_codes=meat_mode_codes)
     tick_context.invalidate_biotic_state()
     tick_context.decay_signal_emissions()
@@ -103,10 +120,45 @@ def run_tick(
         tick=world.tick,
     )
     world.tick_action_order = list(action_order)
-    tick_context.stage_policy_tick_start(
-        world.tick,
-        action_order,
-        observation_snapshots,
+    if action_order and stage_policy:
+        tick_context.stage_policy_tick_start(
+            world.tick,
+            action_order,
+            observation_snapshots,
+        )
+    return PreparedTickStart(
+        climate_state=climate_state,
+        ordered_agent_ids=action_order,
+        observation_snapshots=observation_snapshots,
+        observation_action_masks=observation_action_masks,
+        trajectory_contexts=trajectory_contexts,
+        opportunity_meat_mode_counts=opportunity_meat_mode_counts,
+        opportunity_resource_presence=opportunity_resource_presence,
+        opportunity_reachability_by_meat_mode=(opportunity_reachability_by_meat_mode),
+    )
+
+
+def run_tick(
+    world: Any,
+    *,
+    meat_mode_codes: dict[str, int],
+    tick_context: TickPhaseContext,
+) -> tuple[int, int]:
+    births_this_tick = 0
+    deaths_before_tick = world.deaths
+    prepared = prepare_tick_start(
+        world,
+        meat_mode_codes=meat_mode_codes,
+        tick_context=tick_context,
+    )
+    climate_state = prepared.climate_state
+    action_order = prepared.ordered_agent_ids
+    observation_snapshots = prepared.observation_snapshots
+    trajectory_contexts = prepared.trajectory_contexts
+    opportunity_meat_mode_counts = prepared.opportunity_meat_mode_counts
+    opportunity_resource_presence = prepared.opportunity_resource_presence
+    opportunity_reachability_by_meat_mode = (
+        prepared.opportunity_reachability_by_meat_mode
     )
     pending_trajectory_records: list[dict[str, object]] = []
     acted_trajectory_agent_ids: set[int] = set()

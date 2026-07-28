@@ -1,5 +1,9 @@
 name: CI
 
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   push:
   pull_request:
@@ -61,6 +65,7 @@ jobs:
 
   mind-recurrent-cpu:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       PYTHONHASHSEED: "0"
       PYTHONPATH: python
@@ -84,6 +89,10 @@ jobs:
           assert torch.__version__.split("+", 1)[0] == "2.11.0"'
       - name: Run recurrent Mind contracts with Torch enabled
         run: python -m unittest discover -s python/tests -p 'test_recurrent_*.py' -v
+      - name: Run open-ecology contracts with Torch enabled
+        run: python -m unittest discover -s python/tests -p 'test_open_ecology_*.py' -v
+      - name: Run source-bound capture proof CLI contracts
+        run: python -m unittest python.tests.test_prove_open_ecology_capture_noninterference -v
 
   expensive:
     if: github.event_name == 'schedule' || github.event.inputs.run_expensive_checks == 'true'

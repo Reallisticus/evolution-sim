@@ -12,10 +12,10 @@ from scripts import stream_remote_evolution_archive as remote_archive
 class RemoteEvolutionArchiveTests(unittest.TestCase):
     def _options(self, **overrides: object) -> remote_archive.RemoteArchiveOptions:
         values: dict[str, object] = {
-            "ssh_target": "gpu4070",
-            "remote_repository_root": "/home/train/evolution-sim-checkout",
-            "remote_input_dir": "/home/train/evolution-sim-runs/campaign",
-            "remote_staging_dir": "/home/train/evolution-sim-archives",
+            "ssh_target": "trainer-node",
+            "remote_repository_root": "/srv/evolution-sim/checkout",
+            "remote_input_dir": "/srv/evolution-sim/runs/campaign",
+            "remote_staging_dir": "/srv/evolution-sim/archives",
             "archive_name": "20260727T120000Z-campaign.tar.zst",
             "rclone_remote": "gdrive:evolution-sim-backups",
             "rclone_subdir": "archives",
@@ -29,11 +29,7 @@ class RemoteEvolutionArchiveTests(unittest.TestCase):
             ({"remote_input_dir": "/"}, "filesystem root"),
             ({"remote_input_dir": "relative"}, "absolute normalized"),
             (
-                {
-                    "remote_staging_dir": (
-                        "/home/train/evolution-sim-runs/campaign/staging"
-                    )
-                },
+                {"remote_staging_dir": ("/srv/evolution-sim/runs/campaign/staging")},
                 "may not be inside",
             ),
             ({"archive_name": "../campaign.tar.zst"}, "conservative filename"),

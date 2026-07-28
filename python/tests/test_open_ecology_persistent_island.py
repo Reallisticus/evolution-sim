@@ -4,11 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import gc
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import threading
-import time
-from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,10 +16,17 @@ import torch
 
 from evolution_sim.env.world import SimulationWorld
 from evolution_sim.env.runtime.signals import CommunicationReceiverProjection
+from evolution_sim.io import open_ecology_aggregate_commit as aggregate_commit_module
 from evolution_sim.io.open_ecology_campaign_storage import (
     CampaignStorageError,
     CampaignStorageLock,
     default_storage_lock_path,
+)
+from evolution_sim.io.open_ecology_aggregate_commit import (
+    OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME,
+    OpenEcologyAggregateResumePins,
+    inspect_open_ecology_aggregate_attempt_frontier,
+    load_current_open_ecology_aggregate_generation,
 )
 from evolution_sim.io.open_ecology_checkpoint import (
     REQUIRED_CHECKPOINT_COMPONENTS,
@@ -30,15 +36,25 @@ from evolution_sim.io.open_ecology_rotating_writer import (
     load_open_ecology_evidence_manifest,
 )
 from evolution_sim.mind.open_ecology_persistent_island import (
+    OPEN_ECOLOGY_FIRST_MILESTONE_TICK,
     OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED,
+    OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED,
     OPEN_ECOLOGY_PHASE_D_ARM_ORDER,
     OPEN_ECOLOGY_PHASE_D_TASK_COUNT,
+    OpenEcologyPersistentIslandError,
     PersistentArtifactBinding,
     PersistentIslandRunner,
     PersistentIslandTask,
     build_persistent_island_task_matrix,
+    persistent_genesis_attempt_authority_sha256,
+    persistent_interval_attempt_authority_sha256,
     prioritized_persistent_island_triplet,
     _verify_live_source_authority,
+)
+from evolution_sim.mind.open_ecology_process_workers import (
+    ProcessWorkerExpectedState,
+    ProcessWorkerSlot,
+    _PersistentIslandRuntime,
 )
 from evolution_sim.mind.open_ecology_seed_registry import (
     OPEN_ECOLOGY_CANONICAL_SHA256,
@@ -189,20 +205,24 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
         self,
     ) -> None:
         task = prioritized_persistent_island_triplet(self.tasks)[0]
-        repository_root = Path(__file__).resolve().parents[2]
 
         def git_probe(*, head: str = _SOURCE_COMMIT, status: str = ""):
-            def run(command: list[str], **_: object) -> SimpleNamespace:
-                arguments = tuple(command[3:])
+            def run(
+                _authority: object,
+                *,
+                repository_root: Path,
+                arguments: tuple[str, ...],
+            ) -> str:
+                self.assertEqual(
+                    repository_root,
+                    Path(__file__).resolve().parents[2],
+                )
                 stdout_by_arguments = {
-                    ("rev-parse", "--show-toplevel"): f"{repository_root}\n",
-                    ("rev-parse", "HEAD"): f"{head}\n",
+                    ("rev-parse", "--show-toplevel"): str(repository_root),
+                    ("rev-parse", "HEAD"): head,
                     ("status", "--porcelain=v1", "--untracked-files=all"): status,
                 }
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout=stdout_by_arguments[arguments],
-                )
+                return stdout_by_arguments[arguments]
 
             return run
 
@@ -213,7 +233,11 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
 
         with (
             patch(
-                f"{authority_module}.subprocess.run",
+                f"{authority_module}.discover_pinned_git_executable",
+                return_value=object(),
+            ),
+            patch(
+                f"{authority_module}.run_pinned_git",
                 side_effect=git_probe(),
             ),
             patch(
@@ -240,7 +264,11 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             with (
                 self.subTest(case=label),
                 patch(
-                    f"{authority_module}.subprocess.run",
+                    f"{authority_module}.discover_pinned_git_executable",
+                    return_value=object(),
+                ),
+                patch(
+                    f"{authority_module}.run_pinned_git",
                     side_effect=run_probe,
                 ),
                 patch(
@@ -310,6 +338,651 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             sum(runner.event_counts.values()),
         )
         runner.abort_evidence()
+
+    def test_genesis_retry_preserves_loose_checkpoint_and_evidence_attempt(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        evidence_directory = self.campaign_root / task.task_id
+        checkpoint_directory = self.campaign_root / "checkpoints" / task.task_id
+        checkpoint_path = checkpoint_directory / "checkpoint-observed-00000000.json"
+        with patch(
+            (
+                "evolution_sim.mind.open_ecology_persistent_island."
+                "publish_open_ecology_aggregate_generation"
+            ),
+            side_effect=OSError("simulated genesis pre-generation death"),
+        ):
+            with self.assertRaisesRegex(OSError, "pre-generation death"):
+                self._open(task)
+
+        failed_checkpoint_bytes = checkpoint_path.read_bytes()
+        failed_evidence_bytes = {
+            child.name: child.read_bytes()
+            for child in evidence_directory.iterdir()
+            if child.is_file()
+        }
+        attempt_authority = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            evidence_directory=evidence_directory,
+        )
+        recovered, already_committed = (
+            PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=attempt_authority,
+                evidence_directory=evidence_directory,
+            )
+        )
+
+        self.assertFalse(already_committed)
+        self.assertEqual(recovered.observed_tick, 0)
+        self.assertEqual(checkpoint_path.read_bytes(), failed_checkpoint_bytes)
+        self.assertEqual(
+            {
+                child.name: child.read_bytes()
+                for child in evidence_directory.iterdir()
+                if child.is_file()
+            },
+            failed_evidence_bytes,
+        )
+        checkpoint_attempts = tuple(
+            (
+                self.campaign_root / "attempts" / task.task_id / "genesis-checkpoints"
+            ).iterdir()
+        )
+        evidence_attempts = tuple(
+            (
+                self.campaign_root / "attempts" / task.task_id / "genesis-evidence"
+            ).iterdir()
+        )
+        self.assertEqual(len(checkpoint_attempts), 1)
+        self.assertEqual(len(evidence_attempts), 1)
+        self.assertEqual(
+            (checkpoint_attempts[0] / "checkpoint-observed-00000000.json").read_bytes(),
+            failed_checkpoint_bytes,
+        )
+        self.assertEqual(
+            {
+                child.name: child.read_bytes()
+                for child in evidence_attempts[0].iterdir()
+                if child.is_file()
+            },
+            failed_evidence_bytes,
+        )
+        pins = recovered.latest_aggregate_resume_pins
+        self.assertIsNotNone(pins)
+        assert pins is not None
+        self.assertEqual(pins.aggregate_generation_index, 0)
+        self.assertEqual(pins.identity.tick, 0)
+        self.assertEqual(
+            recovered.campaign_barrier_frontier()["observed_tick"],
+            0,
+        )
+        recovered.abort_evidence()
+
+    def test_genesis_pre_current_and_pre_receipt_deaths_restore_exact_authority(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        evidence_directory = self.campaign_root / task.task_id
+        checkpoint_path = (
+            self.campaign_root
+            / "checkpoints"
+            / task.task_id
+            / "checkpoint-observed-00000000.json"
+        )
+        aggregate_directory = self.campaign_root / "aggregates" / task.task_id
+        current_path = aggregate_directory / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+        with patch(
+            ("evolution_sim.io.open_ecology_aggregate_commit._publish_current_pointer"),
+            side_effect=OSError("simulated genesis pre-CURRENT death"),
+        ):
+            with self.assertRaisesRegex(OSError, "pre-CURRENT death"):
+                self._open(task)
+
+        generation_directory = (
+            aggregate_directory / "generations" / "generation-0000000000000000"
+        )
+        immutable_before = {
+            child.name: child.read_bytes() for child in generation_directory.iterdir()
+        }
+        loose_checkpoint_before = checkpoint_path.read_bytes()
+        self.assertFalse(current_path.exists())
+        attempt_authority = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            evidence_directory=evidence_directory,
+        )
+        recovered, already_committed = (
+            PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=attempt_authority,
+                evidence_directory=evidence_directory,
+            )
+        )
+        self.assertTrue(already_committed)
+        self.assertTrue(current_path.is_file())
+        self.assertEqual(checkpoint_path.read_bytes(), loose_checkpoint_before)
+        self.assertEqual(
+            {
+                child.name: child.read_bytes()
+                for child in generation_directory.iterdir()
+            },
+            immutable_before,
+        )
+
+        # Simulate death after CURRENT but before the coordinator's global
+        # receipt.  The same exact authorization must restore, not rematerialize.
+        rerecovered, current_was_committed = (
+            PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=attempt_authority,
+                evidence_directory=evidence_directory,
+            )
+        )
+        self.assertTrue(current_was_committed)
+        self._assert_runtime_equal(recovered, rerecovered)
+        self.assertEqual(
+            recovered.latest_aggregate_resume_pins,
+            rerecovered.latest_aggregate_resume_pins,
+        )
+        self.assertFalse(
+            (
+                self.campaign_root / "attempts" / task.task_id / "genesis-checkpoints"
+            ).exists()
+        )
+        recovered.abort_evidence()
+        rerecovered.abort_evidence()
+
+    def test_failed_checkpoint_restore_does_not_mutate_live_evidence(self) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        evidence_directory = self.campaign_root / task.task_id
+        runner = self._open(task)
+        pins = runner.latest_aggregate_resume_pins
+        self.assertIsNotNone(pins)
+        assert pins is not None
+        runner.abort_evidence()
+        attempt_authority = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            evidence_directory=evidence_directory,
+        )
+
+        for operation in (
+            lambda: PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=attempt_authority,
+                evidence_directory=evidence_directory,
+            ),
+            lambda: PersistentIslandRunner.restore_from_current(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                pins=pins,
+                evidence_directory=evidence_directory,
+            ),
+        ):
+            with (
+                self.subTest(operation=operation),
+                patch.object(
+                    PersistentIslandRunner,
+                    "_restore_from_checkpoint",
+                    side_effect=OpenEcologyPersistentIslandError(
+                        "hostile checkpoint failure"
+                    ),
+                ),
+                patch(
+                    "evolution_sim.mind.open_ecology_persistent_island."
+                    "restore_open_ecology_evidence_manifest_snapshot"
+                ) as restore_snapshot,
+                self.assertRaisesRegex(
+                    OpenEcologyPersistentIslandError,
+                    "hostile checkpoint",
+                ),
+            ):
+                operation()
+            restore_snapshot.assert_not_called()
+
+    def test_genesis_attempt_authority_mismatch_mutates_nothing(self) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        with self.assertRaisesRegex(
+            ValueError,
+            "genesis attempt authority does not match",
+        ):
+            PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256="0" * 64,
+            )
+        self.assertEqual(tuple(self.campaign_root.iterdir()), ())
+
+    def test_genesis_zero_length_writer_lock_is_preserved_and_rebuilt(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        evidence_directory = self.campaign_root / task.task_id
+        evidence_directory.mkdir()
+        (evidence_directory / ".writer.lock").touch()
+        aggregate_directory = self.campaign_root / "aggregates" / task.task_id
+        aggregate_commit_module._prepare_root(aggregate_directory)
+        authority = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            evidence_directory=evidence_directory,
+        )
+
+        runner, already_committed = (
+            PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=authority,
+                evidence_directory=evidence_directory,
+            )
+        )
+
+        self.assertFalse(already_committed)
+        preserved = tuple(
+            (
+                self.campaign_root / "attempts" / task.task_id / "genesis-evidence"
+            ).iterdir()
+        )
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(
+            (preserved[0] / ".writer.lock").read_bytes(),
+            b"",
+        )
+        self.assertNotEqual(
+            (evidence_directory / ".writer.lock").read_bytes(),
+            b"",
+        )
+        self.assertIsNotNone(runner.latest_aggregate_resume_pins)
+        runner.abort_evidence()
+
+    def test_interval_reconciliation_resolves_real_current_successor_and_partial(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+
+        def open_genesis(root: Path) -> PersistentIslandRunner:
+            root.mkdir()
+            authority = persistent_genesis_attempt_authority_sha256(
+                task,
+                campaign_root=root,
+                campaign_id="persistent-test",
+                evidence_directory=root / task.task_id,
+                checkpoint_interval_ticks=1,
+            )
+            runner, _ = PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=authority,
+                evidence_directory=root / task.task_id,
+                checkpoint_interval_ticks=1,
+            )
+            return runner
+
+        def interval_authority(
+            predecessor: OpenEcologyAggregateResumePins,
+        ) -> str:
+            return persistent_interval_attempt_authority_sha256(
+                task,
+                campaign_id="persistent-test",
+                predecessor=predecessor,
+                target_tick=1,
+            )
+
+        current_root = self.campaign_root / "target-current"
+        current_runner = open_genesis(current_root)
+        current_predecessor = current_runner.latest_aggregate_resume_pins
+        assert current_predecessor is not None
+        current_authority = interval_authority(current_predecessor)
+        current_runner.advance_to(1)
+        current_checkpoint = (
+            current_root
+            / "checkpoints"
+            / task.task_id
+            / "checkpoint-observed-00000001.json"
+        ).read_bytes()
+        restored_current, current_disposition = (
+            PersistentIslandRunner.reconcile_interval_attempt(
+                task,
+                campaign_root=current_root,
+                campaign_id="persistent-test",
+                predecessor=current_predecessor,
+                predecessor_observed_tick=0,
+                predecessor_terminal=False,
+                target_tick=1,
+                attempt_authority_sha256=current_authority,
+                checkpoint_interval_ticks=1,
+            )
+        )
+        self.assertEqual(current_disposition, "already_committed_target")
+        self.assertEqual(restored_current.observed_tick, 1)
+        self.assertEqual(
+            (
+                current_root
+                / "checkpoints"
+                / task.task_id
+                / "checkpoint-observed-00000001.json"
+            ).read_bytes(),
+            current_checkpoint,
+        )
+
+        successor_root = self.campaign_root / "target-successor"
+        successor_runner = open_genesis(successor_root)
+        successor_predecessor = successor_runner.latest_aggregate_resume_pins
+        assert successor_predecessor is not None
+        successor_authority = interval_authority(successor_predecessor)
+        with patch(
+            ("evolution_sim.io.open_ecology_aggregate_commit._publish_current_pointer"),
+            side_effect=OSError("simulated interval pre-CURRENT death"),
+        ):
+            with self.assertRaisesRegex(OSError, "pre-CURRENT death"):
+                successor_runner.advance_to(1)
+        successor_generation = (
+            successor_root
+            / "aggregates"
+            / task.task_id
+            / "generations"
+            / "generation-0000000000000001"
+        )
+        successor_bytes = {
+            child.name: child.read_bytes() for child in successor_generation.iterdir()
+        }
+        restored_successor, successor_disposition = (
+            PersistentIslandRunner.reconcile_interval_attempt(
+                task,
+                campaign_root=successor_root,
+                campaign_id="persistent-test",
+                predecessor=successor_predecessor,
+                predecessor_observed_tick=0,
+                predecessor_terminal=False,
+                target_tick=1,
+                attempt_authority_sha256=successor_authority,
+                checkpoint_interval_ticks=1,
+            )
+        )
+        self.assertEqual(
+            successor_disposition,
+            "recovered_original_precurrent_attempt",
+        )
+        self.assertEqual(restored_successor.observed_tick, 1)
+        self.assertEqual(
+            {
+                child.name: child.read_bytes()
+                for child in successor_generation.iterdir()
+            },
+            successor_bytes,
+        )
+
+        partial_root = self.campaign_root / "target-partial"
+        partial_runner = open_genesis(partial_root)
+        partial_predecessor = partial_runner.latest_aggregate_resume_pins
+        assert partial_predecessor is not None
+        partial_authority = interval_authority(partial_predecessor)
+        partial_checkpoint_path = (
+            partial_root
+            / "checkpoints"
+            / task.task_id
+            / "checkpoint-observed-00000001.json"
+        )
+        with patch(
+            (
+                "evolution_sim.mind.open_ecology_persistent_island."
+                "publish_open_ecology_aggregate_generation"
+            ),
+            side_effect=OSError("simulated interval partial death"),
+        ):
+            with self.assertRaisesRegex(OSError, "partial death"):
+                partial_runner.advance_to(1)
+        failed_partial_checkpoint = partial_checkpoint_path.read_bytes()
+        failed_stage = (
+            partial_root
+            / "aggregates"
+            / (f".{task.task_id}.generation-0000000000000001.stage-hard-death")
+        )
+        failed_stage.mkdir()
+        (failed_stage / "partial-checkpoint.bytes").write_bytes(
+            failed_partial_checkpoint[:1024]
+        )
+        restored_partial, partial_disposition = (
+            PersistentIslandRunner.reconcile_interval_attempt(
+                task,
+                campaign_root=partial_root,
+                campaign_id="persistent-test",
+                predecessor=partial_predecessor,
+                predecessor_observed_tick=0,
+                predecessor_terminal=False,
+                target_tick=1,
+                attempt_authority_sha256=partial_authority,
+                checkpoint_interval_ticks=1,
+            )
+        )
+        self.assertEqual(
+            partial_disposition,
+            "recovered_original_precurrent_attempt",
+        )
+        self.assertEqual(restored_partial.observed_tick, 1)
+        self.assertEqual(
+            partial_checkpoint_path.read_bytes(),
+            failed_partial_checkpoint,
+        )
+        preserved_partial_checkpoints = tuple(
+            (
+                partial_root / "attempts" / task.task_id / "interval-checkpoints"
+            ).iterdir()
+        )
+        self.assertEqual(len(preserved_partial_checkpoints), 1)
+        self.assertEqual(
+            preserved_partial_checkpoints[0].read_bytes(),
+            failed_partial_checkpoint,
+        )
+        preserved_stages = tuple(
+            (partial_root / "attempts" / task.task_id / "aggregate-stages").iterdir()
+        )
+        self.assertEqual(len(preserved_stages), 1)
+        self.assertEqual(
+            (preserved_stages[0] / "partial-checkpoint.bytes").read_bytes(),
+            failed_partial_checkpoint[:1024],
+        )
+        self.assertFalse(failed_stage.exists())
+        current_runner.abort_evidence()
+        restored_current.abort_evidence()
+        restored_successor.abort_evidence()
+        restored_partial.abort_evidence()
+
+    def test_process_runtime_reconciles_real_mixed_disk_frontiers(self) -> None:
+        current_task, successor_task, _ = prioritized_persistent_island_triplet(
+            self.tasks
+        )
+
+        def open_genesis(task: PersistentIslandTask) -> PersistentIslandRunner:
+            authority = persistent_genesis_attempt_authority_sha256(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                evidence_directory=self.campaign_root / task.task_id,
+                checkpoint_interval_ticks=1,
+            )
+            runner, _ = PersistentIslandRunner.materialize_or_restore_genesis(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                attempt_authority_sha256=authority,
+                evidence_directory=self.campaign_root / task.task_id,
+                checkpoint_interval_ticks=1,
+            )
+            return runner
+
+        current_runner = open_genesis(current_task)
+        successor_runner = open_genesis(successor_task)
+        current_predecessor = current_runner.latest_aggregate_resume_pins
+        successor_predecessor = successor_runner.latest_aggregate_resume_pins
+        assert current_predecessor is not None
+        assert successor_predecessor is not None
+        current_authority = persistent_interval_attempt_authority_sha256(
+            current_task,
+            campaign_id="persistent-test",
+            predecessor=None,
+            target_tick=1,
+        )
+        successor_authority = persistent_interval_attempt_authority_sha256(
+            successor_task,
+            campaign_id="persistent-test",
+            predecessor=None,
+            target_tick=1,
+        )
+        current_runner.advance_to(1)
+        current_target_pins = current_runner.latest_aggregate_resume_pins
+        assert current_target_pins is not None
+        with patch(
+            ("evolution_sim.io.open_ecology_aggregate_commit._publish_current_pointer"),
+            side_effect=OSError("simulated process pre-CURRENT death"),
+        ):
+            with self.assertRaisesRegex(OSError, "pre-CURRENT death"):
+                successor_runner.advance_to(1)
+        successor_frontier = inspect_open_ecology_aggregate_attempt_frontier(
+            self.campaign_root / "aggregates" / successor_task.task_id,
+            evidence_directory=self.campaign_root / successor_task.task_id,
+        )
+        successor_generation = successor_frontier["complete_successor"]
+        assert successor_generation is not None
+        successor_target_commit = successor_generation["commit"]["commit_sha256"]
+
+        selected = (current_task.task_id, successor_task.task_id)
+        expected_states = (
+            ProcessWorkerExpectedState(
+                task_id=current_task.task_id,
+                observed_tick=0,
+                terminal_extinct=False,
+                aggregate_resume_pins=None,
+            ),
+            ProcessWorkerExpectedState(
+                task_id=successor_task.task_id,
+                observed_tick=0,
+                terminal_extinct=False,
+                aggregate_resume_pins=None,
+            ),
+        )
+        runtime = _PersistentIslandRuntime(
+            slot=ProcessWorkerSlot(
+                worker_index=0,
+                host_identity="test-host",
+                device_kind="cpu",
+                device_index=None,
+                torch_threads=1,
+                task_ids=selected,
+            ),
+            tasks={
+                current_task.task_id: current_task,
+                successor_task.task_id: successor_task,
+            },
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            checkpoint_interval_ticks=1,
+        )
+        results, dispositions = runtime.reconcile(
+            expected_states=expected_states,
+            target_tick=1,
+            intent_sha256="a" * 64,
+            attempt_authority_sha256_by_task={
+                current_task.task_id: current_authority,
+                successor_task.task_id: successor_authority,
+            },
+        )
+        self.assertEqual(
+            dispositions,
+            {
+                current_task.task_id: "already_committed_target",
+                successor_task.task_id: "recovered_original_precurrent_attempt",
+            },
+        )
+        self.assertEqual(
+            tuple(result["task_id"] for result in results),
+            selected,
+        )
+        self.assertEqual(
+            tuple(result["observed_tick"] for result in results),
+            (1, 1),
+        )
+        self.assertEqual(
+            results[0]["aggregate_resume_pins"]["commit_sha256"],
+            current_target_pins.commit_sha256,
+        )
+        self.assertEqual(
+            results[1]["aggregate_resume_pins"]["commit_sha256"],
+            successor_target_commit,
+        )
+
+        current_pointer = (
+            self.campaign_root
+            / "aggregates"
+            / current_task.task_id
+            / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+        ).read_bytes()
+        successor_pointer = (
+            self.campaign_root
+            / "aggregates"
+            / successor_task.task_id
+            / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+        ).read_bytes()
+        with self.assertRaisesRegex(
+            OpenEcologyPersistentIslandError,
+            "authority",
+        ):
+            _PersistentIslandRuntime(
+                slot=runtime.slot,
+                tasks=runtime.tasks,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                checkpoint_interval_ticks=1,
+            ).reconcile(
+                expected_states=expected_states,
+                target_tick=1,
+                intent_sha256="a" * 64,
+                attempt_authority_sha256_by_task={
+                    current_task.task_id: "f" * 64,
+                    successor_task.task_id: successor_authority,
+                },
+            )
+        self.assertEqual(
+            (
+                self.campaign_root
+                / "aggregates"
+                / current_task.task_id
+                / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+            ).read_bytes(),
+            current_pointer,
+        )
+        self.assertEqual(
+            (
+                self.campaign_root
+                / "aggregates"
+                / successor_task.task_id
+                / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+            ).read_bytes(),
+            successor_pointer,
+        )
+        current_runner.abort_evidence()
+        successor_runner.abort_evidence()
+        for reconciled in runtime.runners.values():
+            reconciled.abort_evidence()
 
     def test_storage_lock_blocks_mutation_and_idle_boundary_is_archive_safe(
         self,
@@ -398,39 +1071,36 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
         h_runner.abort_evidence()
         z_runner.abort_evidence()
 
-    def test_checkpoint_publication_boundaries_are_globally_exclusive(
+    def test_distinct_task_publications_overlap_but_exclude_scan_and_same_task(
         self,
     ) -> None:
         h_task, z_task, _ = prioritized_persistent_island_triplet(self.tasks)
         h_runner = self._open(h_task)
         z_runner = self._open(z_task)
         tick_arrivals = threading.Barrier(3)
-        first_boundary_entered = threading.Event()
-        release_boundary = threading.Event()
-        overlap_observed = threading.Event()
+        publication_arrivals = threading.Barrier(3)
+        release_publications = threading.Event()
         counter_lock = threading.Lock()
-        active_boundaries = 0
-        maximum_active_boundaries = 0
+        active_publications = 0
+        maximum_active_publications = 0
 
         def empty_tick(_world: SimulationWorld) -> tuple[int, int]:
             tick_arrivals.wait(timeout=30)
             return (0, 0)
 
         def blocked_checkpoint(_runner: PersistentIslandRunner) -> None:
-            nonlocal active_boundaries, maximum_active_boundaries
+            nonlocal active_publications, maximum_active_publications
             with counter_lock:
-                active_boundaries += 1
-                maximum_active_boundaries = max(
-                    maximum_active_boundaries,
-                    active_boundaries,
+                active_publications += 1
+                maximum_active_publications = max(
+                    maximum_active_publications,
+                    active_publications,
                 )
-                if active_boundaries > 1:
-                    overlap_observed.set()
-                first_boundary_entered.set()
-            if not release_boundary.wait(timeout=30):
+            publication_arrivals.wait(timeout=30)
+            if not release_publications.wait(timeout=30):
                 raise TimeoutError("concurrency test did not release publication")
             with counter_lock:
-                active_boundaries -= 1
+                active_publications -= 1
 
         with (
             patch.object(SimulationWorld, "_run_tick", new=empty_tick),
@@ -444,17 +1114,117 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             h_future = executor.submit(h_runner.advance_to, 1)
             z_future = executor.submit(z_runner.advance_to, 1)
             tick_arrivals.wait(timeout=30)
-            self.assertTrue(first_boundary_entered.wait(timeout=30))
-            time.sleep(0.2)
-            self.assertFalse(overlap_observed.is_set())
-            release_boundary.set()
+            publication_arrivals.wait(timeout=30)
+            try:
+                self.assertTrue(OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED)
+                self.assertEqual(maximum_active_publications, 2)
+                with self.assertRaisesRegex(
+                    CampaignStorageError,
+                    "locked by another process",
+                ):
+                    with CampaignStorageLock(
+                        default_storage_lock_path(self.campaign_root),
+                        campaign_id="persistent-test",
+                        source_git_sha=_SOURCE_COMMIT,
+                    ):
+                        self.fail("storage scan entered during checkpoint publication")
+                with self.assertRaisesRegex(
+                    CampaignStorageError,
+                    "mutation barrier",
+                ):
+                    h_runner.advance_to(0)
+            finally:
+                release_publications.set()
             self.assertEqual(h_future.result(timeout=30).observed_tick, 1)
             self.assertEqual(z_future.result(timeout=30).observed_tick, 1)
 
-        self.assertEqual(maximum_active_boundaries, 1)
-        self.assertEqual(active_boundaries, 0)
+        self.assertEqual(maximum_active_publications, 2)
+        self.assertEqual(active_publications, 0)
         h_runner.abort_evidence()
         z_runner.abort_evidence()
+
+    def test_distinct_current_restores_overlap_under_campaign_shared_lock(
+        self,
+    ) -> None:
+        h_task, z_task, _ = prioritized_persistent_island_triplet(self.tasks)
+        h_runner = self._open(h_task, checkpoint_interval_ticks=1)
+        z_runner = self._open(z_task, checkpoint_interval_ticks=1)
+        h_runner.advance_to(1)
+        z_runner.advance_to(1)
+        h_pins = h_runner.latest_aggregate_resume_pins
+        z_pins = z_runner.latest_aggregate_resume_pins
+        assert h_pins is not None
+        assert z_pins is not None
+        load_arrivals = threading.Barrier(3)
+        release_loads = threading.Event()
+        first_loads: set[str] = set()
+        first_loads_lock = threading.Lock()
+        real_load = load_current_open_ecology_aggregate_generation
+
+        def blocked_first_load(
+            aggregate_root: object,
+            *args: object,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            task_id = Path(str(aggregate_root)).name
+            with first_loads_lock:
+                first = task_id not in first_loads
+                first_loads.add(task_id)
+            if first:
+                load_arrivals.wait(timeout=30)
+                if not release_loads.wait(timeout=30):
+                    raise TimeoutError("restore concurrency test did not release")
+            return real_load(aggregate_root, *args, **kwargs)
+
+        def restore(
+            task: PersistentIslandTask,
+            pins: object,
+        ) -> PersistentIslandRunner:
+            return PersistentIslandRunner.restore_from_current(
+                task,
+                campaign_root=self.campaign_root,
+                campaign_id="persistent-test",
+                pins=pins,  # type: ignore[arg-type]
+            )
+
+        with (
+            patch(
+                (
+                    "evolution_sim.mind.open_ecology_persistent_island."
+                    "load_current_open_ecology_aggregate_generation"
+                ),
+                side_effect=blocked_first_load,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            h_future = executor.submit(restore, h_task, h_pins)
+            z_future = executor.submit(restore, z_task, z_pins)
+            load_arrivals.wait(timeout=30)
+            try:
+                with self.assertRaisesRegex(
+                    CampaignStorageError,
+                    "locked by another process",
+                ):
+                    with CampaignStorageLock(
+                        default_storage_lock_path(self.campaign_root),
+                        campaign_id="persistent-test",
+                        source_git_sha=_SOURCE_COMMIT,
+                    ):
+                        self.fail("storage scan entered during restore")
+                with self.assertRaisesRegex(
+                    CampaignStorageError,
+                    "mutation barrier",
+                ):
+                    restore(h_task, h_pins)
+            finally:
+                release_loads.set()
+            restored_h = h_future.result(timeout=90)
+            restored_z = z_future.result(timeout=90)
+
+        self.assertEqual(restored_h.observed_tick, 1)
+        self.assertEqual(restored_z.observed_tick, 1)
+        restored_h.abort_evidence()
+        restored_z.abort_evidence()
 
     def test_h_z_and_exact_history_reset_r_are_real_world_treatments(self) -> None:
         h_task, z_task, r_task = prioritized_persistent_island_triplet(self.tasks)
@@ -540,6 +1310,173 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
         manifest = runner.finish_evidence()
         self.assertEqual(manifest["status"], "complete")
 
+    def test_extinct_interval_recovery_reports_incomplete_attempt_disposition(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        runner = self._open(task)
+        for agent in runner.world.alive_agents():
+            agent.health = 0.0
+            agent.energy = -1_000_000.0
+            agent.hydration = -1_000_000.0
+
+        terminal = runner.advance_to(1)
+        self.assertTrue(terminal.extinct)
+        predecessor = runner.latest_aggregate_resume_pins
+        assert predecessor is not None
+        target_tick = OPEN_ECOLOGY_FIRST_MILESTONE_TICK
+        loose_checkpoint = (
+            self.campaign_root
+            / "checkpoints"
+            / task.task_id
+            / f"checkpoint-observed-{target_tick:08d}.json"
+        )
+        loose_checkpoint.write_bytes(b"incomplete-terminal-attempt\n")
+        attempt_authority = persistent_interval_attempt_authority_sha256(
+            task,
+            campaign_id="persistent-test",
+            predecessor=predecessor,
+            target_tick=target_tick,
+        )
+
+        recovered, disposition = PersistentIslandRunner.reconcile_interval_attempt(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            predecessor=predecessor,
+            predecessor_observed_tick=1,
+            predecessor_terminal=True,
+            target_tick=target_tick,
+            attempt_authority_sha256=attempt_authority,
+        )
+
+        self.assertEqual(
+            disposition,
+            "recovered_original_precurrent_attempt",
+        )
+        self.assertTrue(recovered.extinct)
+        self.assertEqual(recovered.observed_tick, 1)
+        preserved = tuple(
+            (
+                self.campaign_root / "attempts" / task.task_id / "interval-checkpoints"
+            ).iterdir()
+        )
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(
+            preserved[0].read_bytes(),
+            b"incomplete-terminal-attempt\n",
+        )
+        recovered.abort_evidence()
+
+    def test_extinction_milestone_publication_failure_is_retryable(self) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        runner = self._open(task)
+        for agent in runner.world.alive_agents():
+            agent.health = 0.0
+            agent.energy = -1_000_000.0
+            agent.hydration = -1_000_000.0
+
+        terminal = runner.advance_to(1)
+        self.assertTrue(terminal.extinct)
+        self.assertIsNone(runner.first_milestone)
+        with patch.object(
+            runner,
+            "_write_runtime_checkpoint_locked",
+            side_effect=OSError("simulated extinction milestone publication failure"),
+        ):
+            with self.assertRaisesRegex(
+                OSError,
+                "extinction milestone publication failure",
+            ):
+                runner.advance_to(OPEN_ECOLOGY_FIRST_MILESTONE_TICK)
+        self.assertIsNone(runner.first_milestone)
+
+        retried = runner.advance_to(OPEN_ECOLOGY_FIRST_MILESTONE_TICK)
+        self.assertEqual(len(retried.milestones), 1)
+        self.assertIsNotNone(runner.first_milestone)
+        milestone_pins = runner.latest_aggregate_resume_pins
+        assert milestone_pins is not None
+        restored = PersistentIslandRunner.restore_from_current(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            pins=milestone_pins,
+        )
+        self.assertEqual(restored.first_milestone, runner.first_milestone)
+        runner.abort_evidence()
+
+    def test_pre_current_crash_preserves_attempt_and_replays_from_pinned_current(
+        self,
+    ) -> None:
+        task = prioritized_persistent_island_triplet(self.tasks)[0]
+        runner = self._open(task, checkpoint_interval_ticks=1)
+        runner.advance_to(1)
+        pins = runner.latest_aggregate_resume_pins
+        assert pins is not None
+        aggregate_root = self.campaign_root / "aggregates" / task.task_id
+        evidence_root = self.campaign_root / task.task_id
+        current_path = aggregate_root / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+        selected_current_bytes = current_path.read_bytes()
+        real_replace = os.replace
+
+        def fail_current(source: object, destination: object) -> None:
+            if Path(destination).name == OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME:
+                raise OSError("simulated pre-CURRENT process death")
+            real_replace(source, destination)
+
+        with patch(
+            "evolution_sim.io.open_ecology_aggregate_commit.os.replace",
+            side_effect=fail_current,
+        ):
+            with self.assertRaisesRegex(OSError, "pre-CURRENT process death"):
+                runner.advance_to(2)
+
+        self.assertEqual(current_path.read_bytes(), selected_current_bytes)
+        self.assertTrue(
+            (aggregate_root / "generations" / "generation-0000000000000001").is_dir()
+        )
+        ahead_manifest = load_open_ecology_evidence_manifest(
+            evidence_root,
+            verify_shards=True,
+        )
+        self.assertNotEqual(
+            ahead_manifest["manifest_sha256"],
+            pins.evidence_manifest_sha256,
+        )
+
+        restored = PersistentIslandRunner.restore_from_current(
+            task,
+            campaign_root=self.campaign_root,
+            campaign_id="persistent-test",
+            pins=pins,
+        )
+        self.assertEqual(restored.observed_tick, 1)
+        selected_manifest = load_open_ecology_evidence_manifest(
+            evidence_root,
+            verify_shards=True,
+        )
+        self.assertEqual(
+            selected_manifest["manifest_sha256"],
+            pins.evidence_manifest_sha256,
+        )
+        attempt_root = self.campaign_root / "attempts" / task.task_id
+        self.assertEqual(
+            len(list((attempt_root / "aggregate-generations").iterdir())),
+            1,
+        )
+        self.assertEqual(len(list((attempt_root / "evidence").iterdir())), 1)
+
+        replayed = restored.advance_to(2)
+        self.assertEqual(replayed.observed_tick, 2)
+        replayed_pins = restored.latest_aggregate_resume_pins
+        assert replayed_pins is not None
+        self.assertEqual(
+            replayed_pins.aggregate_generation_index,
+            pins.aggregate_generation_index + 1,
+        )
+        self.assertNotEqual(current_path.read_bytes(), selected_current_bytes)
+        restored.abort_evidence()
+
     def test_disk_checkpoint_fresh_runner_matches_uninterrupted_h_z_r(self) -> None:
         for task in prioritized_persistent_island_triplet(self.tasks):
             with self.subTest(arm=task.arm):
@@ -573,6 +1510,17 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
                 self.assertLessEqual(checkpoint_path.stat().st_size, 256 * 1024 * 1024)
 
                 shutil.copytree(baseline_root, resumed_root)
+                shutil.copy2(
+                    baseline_root.parent
+                    / (f".{baseline_root.name}.{task.task_id}.open-ecology-task.lock"),
+                    resumed_root.parent
+                    / (f".{resumed_root.name}.{task.task_id}.open-ecology-task.lock"),
+                )
+                shutil.copy2(
+                    default_storage_lock_path(baseline_root),
+                    resumed_root.parent
+                    / f".{resumed_root.name}.open-ecology-storage.lock",
+                )
                 resumed = PersistentIslandRunner.restore_from_current(
                     task,
                     campaign_root=resumed_root,
@@ -628,6 +1576,7 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
                 self.assertEqual(
                     baseline_checkpoint_names,
                     [
+                        "checkpoint-observed-00000000.json",
                         "checkpoint-observed-00000002.json",
                         "checkpoint-observed-00000004.json",
                         "checkpoint-observed-00000005.json",
@@ -659,6 +1608,15 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
         runner.advance_to(1)
         latest = runner.latest_runtime_checkpoint
         assert latest is not None
+        prior_resume_pins = runner.latest_aggregate_resume_pins
+        assert prior_resume_pins is not None
+        current_pointer_path = (
+            self.campaign_root
+            / "aggregates"
+            / task.task_id
+            / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+        )
+        prior_current_bytes = current_pointer_path.read_bytes()
         frontier = runner.campaign_barrier_frontier()
         self.assertEqual(frontier["task_id"], task.task_id)
         self.assertEqual(frontier["observed_tick"], 1)
@@ -712,6 +1670,21 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             profile["component_canonical_envelope_total_bytes"],
             sum(component_bytes.values()),
         )
+        publication_concurrency = profile["publication_concurrency"]
+        self.assertEqual(
+            publication_concurrency,
+            runner.quiescent_checkpoint["checkpoint_publication_concurrency"],
+        )
+        self.assertTrue(
+            publication_concurrency["distinct_task_publications_may_overlap"]
+        )
+        self.assertFalse(
+            publication_concurrency["storage_scan_may_overlap_publication"]
+        )
+        self.assertEqual(
+            publication_concurrency["frontier_publication_latency_model"],
+            "maximum_task_pipeline_elapsed_not_sum_of_task_pipelines",
+        )
         for field_name in (
             "capture_elapsed_ns",
             "write_elapsed_ns",
@@ -720,14 +1693,27 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             "checkpoint_pipeline_elapsed_ns",
         ):
             self.assertGreater(profile[field_name], 0)
-        checkpoint_paths = [older, Path(str(latest["path"])), newer]
-        self.assertTrue(all(path.is_file() for path in checkpoint_paths))
+        checkpoint_paths = sorted(
+            (self.campaign_root / "checkpoints" / task.task_id).iterdir()
+        )
         self.assertEqual(
-            older.read_bytes(),
+            [str(path) for path in checkpoint_paths if not path.is_file()],
+            [],
+        )
+        preserved_checkpoint_attempts = tuple(
+            (
+                self.campaign_root / "attempts" / task.task_id / "genesis-checkpoints"
+            ).iterdir()
+        )
+        self.assertEqual(len(preserved_checkpoint_attempts), 1)
+        preserved_older = preserved_checkpoint_attempts[0] / older.name
+        preserved_newer = preserved_checkpoint_attempts[0] / newer.name
+        self.assertEqual(
+            preserved_older.read_bytes(),
             b"hostile-unverified-older-checkpoint\n",
         )
         self.assertEqual(
-            newer.read_bytes(),
+            preserved_newer.read_bytes(),
             b"hostile-unverified-newer-checkpoint\n",
         )
         self.assertEqual(
@@ -735,7 +1721,6 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
             [
                 "checkpoint-observed-00000000.json",
                 "checkpoint-observed-00000001.json",
-                "checkpoint-observed-00000002.json",
             ],
         )
         manifest_before = load_open_ecology_evidence_manifest(
@@ -760,6 +1745,29 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
                 verify_shards=True,
             ),
             manifest_before,
+        )
+        with patch(
+            (
+                "evolution_sim.mind.open_ecology_persistent_island."
+                "publish_open_ecology_aggregate_generation"
+            ),
+            side_effect=OSError("simulated task publication failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "task publication failure"):
+                runner.advance_to(2)
+        self.assertEqual(current_pointer_path.read_bytes(), prior_current_bytes)
+        retained = load_current_open_ecology_aggregate_generation(
+            self.campaign_root / "aggregates" / task.task_id,
+            evidence_directory=self.campaign_root / task.task_id,
+            pins=prior_resume_pins,
+        )
+        self.assertEqual(
+            retained["commit"]["aggregate_generation_index"],
+            prior_resume_pins.aggregate_generation_index,
+        )
+        self.assertEqual(
+            runner.latest_runtime_checkpoint["checkpoint_sha256"],
+            latest["checkpoint_sha256"],
         )
         runner.abort_evidence()
 

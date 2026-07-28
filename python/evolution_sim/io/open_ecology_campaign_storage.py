@@ -12,14 +12,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
+import ctypes
 from dataclasses import dataclass
+import errno
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import shutil
+import secrets
 import stat
+import sys
 from typing import Any
 
 
@@ -157,6 +160,33 @@ def default_storage_lock_path(campaign_root: Path) -> Path:
     return root.parent / f".{root.name}.open-ecology-storage.lock"
 
 
+def ensure_real_directory_tree(
+    path: str | Path,
+    *,
+    field: str,
+    mode: int = 0o700,
+) -> Path:
+    """Create or validate an absolute directory tree without following symlinks.
+
+    ``Path.mkdir(parents=True)`` follows a pre-existing symlink in any ancestor.
+    Campaign recovery uses caller-supplied preservation paths, so every path
+    component is instead inspected and opened relative to an already verified
+    directory descriptor.  A component that races between inspection and open
+    is rejected by its device/inode identity.
+    """
+
+    if isinstance(mode, bool) or not isinstance(mode, int) or mode < 0 or mode > 0o777:
+        raise CampaignStorageError(f"{field} mode is invalid")
+    normalized, descriptor = _open_real_directory_tree(
+        path,
+        field=field,
+        create=True,
+        mode=mode,
+    )
+    os.close(descriptor)
+    return normalized
+
+
 class CampaignStorageLock(AbstractContextManager["CampaignStorageLock"]):
     """Nonblocking lock with persistent campaign/source identity."""
 
@@ -248,13 +278,21 @@ def check_campaign_storage(
         max_entries=concrete_limits.max_entries,
         require_immutable=False,
     )
-    if scan.total_file_bytes > concrete_limits.max_campaign_bytes:
+    _validate_active_storage_budget(scan, concrete_limits)
+    return scan
+
+
+def _validate_active_storage_budget(
+    scan: StorageScan,
+    limits: CampaignStorageLimits,
+) -> None:
+    if scan.total_file_bytes > limits.max_campaign_bytes:
         raise CampaignStorageError(
             "active campaign exceeds its hard byte quota: "
-            f"{scan.total_file_bytes} > {concrete_limits.max_campaign_bytes}"
+            f"{scan.total_file_bytes} > {limits.max_campaign_bytes}"
         )
     required_free_bytes = max(
-        concrete_limits.min_campaign_free_bytes,
+        limits.min_campaign_free_bytes,
         _ceiling_divide(
             scan.filesystem_total_bytes,
             ACTIVE_FILESYSTEM_FREE_FRACTION_DENOMINATOR,
@@ -265,7 +303,6 @@ def check_campaign_storage(
             "active campaign filesystem is below its free-space floor: "
             f"{scan.free_bytes} < {required_free_bytes}"
         )
-    return scan
 
 
 def seal_closed_bundle(
@@ -553,18 +590,24 @@ def _scan_tree(
     root_device = root_metadata.st_dev
     entries: list[StorageEntry] = []
 
-    def visit(directory: Path, relative: PurePosixPath) -> None:
+    def visit(
+        directory_descriptor: int,
+        directory_metadata: os.stat_result,
+        relative: PurePosixPath,
+    ) -> None:
         try:
-            children = sorted(os.scandir(directory), key=lambda item: item.name)
+            children = sorted(os.listdir(directory_descriptor))
         except OSError as exc:
             raise CampaignStorageError(f"cannot enumerate storage tree: {exc}") from exc
-        for child in children:
+        for child_name in children:
             if len(entries) >= max_entries:
                 raise CampaignStorageError("storage tree exceeds its entry ceiling")
-            path = Path(child.path)
-            child_relative = (relative / child.name).as_posix()
+            child_relative = (relative / child_name).as_posix()
             try:
-                metadata = os.lstat(path)
+                metadata = _stat_at_without_following(
+                    directory_descriptor,
+                    child_name,
+                )
             except OSError as exc:
                 raise CampaignStorageError(
                     f"cannot inspect storage entry {child_relative}: {exc}"
@@ -596,7 +639,20 @@ def _scan_tree(
                         link_count=metadata.st_nlink,
                     )
                 )
-                visit(path, relative / child.name)
+                child_descriptor, opened = _open_directory_at(
+                    directory_descriptor,
+                    child_name,
+                    metadata,
+                    display_path=child_relative,
+                )
+                try:
+                    visit(
+                        child_descriptor,
+                        opened,
+                        relative / child_name,
+                    )
+                finally:
+                    os.close(child_descriptor)
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 raise CampaignStorageError(
@@ -606,7 +662,12 @@ def _scan_tree(
                 raise CampaignStorageError(
                     f"hard links are forbidden in storage trees: {child_relative}"
                 )
-            digest, opened = _hash_descriptor_safe(path, metadata)
+            digest, opened = _hash_descriptor_safe_at(
+                directory_descriptor,
+                child_name,
+                metadata,
+                display_path=child_relative,
+            )
             entries.append(
                 StorageEntry(
                     path=child_relative,
@@ -620,29 +681,112 @@ def _scan_tree(
                     link_count=opened.st_nlink,
                 )
             )
+        finished = os.fstat(directory_descriptor)
+        if not _same_source(directory_metadata, finished):
+            display = relative.as_posix() or "."
+            raise CampaignStorageError(
+                f"storage directory changed while scanning: {display}"
+            )
 
-    visit(root, PurePosixPath())
+    root_descriptor, opened_root = _open_directory_path(root, root_metadata)
+    try:
+        visit(root_descriptor, opened_root, PurePosixPath())
+        filesystem_total_bytes, free_bytes = _descriptor_disk_usage(root_descriptor)
+    finally:
+        os.close(root_descriptor)
     entries.sort(key=lambda entry: entry.path)
-    filesystem_usage = shutil.disk_usage(root)
     return StorageScan(
         root=root,
         entries=tuple(entries),
         total_file_bytes=sum(entry.size for entry in entries if entry.kind == "file"),
-        free_bytes=filesystem_usage.free,
-        filesystem_total_bytes=filesystem_usage.total,
+        free_bytes=free_bytes,
+        filesystem_total_bytes=filesystem_total_bytes,
     )
 
 
-def _hash_descriptor_safe(
+def _open_directory_path(
     path: Path,
     initial: os.stat_result,
-) -> tuple[str, os.stat_result]:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+) -> tuple[int, os.stat_result]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise CampaignStorageError(
-            f"cannot safely open storage file {path}: {exc}"
+            f"cannot safely open storage directory {path}: {exc}"
+        ) from exc
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode) or not _same_source(initial, opened):
+        os.close(descriptor)
+        raise CampaignStorageError(f"storage directory changed while opening: {path}")
+    return descriptor, opened
+
+
+def _stat_at_without_following(
+    parent_descriptor: int,
+    name: str,
+) -> os.stat_result:
+    return os.stat(
+        name,
+        dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+
+
+def _open_directory_at(
+    parent_descriptor: int,
+    name: str,
+    initial: os.stat_result,
+    *,
+    display_path: str,
+) -> tuple[int, os.stat_result]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(
+            name,
+            flags,
+            dir_fd=parent_descriptor,
+        )
+    except OSError as exc:
+        raise CampaignStorageError(
+            f"cannot safely open storage directory {display_path}: {exc}"
+        ) from exc
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode) or not _same_source(initial, opened):
+        os.close(descriptor)
+        raise CampaignStorageError(
+            f"storage directory changed while opening: {display_path}"
+        )
+    return descriptor, opened
+
+
+def _hash_descriptor_safe_at(
+    parent_descriptor: int,
+    name: str,
+    initial: os.stat_result,
+    *,
+    display_path: str,
+) -> tuple[str, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(
+            name,
+            flags,
+            dir_fd=parent_descriptor,
+        )
+    except OSError as exc:
+        raise CampaignStorageError(
+            f"cannot safely open storage file {display_path}: {exc}"
         ) from exc
     try:
         opened = os.fstat(descriptor)
@@ -651,16 +795,25 @@ def _hash_descriptor_safe(
             or opened.st_nlink != 1
             or not _same_source(initial, opened)
         ):
-            raise CampaignStorageError(f"storage file changed while opening: {path}")
+            raise CampaignStorageError(
+                f"storage file changed while opening: {display_path}"
+            )
         digest = hashlib.sha256()
         while chunk := os.read(descriptor, READ_CHUNK_SIZE):
             digest.update(chunk)
         finished = os.fstat(descriptor)
         if not _same_source(opened, finished):
-            raise CampaignStorageError(f"storage file changed while hashing: {path}")
+            raise CampaignStorageError(
+                f"storage file changed while hashing: {display_path}"
+            )
         return digest.hexdigest(), finished
     finally:
         os.close(descriptor)
+
+
+def _descriptor_disk_usage(descriptor: int) -> tuple[int, int]:
+    usage = os.fstatvfs(descriptor)
+    return usage.f_frsize * usage.f_blocks, usage.f_frsize * usage.f_bavail
 
 
 def _same_source(left: os.stat_result, right: os.stat_result) -> bool:
@@ -670,6 +823,7 @@ def _same_source(left: os.stat_result, right: os.stat_result) -> bool:
         and left.st_ino == right.st_ino
         and left.st_size == right.st_size
         and left.st_mtime_ns == right.st_mtime_ns
+        and left.st_ctime_ns == right.st_ctime_ns
         and left.st_nlink == right.st_nlink
     )
 
@@ -686,30 +840,217 @@ def _remove_write_permissions(root: Path, entries: Sequence[StorageEntry]) -> No
 
 
 def _canonical_existing_directory(path: Path, *, field: str) -> Path:
-    raw = Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
-    try:
-        resolved = raw.resolve(strict=True)
-    except OSError as exc:
-        raise CampaignStorageError(f"{field} does not exist: {path}") from exc
-    if raw != resolved:
-        raise CampaignStorageError(
-            f"{field} raw and resolved paths differ; symlink ancestors are forbidden"
-        )
-    if not stat.S_ISDIR(os.lstat(resolved).st_mode):
-        raise CampaignStorageError(f"{field} must be a directory")
-    current = Path(resolved.anchor)
-    for part in resolved.parts[1:]:
-        current /= part
-        metadata = os.lstat(current)
-        if stat.S_ISLNK(metadata.st_mode):
-            raise CampaignStorageError(f"{field} has a symlink ancestor: {current}")
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise CampaignStorageError(
-                f"{field} ancestor is not a directory: {current}"
-            )
-    if resolved == Path(resolved.anchor):
+    normalized, descriptor = _open_real_directory_tree(
+        path,
+        field=field,
+        create=False,
+        mode=0o700,
+    )
+    os.close(descriptor)
+    return normalized
+
+
+def _normalize_real_tree_path(path: str | Path, *, field: str) -> Path:
+    candidate = Path(os.path.expanduser(os.fspath(path)))
+    if not candidate.is_absolute():
+        raise CampaignStorageError(f"{field} must be absolute")
+    lexical = Path(os.path.abspath(candidate))
+    if candidate != lexical:
+        raise CampaignStorageError(f"{field} must be lexically canonical")
+    if lexical == Path(lexical.anchor):
         raise CampaignStorageError(f"{field} may not be a filesystem root")
-    return resolved
+
+    # macOS exposes /tmp and /var as root-owned compatibility symlinks.  Only
+    # resolve that one privileged component.  Joining the untouched suffix is
+    # deliberate: resolving ``lexical`` itself would follow a lower,
+    # user-controlled symlink before the descriptor walk can reject it.
+    if len(lexical.parts) <= 1:
+        return lexical
+    top_level = Path(lexical.anchor) / lexical.parts[1]
+    try:
+        top_level_metadata = os.lstat(top_level)
+    except OSError as exc:
+        raise CampaignStorageError(f"{field} top-level directory is missing") from exc
+    if not stat.S_ISLNK(top_level_metadata.st_mode):
+        return lexical
+    if top_level_metadata.st_uid != 0:
+        raise CampaignStorageError(
+            f"{field} has a non-root-owned top-level symlink ancestor: {top_level}"
+        )
+    try:
+        raw_target = Path(os.readlink(top_level))
+    except OSError as exc:
+        raise CampaignStorageError(
+            f"{field} top-level compatibility symlink is broken"
+        ) from exc
+    if not raw_target.is_absolute():
+        raw_target = top_level.parent / raw_target
+    compatibility_target = Path(os.path.abspath(raw_target))
+    normalized = compatibility_target.joinpath(*lexical.parts[2:])
+    if normalized == Path(normalized.anchor):
+        raise CampaignStorageError(f"{field} may not resolve to a filesystem root")
+    return normalized
+
+
+def _open_real_directory_tree(
+    path: str | Path,
+    *,
+    field: str,
+    create: bool,
+    mode: int,
+) -> tuple[Path, int]:
+    normalized = _normalize_real_tree_path(path, field=field)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(normalized.anchor, flags)
+        current = Path(normalized.anchor)
+        for component in normalized.parts[1:]:
+            current /= component
+            try:
+                metadata = os.stat(
+                    component,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise CampaignStorageError(
+                        f"{field} does not exist: {current}"
+                    ) from None
+                try:
+                    os.mkdir(component, mode=mode, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise CampaignStorageError(
+                        f"cannot create {field} component {current}: {exc}"
+                    ) from exc
+                try:
+                    metadata = os.stat(
+                        component,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    raise CampaignStorageError(
+                        f"cannot inspect created {field} component {current}: {exc}"
+                    ) from exc
+            except OSError as exc:
+                raise CampaignStorageError(
+                    f"cannot inspect {field} component {current}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise CampaignStorageError(
+                    f"{field} component is not a real directory: {current}"
+                )
+            try:
+                child_descriptor = os.open(
+                    component,
+                    flags,
+                    dir_fd=descriptor,
+                )
+            except OSError as exc:
+                raise CampaignStorageError(
+                    f"cannot safely open {field} component {current}: {exc}"
+                ) from exc
+            opened = os.fstat(child_descriptor)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or opened.st_dev != metadata.st_dev
+                or opened.st_ino != metadata.st_ino
+            ):
+                os.close(child_descriptor)
+                raise CampaignStorageError(
+                    f"{field} component changed while opening: {current}"
+                )
+            os.close(descriptor)
+            descriptor = child_descriptor
+        result = descriptor
+        descriptor = None
+        return normalized, result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        stat.S_IFMT(left.st_mode) == stat.S_IFMT(right.st_mode)
+        and left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_size == right.st_size
+        and stat.S_IMODE(left.st_mode) == stat.S_IMODE(right.st_mode)
+        and left.st_nlink == right.st_nlink
+    )
+
+
+def _read_exact_descriptor(descriptor: int, *, expected_bytes: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    remaining = expected_bytes + 1
+    while remaining:
+        chunk = os.read(descriptor, min(READ_CHUNK_SIZE, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _open_published_file_at(
+    parent_descriptor: int,
+    name: str,
+    expected_metadata: os.stat_result,
+    *,
+    payload: bytes,
+    display_path: Path,
+) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise CampaignStorageError(
+            f"cannot read back immutable evidence {display_path}: {exc}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not _same_file_identity(
+            expected_metadata, opened
+        ):
+            raise CampaignStorageError(
+                f"immutable evidence identity changed during publication: {display_path}"
+            )
+        observed = _read_exact_descriptor(
+            descriptor,
+            expected_bytes=len(payload),
+        )
+        finished = os.fstat(descriptor)
+        if observed != payload or not _same_source(opened, finished):
+            raise CampaignStorageError(
+                f"immutable evidence bytes changed during publication: {display_path}"
+            )
+        try:
+            final_path = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CampaignStorageError(
+                f"immutable evidence disappeared after readback: {display_path}"
+            ) from exc
+        if not _same_file_identity(finished, final_path):
+            raise CampaignStorageError(
+                f"immutable evidence path changed after readback: {display_path}"
+            )
+    finally:
+        os.close(descriptor)
 
 
 def _require_distinct_trees(active_root: Path, bundle_root: Path) -> None:
@@ -822,27 +1163,188 @@ def _sha256(value: str, *, field: str) -> str:
 
 
 def _atomic_create(path: Path, payload: bytes, *, mode: int) -> None:
-    if path.exists() or path.is_symlink():
-        raise CampaignStorageError(f"refusing to overwrite immutable evidence: {path}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    destination = Path(path)
+    if not destination.is_absolute():
+        raise CampaignStorageError("immutable evidence path must be absolute")
+    parent, parent_descriptor = _open_real_directory_tree(
+        destination.parent,
+        field="immutable evidence parent",
+        create=False,
+        mode=0o700,
+    )
+    destination = parent / destination.name
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    stage_name: str | None = None
+    descriptor: int | None = None
     try:
-        descriptor = os.open(path, flags, mode)
-    except OSError as exc:
-        raise CampaignStorageError(
-            f"cannot create immutable evidence {path}: {exc}"
-        ) from exc
-    try:
+        for _attempt in range(32):
+            candidate = (
+                f".{destination.name}.pending-{os.getpid()}-{secrets.token_hex(16)}"
+            )
+            try:
+                descriptor = os.open(
+                    candidate,
+                    flags,
+                    mode,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise CampaignStorageError(
+                    f"cannot stage immutable evidence {destination}: {exc}"
+                ) from exc
+            stage_name = candidate
+            break
+        else:
+            raise CampaignStorageError(
+                "cannot allocate an immutable evidence publication stage"
+            )
+
         _write_all(descriptor, payload)
-        os.fsync(descriptor)
         os.fchmod(descriptor, mode)
-    except BaseException:
-        os.close(descriptor)
+        os.fsync(descriptor)
+        staged = os.fstat(descriptor)
         try:
-            path.unlink()
-        except OSError:
-            pass
-        raise
-    os.close(descriptor)
+            named_stage = os.stat(
+                stage_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CampaignStorageError(
+                "immutable evidence stage disappeared before publication"
+            ) from exc
+        stage_bytes = _read_exact_descriptor(
+            descriptor,
+            expected_bytes=len(payload),
+        )
+        finished_stage = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(staged.st_mode)
+            or staged.st_nlink != 1
+            or staged.st_size != len(payload)
+            or stat.S_IMODE(staged.st_mode) != mode
+            or not _same_file_identity(staged, named_stage)
+            or not _same_source(staged, finished_stage)
+            or stage_bytes != payload
+        ):
+            raise CampaignStorageError(
+                "immutable evidence stage identity or bytes changed"
+            )
+        try:
+            _rename_name_no_replace(
+                parent_descriptor,
+                stage_name,
+                destination.name,
+            )
+        except FileExistsError as exc:
+            raise CampaignStorageError(
+                f"refusing to overwrite immutable evidence: {destination}"
+            ) from exc
+        except OSError as exc:
+            raise CampaignStorageError(
+                f"cannot publish immutable evidence {destination}: {exc}"
+            ) from exc
+        try:
+            published = os.stat(
+                destination.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CampaignStorageError(
+                "immutable evidence disappeared during publication"
+            ) from exc
+        if not _same_file_identity(staged, published):
+            raise CampaignStorageError(
+                "immutable evidence identity changed during publication"
+            )
+        _open_published_file_at(
+            parent_descriptor,
+            destination.name,
+            staged,
+            payload=payload,
+            display_path=destination,
+        )
+        os.fsync(parent_descriptor)
+    finally:
+        # A failed stage is intentionally preserved.  POSIX has no
+        # identity-conditional unlink operation: deleting its pathname after
+        # an adversary swaps that name could delete the adversary's replacement.
+        # Successful no-replace rename consumes the stage name atomically.
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_descriptor)
+
+
+def _rename_name_no_replace(
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    """Atomically rename one same-directory entry without replacing a peer."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename = libc.renameatx_np
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_descriptor,
+            os.fsencode(source_name),
+            parent_descriptor,
+            os.fsencode(destination_name),
+            0x00000004 | 0x00000010,
+        )
+    elif sys.platform.startswith("linux"):
+        rename = libc.renameat2
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_descriptor,
+            os.fsencode(source_name),
+            parent_descriptor,
+            os.fsencode(destination_name),
+            1,
+        )
+    else:
+        raise OSError(
+            errno.ENOTSUP,
+            "exclusive immutable evidence publication is unsupported",
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number,
+            os.strerror(error_number),
+            destination_name,
+        )
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        destination_name,
+    )
 
 
 def _write_all(descriptor: int, payload: bytes) -> None:
@@ -856,8 +1358,12 @@ def _write_all(descriptor: int, payload: bytes) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
+    _, descriptor = _open_real_directory_tree(
+        path,
+        field="fsync directory",
+        create=False,
+        mode=0o700,
+    )
     try:
         os.fsync(descriptor)
     finally:
@@ -880,6 +1386,7 @@ __all__ = [
     "canonical_json_bytes",
     "check_campaign_storage",
     "default_storage_lock_path",
+    "ensure_real_directory_tree",
     "load_verified_receipt",
     "seal_closed_bundle",
     "sha256_bytes",

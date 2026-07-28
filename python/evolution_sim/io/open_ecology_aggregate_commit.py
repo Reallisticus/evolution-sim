@@ -6,14 +6,18 @@ import json
 import math
 import os
 import re
-import shutil
+import secrets
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import TYPE_CHECKING, Iterator, Mapping
 
+from evolution_sim.io.open_ecology_campaign_storage import (
+    CampaignStorageError,
+    ensure_real_directory_tree,
+)
 from evolution_sim.io.open_ecology_checkpoint import (
     OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
     load_open_ecology_checkpoint,
@@ -54,6 +58,7 @@ OPEN_ECOLOGY_AGGREGATE_POINTER_DIGEST_POLICY = (
 OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY = "generations"
 OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME = "CURRENT"
 OPEN_ECOLOGY_AGGREGATE_LOCK_NAME = ".aggregate.lock"
+OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME = ".cleanup-tombstones-v1"
 OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME = "checkpoint.json"
 OPEN_ECOLOGY_AGGREGATE_EVIDENCE_MANIFEST_NAME = "evidence-manifest.json"
 OPEN_ECOLOGY_AGGREGATE_COMMIT_NAME = "commit.json"
@@ -69,7 +74,13 @@ _GENERATION_DIRECTORY_RE = re.compile(r"^generation-([0-9]{16})$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_CLEANUP_SLOT_RE = re.compile(
+    r"^(?P<kind>file|stage)-d(?P<device>[0-9a-f]+)-"
+    r"i(?P<inode>[0-9a-f]+)-(?P<nonce>[0-9a-f]{16})$"
+)
 _MAX_JSON_NESTING_DEPTH = 128
+_CLEANUP_TOMBSTONE_MULTIPLIER = 2
+_CLEANUP_TOMBSTONE_RESERVE = 16
 _OPEN_ECOLOGY_RUNTIME_EVIDENCE_ADAPTER_SCHEMA_VERSION = (
     "open_ecology_evidence_writer_continuation_adapter_v1"
 )
@@ -114,6 +125,12 @@ _SUBSTRATE_STATUS = (
 
 class OpenEcologyAggregateCommitError(ValueError):
     """Raised when an aggregate checkpoint generation fails closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PathIdentity:
+    device: int
+    inode: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +267,7 @@ def publish_open_ecology_aggregate_generation(
 
     root = _prepare_root(Path(aggregate_root))
     evidence_path = _require_directory(Path(evidence_directory), field="evidence")
-    with _aggregate_writer_lock(root):
+    with _aggregate_writer_lock(root, limits=limits):
         with _evidence_writer_lock(evidence_path):
             _recover_complete_successor(
                 root,
@@ -326,11 +343,17 @@ def publish_open_ecology_aggregate_generation(
                 checkpoint_bytes=checkpoint_bytes,
                 evidence_manifest_bytes=evidence_manifest_bytes,
                 commit_bytes=commit_bytes,
+                max_cleanup_tombstones=_aggregate_cleanup_tombstone_limit(
+                    limits.max_generations
+                ),
             )
             _publish_current_pointer(
                 root,
                 _pointer_for_commit(commit),
                 max_pointer_bytes=limits.max_pointer_bytes,
+                max_cleanup_tombstones=_aggregate_cleanup_tombstone_limit(
+                    limits.max_generations
+                ),
             )
             loaded = _load_generation_internal(
                 root,
@@ -352,6 +375,7 @@ def load_current_open_ecology_aggregate_generation(
     *,
     evidence_directory: str | Path,
     pins: OpenEcologyAggregateResumePins,
+    uncommitted_successor_preservation_directory: str | Path | None = None,
     max_checkpoint_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
     max_commit_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES,
     max_pointer_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_POINTER_BYTES,
@@ -360,19 +384,409 @@ def load_current_open_ecology_aggregate_generation(
     ),
     max_generations: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_GENERATIONS,
 ) -> dict[str, object]:
-    """Recover an atomically complete successor, then load CURRENT under exact pins."""
+    """Load CURRENT under exact pins.
+
+    By default the legacy aggregate-container recovery contract advances
+    ``CURRENT`` across one atomically complete successor.  A persistent
+    campaign restore instead supplies
+    ``uncommitted_successor_preservation_directory``: externally pinned
+    ``CURRENT`` remains the sole authority and a complete but unselected
+    successor is moved intact into that attempt directory.
+    """
 
     return _load_pinned_generation(
         aggregate_root,
         evidence_directory=evidence_directory,
         pins=pins,
         requested_generation_index=None,
+        complete_successor_policy=(
+            "recover"
+            if uncommitted_successor_preservation_directory is None
+            else "preserve"
+        ),
+        uncommitted_successor_preservation_directory=(
+            uncommitted_successor_preservation_directory
+        ),
         max_checkpoint_bytes=max_checkpoint_bytes,
         max_commit_bytes=max_commit_bytes,
         max_pointer_bytes=max_pointer_bytes,
         max_evidence_manifest_bytes=max_evidence_manifest_bytes,
         max_generations=max_generations,
     )
+
+
+def inspect_current_open_ecology_aggregate_generation(
+    aggregate_root: str | Path,
+    *,
+    evidence_directory: str | Path,
+    pins: OpenEcologyAggregateResumePins,
+    max_checkpoint_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
+    max_commit_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES,
+    max_pointer_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_POINTER_BYTES,
+    max_evidence_manifest_bytes: int = (
+        OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_EVIDENCE_MANIFEST_BYTES
+    ),
+    max_generations: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_GENERATIONS,
+) -> dict[str, object]:
+    """Read CURRENT under exact pins without recovering or preserving a successor."""
+
+    return _load_pinned_generation(
+        aggregate_root,
+        evidence_directory=evidence_directory,
+        pins=pins,
+        requested_generation_index=None,
+        complete_successor_policy="inspect",
+        uncommitted_successor_preservation_directory=None,
+        max_checkpoint_bytes=max_checkpoint_bytes,
+        max_commit_bytes=max_commit_bytes,
+        max_pointer_bytes=max_pointer_bytes,
+        max_evidence_manifest_bytes=max_evidence_manifest_bytes,
+        max_generations=max_generations,
+    )
+
+
+def load_or_recover_open_ecology_genesis_generation(
+    aggregate_root: str | Path,
+    *,
+    evidence_directory: str | Path,
+    identity: OpenEcologyAggregateIdentityPins,
+    max_checkpoint_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
+    max_commit_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES,
+    max_pointer_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_POINTER_BYTES,
+    max_evidence_manifest_bytes: int = (
+        OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_EVIDENCE_MANIFEST_BYTES
+    ),
+    max_generations: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_GENERATIONS,
+) -> dict[str, object] | None:
+    """Load or adopt one complete generation-zero attempt under exact identity.
+
+    ``None`` means no immutable genesis generation exists yet.  A complete
+    generation-zero directory whose ``CURRENT`` publication was interrupted is
+    validated before the pointer is advanced.  No later generation is accepted
+    by this bootstrap-only API.
+    """
+
+    if not isinstance(identity, OpenEcologyAggregateIdentityPins):
+        raise OpenEcologyAggregateCommitError(
+            "genesis identity must be OpenEcologyAggregateIdentityPins"
+        )
+    if identity.simulation_generation_index != 0 or identity.tick != 0:
+        raise OpenEcologyAggregateCommitError(
+            "genesis identity must name simulation generation zero at tick zero"
+        )
+    limits = _limits(
+        max_checkpoint_bytes=max_checkpoint_bytes,
+        max_commit_bytes=max_commit_bytes,
+        max_pointer_bytes=max_pointer_bytes,
+        max_evidence_manifest_bytes=max_evidence_manifest_bytes,
+        max_generations=max_generations,
+    )
+    root_path = Path(aggregate_root)
+    if not root_path.exists() and not root_path.is_symlink():
+        return None
+    root = _require_directory(root_path, field="aggregate_root")
+    evidence_path = _require_directory(Path(evidence_directory), field="evidence")
+    # A process may die after creating the aggregate root or zero-length lock
+    # but before the first generation is durable.  Genesis recovery owns the
+    # only bootstrap mutation, so it may finish that control-file setup.
+    with _aggregate_writer_lock(root, create=True, limits=limits):
+        current = _load_current_internal(
+            root,
+            limits=limits,
+            allow_complete_successor=True,
+        )
+        indexes = _generation_indexes(
+            root,
+            max_generations=limits.max_generations,
+        )
+        # No immutable aggregate exists yet, so the evidence stream is only a
+        # failed attempt.  In particular, its writer lock may be zero-length
+        # after process death during lock initialization; the caller preserves
+        # that directory intact before rematerializing.
+        if current is None and not indexes:
+            return None
+        with _evidence_writer_lock(evidence_path):
+            if current is None:
+                if indexes != [0]:
+                    raise OpenEcologyAggregateCommitError(
+                        "genesis recovery found a non-genesis aggregate frontier"
+                    )
+                current = _load_generation_internal(
+                    root,
+                    generation_index=0,
+                    limits=limits,
+                )
+                _validate_genesis_generation(current, identity=identity)
+                _validate_external_evidence_prefix(
+                    evidence_path,
+                    evidence_manifest=_mapping(
+                        current["evidence_manifest"],
+                        field="genesis.evidence_manifest",
+                    ),
+                )
+                _publish_current_pointer(
+                    root,
+                    _pointer_for_commit(
+                        _mapping(current["commit"], field="genesis.commit")
+                    ),
+                    max_pointer_bytes=limits.max_pointer_bytes,
+                    max_cleanup_tombstones=_aggregate_cleanup_tombstone_limit(
+                        limits.max_generations
+                    ),
+                )
+            if indexes != [0]:
+                raise OpenEcologyAggregateCommitError(
+                    "genesis API refuses a post-genesis aggregate frontier"
+                )
+            _validate_genesis_generation(current, identity=identity)
+            _validate_external_evidence_prefix(
+                evidence_path,
+                evidence_manifest=_mapping(
+                    current["evidence_manifest"],
+                    field="genesis.evidence_manifest",
+                ),
+            )
+            retained = _load_current_internal(root, limits=limits)
+            if retained is None:
+                raise OpenEcologyAggregateCommitError(
+                    "genesis CURRENT disappeared during validated recovery"
+                )
+            if retained != current:
+                raise OpenEcologyAggregateCommitError(
+                    "genesis CURRENT changed during validated recovery"
+                )
+            return retained
+
+
+def inspect_open_ecology_aggregate_attempt_frontier(
+    aggregate_root: str | Path,
+    *,
+    evidence_directory: str | Path,
+    max_checkpoint_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
+    max_commit_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES,
+    max_pointer_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_POINTER_BYTES,
+    max_evidence_manifest_bytes: int = (
+        OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_EVIDENCE_MANIFEST_BYTES
+    ),
+    max_generations: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_GENERATIONS,
+) -> dict[str, object]:
+    """Inspect CURRENT and at most one complete successor without selecting it.
+
+    This is intentionally not resume authority.  A caller must validate a
+    returned generation against an external attempt contract before using
+    :func:`select_open_ecology_aggregate_attempt_generation`.
+    """
+
+    limits = _limits(
+        max_checkpoint_bytes=max_checkpoint_bytes,
+        max_commit_bytes=max_commit_bytes,
+        max_pointer_bytes=max_pointer_bytes,
+        max_evidence_manifest_bytes=max_evidence_manifest_bytes,
+        max_generations=max_generations,
+    )
+    root_path = Path(aggregate_root)
+    if not root_path.exists() and not root_path.is_symlink():
+        return {
+            "complete_successor": None,
+            "current": None,
+            "current_predecessor": None,
+        }
+    root = _require_directory(root_path, field="aggregate_root")
+    evidence_path = _require_directory(Path(evidence_directory), field="evidence")
+    with _aggregate_writer_lock(root, create=True, limits=limits):
+        with _evidence_writer_lock(evidence_path):
+            current = _load_current_internal(
+                root,
+                limits=limits,
+                allow_complete_successor=True,
+            )
+            indexes = _generation_indexes(
+                root,
+                max_generations=limits.max_generations,
+            )
+            current_index = (
+                None
+                if current is None
+                else int(
+                    _mapping(current["commit"], field="current.commit")[
+                        "aggregate_generation_index"
+                    ]
+                )
+            )
+            current_predecessor = (
+                None
+                if current_index is None or current_index == 0
+                else _load_generation_internal(
+                    root,
+                    generation_index=current_index - 1,
+                    limits=limits,
+                )
+            )
+            successor_index = 0 if current_index is None else current_index + 1
+            successor = (
+                _load_generation_internal(
+                    root,
+                    generation_index=successor_index,
+                    limits=limits,
+                )
+                if indexes and indexes[-1] == successor_index
+                else None
+            )
+            for label, loaded in (
+                ("current", current),
+                ("current_predecessor", current_predecessor),
+                ("complete_successor", successor),
+            ):
+                if loaded is not None:
+                    _validate_external_evidence_prefix(
+                        evidence_path,
+                        evidence_manifest=_mapping(
+                            loaded["evidence_manifest"],
+                            field=f"{label}.evidence_manifest",
+                        ),
+                    )
+            return {
+                "complete_successor": successor,
+                "current": current,
+                "current_predecessor": current_predecessor,
+            }
+
+
+def select_open_ecology_aggregate_attempt_generation(
+    aggregate_root: str | Path,
+    *,
+    evidence_directory: str | Path,
+    pins: OpenEcologyAggregateResumePins,
+    expected_previous_commit_sha256: str | None,
+    max_checkpoint_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
+    max_commit_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES,
+    max_pointer_bytes: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_POINTER_BYTES,
+    max_evidence_manifest_bytes: int = (
+        OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_EVIDENCE_MANIFEST_BYTES
+    ),
+    max_generations: int = OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_GENERATIONS,
+) -> dict[str, object]:
+    """Select one externally validated complete attempt generation."""
+
+    if not isinstance(pins, OpenEcologyAggregateResumePins):
+        raise OpenEcologyAggregateCommitError(
+            "attempt generation pins must be OpenEcologyAggregateResumePins"
+        )
+    previous_digest = (
+        None
+        if expected_previous_commit_sha256 is None
+        else _sha256(
+            expected_previous_commit_sha256,
+            field="expected_previous_commit_sha256",
+        )
+    )
+    if (pins.aggregate_generation_index == 0) != (previous_digest is None):
+        raise OpenEcologyAggregateCommitError(
+            "attempt predecessor presence does not match generation index"
+        )
+    limits = _limits(
+        max_checkpoint_bytes=max_checkpoint_bytes,
+        max_commit_bytes=max_commit_bytes,
+        max_pointer_bytes=max_pointer_bytes,
+        max_evidence_manifest_bytes=max_evidence_manifest_bytes,
+        max_generations=max_generations,
+    )
+    root = _require_directory(Path(aggregate_root), field="aggregate_root")
+    evidence_path = _require_directory(Path(evidence_directory), field="evidence")
+    with _aggregate_writer_lock(root, create=False, limits=limits):
+        with _evidence_writer_lock(evidence_path):
+            current = _load_current_internal(
+                root,
+                limits=limits,
+                allow_complete_successor=True,
+            )
+            current_index = (
+                None
+                if current is None
+                else int(
+                    _mapping(current["commit"], field="current.commit")[
+                        "aggregate_generation_index"
+                    ]
+                )
+            )
+            target_index = pins.aggregate_generation_index
+            if current_index == target_index:
+                assert current is not None
+                _validate_resume_pins(current, pins=pins)
+                selected = current
+            else:
+                if current is None:
+                    raise OpenEcologyAggregateCommitError(
+                        "attempt selection requires a published CURRENT "
+                        "predecessor; recover genesis through the genesis API"
+                    )
+                expected_current_index = target_index - 1
+                if current_index != expected_current_index:
+                    raise OpenEcologyAggregateCommitError(
+                        "attempt selection CURRENT is not the exact predecessor"
+                    )
+                current_commit = _mapping(
+                    current["commit"],
+                    field="attempt predecessor.commit",
+                )
+                if current_commit["commit_sha256"] != previous_digest:
+                    raise OpenEcologyAggregateCommitError(
+                        "attempt predecessor commit pin mismatch"
+                    )
+                selected = _load_generation_internal(
+                    root,
+                    generation_index=target_index,
+                    limits=limits,
+                )
+                _validate_resume_pins(selected, pins=pins)
+                selected_commit = _mapping(
+                    selected["commit"],
+                    field="attempt target.commit",
+                )
+                selected_previous = selected_commit["previous"]
+                if previous_digest is None:
+                    if selected_previous is not None:
+                        raise OpenEcologyAggregateCommitError(
+                            "genesis attempt target unexpectedly names a predecessor"
+                        )
+                else:
+                    previous = _mapping(
+                        selected_previous,
+                        field="attempt target.previous",
+                    )
+                    if (
+                        previous["aggregate_generation_index"] != expected_current_index
+                        or previous["commit_sha256"] != previous_digest
+                    ):
+                        raise OpenEcologyAggregateCommitError(
+                            "attempt target does not extend the exact predecessor"
+                        )
+                _validate_external_evidence_prefix(
+                    evidence_path,
+                    evidence_manifest=_mapping(
+                        selected["evidence_manifest"],
+                        field="attempt target.evidence_manifest",
+                    ),
+                )
+                _publish_current_pointer(
+                    root,
+                    _pointer_for_commit(selected_commit),
+                    max_pointer_bytes=limits.max_pointer_bytes,
+                    max_cleanup_tombstones=_aggregate_cleanup_tombstone_limit(
+                        limits.max_generations
+                    ),
+                )
+            retained = _load_current_internal(root, limits=limits)
+            if retained is None:
+                raise OpenEcologyAggregateCommitError(
+                    "attempt selection failed to retain CURRENT"
+                )
+            _validate_resume_pins(retained, pins=pins)
+            if retained != selected:
+                raise OpenEcologyAggregateCommitError(
+                    "attempt selection readback changed"
+                )
+            return retained
 
 
 def load_open_ecology_aggregate_generation(
@@ -396,6 +810,8 @@ def load_open_ecology_aggregate_generation(
         evidence_directory=evidence_directory,
         pins=pins,
         requested_generation_index=aggregate_generation_index,
+        complete_successor_policy="recover",
+        uncommitted_successor_preservation_directory=None,
         max_checkpoint_bytes=max_checkpoint_bytes,
         max_commit_bytes=max_commit_bytes,
         max_pointer_bytes=max_pointer_bytes,
@@ -410,6 +826,8 @@ def _load_pinned_generation(
     evidence_directory: str | Path,
     pins: OpenEcologyAggregateResumePins,
     requested_generation_index: int | None,
+    complete_successor_policy: str,
+    uncommitted_successor_preservation_directory: str | Path | None,
     max_checkpoint_bytes: int,
     max_commit_bytes: int,
     max_pointer_bytes: int,
@@ -429,6 +847,31 @@ def _load_pinned_generation(
     )
     root = _require_directory(Path(aggregate_root), field="aggregate_root")
     evidence_path = _require_directory(Path(evidence_directory), field="evidence")
+    preservation_path = (
+        None
+        if uncommitted_successor_preservation_directory is None
+        else Path(uncommitted_successor_preservation_directory)
+    )
+    if complete_successor_policy not in {"recover", "preserve", "inspect"}:
+        raise OpenEcologyAggregateCommitError("unknown complete successor load policy")
+    if (complete_successor_policy == "preserve") != (preservation_path is not None):
+        raise OpenEcologyAggregateCommitError(
+            "complete successor preservation policy/path mismatch"
+        )
+    if preservation_path is not None:
+        if requested_generation_index is not None:
+            raise OpenEcologyAggregateCommitError(
+                "historical generation loads cannot preserve a CURRENT successor"
+            )
+        if not preservation_path.is_absolute():
+            raise OpenEcologyAggregateCommitError(
+                "uncommitted successor preservation directory must be absolute"
+            )
+        if preservation_path == root or root in preservation_path.parents:
+            raise OpenEcologyAggregateCommitError(
+                "uncommitted successor preservation directory must be outside "
+                "the aggregate root"
+            )
     if requested_generation_index is not None:
         requested_generation_index = _nonnegative_int(
             requested_generation_index,
@@ -438,14 +881,21 @@ def _load_pinned_generation(
             raise OpenEcologyAggregateCommitError(
                 "requested generation does not match resume pins"
             )
-    with _aggregate_writer_lock(root, create=False):
+    with _aggregate_writer_lock(root, create=False, limits=limits):
         with _evidence_writer_lock(evidence_path):
-            _recover_complete_successor(
-                root,
-                limits=limits,
-                evidence_directory=evidence_path,
-            )
-            current = _load_current_internal(root, limits=limits)
+            if complete_successor_policy == "recover":
+                _recover_complete_successor(
+                    root,
+                    limits=limits,
+                    evidence_directory=evidence_path,
+                )
+                current = _load_current_internal(root, limits=limits)
+            else:
+                current = _load_current_internal(
+                    root,
+                    limits=limits,
+                    allow_complete_successor=True,
+                )
             if current is None:
                 raise OpenEcologyAggregateCommitError(
                     "aggregate store has no current generation"
@@ -483,6 +933,21 @@ def _load_pinned_generation(
                     field="loaded.evidence_manifest",
                 ),
             )
+            if complete_successor_policy == "preserve":
+                assert preservation_path is not None
+                _preserve_complete_successor(
+                    root,
+                    current=current,
+                    limits=limits,
+                    evidence_directory=evidence_path,
+                    preservation_directory=preservation_path,
+                )
+                retained = _load_current_internal(root, limits=limits)
+                if retained is None:
+                    raise OpenEcologyAggregateCommitError(
+                        "aggregate CURRENT disappeared during successor preservation"
+                    )
+                _validate_resume_pins(retained, pins=pins)
         return loaded
 
 
@@ -528,7 +993,13 @@ def _prepare_root(root: Path) -> Path:
     if root.exists() or root.is_symlink():
         root = _require_directory(root, field="aggregate_root")
     else:
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root = ensure_real_directory_tree(
+                root,
+                field="aggregate root",
+            )
+        except CampaignStorageError as error:
+            raise OpenEcologyAggregateCommitError(str(error)) from error
         root = _require_directory(root, field="aggregate_root")
     generations = root / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
     if generations.exists() or generations.is_symlink():
@@ -545,6 +1016,7 @@ def _aggregate_writer_lock(
     root: Path,
     *,
     create: bool = True,
+    limits: _Limits,
 ) -> Iterator[None]:
     if create:
         root = _prepare_root(root)
@@ -568,6 +1040,11 @@ def _aggregate_writer_lock(
             expected_bytes=_AGGREGATE_LOCK_BYTES,
             initialize=create,
             field="aggregate lock",
+        )
+        _reconcile_aggregate_cleanup_tombstones(
+            root,
+            max_tombstones=_aggregate_cleanup_tombstone_limit(limits.max_generations),
+            limits=limits,
         )
         yield
     finally:
@@ -699,8 +1176,82 @@ def _recover_complete_successor(
             root,
             _pointer_for_commit(commit),
             max_pointer_bytes=limits.max_pointer_bytes,
+            max_cleanup_tombstones=_aggregate_cleanup_tombstone_limit(
+                limits.max_generations
+            ),
         )
     _load_current_internal(root, limits=limits)
+
+
+def _preserve_complete_successor(
+    root: Path,
+    *,
+    current: Mapping[str, object],
+    limits: _Limits,
+    evidence_directory: Path,
+    preservation_directory: Path,
+) -> None:
+    """Move one complete generation not selected by CURRENT out of authority."""
+
+    indexes = _generation_indexes(root, max_generations=limits.max_generations)
+    current_commit = _mapping(current["commit"], field="current.commit")
+    current_index = int(current_commit["aggregate_generation_index"])
+    candidate_index = current_index + 1
+    if not indexes or indexes[-1] != candidate_index:
+        return
+    candidate = _load_generation_internal(
+        root,
+        generation_index=candidate_index,
+        limits=limits,
+    )
+    candidate_commit = _mapping(candidate["commit"], field="candidate.commit")
+    previous = _mapping(candidate_commit["previous"], field="candidate.previous")
+    if (
+        previous["aggregate_generation_index"] != current_index
+        or previous["commit_sha256"] != current_commit["commit_sha256"]
+    ):
+        raise OpenEcologyAggregateCommitError(
+            "complete successor does not extend pinned CURRENT"
+        )
+    _validate_external_evidence_prefix(
+        evidence_directory,
+        evidence_manifest=_mapping(
+            candidate["evidence_manifest"],
+            field="candidate.evidence_manifest",
+        ),
+    )
+
+    try:
+        preservation_directory = ensure_real_directory_tree(
+            preservation_directory,
+            field="aggregate attempt preservation directory",
+        )
+    except CampaignStorageError as error:
+        raise OpenEcologyAggregateCommitError(str(error)) from error
+    preservation_directory = _require_directory(
+        preservation_directory,
+        field="aggregate attempt preservation directory",
+    )
+    source = (
+        root
+        / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+        / _generation_directory_name(candidate_index)
+    )
+    commit_sha256 = _sha256(
+        candidate_commit["commit_sha256"],
+        field="candidate.commit_sha256",
+    )
+    base_name = f"{source.name}-{commit_sha256}"
+    destination = preservation_directory / base_name
+    attempt_index = 0
+    while destination.exists() or destination.is_symlink():
+        attempt_index += 1
+        destination = preservation_directory / (
+            f"{base_name}-attempt-{attempt_index:04d}"
+        )
+    os.rename(source, destination)
+    _fsync_directory(root / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY)
+    _fsync_directory(preservation_directory)
 
 
 def _load_current_internal(
@@ -711,8 +1262,7 @@ def _load_current_internal(
 ) -> dict[str, object] | None:
     _validate_root_layout(
         root,
-        max_generations=limits.max_generations,
-        max_pointer_bytes=limits.max_pointer_bytes,
+        limits=limits,
         allow_complete_successor=allow_complete_successor,
     )
     pointer_path = root / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
@@ -755,8 +1305,7 @@ def _load_generation_internal(
     if not skip_root_layout:
         _validate_root_layout(
             root,
-            max_generations=limits.max_generations,
-            max_pointer_bytes=limits.max_pointer_bytes,
+            limits=limits,
             allow_complete_successor=True,
         )
     directory_name = _generation_directory_name(selected_index)
@@ -892,6 +1441,25 @@ def _validate_next_generation_request(
         )
 
 
+def _validate_genesis_generation(
+    loaded: Mapping[str, object],
+    *,
+    identity: OpenEcologyAggregateIdentityPins,
+) -> None:
+    commit = _mapping(loaded["commit"], field="genesis.commit")
+    if (
+        commit["aggregate_generation_index"] != 0
+        or commit["previous"] is not None
+        or _identity_pins_from_commit(
+            _mapping(commit["identity"], field="genesis.commit.identity")
+        )
+        != identity
+    ):
+        raise OpenEcologyAggregateCommitError(
+            "aggregate generation is not the expected exact genesis authority"
+        )
+
+
 def _build_commit(
     *,
     aggregate_generation_index: int,
@@ -1003,6 +1571,7 @@ def _publish_generation_directory(
     checkpoint_bytes: bytes,
     evidence_manifest_bytes: bytes,
     commit_bytes: bytes,
+    max_cleanup_tombstones: int,
 ) -> None:
     generations = root / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
     destination = generations / directory_name
@@ -1011,7 +1580,10 @@ def _publish_generation_directory(
             "aggregate generation directory already exists and is immutable"
         )
     stage_prefix = f".{root.name}.{directory_name}.stage-"
-    stage = Path(mkdtemp(prefix=stage_prefix, dir=root.parent))
+    stage, stage_identity = _create_owned_stage_directory(
+        root.parent,
+        prefix=stage_prefix,
+    )
     renamed = False
     try:
         _write_new_file(
@@ -1027,12 +1599,39 @@ def _publish_generation_directory(
             commit_bytes,
         )
         _fsync_directory(stage)
+        if (
+            _directory_identity(
+                stage,
+                field="aggregate staging directory before publication",
+            )
+            != stage_identity
+        ):
+            raise OpenEcologyAggregateCommitError(
+                "aggregate staging directory changed before publication"
+            )
         os.rename(stage, destination)
+        if (
+            _directory_identity(
+                destination,
+                field="published aggregate generation directory",
+            )
+            != stage_identity
+        ):
+            raise OpenEcologyAggregateCommitError(
+                "aggregate staging directory changed during publication"
+            )
         renamed = True
         _fsync_directory(generations)
     finally:
-        if not renamed and stage.exists():
-            _remove_owned_stage(stage, parent=root.parent, prefix=stage_prefix)
+        if not renamed:
+            _remove_owned_stage(
+                stage,
+                parent=root.parent,
+                prefix=stage_prefix,
+                expected_identity=stage_identity,
+                cleanup_root=(root / OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME),
+                max_tombstones=max_cleanup_tombstones,
+            )
 
 
 def _publish_current_pointer(
@@ -1040,6 +1639,7 @@ def _publish_current_pointer(
     pointer: Mapping[str, object],
     *,
     max_pointer_bytes: int,
+    max_cleanup_tombstones: int,
 ) -> None:
     validated = _validate_pointer(pointer)
     encoded = _canonical_ascii_line(validated)
@@ -1049,6 +1649,7 @@ def _publish_current_pointer(
         )
     destination = root / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
     temp_path: Path | None = None
+    temp_identity: _PathIdentity | None = None
     try:
         with NamedTemporaryFile(
             "wb",
@@ -1058,6 +1659,7 @@ def _publish_current_pointer(
             delete=False,
         ) as temp_file:
             temp_path = Path(temp_file.name)
+            temp_identity = _path_identity_from_stat(os.fstat(temp_file.fileno()))
             temp_file.write(encoded)
             temp_file.flush()
             os.fsync(temp_file.fileno())
@@ -1065,8 +1667,15 @@ def _publish_current_pointer(
         temp_path = None
         _fsync_directory(root)
     finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
+        if temp_path is not None and temp_identity is not None:
+            _unlink_owned_regular_file(
+                temp_path,
+                expected_identity=temp_identity,
+                field="aggregate CURRENT temp",
+                missing_ok=True,
+                cleanup_root=(root / OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME),
+                max_tombstones=max_cleanup_tombstones,
+            )
 
 
 def _validate_commit(
@@ -1780,29 +2389,40 @@ def _identity_pins_from_commit(
 def _validate_root_layout(
     root: Path,
     *,
-    max_generations: int,
-    max_pointer_bytes: int,
+    limits: _Limits,
     allow_complete_successor: bool,
 ) -> None:
     root = _require_directory(root, field="aggregate_root")
     names = {entry.name for entry in root.iterdir()}
-    if names not in {
+    cleanup_present = OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME in names
+    authority_names = names - {OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME}
+    if authority_names not in {
         _ROOT_ENTRIES_WITHOUT_CURRENT,
         _ROOT_ENTRIES_WITH_CURRENT,
     }:
         raise OpenEcologyAggregateCommitError(
             "aggregate root contains missing or surplus entries"
         )
+    if cleanup_present:
+        _reconcile_aggregate_cleanup_tombstones(
+            root,
+            max_tombstones=_aggregate_cleanup_tombstone_limit(limits.max_generations),
+            repair=False,
+            limits=limits,
+        )
     generations = _require_directory(
         root / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY,
         field="aggregate generations",
     )
-    indexes = _generation_indexes(root, max_generations=max_generations)
+    indexes = _generation_indexes(
+        root,
+        max_generations=limits.max_generations,
+    )
     pointer_path = root / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
     if pointer_path.exists() or pointer_path.is_symlink():
         pointer = _load_pointer(
             pointer_path,
-            max_bytes=max_pointer_bytes,
+            max_bytes=limits.max_pointer_bytes,
         )
         current_index = int(pointer["aggregate_generation_index"])
         maximum_allowed = current_index + (1 if allow_complete_successor else 0)
@@ -1981,12 +2601,890 @@ def _write_new_file(path: Path, encoded: bytes) -> None:
         os.close(descriptor)
 
 
-def _remove_owned_stage(stage: Path, *, parent: Path, prefix: str) -> None:
+def _path_identity_from_stat(path_stat: os.stat_result) -> _PathIdentity:
+    return _PathIdentity(
+        device=path_stat.st_dev,
+        inode=path_stat.st_ino,
+    )
+
+
+def _aggregate_cleanup_tombstone_limit(max_generations: int) -> int:
+    return (
+        _positive_int(max_generations, field="max_generations")
+        * _CLEANUP_TOMBSTONE_MULTIPLIER
+        + _CLEANUP_TOMBSTONE_RESERVE
+    )
+
+
+def _directory_identity(path: Path, *, field: str) -> _PathIdentity:
+    try:
+        path_stat = os.lstat(path)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise OpenEcologyAggregateCommitError(f"cannot inspect {field}") from error
+    if not stat.S_ISDIR(path_stat.st_mode):
+        raise OpenEcologyAggregateCommitError(f"{field} must be a real directory")
+    return _path_identity_from_stat(path_stat)
+
+
+def _directory_descriptor_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required):
+        raise OpenEcologyAggregateCommitError(
+            "descriptor-relative cleanup requires O_DIRECTORY and O_NOFOLLOW"
+        )
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_owned_cleanup_parent(
+    path: Path,
+    *,
+    field: str,
+) -> tuple[int, os.stat_result]:
+    try:
+        descriptor = os.open(path, _directory_descriptor_flags())
+    except OSError as error:
+        raise OpenEcologyAggregateCommitError(
+            f"cannot safely open {field} directory"
+        ) from error
+    metadata = os.fstat(descriptor)
+    mode = stat.S_IMODE(metadata.st_mode)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or mode & 0o022
+    ):
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(
+            f"{field} directory must be real, process-owned, and not "
+            "group/world-writable"
+        )
+    try:
+        current = os.lstat(path)
+    except OSError as error:
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(
+            f"cannot revalidate {field} directory"
+        ) from error
+    if not stat.S_ISDIR(current.st_mode) or _path_identity_from_stat(
+        current
+    ) != _path_identity_from_stat(metadata):
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(f"{field} directory namespace changed")
+    return descriptor, metadata
+
+
+def _create_owned_stage_directory(
+    parent: Path,
+    *,
+    prefix: str,
+) -> tuple[Path, _PathIdentity]:
+    parent_descriptor, parent_metadata = _open_owned_cleanup_parent(
+        parent,
+        field="aggregate staging parent",
+    )
+    try:
+        for _attempt in range(128):
+            name = f"{prefix}{secrets.token_hex(8)}"
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+            except FileExistsError:
+                continue
+            except OSError as error:
+                raise OpenEcologyAggregateCommitError(
+                    "cannot create aggregate staging directory"
+                ) from error
+            metadata = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_dev != parent_metadata.st_dev
+                or stat.S_IMODE(metadata.st_mode) & 0o077
+            ):
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate staging directory authority is invalid"
+                )
+            current_parent = os.lstat(parent)
+            if not stat.S_ISDIR(current_parent.st_mode) or _path_identity_from_stat(
+                current_parent
+            ) != _path_identity_from_stat(parent_metadata):
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate staging parent namespace changed"
+                )
+            _fsync_directory_descriptor_best_effort(parent_descriptor)
+            return parent / name, _path_identity_from_stat(metadata)
+    finally:
+        os.close(parent_descriptor)
+    raise OpenEcologyAggregateCommitError(
+        "cannot allocate a unique aggregate staging directory"
+    )
+
+
+def _open_aggregate_cleanup_directory(
+    root_descriptor: int,
+    *,
+    root_metadata: os.stat_result,
+    create: bool,
+) -> tuple[int, os.stat_result] | None:
+    name = OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise OpenEcologyAggregateCommitError(
+                "cannot create aggregate cleanup tombstone directory"
+            ) from error
+    try:
+        descriptor = os.open(
+            name,
+            _directory_descriptor_flags(),
+            dir_fd=root_descriptor,
+        )
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise
+    except OSError as error:
+        raise OpenEcologyAggregateCommitError(
+            "cannot safely open aggregate cleanup tombstone directory"
+        ) from error
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) not in {0o500, 0o700}
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != root_metadata.st_dev
+    ):
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup tombstone directory authority is invalid"
+        )
+    try:
+        namespace_metadata = os.stat(
+            name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(
+            "cannot revalidate aggregate cleanup tombstone namespace"
+        ) from error
+    if not stat.S_ISDIR(namespace_metadata.st_mode) or _path_identity_from_stat(
+        namespace_metadata
+    ) != _path_identity_from_stat(metadata):
+        os.close(descriptor)
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup tombstone namespace changed"
+        )
+    return descriptor, metadata
+
+
+def _aggregate_cleanup_slot_contract(
+    name: str,
+) -> tuple[str, _PathIdentity]:
+    match = _CLEANUP_SLOT_RE.fullmatch(name)
+    if match is None:
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup tombstone directory contains a surplus entry"
+        )
+    return (
+        match.group("kind"),
+        _PathIdentity(
+            device=int(match.group("device"), 16),
+            inode=int(match.group("inode"), 16),
+        ),
+    )
+
+
+def _validate_aggregate_cleanup_directory(
+    metadata: os.stat_result,
+    *,
+    cleanup_device: int,
+    field: str,
+) -> None:
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) not in {0o500, 0o700}
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != cleanup_device
+    ):
+        raise OpenEcologyAggregateCommitError(f"{field} authority is invalid")
+
+
+def _open_aggregate_cleanup_slot(
+    cleanup_descriptor: int,
+    *,
+    cleanup_metadata: os.stat_result,
+    kind: str,
+    expected_identity: _PathIdentity,
+) -> tuple[str, int, os.stat_result]:
+    if kind not in {"file", "stage"}:
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup tombstone kind is invalid"
+        )
+    for _attempt in range(128):
+        slot_name = (
+            f"{kind}-d{expected_identity.device:x}-i{expected_identity.inode:x}-"
+            f"{secrets.token_hex(8)}"
+        )
+        try:
+            os.mkdir(slot_name, mode=0o700, dir_fd=cleanup_descriptor)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise OpenEcologyAggregateCommitError(
+                "cannot create aggregate cleanup tombstone slot"
+            ) from error
+        try:
+            slot_descriptor = os.open(
+                slot_name,
+                _directory_descriptor_flags(),
+                dir_fd=cleanup_descriptor,
+            )
+        except OSError as error:
+            raise OpenEcologyAggregateCommitError(
+                "cannot safely open aggregate cleanup tombstone slot"
+            ) from error
+        slot_metadata = os.fstat(slot_descriptor)
+        _validate_aggregate_cleanup_directory(
+            slot_metadata,
+            cleanup_device=cleanup_metadata.st_dev,
+            field="aggregate cleanup tombstone slot",
+        )
+        return slot_name, slot_descriptor, slot_metadata
+    raise OpenEcologyAggregateCommitError(
+        "cannot allocate a unique aggregate cleanup tombstone slot"
+    )
+
+
+def _opened_aggregate_cleanup_file_identity(
+    descriptor: int,
+    *,
+    expected_identity: _PathIdentity,
+    cleanup_device: int,
+    field: str,
+    allow_relocated_zero: bool = False,
+) -> os.stat_result:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != cleanup_device
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise OpenEcologyAggregateCommitError(
+            f"{field} changed before descriptor-bound truncation"
+        )
+    if _path_identity_from_stat(metadata) != expected_identity and not (
+        allow_relocated_zero and metadata.st_size == 0
+    ):
+        raise OpenEcologyAggregateCommitError(
+            f"{field} changed before descriptor-bound truncation"
+        )
+    return metadata
+
+
+def _stage_file_byte_ceilings(limits: _Limits | None) -> dict[str, int]:
+    return {
+        OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME: (
+            OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES
+            if limits is None
+            else limits.max_checkpoint_bytes
+        ),
+        OPEN_ECOLOGY_AGGREGATE_EVIDENCE_MANIFEST_NAME: (
+            OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_EVIDENCE_MANIFEST_BYTES
+            if limits is None
+            else limits.max_evidence_manifest_bytes
+        ),
+        OPEN_ECOLOGY_AGGREGATE_COMMIT_NAME: (
+            OPEN_ECOLOGY_DEFAULT_MAX_AGGREGATE_COMMIT_BYTES
+            if limits is None
+            else limits.max_commit_bytes
+        ),
+    }
+
+
+def _validate_opened_aggregate_stage(
+    descriptor: int,
+    *,
+    expected_identity: _PathIdentity,
+    cleanup_device: int,
+    limits: _Limits | None,
+    field: str,
+    allow_relocated: bool = False,
+) -> os.stat_result:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != cleanup_device
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise OpenEcologyAggregateCommitError(f"{field} authority is invalid")
+    if _path_identity_from_stat(metadata) != expected_identity and not allow_relocated:
+        raise OpenEcologyAggregateCommitError(f"{field} authority is invalid")
+    ceilings = _stage_file_byte_ceilings(limits)
+    entries = os.listdir(descriptor)
+    if len(entries) > len(ceilings) or not set(entries).issubset(ceilings):
+        raise OpenEcologyAggregateCommitError(f"{field} contains surplus entries")
+    for name in entries:
+        try:
+            candidate = os.stat(
+                name,
+                dir_fd=descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise OpenEcologyAggregateCommitError(
+                f"cannot inspect {field} file {name}"
+            ) from error
+        if (
+            not stat.S_ISREG(candidate.st_mode)
+            or candidate.st_nlink != 1
+            or candidate.st_uid != os.geteuid()
+            or candidate.st_dev != cleanup_device
+            or stat.S_IMODE(candidate.st_mode) & 0o022
+            or candidate.st_size > ceilings[name]
+        ):
+            raise OpenEcologyAggregateCommitError(
+                f"{field} file {name} violates its authority or byte ceiling"
+            )
+    return metadata
+
+
+def _reconcile_aggregate_cleanup_directory_descriptor(
+    cleanup_descriptor: int,
+    *,
+    cleanup_metadata: os.stat_result,
+    max_tombstones: int,
+    repair: bool,
+    limits: _Limits | None,
+) -> int:
+    names = sorted(os.listdir(cleanup_descriptor))
+    if len(names) > max_tombstones:
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup tombstone limit exceeded"
+        )
+    for slot_name in names:
+        kind, expected_identity = _aggregate_cleanup_slot_contract(slot_name)
+        try:
+            slot_descriptor = os.open(
+                slot_name,
+                _directory_descriptor_flags(),
+                dir_fd=cleanup_descriptor,
+            )
+        except OSError as error:
+            raise OpenEcologyAggregateCommitError(
+                "cannot safely open aggregate cleanup tombstone slot"
+            ) from error
+        try:
+            slot_metadata = os.fstat(slot_descriptor)
+            _validate_aggregate_cleanup_directory(
+                slot_metadata,
+                cleanup_device=cleanup_metadata.st_dev,
+                field="aggregate cleanup tombstone slot",
+            )
+            entries = os.listdir(slot_descriptor)
+            if not entries:
+                continue
+            if entries != ["candidate"]:
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate cleanup tombstone slot contains surplus entries"
+                )
+            if kind == "file":
+                flags = os.O_RDWR if repair else os.O_RDONLY
+                flags |= getattr(os, "O_CLOEXEC", 0) | getattr(
+                    os,
+                    "O_NOFOLLOW",
+                    0,
+                )
+                try:
+                    candidate_descriptor = os.open(
+                        "candidate",
+                        flags,
+                        dir_fd=slot_descriptor,
+                    )
+                except OSError as error:
+                    raise OpenEcologyAggregateCommitError(
+                        "cannot safely open aggregate cleanup tombstone candidate"
+                    ) from error
+                try:
+                    candidate_metadata = _opened_aggregate_cleanup_file_identity(
+                        candidate_descriptor,
+                        expected_identity=expected_identity,
+                        cleanup_device=cleanup_metadata.st_dev,
+                        field="aggregate cleanup tombstone candidate",
+                        allow_relocated_zero=True,
+                    )
+                    if candidate_metadata.st_size:
+                        if not repair:
+                            raise OpenEcologyAggregateCommitError(
+                                "aggregate cleanup tombstone candidate is not zero-byte"
+                            )
+                        os.ftruncate(candidate_descriptor, 0)
+                        os.fsync(candidate_descriptor)
+                    final_metadata = _opened_aggregate_cleanup_file_identity(
+                        candidate_descriptor,
+                        expected_identity=expected_identity,
+                        cleanup_device=cleanup_metadata.st_dev,
+                        field="aggregate cleanup tombstone candidate",
+                        allow_relocated_zero=True,
+                    )
+                    if final_metadata.st_size != 0:
+                        raise OpenEcologyAggregateCommitError(
+                            "aggregate cleanup tombstone truncation did not persist"
+                        )
+                    named_metadata = os.stat(
+                        "candidate",
+                        dir_fd=slot_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        _path_identity_from_stat(named_metadata)
+                        != _path_identity_from_stat(final_metadata)
+                        or named_metadata.st_size != 0
+                    ):
+                        raise OpenEcologyAggregateCommitError(
+                            "aggregate cleanup tombstone candidate changed "
+                            "during cleanup"
+                        )
+                finally:
+                    os.close(candidate_descriptor)
+            else:
+                try:
+                    candidate_descriptor = os.open(
+                        "candidate",
+                        _directory_descriptor_flags(),
+                        dir_fd=slot_descriptor,
+                    )
+                except OSError as error:
+                    raise OpenEcologyAggregateCommitError(
+                        "cannot safely open aggregate stage tombstone candidate"
+                    ) from error
+                try:
+                    candidate_metadata = _validate_opened_aggregate_stage(
+                        candidate_descriptor,
+                        expected_identity=expected_identity,
+                        cleanup_device=cleanup_metadata.st_dev,
+                        limits=limits,
+                        field="aggregate stage tombstone candidate",
+                        allow_relocated=True,
+                    )
+                    named_metadata = os.stat(
+                        "candidate",
+                        dir_fd=slot_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if not stat.S_ISDIR(
+                        named_metadata.st_mode
+                    ) or _path_identity_from_stat(
+                        named_metadata
+                    ) != _path_identity_from_stat(candidate_metadata):
+                        raise OpenEcologyAggregateCommitError(
+                            "aggregate stage tombstone candidate changed during cleanup"
+                        )
+                finally:
+                    os.close(candidate_descriptor)
+            current_slot = os.stat(
+                slot_name,
+                dir_fd=cleanup_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(current_slot.st_mode) or _path_identity_from_stat(
+                current_slot
+            ) != _path_identity_from_stat(slot_metadata):
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate cleanup tombstone slot namespace changed"
+                )
+        finally:
+            os.close(slot_descriptor)
+    return len(names)
+
+
+def _reconcile_aggregate_cleanup_tombstones(
+    root: Path,
+    *,
+    max_tombstones: int,
+    repair: bool = True,
+    limits: _Limits | None = None,
+) -> int:
+    _positive_int(max_tombstones, field="max_tombstones")
+    root_descriptor, root_metadata = _open_owned_cleanup_parent(
+        root,
+        field="aggregate cleanup root",
+    )
+    try:
+        opened = _open_aggregate_cleanup_directory(
+            root_descriptor,
+            root_metadata=root_metadata,
+            create=False,
+        )
+        if opened is None:
+            return 0
+        cleanup_descriptor, cleanup_metadata = opened
+        try:
+            count = _reconcile_aggregate_cleanup_directory_descriptor(
+                cleanup_descriptor,
+                cleanup_metadata=cleanup_metadata,
+                max_tombstones=max_tombstones,
+                repair=repair,
+                limits=limits,
+            )
+            current_cleanup = os.stat(
+                OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(current_cleanup.st_mode) or _path_identity_from_stat(
+                current_cleanup
+            ) != _path_identity_from_stat(cleanup_metadata):
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate cleanup tombstone namespace changed"
+                )
+            current_root = os.lstat(root)
+            if not stat.S_ISDIR(current_root.st_mode) or _path_identity_from_stat(
+                current_root
+            ) != _path_identity_from_stat(root_metadata):
+                raise OpenEcologyAggregateCommitError(
+                    "aggregate cleanup root namespace changed"
+                )
+            return count
+        finally:
+            os.close(cleanup_descriptor)
+    finally:
+        os.close(root_descriptor)
+
+
+def _quarantine_owned_path(
+    path: Path,
+    *,
+    expected_identity: _PathIdentity,
+    field: str,
+    kind: str,
+    cleanup_root: Path,
+    max_tombstones: int,
+    missing_ok: bool,
+    limits: _Limits | None = None,
+) -> bool:
+    _positive_int(max_tombstones, field="max_tombstones")
+    if cleanup_root.name != OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME:
+        raise OpenEcologyAggregateCommitError(
+            "aggregate cleanup root name is not authoritative"
+        )
+    aggregate_root = cleanup_root.parent
+    source_descriptor, source_metadata = _open_owned_cleanup_parent(
+        path.parent,
+        field=f"{field} parent",
+    )
+    try:
+        try:
+            observed = os.stat(
+                path.name,
+                dir_fd=source_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            if missing_ok:
+                return False
+            raise
+        if kind == "file":
+            source_valid = (
+                stat.S_ISREG(observed.st_mode)
+                and observed.st_nlink == 1
+                and observed.st_uid == os.geteuid()
+            )
+        elif kind == "stage":
+            source_valid = (
+                stat.S_ISDIR(observed.st_mode)
+                and observed.st_uid == os.geteuid()
+                and not stat.S_IMODE(observed.st_mode) & 0o022
+            )
+        else:
+            raise OpenEcologyAggregateCommitError(
+                "aggregate cleanup tombstone kind is invalid"
+            )
+        if not source_valid or _path_identity_from_stat(observed) != expected_identity:
+            raise OpenEcologyAggregateCommitError(
+                f"{field} changed before cleanup; replacement preserved"
+            )
+        root_descriptor, root_metadata = _open_owned_cleanup_parent(
+            aggregate_root,
+            field="aggregate cleanup root",
+        )
+        try:
+            if source_metadata.st_dev != root_metadata.st_dev:
+                raise OpenEcologyAggregateCommitError(
+                    f"{field} cleanup requires a same-filesystem quarantine"
+                )
+            opened = _open_aggregate_cleanup_directory(
+                root_descriptor,
+                root_metadata=root_metadata,
+                create=True,
+            )
+            assert opened is not None
+            cleanup_descriptor, cleanup_metadata = opened
+            try:
+                count = _reconcile_aggregate_cleanup_directory_descriptor(
+                    cleanup_descriptor,
+                    cleanup_metadata=cleanup_metadata,
+                    max_tombstones=max_tombstones,
+                    repair=True,
+                    limits=limits,
+                )
+                if count >= max_tombstones:
+                    raise OpenEcologyAggregateCommitError(
+                        "aggregate cleanup tombstone limit reached"
+                    )
+                slot_name, slot_descriptor, slot_metadata = (
+                    _open_aggregate_cleanup_slot(
+                        cleanup_descriptor,
+                        cleanup_metadata=cleanup_metadata,
+                        kind=kind,
+                        expected_identity=expected_identity,
+                    )
+                )
+                try:
+                    if os.listdir(slot_descriptor):
+                        raise OpenEcologyAggregateCommitError(
+                            "new aggregate cleanup tombstone slot is not empty"
+                        )
+                    current = os.stat(
+                        path.name,
+                        dir_fd=source_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if kind == "file":
+                        current_valid = (
+                            stat.S_ISREG(current.st_mode)
+                            and current.st_nlink == 1
+                            and current.st_uid == os.geteuid()
+                        )
+                    else:
+                        current_valid = (
+                            stat.S_ISDIR(current.st_mode)
+                            and current.st_uid == os.geteuid()
+                            and not stat.S_IMODE(current.st_mode) & 0o022
+                        )
+                    if (
+                        not current_valid
+                        or _path_identity_from_stat(current) != expected_identity
+                    ):
+                        raise OpenEcologyAggregateCommitError(
+                            f"{field} changed before cleanup; replacement preserved"
+                        )
+                    try:
+                        os.rename(
+                            path.name,
+                            "candidate",
+                            src_dir_fd=source_descriptor,
+                            dst_dir_fd=slot_descriptor,
+                        )
+                    except FileNotFoundError:
+                        if missing_ok:
+                            return False
+                        raise
+                    if kind == "file":
+                        flags = (
+                            os.O_RDWR
+                            | getattr(os, "O_CLOEXEC", 0)
+                            | getattr(os, "O_NOFOLLOW", 0)
+                        )
+                        candidate_descriptor = os.open(
+                            "candidate",
+                            flags,
+                            dir_fd=slot_descriptor,
+                        )
+                        try:
+                            _opened_aggregate_cleanup_file_identity(
+                                candidate_descriptor,
+                                expected_identity=expected_identity,
+                                cleanup_device=cleanup_metadata.st_dev,
+                                field=f"{field} quarantine candidate",
+                            )
+                            os.ftruncate(candidate_descriptor, 0)
+                            os.fsync(candidate_descriptor)
+                            final_metadata = _opened_aggregate_cleanup_file_identity(
+                                candidate_descriptor,
+                                expected_identity=expected_identity,
+                                cleanup_device=cleanup_metadata.st_dev,
+                                field=f"{field} quarantine candidate",
+                            )
+                            if final_metadata.st_size != 0:
+                                raise OpenEcologyAggregateCommitError(
+                                    f"{field} descriptor-bound truncation failed"
+                                )
+                            named_metadata = os.stat(
+                                "candidate",
+                                dir_fd=slot_descriptor,
+                                follow_symlinks=False,
+                            )
+                            if (
+                                _path_identity_from_stat(named_metadata)
+                                != expected_identity
+                                or named_metadata.st_size != 0
+                            ):
+                                raise OpenEcologyAggregateCommitError(
+                                    f"{field} changed during cleanup; "
+                                    "replacement preserved"
+                                )
+                        finally:
+                            os.close(candidate_descriptor)
+                    else:
+                        candidate_descriptor = os.open(
+                            "candidate",
+                            _directory_descriptor_flags(),
+                            dir_fd=slot_descriptor,
+                        )
+                        try:
+                            candidate_metadata = _validate_opened_aggregate_stage(
+                                candidate_descriptor,
+                                expected_identity=expected_identity,
+                                cleanup_device=cleanup_metadata.st_dev,
+                                limits=limits,
+                                field=f"{field} quarantine candidate",
+                            )
+                            named_metadata = os.stat(
+                                "candidate",
+                                dir_fd=slot_descriptor,
+                                follow_symlinks=False,
+                            )
+                            if not stat.S_ISDIR(
+                                named_metadata.st_mode
+                            ) or _path_identity_from_stat(
+                                named_metadata
+                            ) != _path_identity_from_stat(candidate_metadata):
+                                raise OpenEcologyAggregateCommitError(
+                                    f"{field} changed during cleanup; "
+                                    "replacement preserved"
+                                )
+                        finally:
+                            os.close(candidate_descriptor)
+                    current_slot = os.stat(
+                        slot_name,
+                        dir_fd=cleanup_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if not stat.S_ISDIR(
+                        current_slot.st_mode
+                    ) or _path_identity_from_stat(
+                        current_slot
+                    ) != _path_identity_from_stat(slot_metadata):
+                        raise OpenEcologyAggregateCommitError(
+                            f"{field} cleanup slot namespace changed"
+                        )
+                    current_cleanup = os.stat(
+                        OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME,
+                        dir_fd=root_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if not stat.S_ISDIR(
+                        current_cleanup.st_mode
+                    ) or _path_identity_from_stat(
+                        current_cleanup
+                    ) != _path_identity_from_stat(cleanup_metadata):
+                        raise OpenEcologyAggregateCommitError(
+                            f"{field} cleanup namespace changed"
+                        )
+                    current_root = os.lstat(aggregate_root)
+                    if not stat.S_ISDIR(
+                        current_root.st_mode
+                    ) or _path_identity_from_stat(
+                        current_root
+                    ) != _path_identity_from_stat(root_metadata):
+                        raise OpenEcologyAggregateCommitError(
+                            f"{field} cleanup root namespace changed"
+                        )
+                    current_source_parent = os.lstat(path.parent)
+                    if not stat.S_ISDIR(
+                        current_source_parent.st_mode
+                    ) or _path_identity_from_stat(
+                        current_source_parent
+                    ) != _path_identity_from_stat(source_metadata):
+                        raise OpenEcologyAggregateCommitError(
+                            f"{field} parent namespace changed"
+                        )
+                    _fsync_directory_descriptor_best_effort(slot_descriptor)
+                    _fsync_directory_descriptor_best_effort(cleanup_descriptor)
+                    _fsync_directory_descriptor_best_effort(root_descriptor)
+                    _fsync_directory_descriptor_best_effort(source_descriptor)
+                    return True
+                finally:
+                    os.close(slot_descriptor)
+            finally:
+                os.close(cleanup_descriptor)
+        finally:
+            os.close(root_descriptor)
+    finally:
+        os.close(source_descriptor)
+
+
+def _remove_owned_stage(
+    stage: Path,
+    *,
+    parent: Path,
+    prefix: str,
+    expected_identity: _PathIdentity,
+    cleanup_root: Path,
+    max_tombstones: int,
+    limits: _Limits | None = None,
+) -> None:
     if stage.parent != parent or not stage.name.startswith(prefix):
         raise OpenEcologyAggregateCommitError(
             "refusing to remove an unrecognized aggregate staging directory"
         )
-    shutil.rmtree(stage)
+    _quarantine_owned_path(
+        stage,
+        expected_identity=expected_identity,
+        field="aggregate staging directory",
+        kind="stage",
+        cleanup_root=cleanup_root,
+        max_tombstones=max_tombstones,
+        missing_ok=True,
+        limits=limits,
+    )
+
+
+def _regular_file_identity(path: Path, *, field: str) -> _PathIdentity:
+    try:
+        path_stat = os.lstat(path)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise OpenEcologyAggregateCommitError(f"cannot inspect {field}") from error
+    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+        raise OpenEcologyAggregateCommitError(
+            f"{field} must be a single-link regular file"
+        )
+    return _path_identity_from_stat(path_stat)
+
+
+def _unlink_owned_regular_file(
+    path: Path,
+    *,
+    expected_identity: _PathIdentity,
+    field: str,
+    missing_ok: bool = False,
+    cleanup_root: Path,
+    max_tombstones: int,
+) -> bool:
+    return _quarantine_owned_path(
+        path,
+        expected_identity=expected_identity,
+        field=field,
+        kind="file",
+        cleanup_root=cleanup_root,
+        max_tombstones=max_tombstones,
+        missing_ok=missing_ok,
+    )
 
 
 def _require_directory(path: Path, *, field: str) -> Path:
@@ -2177,3 +3675,10 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _fsync_directory_descriptor_best_effort(descriptor: int) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass

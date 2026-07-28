@@ -81,6 +81,22 @@ class OpenEcologyCheckpointTests(unittest.TestCase):
             self._canonical(first) + b"\n",
         )
 
+    def test_validation_result_does_not_alias_caller_input(self) -> None:
+        checkpoint = build_open_ecology_checkpoint(**self._complete_kwargs())
+        validated = validate_open_ecology_checkpoint(checkpoint)
+
+        checkpoint["components"]["world_state"]["payload"]["agents"][0]["id"] = 99
+        self.assertEqual(
+            validated["components"]["world_state"]["payload"]["agents"][0]["id"],
+            7,
+        )
+
+        validated["components"]["environment_rng_state"]["payload"]["state"][0] = 999
+        self.assertEqual(
+            checkpoint["components"]["environment_rng_state"]["payload"]["state"],
+            [11, 29, 47],
+        )
+
     def test_partial_observational_checkpoint_cannot_masquerade_as_restartable(
         self,
     ) -> None:

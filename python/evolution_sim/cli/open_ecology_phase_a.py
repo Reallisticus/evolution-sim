@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 
 import torch
 
+from evolution_sim.io.open_ecology_git_authority import (
+    OpenEcologyGitAuthorityError,
+    PinnedGitExecutable,
+    discover_pinned_git_executable,
+    run_pinned_git,
+)
 from evolution_sim.mind.open_ecology_phase_a import (
     OPEN_ECOLOGY_PHASE_A_CELL_ORDER,
+    OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH,
+    OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256,
     build_open_ecology_phase_a_evidence_index,
     build_open_ecology_phase_a_launch_authorization,
     build_open_ecology_phase_a_preregistration,
+    build_open_ecology_phase_a_resource_envelope,
     build_open_ecology_phase_a_runtime_contract,
     build_open_ecology_phase_a_throughput_gate,
     configure_open_ecology_phase_a_determinism,
@@ -25,7 +34,20 @@ from evolution_sim.mind.open_ecology_phase_a import (
 from evolution_sim.mind.open_ecology_phase_a_readiness import (
     DEPENDENCY_EVIDENCE_KINDS,
     OPERATIONAL_EVIDENCE_KINDS,
+    _rename_path_no_replace,
+    produce_campaign_storage_capacity_report,
     produce_capture_noninterference_reexecution_report,
+    produce_cross_surface_and_self_echo_report,
+    produce_critic_gradient_and_density_schedule_report,
+    produce_exact_sha_phase_a_training_and_torch_ci_report,
+    produce_fixed_batch_equivalence_and_speed_report,
+    produce_output_lock_contention_report,
+    produce_phase_a_training_throughput_report,
+    produce_preregistration_roundtrip_fail_closed_report,
+    produce_runtime_genome_and_action_source_report,
+)
+from evolution_sim.mind.open_ecology_phase_a_qualification import (
+    ephemeral_github_credential,
 )
 from evolution_sim.mind.recurrent_scale_campaign import source_file_hash_manifest
 
@@ -43,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    resource_envelope = subparsers.add_parser("build-resource-envelope")
+    resource_envelope.add_argument("--source-commit", required=True)
+    resource_envelope.add_argument("--output", type=Path, required=True)
+
     preregister = subparsers.add_parser("preregister")
     preregister.add_argument("--source-commit", required=True)
     preregister.add_argument(
@@ -58,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
     preregister.add_argument(
         "--resource-envelope",
         type=Path,
+        required=True,
+    )
+    preregister.add_argument(
+        "--expected-archive-tool-authority-sha256",
         required=True,
     )
     preregister.add_argument("--device", default="cuda")
@@ -107,6 +137,92 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_reexecution.add_argument("--output", type=Path, required=True)
 
+    preregistration_roundtrip = subparsers.add_parser("prove-preregistration-roundtrip")
+    preregistration_roundtrip.add_argument(
+        "--preregistration",
+        type=Path,
+        required=True,
+    )
+    preregistration_roundtrip.add_argument(
+        "--output-directory",
+        type=Path,
+        required=True,
+    )
+
+    cross_surface = subparsers.add_parser("prove-cross-surface-and-self-echo")
+    cross_surface.add_argument("--preregistration", type=Path, required=True)
+    cross_surface.add_argument("--output-directory", type=Path, required=True)
+
+    runtime_genome = subparsers.add_parser("prove-runtime-genome-and-action-source")
+    runtime_genome.add_argument("--preregistration", type=Path, required=True)
+    runtime_genome.add_argument("--output-directory", type=Path, required=True)
+
+    critic_gradient = subparsers.add_parser(
+        "prove-critic-gradient-and-density-schedule"
+    )
+    critic_gradient.add_argument("--preregistration", type=Path, required=True)
+    critic_gradient.add_argument("--output-directory", type=Path, required=True)
+
+    fixed_batch = subparsers.add_parser("prove-fixed-batch-equivalence-and-speed")
+    fixed_batch.add_argument("--preregistration", type=Path, required=True)
+    fixed_batch.add_argument("--device", default="cuda")
+    fixed_batch.add_argument("--output-directory", type=Path, required=True)
+
+    exact_source = subparsers.add_parser("prove-exact-source-training")
+    exact_source.add_argument("--preregistration", type=Path, required=True)
+    exact_source.add_argument("--host-class", required=True)
+    exact_source.add_argument(
+        "--heritable-benchmark",
+        type=Path,
+        required=True,
+    )
+    exact_source.add_argument(
+        "--zero-all-benchmark",
+        type=Path,
+        required=True,
+    )
+    exact_source.add_argument(
+        "--github-token-stdin",
+        action="store_true",
+        help=(
+            "read one bounded GitHub token from stdin and retain it only in "
+            "memory for the exact-SHA HTTPS request"
+        ),
+    )
+    exact_source.add_argument("--output-directory", type=Path, required=True)
+
+    training_throughput = subparsers.add_parser("prove-training-throughput")
+    training_throughput.add_argument(
+        "--preregistration",
+        type=Path,
+        required=True,
+    )
+    training_throughput.add_argument("--host-class", required=True)
+    training_throughput.add_argument(
+        "--output-directory",
+        type=Path,
+        required=True,
+    )
+
+    storage = subparsers.add_parser("prove-storage-capacity")
+    storage.add_argument("--preregistration", type=Path, required=True)
+    storage.add_argument("--target-filesystem", type=Path, required=True)
+    storage.add_argument(
+        "--archive-tool-authority",
+        type=Path,
+        required=True,
+    )
+    storage.add_argument(
+        "--expected-archive-tool-authority-sha256",
+        required=True,
+    )
+    storage.add_argument("--drive-remote", default="gdrive:")
+    storage.add_argument("--output-directory", type=Path, required=True)
+
+    output_lock = subparsers.add_parser("prove-output-lock")
+    output_lock.add_argument("--preregistration", type=Path, required=True)
+    output_lock.add_argument("--output-directory", type=Path, required=True)
+
     run_cell = subparsers.add_parser("run-cell")
     run_cell.add_argument("--preregistration", type=Path, required=True)
     run_cell.add_argument("--expected-preregistration-digest", required=True)
@@ -138,17 +254,78 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "build-resource-envelope":
+        try:
+            git_authority = discover_pinned_git_executable()
+            head, clean = _git_source_state(git_authority=git_authority)
+        except (OpenEcologyGitAuthorityError, RuntimeError) as error:
+            raise SystemExit(
+                "Phase A resource-envelope Git inspection failed closed"
+            ) from error
+        if head != args.source_commit or not clean:
+            raise SystemExit(
+                "Phase A resource-envelope construction requires "
+                "--source-commit to match a clean Git HEAD"
+            )
+        initial_manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        initial_document_sha256 = _preregistration_document_sha256()
+        if initial_document_sha256 != OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256:
+            raise SystemExit(
+                "Phase A resource-envelope evidence differs from the sealed "
+                "preregistration document"
+            )
+        envelope = build_open_ecology_phase_a_resource_envelope(
+            source_commit=head,
+        )
+        final_manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        final_document_sha256 = _preregistration_document_sha256()
+        try:
+            final_head, final_clean = _git_source_state(
+                git_authority=git_authority,
+            )
+        except (OpenEcologyGitAuthorityError, RuntimeError) as error:
+            raise SystemExit(
+                "Phase A resource-envelope Git reinspection failed closed"
+            ) from error
+        if (
+            final_head != head
+            or not final_clean
+            or final_manifest != initial_manifest
+            or final_document_sha256 != initial_document_sha256
+        ):
+            raise SystemExit(
+                "Phase A source changed while the resource envelope was being assembled"
+            )
+        _write_atomic_json(args.output, envelope)
+        print(
+            "open_ecology_phase_a_resource_envelope_built "
+            f"digest={envelope['exact_digest']} output={args.output}"
+        )
+        return 0
     if args.command == "preregister":
-        head, clean = _git_source_state()
+        try:
+            git_authority = discover_pinned_git_executable()
+            head, clean = _git_source_state(git_authority=git_authority)
+        except (OpenEcologyGitAuthorityError, RuntimeError) as error:
+            raise SystemExit("Phase A Git source inspection failed closed") from error
         if head != args.source_commit or not clean:
             raise SystemExit(
                 "Phase A preregistration requires --source-commit to match "
                 "a clean Git HEAD"
             )
+        initial_manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        initial_document_sha256 = _preregistration_document_sha256()
+        if initial_document_sha256 != OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256:
+            raise SystemExit(
+                "Phase A preregistration document differs from its sealed hash"
+            )
         configure_open_ecology_phase_a_determinism()
         heritable = _load_strict_json(args.heritable_benchmark)
         zero_all = _load_strict_json(args.zero_all_benchmark)
-        resource_envelope = _load_strict_json(args.resource_envelope)
+        resource_envelope = _load_canonical_resource_envelope(
+            args.resource_envelope,
+            source_commit=head,
+        )
         throughput_gate = build_open_ecology_phase_a_throughput_gate(
             source_commit=head,
             heritable_report=heritable,
@@ -159,10 +336,31 @@ def main(argv: list[str] | None = None) -> int:
             device=torch.device(args.device),
             rollout_workers=int(throughput_gate["selected_rollout_workers"]),
         )
-        manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        final_manifest = source_file_hash_manifest(_REPOSITORY_ROOT)
+        final_document_sha256 = _preregistration_document_sha256()
+        try:
+            final_head, final_clean = _git_source_state(
+                git_authority=git_authority,
+            )
+        except (OpenEcologyGitAuthorityError, RuntimeError) as error:
+            raise SystemExit("Phase A Git source reinspection failed closed") from error
+        if (
+            final_head != head
+            or not final_clean
+            or final_manifest != initial_manifest
+            or final_document_sha256 != initial_document_sha256
+        ):
+            raise SystemExit(
+                "Phase A source changed while preregistration was being assembled"
+            )
+        _load_canonical_resource_envelope(
+            args.resource_envelope,
+            source_commit=head,
+        )
         preregistration = build_open_ecology_phase_a_preregistration(
             source_commit=head,
-            source_manifest_sha256=str(manifest["aggregate_sha256"]),
+            source_manifest_sha256=str(initial_manifest["aggregate_sha256"]),
+            archive_tool_authority_sha256=(args.expected_archive_tool_authority_sha256),
             runtime_contract=runtime,
             throughput_gate=throughput_gate,
         )
@@ -263,6 +461,130 @@ def main(argv: list[str] | None = None) -> int:
             f"digest={report['exact_digest']} output={args.output}"
         )
         return 0
+    if args.command == "prove-preregistration-roundtrip":
+        report = produce_preregistration_roundtrip_fail_closed_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+        )
+        print(
+            "open_ecology_preregistration_roundtrip_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-cross-surface-and-self-echo":
+        report = produce_cross_surface_and_self_echo_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+        )
+        print(
+            "open_ecology_cross_surface_and_self_echo_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-runtime-genome-and-action-source":
+        report = produce_runtime_genome_and_action_source_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+        )
+        print(
+            "open_ecology_runtime_genome_and_action_source_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-critic-gradient-and-density-schedule":
+        report = produce_critic_gradient_and_density_schedule_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+        )
+        print(
+            "open_ecology_critic_gradient_and_density_schedule_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-fixed-batch-equivalence-and-speed":
+        report = produce_fixed_batch_equivalence_and_speed_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+            device=args.device,
+        )
+        print(
+            "open_ecology_fixed_batch_equivalence_and_speed_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-exact-source-training":
+        preregistration = _load_strict_json(args.preregistration)
+        if args.github_token_stdin:
+            github_token = _read_secret_token_from_stdin()
+            with ephemeral_github_credential(github_token):
+                report = produce_exact_sha_phase_a_training_and_torch_ci_report(
+                    preregistration,
+                    output_directory=args.output_directory,
+                    host_class=args.host_class,
+                    heritable_benchmark_path=args.heritable_benchmark,
+                    zero_all_benchmark_path=args.zero_all_benchmark,
+                )
+            if any(github_token):
+                raise SystemExit("GitHub token was not zeroed after D10 production")
+        else:
+            report = produce_exact_sha_phase_a_training_and_torch_ci_report(
+                preregistration,
+                output_directory=args.output_directory,
+                host_class=args.host_class,
+                heritable_benchmark_path=args.heritable_benchmark,
+                zero_all_benchmark_path=args.zero_all_benchmark,
+            )
+        print(
+            "open_ecology_exact_source_training_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-training-throughput":
+        report = produce_phase_a_training_throughput_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+            host_class=args.host_class,
+        )
+        print(
+            "open_ecology_training_throughput_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-storage-capacity":
+        report = produce_campaign_storage_capacity_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+            target_filesystem=args.target_filesystem,
+            archive_tool_authority_path=args.archive_tool_authority,
+            expected_archive_tool_authority_sha256=(
+                args.expected_archive_tool_authority_sha256
+            ),
+            drive_remote=args.drive_remote,
+        )
+        print(
+            "open_ecology_storage_capacity_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
+    if args.command == "prove-output-lock":
+        report = produce_output_lock_contention_report(
+            _load_strict_json(args.preregistration),
+            output_directory=args.output_directory,
+        )
+        print(
+            "open_ecology_output_lock_proved "
+            f"digest={report['exact_digest']} "
+            f"output={args.output_directory / 'report.json'}"
+        )
+        return 0
     if args.command == "run-cell":
         preregistration = _load_strict_json(args.preregistration)
         report = run_open_ecology_phase_a_cell(
@@ -283,21 +605,24 @@ def main(argv: list[str] | None = None) -> int:
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
-def _git_source_state() -> tuple[str, bool]:
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=_REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
-        cwd=_REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+def _git_source_state(
+    *,
+    git_authority: PinnedGitExecutable | None = None,
+) -> tuple[str, bool]:
+    try:
+        authority = git_authority or discover_pinned_git_executable()
+        head = run_pinned_git(
+            authority,
+            repository_root=_REPOSITORY_ROOT,
+            arguments=("rev-parse", "HEAD"),
+        )
+        status = run_pinned_git(
+            authority,
+            repository_root=_REPOSITORY_ROOT,
+            arguments=("status", "--porcelain=v1", "--untracked-files=normal"),
+        )
+    except OpenEcologyGitAuthorityError as error:
+        raise RuntimeError("Phase A Git source inspection failed closed") from error
     return head, not bool(status)
 
 
@@ -358,28 +683,98 @@ def _load_strict_json(path: Path) -> dict[str, object]:
     return value
 
 
+def _read_secret_token_from_stdin() -> bytearray:
+    payload = os.read(0, 4097)
+    if (
+        not payload
+        or len(payload) > 4096
+        or not payload.endswith(b"\n")
+        or payload.count(b"\n") != 1
+    ):
+        raise SystemExit(
+            "--github-token-stdin requires one bounded newline-terminated token"
+        )
+    token = payload[:-1]
+    if len(token) < 20 or any(byte < 0x21 or byte > 0x7E for byte in token):
+        raise SystemExit("GitHub token input is malformed")
+    return bytearray(token)
+
+
+def _load_canonical_resource_envelope(
+    path: Path,
+    *,
+    source_commit: str,
+) -> dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(
+            "Phase A resource envelope must be one regular non-symlink file"
+        )
+    envelope = _load_strict_json(path)
+    expected = build_open_ecology_phase_a_resource_envelope(
+        source_commit=source_commit,
+    )
+    if envelope != expected or path.read_bytes() != _canonical_json_bytes(expected):
+        raise ValueError(
+            "Phase A preregistration requires the byte-canonical resource envelope"
+        )
+    return envelope
+
+
+def _preregistration_document_sha256() -> str:
+    path = _REPOSITORY_ROOT / OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(
+            "sealed Phase A preregistration document must be one regular file"
+        )
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _canonical_json_bytes(payload: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def _write_atomic_json(path: Path, payload: dict[str, object]) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    raw_parent = path.parent
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"authority output already exists: {path}")
+    if raw_parent.is_symlink():
+        raise ValueError("authority output parent must be one real directory")
+    parent = raw_parent.resolve()
+    if not parent.is_dir():
+        raise ValueError("authority output parent must be one real directory")
+    destination = parent / path.name
     descriptor, temporary_name = tempfile.mkstemp(
-        dir=destination.parent,
+        dir=parent,
         prefix=f".{destination.name}.",
         suffix=".tmp",
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(
-                payload,
-                handle,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-            handle.write("\n")
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(_canonical_json_bytes(payload))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, destination)
+        # The platform-exclusive rename is atomic and create-if-absent. It
+        # neither overwrites prior authority nor leaves a second hard link
+        # during a crash window.
+        _rename_path_no_replace(temporary, destination)
+        directory_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if temporary.exists():
             temporary.unlink()

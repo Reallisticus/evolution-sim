@@ -41,7 +41,7 @@ class RecurrentScaleGpuLauncherTests(unittest.TestCase):
             "tmux new-session",
         ):
             self.assertIn(required, source)
-        self.assertNotIn("gpu4070", source)
+        self.assertNotIn("ssh ", source)
         self.assertNotIn("/home/", source)
         self.assertNotIn("CUDA_VISIBLE_DEVICES", source)
         self.assertLess(

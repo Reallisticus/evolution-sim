@@ -51,16 +51,30 @@ change fails closed. Editing this file after evidence exists is prohibited; a
 change requires a new version that says what changed and why.
 
 All campaign seed identities come from
-`mind_v3_open_ecology_development_seed_registry_v2`, whose canonical digest is
+`mind_v3_open_ecology_development_seed_registry_v4`, whose canonical digest is
 `ed4ba14609fe2e98795cc4352ec50ab1e172c3c758b1a268f6481ac024e348e0`.
 It contains 512 training-world seeds, 128 development-selection seeds, 32
 persistent-island seeds, eight learner seeds, and 32 independent high-64-bit
 genome-stream roots. It also contains 64 disjoint operational benchmark seeds
-that may measure capacity and throughput but may not train a model, select a
+that may execute only disposable benchmark updates to measure capacity and
+throughput but may not produce a scientific model artifact, select a
 configuration, or support a scientific claim, plus 16 disjoint engineering
 proof seeds reserved for source-bound noninterference and continuation proofs.
 Proof seeds likewise cannot tune configuration or support scientific outcomes.
 Validation and lockbox roles are unavailable and must remain inaccessible.
+
+The 64 operational benchmark seeds have disjoint, role-internal subaxes. Phase
+A uses environment indices `0` through `15`, model-initialization index `16`,
+and genome-stream index `17`. Phase B uses environment indices `18` through
+`33`, model-initialization index `34`, and genome-stream index `35`. Selection
+resource measurement uses environment indices `36` through `39`,
+model-initialization index `40`, and genome-stream index `41`. The Phase-D
+throughput H/Z/R triplet shares paired environment index `42`, with
+model-initialization index `43` and genome-stream index `44`. Indices `45`
+through `63` remain reserved and inaccessible unless a later preregistration
+version allocates them. No operational benchmark may consume training,
+selection, island, learner, scientific genome-stream, validation, or lockbox
+seeds.
 
 The eight learner seeds, in fixed order, are `1570849880`, `1323833341`,
 `67094806`, `1871495966`, `411483968`, `1589768480`, `1483917974`, and
@@ -81,6 +95,13 @@ domain-separated derivation from the exact phase, learner index, environment
 index, arm, update, and tape identity. They are never reused as world,
 learner, or genome seeds. Every report includes both the identities and their
 derived values.
+
+Within phase A, cell is deliberately excluded from both the policy-sampling
+identity and the genome-population world identity. For a fixed learner,
+update, and world, A0 through A3 therefore receive the same policy RNG seed,
+environment, genome-stream root, and founder-genome binding while retaining
+cell-distinct task and evidence identities. This pairing is prospective and
+does not claim mutable streams remain identical after cell behavior diverges.
 
 ## Fixed neural, environmental, and learning configuration
 
@@ -117,6 +138,16 @@ There is no auxiliary imitation loss, hand-coded action target, carrion target,
 reward shaping, archive fitness bonus, or hidden heuristic action selector.
 A KL rejection or rollback is evidence and remains visible; it is not silently
 retried with a stronger update.
+No phase-A update may enter the durable evidence prefix unless at least one PPO
+minibatch was accepted, the reported parameter delta is positive, and the full
+model-state SHA differs from the preceding committed state. Mixed updates that
+accept one or more minibatches before a later post-step KL rejection remain
+valid and retain the rejection diagnostics. The terminal authority binds the
+initial and terminal model SHAs, requires them to differ, and reports cumulative
+accepted-minibatch and KL-rejected-step counts across the complete prefix.
+For every update, `post_step_kl_audit_count` must equal accepted minibatches
+plus post-step KL-rejected steps; an attempted optimizer step cannot disappear
+from the audit.
 
 Development worlds use the existing 48-by-32 terrain, maximum population 320,
 and otherwise the exact bound `WorldConfig` committed at launch. Phase A uses
@@ -143,15 +174,16 @@ agent decisions, trajectory rows, or PPO minibatches.
 
 Thus the learning work contains 6,144 preregistered training worlds, of which
 4,096 belong to the selected configuration trained again from scratch. No
-phase-A weights are carried into phase B. Phase-A selection contains 2,560
-primary development-only executions (16 artifacts × 32 environments × four
-stochastic tapes plus argmax), each 512 ticks, and an equal 2,560 independent
-replay executions. It therefore costs 5,120 physical world runs. Phase-B
-terminal selection contains 1,280 primary executions (eight artifacts × 32
-environments × the same five-policy convention), each 2,000 ticks, plus 1,280
-independent replay executions, for 2,560 physical world runs. “Execution” in a
-scientific report means a primary policy execution; resource accounting must
-separately record primary, replay, and total physical world-run counts. Phase C
+phase-A weights are carried into phase B. Each phase-A artifact runs 160 trained
+policy executions (32 environments × four stochastic tapes plus argmax) and 128
+initialized-baseline executions on the exact same four stochastic tapes, with
+no duplicate baseline argmax or causal battery. Across 16 artifacts this is
+4,608 primary executions, followed by an equal 4,608 full authority
+reexecution, for 9,216 physical world runs. Phase-B terminal selection similarly
+contains 2,304 primary executions (1,280 trained plus 1,024 same-tape initialized
+baseline) and an equal 2,304 authority reexecution, for 4,608 physical world
+runs. Resource accounting records trained, initialized-baseline, primary-pass,
+authority-reexecution, and total physical world-run counts separately. Phase C
 has exactly the 192 executions shown in the table and no additional argmax
 copy. All physical executions are part of the resource projection even though
 they never update a model.
@@ -185,7 +217,15 @@ unit is the learner seed, not ticks or decisions.
 
 A cell is eligible only if it has finite outputs, exact action-mask legality,
 exact same-contract replay, no hidden heuristic action source, no persistent
-global action collapse, and causal use of its genome. The causal genome test
+global action collapse, sufficient collapse evidence, causal use of its genome,
+and strictly positive paired median normalized-return improvement over the
+learner-seed initialized model on the same four selection tapes. Pairing is
+hierarchical: take the median of the four trained-minus-initialized tape deltas
+inside each environment, then take the equal-weight median of the resulting 32
+environment values. Flattening all 128 tape rows is descriptive only and cannot
+decide eligibility. The initialized baseline model SHA and report digest are
+bound to the evidence, and the baseline does not receive an extra argmax or
+causal execution. The causal genome test
 samples 64 policy states from each of the 32 selection worlds, or 2,048 states
 per artifact. It freezes observation, previous feedback, recurrent state,
 action mask, backbone, and sampling RNG, then compares the original genome
@@ -194,10 +234,31 @@ have original-versus-donor Jensen-Shannon divergence at least `0.01`, mean
 divergence must be at least `0.002`, and the 99th percentile total-variation
 distance for a bounded `±0.05` single-locus perturbation must not exceed
 `0.25`. An eligible cell must pass for at least three of four learners.
-Global action collapse means one requested action has share at least `0.80` in
-three consecutive 1,000-decision windows and the same dominant action appears
-in at least 90% of represented lineages. It is a failure, not an invitation to
-tune a prior.
+Global action collapse is detected over every possible rolling span of 3,000
+consecutive decisions, not only windows aligned to decision zero. A span
+qualifies when one requested action has share at least `0.80` and that same
+action is dominant in at least 90% of represented lineages. Fewer than 3,000
+decisions is insufficient evidence and cannot be eligible. Collapse is a
+failure, not an invitation to tune a prior.
+
+Held-out value and advantage targets use the training truncation convention.
+Each world executes exactly `T` scored ticks. On a disposable clone of the
+authoritative post-run world, the evaluator advances only the real tick-`T`
+policy-visible ecology prefix: tick-start signal decay, climate and emissions,
+resource regrowth, observations, action masks, and deterministic turn order.
+It then evaluates each living agent exactly once using its previous feedback,
+recurrent state, and inherited genome. It samples, commits, and resolves no
+action, and the original world, environment RNG, runtime counters, policy
+state, sampling RNG, model, and genome population must remain canonically
+unchanged. Every living terminal agent appears in bootstrap evidence, but only
+an agent with at least one scored decision may enter a target array. A child
+born on the final scored tick is therefore retained and counted as
+zero-decision evidence, but excluded from targets. Dead agents bootstrap zero.
+A passive terminal death reward remains a separate raw outcome; in the value
+target it enters exactly at the `gamma` boundary after the last scored action,
+matching PPO training. Bootstrap rows, target eligibility, state-invariance
+digests, and the target-contract version are part of full-behavior evidence and
+must reproduce exactly.
 
 The causal-state adapter is read-only but reaches protected recurrent state.
 Before its output can be authoritative, the final exact source must run the
@@ -213,13 +274,13 @@ is only structural evidence: the launch dependency must reexecute the proof on
 the exact source and match the full report. A short capture-versus-capture unit
 test is not enough.
 
-Selection is exactly two-pass. The producer executes the 32 environments
-times four stochastic tapes plus argmax once, or 160 physical worlds, and
+Selection is exactly two-pass. Per artifact the producer executes 160 trained
+worlds plus 128 initialized-baseline worlds, or 288 physical worlds, and
 emits only a provisional report. The authority pass first reconstructs the
 canonical run contract from this preregistration, validates the complete
 eight-update checkpoint/commit chain and terminal model, resolves the artifact
 and run contract only through the terminal bundle's relative file references,
-then independently reruns the same 160 worlds. Only an exact report match may
+then independently reruns the same 288 worlds. Only an exact report match may
 emit learner evidence. That receipt binds the terminal digest and final prefix
 commit digest; caller-supplied artifact paths, source hashes, or self-signed
 run contracts cannot choose those pins.
@@ -423,38 +484,53 @@ Before phase A, the exact source SHA must run the end-to-end recurrent pipeline
 benchmark on the intended training host with worker counts `1, 2, 4, 8, 16`,
 one full-shaped 16-world update, 128 rollout ticks, fixed density 64, and both
 `heritable` and `zero_all` conditioning. It uses benchmark-seed indices 0
-through 15 in order and runs three fresh, identically seeded repetitions per
-mode and worker count. The benchmark includes world construction, observation
-encoding, policy sampling, ordered worker merge, GAE, and PPO. A worker
+through 15 in order for environments, reserved benchmark-seed index 16 for
+model initialization, and reserved benchmark-seed index 17 for the controller
+genome stream. It may not access training, selection, validation, or lockbox
+environment seeds. It runs three fresh, identically seeded repetitions per mode
+and worker count through the same fixed-capacity 320 collector used by the
+Phase-A cells. The benchmark includes world construction, observation encoding,
+policy sampling, ordered worker merge, GAE, and PPO. A worker
 topology is eligible only when every repetition's final model-state and
 semantic-evidence digests exactly match the one-worker case. The topology
 minimizing the slower H/Z median wall time is frozen, with smaller worker count
 as the exact tie-break. Phase-A cost is 128 full updates multiplied by that
 slower median and a fixed `1.20` safety factor.
 
+The Phase-A training wall envelope is frozen prospectively at exactly `604800`
+seconds: seven consecutive 24-hour days. It is not a CLI-selected budget and
+cannot be enlarged after observing benchmark or training results. The
+machine-readable resource envelope's `evidence_sha256` is the SHA-256 of the
+exact committed bytes of this preregistration document. Resource-envelope
+construction must fail closed if the live document hash differs from the
+source-sealed document hash, and preregistration accepts only the canonical
+envelope for its exact clean source commit.
+
 The same exact source must separately benchmark the phase-B shape before phase
 B can be budgeted: one 16-world update, 256 rollout ticks, density cycle
-`32,64,128,64` repeated four times, benchmark-seed indices 16 through 31, both
-H and Z conditioning, and three fresh repetitions at worker counts one and the
+`32,64,128,64` repeated four times, benchmark-seed environment indices `18`
+through `33`, model-initialization index `34`, genome-stream index `35`, both H
+and Z conditioning, and three fresh repetitions at worker counts one and the
 already-selected topology. Exact model/evidence equality is again mandatory.
-Phase-B cost is 256 full updates multiplied by the slower selected-topology H/Z
-median and the same `1.20` safety factor. The phase-A tick rate may be retained
-as a planning proxy, but it cannot authorize phase B.
+Phase-B cost is 256 full updates multiplied by the slower selected-topology
+H/Z median and the same `1.20` safety factor. The phase-A tick rate may be
+retained as a planning proxy, but it cannot authorize phase B.
 
 Selection has an independent CPU process topology and must not inherit the
 training worker count. On the exact source, a separate long-horizon resource
-benchmark uses benchmark-seed indices 32 through 35, a canonical frozen
-width-256 actor-FiLM artifact initialized from benchmark seed index 36, H and Z
-genome populations, horizons 512 and 2,000, and initial densities 64 and the
-population-cap stress case 320. It runs the real observation, policy, world,
-bounded-evidence, primary, and independent-replay paths. Evaluation-worker
-counts are `1,2,4,8,16`, capped by task count, with three fresh repetitions per
-case. A topology is eligible only when semantic evidence exactly matches the
-one-worker case; the topology minimizing the slowest case median is selected,
-with smaller count as tie-break. Primary and replay wall time are recorded
-separately. The slower per-horizon median, multiplied by `1.20`, projects all
-5,120 phase-A and 2,560 phase-B physical selection world runs. The stress
-density cannot contribute scientific outcomes or model selection.
+benchmark uses benchmark-seed environment indices `36` through `39`, a
+canonical frozen width-256 actor-FiLM artifact initialized from benchmark seed
+index `40`, benchmark genome-stream index `41`, H and Z genome populations,
+horizons 512 and 2,000, and initial densities 64 and the population-cap stress
+case 320. It runs the real observation, policy, world, bounded-evidence,
+primary, and independent-replay paths. Evaluation-worker counts are
+`1,2,4,8,16`, capped by task count, with three fresh repetitions per case. A
+topology is eligible only when semantic evidence exactly matches the one-worker
+case; the topology minimizing the slowest case median is selected, with smaller
+count as tie-break. Primary and replay wall time are recorded separately. The
+slower per-horizon median, multiplied by `1.20`, projects all 9,216 phase-A and
+4,608 phase-B physical selection world runs. The stress density cannot
+contribute scientific outcomes or model selection.
 
 Phase A remains blocked until the authoritative phase-A training projection
 fits its resource envelope, and phase-A selection cannot start until its
@@ -466,8 +542,9 @@ gate.
 
 Before any of the 48 primary islands starts, the final exact source SHA must run
 an end-to-end resource benchmark on every intended host class. It uses one
-throughput-only H/Z/R triplet at the selected density for 2,000 ticks, training
-seed index 511 and genome-stream index 31, twice. It enables the production
+throughput-only H/Z/R triplet at the selected density for 2,000 ticks, paired
+benchmark environment-seed index `42`, benchmark model-initialization index
+`43`, and benchmark genome-stream index `44`, twice. It enables the production
 observation builder, batching, sampling, action resolution, recurrent/genome
 state commit, 100-tick summaries, replay bounds, and forced checkpoints at
 ticks 1,000 and 2,000 so checkpoint overhead is conservatively represented.

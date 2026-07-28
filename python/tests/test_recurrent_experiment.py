@@ -58,6 +58,7 @@ if torch is not None:
         RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT,
         RECURRENT_TRAINING_SEED_REGISTRY_SCALE_DEVELOPMENT_V2,
         OpenEcologyBroadWorldTreatment,
+        OpenEcologyBenchmarkRolloutTask,
         OpenEcologyRolloutTask,
         OpenEcologySignalTreatment,
         RecurrentCounterfactualExperimentConfig,
@@ -66,6 +67,8 @@ if torch is not None:
         RecurrentRolloutTask,
         _scope_diagnostics,
         _training_seed_provenance,
+        _open_ecology_benchmark_policy_sampling_identity,
+        _open_ecology_benchmark_task_id,
         build_open_ecology_training_schedule,
         build_recurrent_counterfactual_collection_tasks,
         build_recurrent_training_schedule,
@@ -79,7 +82,11 @@ if torch is not None:
         recurrent_genome_stream_binding_sha256,
     )
     from evolution_sim.mind.open_ecology_seed_registry import (
+        OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
         OPEN_ECOLOGY_CANONICAL_SHA256,
+        OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES,
         OPEN_ECOLOGY_SEED_REGISTRY,
     )
     from evolution_sim.mind.recurrent_ppo import RecurrentPPOConfig
@@ -102,6 +109,59 @@ class RecurrentExperimentTests(unittest.TestCase):
     def setUp(self) -> None:
         assert torch is not None
         torch.set_num_threads(1)
+
+    def test_phase_a_benchmark_task_rejects_future_operational_seed_ranges(
+        self,
+    ) -> None:
+        benchmark_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE]
+        environment_index = OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES[0]
+        treatment = OpenEcologyBroadWorldTreatment(initial_agents=64)
+        identity = _open_ecology_benchmark_policy_sampling_identity(
+            genome_population_mode=RecurrentGenomePopulationMode.HERITABLE.value,
+            update_index=0,
+            world_index=0,
+            environment_seed_index=environment_index,
+            initial_agents=64,
+        )
+        with self.assertRaisesRegex(
+            RecurrentExperimentError,
+            "detached from its operational-only contract",
+        ):
+            OpenEcologyBenchmarkRolloutTask(
+                task_id=_open_ecology_benchmark_task_id(
+                    genome_population_mode=(
+                        RecurrentGenomePopulationMode.HERITABLE.value
+                    ),
+                    update_index=0,
+                    world_index=0,
+                    environment_seed_index=environment_index,
+                    environment_seed=benchmark_seeds[environment_index],
+                    initial_agents=64,
+                ),
+                scenario="broad",
+                environment_seed=benchmark_seeds[environment_index],
+                rollout_ticks=1,
+                policy_sampling_identity=identity,
+                policy_sampling_seed=derive_recurrent_policy_sampling_seed(
+                    task_identity=identity
+                ),
+                seed_role=OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+                genome_stream_seed=benchmark_seeds[
+                    OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX
+                ],
+                genome_population_mode=(RecurrentGenomePopulationMode.HERITABLE.value),
+                open_ecology_treatment=treatment,
+                open_ecology_learner_seed=benchmark_seeds[
+                    OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX
+                ],
+                open_ecology_environment_seed_index=environment_index,
+                open_ecology_genome_stream_seed_index=(
+                    OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX
+                ),
+                open_ecology_training_phase=OPEN_ECOLOGY_PHASE_A,
+                open_ecology_update_index=0,
+                open_ecology_world_index=0,
+            )
 
     def test_determinism_configuration_rejects_wrong_cublas_contract(self) -> None:
         with patch.dict(
@@ -982,8 +1042,23 @@ class RecurrentExperimentTests(unittest.TestCase):
                 "policy_sampling_seed",
                 "policy_sampling_seed_namespace",
                 "rollout_ticks",
+                "terminal_bootstrap",
                 "summary",
             },
+        )
+        self.assertEqual(first.world_summaries[0]["summary"]["ticks_executed"], 2)
+        self.assertEqual(
+            first.world_summaries[0]["terminal_bootstrap"]["tick"],
+            2,
+        )
+        self.assertFalse(
+            first.world_summaries[0]["terminal_bootstrap"]["action_sampled"]
+        )
+        self.assertFalse(
+            first.world_summaries[0]["terminal_bootstrap"]["action_committed"]
+        )
+        self.assertFalse(
+            first.world_summaries[0]["terminal_bootstrap"]["action_resolved"]
         )
         self.assertEqual(
             set(first.world_summaries[0]["summary"]),
@@ -1732,9 +1807,7 @@ class RecurrentExperimentTests(unittest.TestCase):
 
     def test_open_ecology_phase_b_result_serializes_exact_density_cycle(self) -> None:
         learner_seed = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][0]
-        genome_stream_seed = OPEN_ECOLOGY_SEED_REGISTRY[
-            "open_ecology_genome_stream"
-        ][0]
+        genome_stream_seed = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"][0]
         signal_treatment = OpenEcologySignalTreatment()
         runner = RecurrentExperimentRunner(
             learner_seed=learner_seed,
@@ -1767,9 +1840,7 @@ class RecurrentExperimentTests(unittest.TestCase):
         payload = recurrent_training_run_payload(result)
 
         self.assertEqual(
-            tuple(
-                task.open_ecology_treatment.initial_agents for task in schedule[0]
-            ),
+            tuple(task.open_ecology_treatment.initial_agents for task in schedule[0]),
             OPEN_ECOLOGY_PHASE_B_DENSITY_CYCLE,
         )
         self.assertEqual(

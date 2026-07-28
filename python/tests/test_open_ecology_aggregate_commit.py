@@ -5,11 +5,13 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from evolution_sim.io.open_ecology_aggregate_commit import (
@@ -20,9 +22,12 @@ from evolution_sim.io.open_ecology_aggregate_commit import (
     OpenEcologyAggregateCommitError,
     OpenEcologyAggregateIdentityPins,
     OpenEcologyAggregateResumePins,
+    inspect_current_open_ecology_aggregate_generation,
     load_current_open_ecology_aggregate_generation,
+    load_or_recover_open_ecology_genesis_generation,
     load_open_ecology_aggregate_generation,
     publish_open_ecology_aggregate_generation,
+    select_open_ecology_aggregate_attempt_generation,
 )
 from evolution_sim.io.open_ecology_checkpoint import (
     VersionedCheckpointState,
@@ -149,6 +154,143 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
                 1,
             )
 
+    def test_attempt_selection_delegates_unpublished_genesis_to_genesis_api(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self._fixture(Path(tmpdir))
+            first_inputs = self._first_inputs(fixture)
+            real_replace = os.replace
+
+            def fail_current(source: object, destination: object) -> None:
+                if Path(destination).name == OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME:
+                    raise OSError("simulated genesis CURRENT publication crash")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_aggregate_commit.os.replace",
+                side_effect=fail_current,
+            ):
+                with self.assertRaisesRegex(OSError, "genesis CURRENT"):
+                    self._publish(
+                        fixture,
+                        aggregate_generation_index=0,
+                        checkpoint=first_inputs.checkpoint,
+                        identity=first_inputs.identity,
+                        manifest=first_inputs.manifest,
+                        previous=None,
+                    )
+
+            orphan = {
+                "checkpoint": first_inputs.checkpoint,
+                "commit": self._load_json(self._commit_path(fixture.root, 0)),
+                "evidence_manifest": first_inputs.manifest,
+            }
+            pins = self._resume_pins(orphan)
+            with self.assertRaisesRegex(
+                OpenEcologyAggregateCommitError,
+                "recover genesis through the genesis API",
+            ):
+                select_open_ecology_aggregate_attempt_generation(
+                    fixture.root,
+                    evidence_directory=fixture.evidence,
+                    pins=pins,
+                    expected_previous_commit_sha256=None,
+                )
+
+            recovered = load_or_recover_open_ecology_genesis_generation(
+                fixture.root,
+                evidence_directory=fixture.evidence,
+                identity=first_inputs.identity,
+            )
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(recovered["commit"], orphan["commit"])
+            self.assertTrue(
+                (fixture.root / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME).is_file()
+            )
+
+    def test_pinned_current_preserves_complete_unselected_successor_for_retry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self._fixture(Path(tmpdir))
+            first = self._publish_first(fixture)
+            second_inputs = self._second_inputs(fixture)
+            real_replace = os.replace
+
+            def fail_current(source: object, destination: object) -> None:
+                if Path(destination).name == OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME:
+                    raise OSError("simulated CURRENT publication crash")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_aggregate_commit.os.replace",
+                side_effect=fail_current,
+            ):
+                with self.assertRaisesRegex(OSError, "simulated CURRENT"):
+                    self._publish(
+                        fixture,
+                        aggregate_generation_index=1,
+                        checkpoint=second_inputs.checkpoint,
+                        identity=second_inputs.identity,
+                        manifest=second_inputs.manifest,
+                        previous=first,
+                    )
+
+            orphan_commit_sha256 = self._load_json(self._commit_path(fixture.root, 1))[
+                "commit_sha256"
+            ]
+            inspected = inspect_current_open_ecology_aggregate_generation(
+                fixture.root,
+                evidence_directory=fixture.evidence,
+                pins=self._resume_pins(first),
+            )
+            self.assertEqual(
+                inspected["commit"]["aggregate_generation_index"],
+                0,
+            )
+            self.assertTrue(self._commit_path(fixture.root, 1).is_file())
+            preservation = fixture.root.parent / "attempts"
+            retained = load_current_open_ecology_aggregate_generation(
+                fixture.root,
+                evidence_directory=fixture.evidence,
+                pins=self._resume_pins(first),
+                uncommitted_successor_preservation_directory=preservation,
+            )
+            self.assertEqual(
+                retained["commit"]["aggregate_generation_index"],
+                0,
+            )
+            self.assertFalse(
+                (
+                    fixture.root
+                    / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+                    / "generation-0000000000000001"
+                ).exists()
+            )
+            preserved = list(preservation.iterdir())
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual(
+                self._load_json(preserved[0] / OPEN_ECOLOGY_AGGREGATE_COMMIT_NAME)[
+                    "commit_sha256"
+                ],
+                orphan_commit_sha256,
+            )
+
+            retried = self._publish(
+                fixture,
+                aggregate_generation_index=1,
+                checkpoint=second_inputs.checkpoint,
+                identity=second_inputs.identity,
+                manifest=second_inputs.manifest,
+                previous=first,
+            )
+            self.assertEqual(
+                retried["commit"]["aggregate_generation_index"],
+                1,
+            )
+
     def test_generation_directory_crash_retains_previous_current(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = self._fixture(Path(tmpdir))
@@ -184,6 +326,344 @@ class OpenEcologyAggregateCommitTests(unittest.TestCase):
                     / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
                     / "generation-0000000000000001"
                 ).exists()
+            )
+
+    def test_failed_generation_cleanup_preserves_replaced_stage_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = self._fixture(Path(tmpdir))
+            staged_path: Path | None = None
+            validated_backup = Path(tmpdir) / "validated-stage-backup"
+            attacker_bytes = b"replacement-stage-must-not-be-removed\n"
+
+            def replace_stage_then_fail(path: Path, encoded: bytes) -> None:
+                nonlocal staged_path
+                del encoded
+                staged_path = path.parent
+                staged_path.rename(validated_backup)
+                staged_path.mkdir()
+                (staged_path / "attacker-sentinel").write_bytes(attacker_bytes)
+                raise OSError("simulated staged-file write failure")
+
+            with patch(
+                "evolution_sim.io.open_ecology_aggregate_commit._write_new_file",
+                side_effect=replace_stage_then_fail,
+            ):
+                with self.assertRaises(Exception):
+                    self._publish_first(fixture)
+
+            self.assertIsNotNone(staged_path)
+            assert staged_path is not None
+            self.assertEqual(
+                (staged_path / "attacker-sentinel").read_bytes(),
+                attacker_bytes,
+            )
+            self.assertTrue(validated_backup.is_dir())
+
+    def test_current_temp_cleanup_preserves_postcheck_replacement(self) -> None:
+        from evolution_sim.io import open_ecology_aggregate_commit as aggregate_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "aggregate"
+            root.mkdir()
+            victim = root.parent / ".aggregate.CURRENT.injected.tmp"
+            victim.write_bytes(b"validated-current-temp\n")
+            identity = aggregate_module._regular_file_identity(
+                victim,
+                field="CURRENT cleanup victim",
+            )
+            validated_backup = root.parent / "validated-current-open-inode"
+            attacker_bytes = b"replacement-must-survive-ftruncate\n"
+            real_ftruncate = os.ftruncate
+            injected = False
+
+            def replace_after_descriptor_validation(
+                descriptor: int,
+                length: int,
+            ) -> None:
+                nonlocal injected
+                if not injected:
+                    tombstone = next(
+                        (
+                            root
+                            / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+                        ).glob("*/candidate")
+                    )
+                    tombstone.rename(validated_backup)
+                    tombstone.write_bytes(attacker_bytes)
+                    injected = True
+                real_ftruncate(descriptor, length)
+
+            with patch.object(
+                aggregate_module.os,
+                "ftruncate",
+                side_effect=replace_after_descriptor_validation,
+            ):
+                with self.assertRaisesRegex(
+                    OpenEcologyAggregateCommitError,
+                    "changed during cleanup",
+                ):
+                    aggregate_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="CURRENT cleanup victim",
+                        cleanup_root=(
+                            root
+                            / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+                        ),
+                        max_tombstones=8,
+                    )
+
+            self.assertTrue(injected)
+            replacement = next(
+                (
+                    root
+                    / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+                ).glob("*/candidate")
+            )
+            self.assertEqual(replacement.read_bytes(), attacker_bytes)
+            self.assertEqual(validated_backup.read_bytes(), b"")
+
+    def test_stage_cleanup_namespace_replacement_cannot_redirect_move(self) -> None:
+        from evolution_sim.io import open_ecology_aggregate_commit as aggregate_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            root = parent / "aggregate"
+            root.mkdir()
+            stage_prefix = ".aggregate.generation-0000000000000000.stage-"
+            stage = parent / f"{stage_prefix}probe"
+            stage.mkdir()
+            (stage / "checkpoint.json").write_bytes(b"validated-stage\n")
+            identity = aggregate_module._directory_identity(
+                stage,
+                field="stage cleanup victim",
+            )
+            cleanup = (
+                root / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+            )
+            displaced = root / "displaced-cleanup-root"
+            outside = root / "attacker-selected"
+            outside.mkdir()
+            real_rename = os.rename
+            injected = False
+
+            def replace_cleanup_namespace(
+                source: object,
+                destination: object,
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                nonlocal injected
+                if (
+                    Path(os.fsdecode(source)).name == stage.name
+                    and Path(os.fsdecode(destination)).name == "candidate"
+                    and not injected
+                ):
+                    cleanup.rename(displaced)
+                    cleanup.symlink_to(outside, target_is_directory=True)
+                    injected = True
+                real_rename(source, destination, *args, **kwargs)
+
+            with patch.object(
+                aggregate_module.os,
+                "rename",
+                side_effect=replace_cleanup_namespace,
+            ):
+                with self.assertRaisesRegex(
+                    OpenEcologyAggregateCommitError,
+                    "namespace changed",
+                ):
+                    aggregate_module._remove_owned_stage(
+                        stage,
+                        parent=parent,
+                        prefix=stage_prefix,
+                        expected_identity=identity,
+                        cleanup_root=cleanup,
+                        max_tombstones=8,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(list(outside.iterdir()), [])
+            retained = next(displaced.glob("*/candidate/checkpoint.json"))
+            self.assertEqual(retained.read_bytes(), b"validated-stage\n")
+
+    def test_aggregate_tombstones_are_bounded_and_crash_reconciled(self) -> None:
+        from evolution_sim.io import open_ecology_aggregate_commit as aggregate_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "aggregate"
+            root.mkdir()
+            cleanup = (
+                root / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+            )
+            victim = root.parent / ".aggregate.CURRENT.injected.tmp"
+            victim.write_bytes(b"crash-leftover\n")
+            identity = aggregate_module._regular_file_identity(
+                victim,
+                field="crash cleanup victim",
+            )
+            with patch.object(
+                aggregate_module.os,
+                "ftruncate",
+                side_effect=SystemExit("simulated truncation crash"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "truncation crash"):
+                    aggregate_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="crash cleanup victim",
+                        cleanup_root=cleanup,
+                        max_tombstones=8,
+                    )
+
+            candidate = next(cleanup.glob("*/candidate"))
+            self.assertEqual(candidate.read_bytes(), b"crash-leftover\n")
+            self.assertEqual(cleanup.stat().st_dev, root.stat().st_dev)
+            aggregate_module._reconcile_aggregate_cleanup_tombstones(
+                root,
+                max_tombstones=8,
+            )
+            self.assertEqual(candidate.read_bytes(), b"")
+
+            second = root.parent / ".aggregate.CURRENT.second.tmp"
+            second.write_bytes(b"second\n")
+            second_identity = aggregate_module._regular_file_identity(
+                second,
+                field="second cleanup victim",
+            )
+            with self.assertRaisesRegex(
+                OpenEcologyAggregateCommitError,
+                "tombstone limit",
+            ):
+                aggregate_module._unlink_owned_regular_file(
+                    second,
+                    expected_identity=second_identity,
+                    field="second cleanup victim",
+                    cleanup_root=cleanup,
+                    max_tombstones=1,
+                )
+            self.assertEqual(second.read_bytes(), b"second\n")
+
+    def test_aggregate_cleanup_rejects_cross_filesystem_quarantine(self) -> None:
+        from evolution_sim.io import open_ecology_aggregate_commit as aggregate_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "aggregate"
+            root.mkdir()
+            victim = root.parent / ".aggregate.CURRENT.cross-device.tmp"
+            victim.write_bytes(b"same-filesystem-required\n")
+            identity = aggregate_module._regular_file_identity(
+                victim,
+                field="cross-device cleanup victim",
+            )
+            real_open_parent = aggregate_module._open_owned_cleanup_parent
+
+            def report_distinct_source_device(
+                path: Path,
+                *,
+                field: str,
+            ) -> tuple[int, object]:
+                descriptor, metadata = real_open_parent(path, field=field)
+                if path == victim.parent:
+                    return (
+                        descriptor,
+                        SimpleNamespace(st_dev=metadata.st_dev + 1),
+                    )
+                return descriptor, metadata
+
+            with patch.object(
+                aggregate_module,
+                "_open_owned_cleanup_parent",
+                side_effect=report_distinct_source_device,
+            ):
+                with self.assertRaisesRegex(
+                    OpenEcologyAggregateCommitError,
+                    "same-filesystem quarantine",
+                ):
+                    aggregate_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="cross-device cleanup victim",
+                        cleanup_root=(
+                            root
+                            / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+                        ),
+                        max_tombstones=8,
+                    )
+
+            self.assertEqual(victim.read_bytes(), b"same-filesystem-required\n")
+
+    def test_relocated_aggregate_tombstones_are_inert_and_bounded(self) -> None:
+        from evolution_sim.io import open_ecology_aggregate_commit as aggregate_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            root = parent / "aggregate"
+            root.mkdir()
+            cleanup = (
+                root / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+            )
+            file_victim = parent / ".aggregate.CURRENT.archive-copy.tmp"
+            file_victim.write_bytes(b"temporary-pointer\n")
+            aggregate_module._unlink_owned_regular_file(
+                file_victim,
+                expected_identity=aggregate_module._regular_file_identity(
+                    file_victim,
+                    field="archive-copy file victim",
+                ),
+                field="archive-copy file victim",
+                cleanup_root=cleanup,
+                max_tombstones=8,
+            )
+            stage_prefix = ".aggregate.generation-0000000000000000.stage-"
+            stage = parent / f"{stage_prefix}archive-copy"
+            stage.mkdir()
+            (stage / "checkpoint.json").write_bytes(b"retained-stage\n")
+            aggregate_module._remove_owned_stage(
+                stage,
+                parent=parent,
+                prefix=stage_prefix,
+                expected_identity=aggregate_module._directory_identity(
+                    stage,
+                    field="archive-copy stage victim",
+                ),
+                cleanup_root=cleanup,
+                max_tombstones=8,
+            )
+
+            relocated = parent / "aggregate-relocated"
+            shutil.copytree(root, relocated)
+            self.assertEqual(
+                aggregate_module._reconcile_aggregate_cleanup_tombstones(
+                    relocated,
+                    max_tombstones=8,
+                ),
+                2,
+            )
+            relocated_cleanup = (
+                relocated
+                / aggregate_module.OPEN_ECOLOGY_AGGREGATE_CLEANUP_DIRECTORY_NAME
+            )
+            retained_stage = next(
+                relocated_cleanup.glob("stage-*/candidate/checkpoint.json")
+            )
+            self.assertEqual(retained_stage.read_bytes(), b"retained-stage\n")
+
+            relocated_file = next(relocated_cleanup.glob("file-*/candidate"))
+            relocated_file.write_bytes(b"relocated-nonzero-replacement\n")
+            with self.assertRaisesRegex(
+                OpenEcologyAggregateCommitError,
+                "changed before descriptor-bound truncation",
+            ):
+                aggregate_module._reconcile_aggregate_cleanup_tombstones(
+                    relocated,
+                    max_tombstones=8,
+                )
+            self.assertEqual(
+                relocated_file.read_bytes(),
+                b"relocated-nonzero-replacement\n",
             )
 
     def test_cross_process_writer_lock_fails_closed(self) -> None:

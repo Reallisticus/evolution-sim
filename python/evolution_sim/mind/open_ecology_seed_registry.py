@@ -14,7 +14,7 @@ from evolution_sim.mind.recurrent_seed_registry import (
 )
 
 
-OPEN_ECOLOGY_SEED_REGISTRY_VERSION = "mind_v3_open_ecology_development_seed_registry_v2"
+OPEN_ECOLOGY_SEED_REGISTRY_VERSION = "mind_v3_open_ecology_development_seed_registry_v4"
 OPEN_ECOLOGY_SEED_REGISTRY_NAMESPACE = (
     "evolution-sim|mind-v3-open-ecology|development-seed-registry-v1|2026-07-27"
 )
@@ -28,6 +28,38 @@ OPEN_ECOLOGY_SEED_ROLE_COUNTS: tuple[tuple[str, int], ...] = (
     ("open_ecology_proof", 16),
 )
 OPEN_ECOLOGY_UNAVAILABLE_ROLES: tuple[str, ...] = ("validation", "lockbox")
+OPEN_ECOLOGY_BENCHMARK_SEED_ROLE = "open_ecology_benchmark"
+OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES: tuple[int, ...] = tuple(
+    range(0, 16)
+)
+OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX = 16
+OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX = 17
+OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES: tuple[int, ...] = tuple(
+    range(18, 34)
+)
+OPEN_ECOLOGY_PHASE_B_BENCHMARK_MODEL_SEED_INDEX = 34
+OPEN_ECOLOGY_PHASE_B_BENCHMARK_GENOME_STREAM_SEED_INDEX = 35
+OPEN_ECOLOGY_SELECTION_BENCHMARK_ENVIRONMENT_SEED_INDICES: tuple[int, ...] = tuple(
+    range(36, 40)
+)
+OPEN_ECOLOGY_SELECTION_BENCHMARK_MODEL_SEED_INDEX = 40
+OPEN_ECOLOGY_SELECTION_BENCHMARK_GENOME_STREAM_SEED_INDEX = 41
+OPEN_ECOLOGY_PHASE_D_BENCHMARK_ENVIRONMENT_SEED_INDEX = 42
+OPEN_ECOLOGY_PHASE_D_BENCHMARK_MODEL_SEED_INDEX = 43
+OPEN_ECOLOGY_PHASE_D_BENCHMARK_GENOME_STREAM_SEED_INDEX = 44
+OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES: tuple[int, ...] = tuple(range(45, 64))
+
+# Compatibility names remain Phase-A-specific. New code should use the explicit
+# Phase-A constants above rather than treating this role as a single shared axis.
+OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT = len(
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES
+)
+OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX = (
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX
+)
+OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX = (
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX
+)
 OPEN_ECOLOGY_CANONICAL_SHA256 = (
     "ed4ba14609fe2e98795cc4352ec50ab1e172c3c758b1a268f6481ac024e348e0"
 )
@@ -105,11 +137,16 @@ OPEN_ECOLOGY_SEED_ROLE_POLICIES: Mapping[str, OpenEcologySeedRolePolicy] = (
                 access_policy="paired_across_preregistered_treatment_arms",
             ),
             "open_ecology_benchmark": OpenEcologySeedRolePolicy(
-                axis="environment",
+                axis="operational_benchmark_environment_model_and_genome",
                 lifecycle="open_ecology_operational_resource_benchmark",
                 may_tune_configuration=False,
                 promotion_evidence=False,
-                access_policy=("operational_throughput_and_capacity_measurement_only"),
+                access_policy=(
+                    "phase_a_environment_0_15_model_16_genome_17_phase_b_"
+                    "environment_18_33_model_34_genome_35_selection_environment_"
+                    "36_39_model_40_genome_41_phase_d_paired_environment_42_"
+                    "model_43_genome_44_reserved_45_63_operational_only"
+                ),
             ),
             "open_ecology_proof": OpenEcologySeedRolePolicy(
                 axis="environment",
@@ -274,6 +311,9 @@ def open_ecology_seed_registry_contract() -> dict[str, object]:
             role: asdict(policy)
             for role, policy in OPEN_ECOLOGY_SEED_ROLE_POLICIES.items()
         },
+        "operational_benchmark_allocation": (
+            open_ecology_operational_benchmark_seed_contract()
+        ),
         "seeds": open_ecology_seed_registry_payload(),
         "unavailable_roles": {
             role: {
@@ -284,6 +324,86 @@ def open_ecology_seed_registry_contract() -> dict[str, object]:
             for role in OPEN_ECOLOGY_UNAVAILABLE_ROLES
         },
     }
+
+
+def open_ecology_operational_benchmark_seed_contract() -> dict[str, object]:
+    """Return the disjoint, non-scientific allocation within the benchmark role."""
+
+    return {
+        "seed_role": OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+        "phase_a_training": {
+            "environment_seed_indices": list(
+                OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES
+            ),
+            "model_initialization_seed_index": (
+                OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX
+            ),
+            "genome_stream_seed_index": (
+                OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX
+            ),
+        },
+        "phase_b_training": {
+            "environment_seed_indices": list(
+                OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES
+            ),
+            "model_initialization_seed_index": (
+                OPEN_ECOLOGY_PHASE_B_BENCHMARK_MODEL_SEED_INDEX
+            ),
+            "genome_stream_seed_index": (
+                OPEN_ECOLOGY_PHASE_B_BENCHMARK_GENOME_STREAM_SEED_INDEX
+            ),
+        },
+        "selection": {
+            "environment_seed_indices": list(
+                OPEN_ECOLOGY_SELECTION_BENCHMARK_ENVIRONMENT_SEED_INDICES
+            ),
+            "model_initialization_seed_index": (
+                OPEN_ECOLOGY_SELECTION_BENCHMARK_MODEL_SEED_INDEX
+            ),
+            "genome_stream_seed_index": (
+                OPEN_ECOLOGY_SELECTION_BENCHMARK_GENOME_STREAM_SEED_INDEX
+            ),
+        },
+        "phase_d_throughput": {
+            "environment_seed_indices": [
+                OPEN_ECOLOGY_PHASE_D_BENCHMARK_ENVIRONMENT_SEED_INDEX
+            ],
+            "environment_pairing": "same_environment_root_across_h_z_r",
+            "model_initialization_seed_index": (
+                OPEN_ECOLOGY_PHASE_D_BENCHMARK_MODEL_SEED_INDEX
+            ),
+            "genome_stream_seed_index": (
+                OPEN_ECOLOGY_PHASE_D_BENCHMARK_GENOME_STREAM_SEED_INDEX
+            ),
+        },
+        "reserved_seed_indices": list(OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES),
+        "scientific_seed_roles_accessed": [],
+    }
+
+
+def _validate_operational_benchmark_seed_contract() -> None:
+    assigned = (
+        *OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+        OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+        *OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+        OPEN_ECOLOGY_PHASE_B_BENCHMARK_MODEL_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_B_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+        *OPEN_ECOLOGY_SELECTION_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+        OPEN_ECOLOGY_SELECTION_BENCHMARK_MODEL_SEED_INDEX,
+        OPEN_ECOLOGY_SELECTION_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_D_BENCHMARK_ENVIRONMENT_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_D_BENCHMARK_MODEL_SEED_INDEX,
+        OPEN_ECOLOGY_PHASE_D_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    )
+    if len(assigned) != len(set(assigned)):
+        raise RuntimeError("operational benchmark seed subaxes overlap")
+    if set(assigned).intersection(OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES):
+        raise RuntimeError("operational benchmark allocation consumes reserved seeds")
+    if set(assigned).union(OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES) != set(
+        range(dict(OPEN_ECOLOGY_SEED_ROLE_COUNTS)[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE])
+    ):
+        raise RuntimeError("operational benchmark allocation is incomplete")
 
 
 def _generate_genome_stream_seeds(*, role: str, count: int) -> list[int]:
@@ -303,6 +423,7 @@ def _generate_genome_stream_seeds(*, role: str, count: int) -> list[int]:
     return values
 
 
+_validate_operational_benchmark_seed_contract()
 _BUILT_OPEN_ECOLOGY_REGISTRY = build_open_ecology_seed_registry()
 validate_open_ecology_seed_registry(_BUILT_OPEN_ECOLOGY_REGISTRY)
 OPEN_ECOLOGY_SEED_REGISTRY: Mapping[str, tuple[int, ...]] = MappingProxyType(

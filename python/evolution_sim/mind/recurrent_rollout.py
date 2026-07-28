@@ -87,6 +87,9 @@ RECURRENT_FIXED_BATCH_EXECUTION_SCOPE = "single_world_intra_tick_pure_forward_v1
 RECURRENT_FIXED_BATCH_RELEASE_STATUS = (
     "experimental_opt_in_repeatability_and_measured_topology_gate_required_v1"
 )
+RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION = (
+    "mind_v3_recurrent_action_free_bootstrap_v1"
+)
 OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY = 320
 
 
@@ -862,6 +865,7 @@ class RecurrentRolloutBuffer:
         self,
         world_id: str,
         *,
+        genome_world_identity: str | None = None,
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
         genome_conditioning_mode: str | None = None,
@@ -906,6 +910,18 @@ class RecurrentRolloutBuffer:
                 ),
             }
             if genome_conditioning_mode is not None:
+                resolved_genome_world_identity = (
+                    world_id if genome_world_identity is None else genome_world_identity
+                )
+                if (
+                    not isinstance(resolved_genome_world_identity, str)
+                    or not resolved_genome_world_identity
+                    or resolved_genome_world_identity
+                    != resolved_genome_world_identity.strip()
+                ):
+                    raise RecurrentRolloutError(
+                        "genome_world_identity must be non-empty and trimmed"
+                    )
                 parsed_conditioning_mode = _genome_conditioning_mode(
                     genome_conditioning_mode
                 )
@@ -931,7 +947,7 @@ class RecurrentRolloutBuffer:
                 try:
                     expected_binding_sha256 = recurrent_genome_stream_binding_sha256(
                         genome_stream_seed=parsed_stream_seed,
-                        world_identity=world_id,
+                        world_identity=resolved_genome_world_identity,
                     )
                 except RecurrentGenomePopulationError as exc:
                     raise RecurrentRolloutError(
@@ -944,6 +960,11 @@ class RecurrentRolloutBuffer:
                     )
                 provenance.update(
                     {
+                        **(
+                            {"genome_world_identity": (resolved_genome_world_identity)}
+                            if resolved_genome_world_identity != world_id
+                            else {}
+                        ),
                         "genome_conditioning_mode": parsed_conditioning_mode,
                         "genome_population_mode": parsed_population_mode.value,
                         "genome_stream_seed": parsed_stream_seed,
@@ -1188,8 +1209,8 @@ class RecurrentRolloutBuffer:
         ]
         if open_agents:
             raise RecurrentRolloutError(
-                "world rollout has unclosed agent sequences; run one bootstrap "
-                "tick beyond rollout_ticks with record_trajectory=True: "
+                "world rollout has unclosed agent sequences; finalize the "
+                "action-free policy-visible tick-start bootstrap: "
                 f"{sorted(open_agents)}"
             )
 
@@ -1272,11 +1293,11 @@ class RecurrentOnPolicyCollector:
     action, old log-prob/value, public input, reward, and resolved outcome are
     joined only there.
 
-    For an unbiased finite-horizon truncation, configure the world for exactly
-    `rollout_ticks + 1` ticks. The final tick is used only to evaluate V(s_T)
-    from the next policy-visible observation. Its actions and rewards are not
-    inserted into the rollout. `finish_world` fails closed if that bootstrap
-    tick was omitted.
+    For an unbiased finite-horizon truncation, run exactly `rollout_ticks`
+    scored ticks, prepare the next tick's policy-visible state with
+    `SimulationWorld.prepare_policy_visible_tick_start`, then call
+    `finalize_action_free_bootstrap`. No bootstrap action is sampled, committed,
+    or resolved.
     """
 
     policy_id = RECURRENT_ROLLOUT_POLICY_ID
@@ -1362,6 +1383,7 @@ class RecurrentOnPolicyCollector:
             )
         )
         self._active_world_id: str | None = None
+        self._genome_world_identity: str | None = None
         self._environment_seed = 0
         self._policy_sampling_seed = 0
         self._rollout_ticks = 0
@@ -1374,6 +1396,14 @@ class RecurrentOnPolicyCollector:
         self._genome_population_manager: RecurrentGenomePopulationManager | None = None
         self._staged_tick: int | None = None
         self._staged_by_agent: dict[int, StagedRecurrentDecision] = {}
+        self._bootstrap_value_rows: dict[int, dict[str, object]] = {}
+
+    @property
+    def last_bootstrap_evidence(self) -> dict[str, object]:
+        """Return canonical evidence for the active world's finite boundary."""
+
+        self._require_active_world()
+        return copy.deepcopy(self._build_bootstrap_evidence())
 
     @property
     def genome_conditioning_mode(self) -> str:
@@ -1383,6 +1413,7 @@ class RecurrentOnPolicyCollector:
         self,
         *,
         world_id: str,
+        genome_world_identity: str | None = None,
         rollout_ticks: int,
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
@@ -1417,6 +1448,17 @@ class RecurrentOnPolicyCollector:
         if isinstance(rollout_ticks, bool) or int(rollout_ticks) <= 0:
             raise RecurrentRolloutError("rollout_ticks must be positive")
         genome_population_manager: RecurrentGenomePopulationManager | None = None
+        resolved_genome_world_identity = (
+            world_id if genome_world_identity is None else genome_world_identity
+        )
+        if (
+            not isinstance(resolved_genome_world_identity, str)
+            or not resolved_genome_world_identity
+            or resolved_genome_world_identity != resolved_genome_world_identity.strip()
+        ):
+            raise RecurrentRolloutError(
+                "genome_world_identity must be non-empty and trimmed"
+            )
         if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
             if genome_stream_seed is not None:
                 raise RecurrentRolloutError(
@@ -1442,7 +1484,7 @@ class RecurrentOnPolicyCollector:
             try:
                 genome_population_manager = RecurrentGenomePopulationManager(
                     genome_stream_seed=parsed_genome_stream_seed,
-                    world_identity=world_id,
+                    world_identity=resolved_genome_world_identity,
                     mode=parsed_population_mode,
                 )
             except RecurrentGenomePopulationError as exc:
@@ -1464,12 +1506,18 @@ class RecurrentOnPolicyCollector:
             }
         self.buffer.register_world(
             world_id,
+            genome_world_identity=(
+                resolved_genome_world_identity
+                if resolved_genome_world_identity != world_id
+                else None
+            ),
             environment_seed=environment_seed,
             policy_sampling_seed=policy_sampling_seed,
             fixed_batch_runtime=self._fixed_batch_runtime,
             **genome_provenance,
         )
         self._active_world_id = world_id
+        self._genome_world_identity = resolved_genome_world_identity
         self._environment_seed = int(environment_seed)
         self._policy_sampling_seed = policy_sampling_seed
         self._rollout_ticks = int(rollout_ticks)
@@ -1481,6 +1529,7 @@ class RecurrentOnPolicyCollector:
         self._pending_by_agent.clear()
         self._staged_tick = None
         self._staged_by_agent.clear()
+        self._bootstrap_value_rows.clear()
         self._genome_population_manager = genome_population_manager
 
     def contextual_founder_metadata(
@@ -1560,9 +1609,177 @@ class RecurrentOnPolicyCollector:
         self._staged_by_agent.clear()
         self._genome_population_manager = None
         self._active_world_id = None
+        self._genome_world_identity = None
         self._environment_seed = 0
         self._policy_sampling_seed = 0
         self._bootstrap_phase = False
+
+    def finalize_action_free_bootstrap(
+        self,
+        *,
+        tick: int,
+        ordered_agent_ids: Sequence[int],
+        observations_by_agent: Mapping[int, Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Evaluate V(s_T) for every living agent without sampling an action.
+
+        Living agents with no scored decision (for example, reproduction on the
+        final scored tick) remain bound in the evidence but cannot enter PPO
+        target arrays.
+        """
+
+        world_id = self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        tick = _strict_int(tick, field="action-free bootstrap tick")
+        if tick != self._rollout_ticks:
+            raise RecurrentRolloutError(
+                "action-free bootstrap tick must equal rollout_ticks"
+            )
+        if self._pending_by_agent:
+            raise RecurrentRolloutError(
+                "action-free bootstrap cannot run over pending decisions"
+            )
+        ordered_ids = tuple(
+            _strict_int(agent_id, field="action-free bootstrap agent_id")
+            for agent_id in ordered_agent_ids
+        )
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise RecurrentRolloutError(
+                "action-free bootstrap agent order must be unique"
+            )
+        if set(observations_by_agent) != set(ordered_ids):
+            raise RecurrentRolloutError(
+                "action-free bootstrap observations must exactly cover living agents"
+            )
+        if not self._bootstrap_phase:
+            if ordered_ids:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap requires all scored ticks to be finalized"
+                )
+            self.buffer.validate_world_closed(world_id)
+        if ordered_ids:
+            expected_order = deterministic_agent_turn_order(
+                ordered_ids,
+                seed=self._environment_seed,
+                tick=tick,
+            )
+            if ordered_ids != expected_order:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap rows are not in deterministic turn order"
+                )
+        elif self._staged_tick is not None or self._staged_by_agent:
+            raise RecurrentRolloutError(
+                "empty action-free bootstrap contains staged recurrent rows"
+            )
+
+        state_before = self._action_free_policy_state()
+        value_rows: dict[int, dict[str, object]] = {}
+        try:
+            if (
+                ordered_ids
+                and self._fixed_batch_contract is not None
+                and self._staged_tick is None
+                and not self._staged_by_agent
+            ):
+                self.stage_tick_start_batch(
+                    tick=tick,
+                    ordered_agent_ids=ordered_ids,
+                    observations_by_agent=observations_by_agent,
+                )
+            for agent_id in ordered_ids:
+                observation = observations_by_agent[agent_id]
+                (
+                    policy_input,
+                    mask,
+                    hidden,
+                    previous_feedback,
+                    genome_values,
+                    genome_sha256,
+                    genome_stream_seed,
+                ) = self._decision_inputs(
+                    observation,
+                    _mapping(observation.get("action_mask"), field="action_mask"),
+                    expected_agent_id=agent_id,
+                )
+                if self._fixed_batch_contract is None:
+                    if (
+                        self._genome_conditioning_mode
+                        == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                    ):
+                        raw_output = self._core.forward_step(
+                            policy_input,
+                            mask,
+                            previous_feedback,
+                            hidden,
+                            genome_values=genome_values,
+                        )
+                    else:
+                        raw_output = self._core.forward_step(
+                            policy_input,
+                            mask,
+                            previous_feedback,
+                            hidden,
+                        )
+                    output = self._validated_core_output(raw_output)
+                else:
+                    if self._staged_tick != tick:
+                        raise RecurrentRolloutError(
+                            "action-free bootstrap fixed batch tick drifted"
+                        )
+                    staged = self._staged_by_agent.pop(agent_id, None)
+                    if staged is None:
+                        raise RecurrentRolloutError(
+                            f"agent {agent_id} has no staged bootstrap value"
+                        )
+                    if (
+                        staged.policy_input,
+                        staged.action_mask,
+                        staged.hidden,
+                        staged.previous_feedback,
+                        staged.genome_values,
+                        staged.genome_sha256,
+                        staged.genome_stream_seed,
+                    ) != (
+                        policy_input,
+                        mask,
+                        hidden,
+                        previous_feedback,
+                        genome_values,
+                        genome_sha256,
+                        genome_stream_seed,
+                    ):
+                        raise RecurrentRolloutError(
+                            "action-free bootstrap staged inputs drifted"
+                        )
+                    output = staged.output
+                target_eligible = self.buffer.mark_truncated(
+                    world_id=world_id,
+                    agent_id=agent_id,
+                    bootstrap_value=output.value,
+                )
+                value_rows[agent_id] = _bootstrap_value_evidence_row(
+                    agent_id=agent_id,
+                    policy_input=policy_input,
+                    value=output.value,
+                    target_eligible=target_eligible,
+                    genome_sha256=genome_sha256,
+                )
+            if self._staged_by_agent:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap left staged recurrent rows"
+                )
+            self._staged_tick = None
+            self._bootstrap_value_rows = value_rows
+            state_after = self._action_free_policy_state()
+            if state_after != state_before:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap mutated policy, RNG, or genome state"
+                )
+            return copy.deepcopy(self._build_bootstrap_evidence())
+        except Exception:
+            self._staged_tick = None
+            self._staged_by_agent.clear()
+            raise
 
     def stage_tick_start_batch(
         self,
@@ -1951,10 +2168,17 @@ class RecurrentOnPolicyCollector:
 
         self._validate_alignment(record, pending=pending, tick=tick)
         if pending.tick_phase == "bootstrap":
-            self.buffer.mark_truncated(
+            target_eligible = self.buffer.mark_truncated(
                 world_id=world_id,
                 agent_id=agent_id,
                 bootstrap_value=pending.value,
+            )
+            self._bootstrap_value_rows[agent_id] = _bootstrap_value_evidence_row(
+                agent_id=agent_id,
+                policy_input=pending.observation,
+                value=pending.value,
+                target_eligible=target_eligible,
+                genome_sha256=pending.genome_sha256,
             )
             if _record_terminated(record):
                 self._discard_terminal_genome(agent_id)
@@ -2327,6 +2551,50 @@ class RecurrentOnPolicyCollector:
         self._staged_by_agent.clear()
         self._staged_tick = None
 
+    def _build_bootstrap_evidence(self) -> dict[str, object]:
+        values = [
+            copy.deepcopy(self._bootstrap_value_rows[agent_id])
+            for agent_id in sorted(self._bootstrap_value_rows)
+        ]
+        zero_decision_alive_agent_ids = [
+            int(row["agent_id"]) for row in values if row["target_eligible"] is False
+        ]
+        payload: dict[str, object] = {
+            "schema_version": RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION,
+            "world_id": self._require_active_world(),
+            "tick": self._rollout_ticks,
+            "boundary": (
+                "exact_policy_visible_tick_start_before_action_v1"
+                if self._bootstrap_phase
+                else "terminal_before_horizon_no_bootstrap_v1"
+            ),
+            "action_sampled": False,
+            "action_committed": False,
+            "action_resolved": False,
+            "alive_agent_count": len(values),
+            "target_eligible_agent_count": (
+                len(values) - len(zero_decision_alive_agent_ids)
+            ),
+            "zero_decision_alive_agent_count": len(zero_decision_alive_agent_ids),
+            "zero_decision_alive_agent_ids": zero_decision_alive_agent_ids,
+            "values": values,
+        }
+        payload["exact_digest"] = _stable_payload_sha256(payload)
+        return payload
+
+    def _action_free_policy_state(self) -> dict[str, object]:
+        manager = self._genome_population_manager
+        return {
+            "decision_index": self._decision_index,
+            "sampling_rng_state": copy.deepcopy(self._rng.getstate()),
+            "hidden_by_agent": copy.deepcopy(self._hidden_by_agent),
+            "feedback_by_agent": copy.deepcopy(self._feedback_by_agent),
+            "pending_by_agent": copy.deepcopy(self._pending_by_agent),
+            "genome_population_state_sha256": (
+                None if manager is None else manager.state_sha256
+            ),
+        }
+
     def _initial_hidden(self) -> tuple[float, ...]:
         hidden = tuple(
             _finite_float(value, field="initial hidden state")
@@ -2387,7 +2655,10 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError(
                 "actor_film_v1 collection has an incompatible population mode"
             )
-        if manager.world_identity != self._require_active_world():
+        if (
+            self._genome_world_identity is None
+            or manager.world_identity != self._genome_world_identity
+        ):
             raise RecurrentRolloutError(
                 "recurrent genome population world binding does not match collector"
             )
@@ -2661,6 +2932,46 @@ def _stable_payload_sha256(value: Mapping[str, object]) -> str:
             "fixed recurrent batch payload is not canonical JSON"
         ) from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _bootstrap_value_evidence_row(
+    *,
+    agent_id: int,
+    policy_input: Sequence[float],
+    value: float,
+    target_eligible: bool,
+    genome_sha256: str | None,
+) -> dict[str, object]:
+    if type(target_eligible) is not bool:
+        raise RecurrentRolloutError(
+            "bootstrap target eligibility must be an exact boolean"
+        )
+    canonical_input = tuple(
+        _finite_float(component, field="bootstrap policy input")
+        for component in policy_input
+    )
+    row: dict[str, object] = {
+        "agent_id": _strict_int(agent_id, field="bootstrap agent_id"),
+        "policy_input_sha256": hashlib.sha256(
+            json.dumps(
+                canonical_input,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "value": round(
+            _finite_float(value, field="bootstrap value"),
+            12,
+        ),
+        "target_eligible": target_eligible,
+        "genome_sha256": (
+            None
+            if genome_sha256 is None
+            else _sha256(genome_sha256, field="bootstrap genome_sha256")
+        ),
+    }
+    row["exact_digest"] = _stable_payload_sha256(row)
+    return row
 
 
 def _validated_rollout_genome_fields(

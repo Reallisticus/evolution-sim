@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from collections import namedtuple
 
 from evolution_sim.io import open_ecology_campaign_storage as storage
+from evolution_sim.io import open_ecology_archive_authority as archive_authority
 from scripts import archive_open_ecology_campaign as archive_tool
 
 
@@ -31,9 +33,9 @@ SAFE_DISK_USAGE = DiskUsage(
 class OpenEcologyCampaignStorageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.disk_usage_patch = patch.object(
-            storage.shutil,
-            "disk_usage",
-            return_value=SAFE_DISK_USAGE,
+            storage,
+            "_descriptor_disk_usage",
+            return_value=(SAFE_DISK_USAGE.total, SAFE_DISK_USAGE.free),
         )
         self.disk_usage_patch.start()
         self.addCleanup(self.disk_usage_patch.stop)
@@ -132,13 +134,9 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
             active, _ = self._trees(directory)
             total = 1024 * 1024**3
             with patch.object(
-                storage.shutil,
-                "disk_usage",
-                return_value=DiskUsage(
-                    total=total,
-                    used=total - 199 * 1024**3,
-                    free=199 * 1024**3,
-                ),
+                storage,
+                "_descriptor_disk_usage",
+                return_value=(total, 199 * 1024**3),
             ):
                 with self.assertRaisesRegex(
                     storage.CampaignStorageError,
@@ -152,13 +150,9 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
                     )
 
             with patch.object(
-                storage.shutil,
-                "disk_usage",
-                return_value=DiskUsage(
-                    total=total,
-                    used=total - 205 * 1024**3,
-                    free=205 * 1024**3,
-                ),
+                storage,
+                "_descriptor_disk_usage",
+                return_value=(total, 205 * 1024**3),
             ):
                 storage.check_campaign_storage(
                     active,
@@ -179,7 +173,7 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
             alias.symlink_to(real, target_is_directory=True)
             with self.assertRaisesRegex(
                 storage.CampaignStorageError,
-                "raw and resolved paths differ",
+                "not a real directory",
             ):
                 storage.check_campaign_storage(
                     alias / "active",
@@ -187,6 +181,102 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
                     source_git_sha=SOURCE_SHA,
                     limits=self._limits(),
                 )
+
+    def test_directory_tree_creation_rejects_user_controlled_symlink_ancestor(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            outside = base / "outside"
+            outside.mkdir()
+            hostile = base / "attempts"
+            hostile.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(
+                storage.CampaignStorageError,
+                "not a real directory",
+            ):
+                storage.ensure_real_directory_tree(
+                    hostile / "evidence",
+                    field="test preservation tree",
+                )
+
+            self.assertEqual(list(outside.iterdir()), [])
+            created = storage.ensure_real_directory_tree(
+                base / "real" / "nested",
+                field="test preservation tree",
+            )
+            self.assertEqual(created, base / "real" / "nested")
+            self.assertTrue(created.is_dir())
+
+    def test_root_owned_top_alias_never_resolves_a_lower_symlink(self) -> None:
+        if not Path("/var/tmp").is_dir():
+            self.skipTest("/var/tmp compatibility namespace is unavailable")
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as directory:
+            alias_base = Path(directory)
+            expected_base = alias_base.resolve()
+            created = storage.ensure_real_directory_tree(
+                alias_base / "real" / "nested",
+                field="root compatibility tree",
+            )
+            self.assertEqual(created, expected_base / "real" / "nested")
+
+            outside = expected_base / "outside"
+            outside.mkdir()
+            hostile = alias_base / "lower-alias"
+            hostile.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(
+                storage.CampaignStorageError,
+                "not a real directory",
+            ):
+                storage.ensure_real_directory_tree(
+                    hostile / "must-not-exist",
+                    field="root compatibility tree",
+                )
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_root_compatibility_target_is_descriptor_walked_not_resolved(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            outside = base / "outside"
+            outside.mkdir()
+            lower_alias = base / "compatibility-target"
+            lower_alias.symlink_to(outside, target_is_directory=True)
+            synthetic_top = Path("/synthetic-root-compatibility")
+            real_lstat = storage.os.lstat
+
+            def root_owned_synthetic_alias(path: object) -> object:
+                if Path(path) == synthetic_top:
+                    return SimpleNamespace(
+                        st_mode=stat.S_IFLNK | 0o777,
+                        st_uid=0,
+                    )
+                return real_lstat(path)
+
+            with (
+                patch.object(
+                    storage.os,
+                    "lstat",
+                    side_effect=root_owned_synthetic_alias,
+                ),
+                patch.object(
+                    storage.os,
+                    "readlink",
+                    return_value=str(lower_alias),
+                ),
+                self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "not a real directory",
+                ),
+            ):
+                storage.ensure_real_directory_tree(
+                    synthetic_top / "must-not-exist",
+                    field="synthetic root compatibility tree",
+                )
+
+            self.assertEqual(list(outside.iterdir()), [])
 
     def test_scan_rejects_symlink_hardlink_and_special_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -216,18 +306,22 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
             active, _ = self._trees(directory)
             crossing = active / "mounted"
             crossing.mkdir()
-            real_lstat = os.lstat
+            real_stat_at = storage._stat_at_without_following
 
-            def device_drift(candidate: object) -> object:
-                metadata = real_lstat(candidate)
-                if Path(candidate) == crossing:
+            def device_drift(parent_descriptor: int, name: str) -> object:
+                metadata = real_stat_at(parent_descriptor, name)
+                if name == crossing.name:
                     return SimpleNamespace(
                         st_dev=metadata.st_dev + 1,
                         st_mode=metadata.st_mode,
                     )
                 return metadata
 
-            with patch.object(storage.os, "lstat", side_effect=device_drift):
+            with patch.object(
+                storage,
+                "_stat_at_without_following",
+                side_effect=device_drift,
+            ):
                 with self.assertRaisesRegex(
                     storage.CampaignStorageError,
                     "mount boundary",
@@ -238,6 +332,91 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
                         source_git_sha=SOURCE_SHA,
                         limits=self._limits(),
                     )
+
+    def test_scan_fails_closed_when_child_directory_is_swapped_for_symlink(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            active = base / "active"
+            active.mkdir()
+            victim = active / "victim"
+            victim.mkdir()
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "untrusted.bin").write_bytes(b"outside")
+            real_open = os.open
+            swapped = False
+
+            def swap_before_open(
+                candidate: object,
+                flags: int,
+                mode: int = 0o777,
+                *,
+                dir_fd: int | None = None,
+            ) -> int:
+                nonlocal swapped
+                if (
+                    not swapped
+                    and candidate == victim.name
+                    and dir_fd is not None
+                    and flags & getattr(os, "O_DIRECTORY", 0)
+                ):
+                    os.rmdir(victim)
+                    victim.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                return real_open(candidate, flags, mode, dir_fd=dir_fd)
+
+            with patch.object(storage.os, "open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "cannot safely open storage directory",
+                ):
+                    storage.check_campaign_storage(
+                        active,
+                        campaign_id=CAMPAIGN_ID,
+                        source_git_sha=SOURCE_SHA,
+                        limits=self._limits(),
+                    )
+            self.assertTrue(swapped)
+
+    def test_scan_rejects_same_size_mutation_with_restored_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            active = Path(directory).resolve() / "active"
+            active.mkdir()
+            target = active / "payload.bin"
+            target.write_bytes(b"original")
+            original = target.stat()
+            real_read = os.read
+            mutated = False
+
+            def mutate_before_read(descriptor: int, size: int) -> bytes:
+                nonlocal mutated
+                if not mutated:
+                    writer = os.open(target, os.O_WRONLY)
+                    try:
+                        os.write(writer, b"mutated!")
+                    finally:
+                        os.close(writer)
+                    os.utime(
+                        target,
+                        ns=(original.st_atime_ns, original.st_mtime_ns),
+                    )
+                    mutated = True
+                return real_read(descriptor, size)
+
+            with patch.object(storage.os, "read", side_effect=mutate_before_read):
+                with self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "changed while hashing",
+                ):
+                    storage.check_campaign_storage(
+                        active,
+                        campaign_id=CAMPAIGN_ID,
+                        source_git_sha=SOURCE_SHA,
+                        limits=self._limits(),
+                    )
+            self.assertTrue(mutated)
 
     def test_active_root_or_descendant_cannot_be_sealed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -390,16 +569,173 @@ class OpenEcologyCampaignStorageTests(unittest.TestCase):
             ):
                 storage.load_verified_receipt(receipt)
 
+    def test_atomic_publication_preserves_a_racing_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            destination = parent / "receipt.json"
+            real_rename = storage._rename_name_no_replace
+
+            def publish_competitor_then_rename(
+                parent_descriptor: int,
+                source_name: str,
+                destination_name: str,
+            ) -> None:
+                competitor = os.open(
+                    destination_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o444,
+                    dir_fd=parent_descriptor,
+                )
+                try:
+                    storage._write_all(competitor, b"competitor\n")
+                    os.fsync(competitor)
+                finally:
+                    os.close(competitor)
+                real_rename(
+                    parent_descriptor,
+                    source_name,
+                    destination_name,
+                )
+
+            with patch.object(
+                storage,
+                "_rename_name_no_replace",
+                side_effect=publish_competitor_then_rename,
+            ):
+                with self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "refusing to overwrite",
+                ):
+                    storage._atomic_create(
+                        destination,
+                        b"authoritative\n",
+                        mode=0o444,
+                    )
+
+            self.assertEqual(destination.read_bytes(), b"competitor\n")
+            stages = list(parent.glob(f".{destination.name}.pending-*"))
+            self.assertEqual(len(stages), 1)
+            self.assertEqual(stages[0].read_bytes(), b"authoritative\n")
+
+    def test_atomic_publication_detects_stage_replacement_without_deleting_it(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            destination = parent / "receipt.json"
+            real_rename = storage._rename_name_no_replace
+
+            def replace_stage_then_publish(
+                parent_descriptor: int,
+                source_name: str,
+                destination_name: str,
+            ) -> None:
+                os.unlink(source_name, dir_fd=parent_descriptor)
+                competitor = os.open(
+                    source_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o444,
+                    dir_fd=parent_descriptor,
+                )
+                try:
+                    storage._write_all(competitor, b"stage-competitor\n")
+                    os.fchmod(competitor, 0o444)
+                    os.fsync(competitor)
+                finally:
+                    os.close(competitor)
+                real_rename(
+                    parent_descriptor,
+                    source_name,
+                    destination_name,
+                )
+
+            with patch.object(
+                storage,
+                "_rename_name_no_replace",
+                side_effect=replace_stage_then_publish,
+            ):
+                with self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "identity changed",
+                ):
+                    storage._atomic_create(
+                        destination,
+                        b"authoritative\n",
+                        mode=0o444,
+                    )
+
+            self.assertEqual(destination.read_bytes(), b"stage-competitor\n")
+
+    def test_atomic_publication_detects_post_open_destination_replacement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            destination = parent / "receipt.json"
+            retained = parent / "retained-authoritative.json"
+            real_readback = storage._read_exact_descriptor
+            readback_count = 0
+
+            def replace_destination_during_readback(
+                descriptor: int,
+                *,
+                expected_bytes: int,
+            ) -> bytes:
+                nonlocal readback_count
+                readback_count += 1
+                observed = real_readback(
+                    descriptor,
+                    expected_bytes=expected_bytes,
+                )
+                if readback_count == 2:
+                    os.replace(destination, retained)
+                    destination.write_bytes(b"post-open-competitor\n")
+                    destination.chmod(0o444)
+                return observed
+
+            with patch.object(
+                storage,
+                "_read_exact_descriptor",
+                side_effect=replace_destination_during_readback,
+            ):
+                with self.assertRaisesRegex(
+                    storage.CampaignStorageError,
+                    "changed during publication|changed after readback",
+                ):
+                    storage._atomic_create(
+                        destination,
+                        b"authoritative\n",
+                        mode=0o444,
+                    )
+
+            self.assertEqual(readback_count, 2)
+            self.assertEqual(destination.read_bytes(), b"post-open-competitor\n")
+            self.assertEqual(retained.read_bytes(), b"authoritative\n")
+
 
 class OpenEcologyArchiveToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.disk_usage_patch = patch.object(
-            storage.shutil,
-            "disk_usage",
-            return_value=SAFE_DISK_USAGE,
+            storage,
+            "_descriptor_disk_usage",
+            return_value=(SAFE_DISK_USAGE.total, SAFE_DISK_USAGE.free),
         )
         self.disk_usage_patch.start()
         self.addCleanup(self.disk_usage_patch.stop)
+        self.ssh_endpoint_patch = patch.object(
+            archive_tool,
+            "_require_effective_ssh_endpoint",
+        )
+        self.real_ssh_endpoint_verifier = archive_tool._require_effective_ssh_endpoint
+        self.real_remote_authority_verifier = archive_tool._verify_remote_authority
+        self.remote_authority_patch = patch.object(
+            archive_tool,
+            "_verify_remote_authority",
+        )
+        self.ssh_endpoint_patch.start()
+        self.remote_authority_patch.start()
+        self.addCleanup(self.ssh_endpoint_patch.stop)
+        self.addCleanup(self.remote_authority_patch.stop)
 
     def _limits(self) -> storage.CampaignStorageLimits:
         return storage.CampaignStorageLimits(
@@ -410,22 +746,90 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
         )
 
     def _options(self, directory: str) -> archive_tool.RemoteArchiveOptions:
-        receipt = Path(directory).resolve() / "receipt.json"
+        base = Path(directory).resolve()
+        receipt = base / "receipt.json"
+        tools = base / "tools"
+        tools.mkdir()
+        local_tools: dict[str, dict[str, str]] = {}
+        for name in archive_authority.LOCAL_TOOL_NAMES:
+            path = tools / name
+            path.write_bytes(f"#!/bin/sh\n# {name}\n".encode())
+            path.chmod(0o755)
+            local_tools[name] = {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        rclone_config = base / "rclone.conf"
+        rclone_config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+        rclone_config.chmod(0o600)
+        remote_tools = {
+            name: {
+                "path": f"/usr/bin/{name}",
+                "sha256": hashlib.sha256(name.encode()).hexdigest(),
+            }
+            for name in archive_authority.REMOTE_TOOL_NAMES
+        }
+        remote_helpers = {
+            name: hashlib.sha256(name.encode()).hexdigest()
+            for name in archive_authority.REMOTE_HELPER_PATHS
+        }
+        payload = {
+            "endpoint": {
+                "rclone_base": archive_tool.DEFAULT_RCLONE_BASE,
+                "rclone_config": {
+                    "path": str(rclone_config),
+                    "sha256": hashlib.sha256(rclone_config.read_bytes()).hexdigest(),
+                },
+                "ssh_effective_config_sha256": "c" * 64,
+                "ssh_connection": {
+                    "address": "192.0.2.40",
+                    "authenticated_host": "trainer-node.example.invalid",
+                    "authentication": "publickey",
+                    "host_key": (
+                        "ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    ),
+                    "port": 22,
+                },
+                "ssh_target": "trainer-node",
+            },
+            "local_tools": local_tools,
+            "remote_helpers": remote_helpers,
+            "remote_tools": remote_tools,
+            "schema_version": (archive_authority.ARCHIVE_TOOL_AUTHORITY_SCHEMA_VERSION),
+            "source": {
+                "git_sha": SOURCE_SHA,
+                "manifest_sha256": SOURCE_MANIFEST,
+                "remote_repository_root": "/srv/evolution-sim/checkout",
+            },
+        }
+        authority_path = base / "archive-authority.json"
+        authority_bytes = storage.canonical_json_bytes(payload)
+        authority_path.write_bytes(authority_bytes)
         return archive_tool.RemoteArchiveOptions(
-            ssh_target="gpu4070",
-            remote_repository_root="/home/train/evolution-sim-checkout",
-            remote_active_campaign_root="/home/train/runs/campaign-1",
-            remote_closed_bundle_dir="/home/train/closed/bundle-1",
-            remote_staging_dir="/home/train/staging/bundle-1",
+            ssh_target="trainer-node",
+            remote_repository_root="/srv/evolution-sim/checkout",
+            remote_active_campaign_root="/srv/evolution-sim/runs/campaign-1",
+            remote_closed_bundle_dir="/srv/evolution-sim/closed/bundle-1",
+            remote_staging_dir="/srv/evolution-sim/staging/bundle-1",
             campaign_id=CAMPAIGN_ID,
             bundle_id=BUNDLE_ID,
             source_git_sha=SOURCE_SHA,
             source_manifest_sha256=SOURCE_MANIFEST,
+            expected_marker_sha256="c" * 64,
+            expected_entry_count=5,
+            expected_file_count=3,
+            expected_directory_count=2,
+            expected_total_file_bytes=123,
             receipt_path=receipt,
+            tool_authority_path=authority_path,
+            tool_authority_sha256=hashlib.sha256(authority_bytes).hexdigest(),
             limits=self._limits(),
         )
 
-    def _build(self) -> dict[str, object]:
+    def _build(
+        self,
+        options: archive_tool.RemoteArchiveOptions | None = None,
+    ) -> dict[str, object]:
         marker_sha256 = "c" * 64
         archive_name = f"bundle-1-{marker_sha256[:16]}.tar.zst"
         names = (
@@ -438,15 +842,21 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
                 "name": name,
                 "sha256": hashlib.sha256(name.encode()).hexdigest(),
                 "size": index + 11,
-                "source_path": f"/home/train/staging/bundle-1/{name}",
+                "source_path": f"/srv/evolution-sim/staging/bundle-1/{name}",
             }
             for index, name in enumerate(names)
         ]
-        return {
+        payload: dict[str, object] = {
             "archive_name": archive_name,
             "bundle_id": BUNDLE_ID,
             "campaign_id": CAMPAIGN_ID,
-            "marker_sha256": marker_sha256,
+            "closed_bundle": {
+                "marker_sha256": marker_sha256,
+                "entry_count": 5,
+                "file_count": 3,
+                "directory_count": 2,
+                "total_file_bytes": 123,
+            },
             "objects": objects,
             "remote_input_pruned": False,
             "remote_staging_pruned": False,
@@ -455,6 +865,14 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
             "source_manifest_sha256": SOURCE_MANIFEST,
             "status": "deterministic_tar_zst_triple_validated",
         }
+        if options is not None:
+            authority = archive_tool._load_and_validate_authority(options)
+            payload["tool_authority"] = (
+                archive_tool.RemoteBuildAuthority.from_archive_authority(
+                    authority
+                ).receipt_record()
+            )
+        return payload
 
     def _inventory(self, build: dict[str, object]) -> list[dict[str, object]]:
         return [
@@ -475,6 +893,119 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
             archive_tool.DEFAULT_RCLONE_BASE,
             "gdrive:evolution-sim-backups/archives/open-ecology",
         )
+
+    def test_fake_path_cannot_replace_pinned_local_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            options = self._options(directory)
+            authority = archive_tool._load_and_validate_authority(options)
+            hostile = Path(directory).resolve() / "hostile"
+            hostile.mkdir()
+            marker = Path(directory).resolve() / "path-tool-ran"
+            for name in archive_authority.LOCAL_TOOL_NAMES:
+                executable = hostile / name
+                executable.write_text(
+                    f"#!/bin/sh\n/usr/bin/touch {marker}\n",
+                    encoding="utf-8",
+                )
+                executable.chmod(0o755)
+            git_pin = authority.local_tool("git")
+            with patch.dict(os.environ, {"PATH": str(hostile)}):
+                completed = archive_tool._run_local_tool(
+                    authority,
+                    "git",
+                    (git_pin.path,),
+                )
+            self.assertEqual(completed.returncode, 0)
+            self.assertFalse(marker.exists())
+
+    def test_authenticated_ssh_endpoint_replacement_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            options = self._options(directory)
+            authority = archive_tool._load_and_validate_authority(options)
+            effective_config = b"host trainer-node\nhostname 192.0.2.40\n"
+            authority = replace(
+                authority,
+                ssh_effective_config_sha256=(
+                    hashlib.sha256(effective_config).hexdigest()
+                ),
+            )
+            changed_connection = b"\n".join(
+                (
+                    (
+                        b"debug1: Server host key: ssh-ed25519 "
+                        b"SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                    ),
+                    (
+                        b"Authenticated to replacement.example.invalid "
+                        b'([192.0.2.41]:22) using "publickey".'
+                    ),
+                    b"",
+                )
+            )
+            with patch.object(
+                archive_tool,
+                "_run_pinned",
+                side_effect=(
+                    subprocess.CompletedProcess([], 0, effective_config, b""),
+                    subprocess.CompletedProcess([], 0, b"", changed_connection),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    archive_tool.OpenEcologyArchiveError,
+                    "host key/address differs",
+                ):
+                    self.real_ssh_endpoint_verifier(authority)
+
+    def test_pinned_local_executable_replacement_fails_before_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            options = self._options(directory)
+            authority = archive_tool._load_and_validate_authority(options)
+            rclone_path = Path(authority.local_tool("rclone").path)
+            rclone_path.write_text("#!/bin/sh\nexit 19\n", encoding="utf-8")
+            rclone_path.chmod(0o755)
+            with self.assertRaisesRegex(
+                archive_authority.ArchiveAuthorityError,
+                "SHA256 mismatch",
+            ):
+                archive_tool._run_local_tool(
+                    authority,
+                    "rclone",
+                    archive_tool._rclone_command(authority, "version"),
+                )
+
+    def test_remote_helper_replacement_fails_external_authority_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            options = self._options(directory)
+            authority = archive_tool._load_and_validate_authority(options)
+            expected = {pin.path: pin.sha256 for _, pin in authority.remote_tools}
+            repository = PurePosixPath(options.remote_repository_root)
+            for relative_path, digest in authority.remote_helpers:
+                expected[str(repository / relative_path)] = digest
+            replaced_path = str(repository / archive_authority.REMOTE_HELPER_PATHS[-1])
+            expected[replaced_path] = "0" * 64
+            stdout = "".join(
+                f"{digest}  {path}\n" for path, digest in sorted(expected.items())
+            ).encode()
+            with patch.object(
+                archive_tool,
+                "_run_local_tool",
+                return_value=subprocess.CompletedProcess([], 0, stdout, b""),
+            ):
+                with self.assertRaisesRegex(
+                    archive_tool.OpenEcologyArchiveError,
+                    "executable or helper differs",
+                ):
+                    self.real_remote_authority_verifier(options, authority)
+
+    def test_authority_file_replacement_fails_its_external_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            options = self._options(directory)
+            options.tool_authority_path.write_bytes(b"{}\n")
+            with self.assertRaisesRegex(
+                archive_tool.OpenEcologyArchiveError,
+                "SHA256 mismatch",
+            ):
+                archive_tool._load_and_validate_authority(options)
 
     def test_source_head_or_manifest_drift_fails_closed(self) -> None:
         with patch.object(
@@ -615,7 +1146,7 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             options = self._options(directory)
-            build = self._build()
+            build = self._build(options)
             first = build["objects"][0]  # type: ignore[index]
             first["source_path"] = f"/tmp/{first['name']}"  # type: ignore[index]
             with self.assertRaisesRegex(
@@ -623,6 +1154,60 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
                 "evidence is invalid",
             ):
                 archive_tool._validated_remote_build(build, options=options)
+
+    def test_valid_resealed_bundle_cannot_replace_externally_pinned_closure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            options = self._options(directory)
+            authority = archive_tool._load_and_validate_authority(options)
+            execution_authority = (
+                archive_tool.RemoteBuildAuthority.from_archive_authority(authority)
+            )
+            repository = base / "repository"
+            active = base / "active"
+            bundle = base / BUNDLE_ID
+            staging = base / "staging"
+            for path in (repository, active, bundle):
+                path.mkdir()
+            (active / "writer").write_bytes(b"active")
+            (bundle / "evidence").write_bytes(b"valid-resealed-replacement")
+            snapshot = storage.seal_closed_bundle(
+                active,
+                bundle,
+                campaign_id=CAMPAIGN_ID,
+                bundle_id=BUNDLE_ID,
+                source_git_sha=SOURCE_SHA,
+                source_manifest_sha256=SOURCE_MANIFEST,
+                limits=self._limits(),
+            )
+            with patch.object(
+                archive_tool,
+                "_require_exact_source_binding",
+                return_value=repository,
+            ):
+                with self.assertRaisesRegex(
+                    archive_tool.OpenEcologyArchiveError,
+                    "externally pinned closure",
+                ):
+                    archive_tool.build_remote_closed_bundle_archive(
+                        repository_root=repository,
+                        active_campaign_root=active,
+                        closed_bundle_dir=bundle,
+                        staging_dir=staging,
+                        campaign_id=CAMPAIGN_ID,
+                        bundle_id=BUNDLE_ID,
+                        source_git_sha=SOURCE_SHA,
+                        source_manifest_sha256=SOURCE_MANIFEST,
+                        expected_marker_sha256="0" * 64,
+                        expected_entry_count=len(snapshot.scan.entries),
+                        expected_file_count=snapshot.scan.file_count,
+                        expected_directory_count=snapshot.scan.directory_count,
+                        expected_total_file_bytes=snapshot.scan.total_file_bytes,
+                        limits=self._limits(),
+                        execution_authority=execution_authority,
+                    )
 
     def test_producer_manifest_must_equal_descriptor_safe_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -655,8 +1240,8 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
             sidecar.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
             with patch.object(
                 archive_tool,
-                "_run",
-                return_value=subprocess.CompletedProcess([], 0, b"", b""),
+                "_validate_archive_against_snapshot",
+                return_value=digest,
             ):
                 rows = archive_tool._validate_producer_objects(
                     snapshot,
@@ -803,7 +1388,7 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
             b"[\n",
             b"ERROR: directory not found\n",
         )
-        with patch("subprocess.run", return_value=missing):
+        with patch.object(archive_tool, "_run", return_value=missing):
             rows = archive_tool._inspect_remote_inventory(
                 "gdrive:missing",
                 expected_names=("a", "b", "c"),
@@ -848,7 +1433,7 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
     def test_partial_exact_retry_fills_only_missing_objects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             options = self._options(directory)
-            build = self._build()
+            build = self._build(options)
             objects = archive_tool._validated_remote_build(build, options=options)
             first = objects[0]
             initial = [
@@ -860,7 +1445,7 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
             ]
             final = self._inventory(build)
 
-            def readback(path: str) -> dict[str, object]:
+            def readback(path: str, **_: object) -> dict[str, object]:
                 name = path.rsplit("/", 1)[1]
                 row = next(row for row in objects if row["name"] == name)
                 return {"sha256": row["sha256"], "size": row["size"]}
@@ -914,6 +1499,10 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
                 "payload"
             ]
             self.assertEqual(
+                receipt_payload["archive_tool_authority"]["authority_sha256"],  # type: ignore[index]
+                options.tool_authority_sha256,
+            )
+            self.assertEqual(
                 receipt_payload["drive_quota"],  # type: ignore[index]
                 {
                     "free_after_bytes": 400 * 1024**3,
@@ -925,7 +1514,7 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
     def test_existing_mismatch_writes_no_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             options = self._options(directory)
-            build = self._build()
+            build = self._build(options)
             objects = archive_tool._validated_remote_build(build, options=options)
             initial = [
                 {
@@ -964,13 +1553,13 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             options = self._options(directory)
-            build = self._build()
+            build = self._build(options)
             objects = archive_tool._validated_remote_build(build, options=options)
             before = self._inventory(build)
             after = [dict(row) for row in before]
             after[0]["id"] = "drive-replaced"
 
-            def readback(path: str) -> dict[str, object]:
+            def readback(path: str, **_: object) -> dict[str, object]:
                 name = path.rsplit("/", 1)[1]
                 row = next(row for row in objects if row["name"] == name)
                 return {"sha256": row["sha256"], "size": row["size"]}
@@ -1014,11 +1603,11 @@ class OpenEcologyArchiveToolTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             options = self._options(directory)
-            build = self._build()
+            build = self._build(options)
             objects = archive_tool._validated_remote_build(build, options=options)
             final = self._inventory(build)
 
-            def readback(path: str) -> dict[str, object]:
+            def readback(path: str, **_: object) -> dict[str, object]:
                 name = path.rsplit("/", 1)[1]
                 row = next(row for row in objects if row["name"] == name)
                 return {"sha256": row["sha256"], "size": row["size"]}

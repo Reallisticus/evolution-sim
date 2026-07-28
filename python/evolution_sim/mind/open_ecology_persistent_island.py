@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import re
 import stat
-import subprocess
 import time
 from typing import Protocol
 
@@ -24,6 +23,7 @@ from evolution_sim.io.open_ecology_campaign_storage import (
     CampaignStorageLock,
     canonical_json_bytes,
     default_storage_lock_path,
+    ensure_real_directory_tree,
 )
 from evolution_sim.io.open_ecology_aggregate_commit import (
     OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME,
@@ -33,8 +33,12 @@ from evolution_sim.io.open_ecology_aggregate_commit import (
     OPEN_ECOLOGY_AGGREGATE_POINTER_SCHEMA,
     OpenEcologyAggregateIdentityPins,
     OpenEcologyAggregateResumePins,
+    inspect_current_open_ecology_aggregate_generation,
+    inspect_open_ecology_aggregate_attempt_frontier,
     load_current_open_ecology_aggregate_generation,
+    load_or_recover_open_ecology_genesis_generation,
     publish_open_ecology_aggregate_generation,
+    select_open_ecology_aggregate_attempt_generation,
 )
 from evolution_sim.io.open_ecology_checkpoint import (
     OPEN_ECOLOGY_DEFAULT_MAX_CHECKPOINT_BYTES,
@@ -54,12 +58,20 @@ from evolution_sim.io.open_ecology_rotating_writer import (
     RotatingEvidenceConfig,
     RotatingOpenEcologyEvidenceWriter,
     SignalContributorEvidence,
+    load_open_ecology_evidence_manifest,
+    preserve_open_ecology_evidence_attempt_directory,
+    restore_open_ecology_evidence_manifest_snapshot,
 )
 from evolution_sim.io.open_ecology_runtime_checkpoint import (
     RuntimeCheckpointBinding,
     RuntimeCheckpointComponents,
     capture_open_ecology_runtime_checkpoint,
     restore_open_ecology_runtime_checkpoint,
+)
+from evolution_sim.io.open_ecology_git_authority import (
+    OpenEcologyGitAuthorityError,
+    discover_pinned_git_executable,
+    run_pinned_git,
 )
 from evolution_sim.io.source_manifest import source_file_hash_manifest
 from evolution_sim.mind.open_ecology_seed_registry import (
@@ -134,6 +146,13 @@ OPEN_ECOLOGY_RUNTIME_CHECKPOINT_INTERVAL_TICKS = 5_000
 OPEN_ECOLOGY_RUNTIME_CHECKPOINT_RETENTION_COUNT = 2
 OPEN_ECOLOGY_PHASE_D_DENSITIES = frozenset({64, 128, 256})
 OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED = True
+OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED = True
+OPEN_ECOLOGY_CHECKPOINT_PUBLICATION_CONCURRENCY_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_checkpoint_publication_concurrency_v1"
+)
+OPEN_ECOLOGY_GENESIS_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_genesis_attempt_authority_v1"
+)
 OPEN_ECOLOGY_PERSISTENT_LAUNCH_BLOCKERS = (
     "campaign_storage_interval_check_not_integrated",
     "exact_source_phase_d_throughput_gate_not_yet_passed",
@@ -165,6 +184,30 @@ _MOVE_DELTAS = {
 
 class OpenEcologyPersistentIslandError(ValueError):
     """Raised when a persistent primary-island contract fails closed."""
+
+
+def checkpoint_publication_concurrency_contract() -> dict[str, object]:
+    """Describe the lock and frontier-latency contract without wall-clock claims."""
+
+    return {
+        "schema_version": (
+            OPEN_ECOLOGY_CHECKPOINT_PUBLICATION_CONCURRENCY_SCHEMA_VERSION
+        ),
+        "task_lock_mode": "exclusive",
+        "campaign_epoch_lock_mode": "shared",
+        "global_storage_barrier_lock_mode": "exclusive",
+        "distinct_task_publications_may_overlap": (
+            OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED
+        ),
+        "same_task_publications_may_overlap": False,
+        "storage_scan_may_overlap_publication": False,
+        "frontier_publication_latency_model": (
+            "maximum_task_pipeline_elapsed_not_sum_of_task_pipelines"
+        ),
+        "publication_parallelism_upper_bound": OPEN_ECOLOGY_PHASE_D_TASK_COUNT,
+        "global_serial_publication_blocker_present": False,
+        "exact_source_throughput_gate_still_required": True,
+    }
 
 
 class _IdentityFileLock:
@@ -758,6 +801,151 @@ def persistent_island_writer_source_contract(
     return payload
 
 
+def persistent_genesis_attempt_authority_sha256(
+    task: PersistentIslandTask,
+    *,
+    campaign_root: str | Path,
+    campaign_id: str,
+    evidence_directory: str | Path | None = None,
+    checkpoint_directory: str | Path | None = None,
+    aggregate_directory: str | Path | None = None,
+    writer_config: RotatingEvidenceConfig | None = None,
+    checkpoint_interval_ticks: int = (OPEN_ECOLOGY_RUNTIME_CHECKPOINT_INTERVAL_TICKS),
+) -> str:
+    """Derive the exact coordinator-visible authorization for tick-zero work."""
+
+    campaign_path = Path(campaign_root)
+    if not campaign_path.is_absolute():
+        raise OpenEcologyPersistentIslandError(
+            "genesis authority campaign_root must be absolute"
+        )
+    evidence_path = (
+        campaign_path / task.task_id
+        if evidence_directory is None
+        else Path(evidence_directory)
+    )
+    checkpoint_path = (
+        campaign_path / "checkpoints" / task.task_id
+        if checkpoint_directory is None
+        else Path(checkpoint_directory)
+    )
+    aggregate_path = (
+        campaign_path / "aggregates" / task.task_id
+        if aggregate_directory is None
+        else Path(aggregate_directory)
+    )
+    if not all(
+        path.is_absolute() for path in (evidence_path, checkpoint_path, aggregate_path)
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "genesis authority paths must be absolute"
+        )
+    concrete_writer_config = writer_config or RotatingEvidenceConfig(
+        max_ticks_per_shard=5_000
+    )
+    payload = {
+        "schema_version": OPEN_ECOLOGY_GENESIS_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
+        "campaign_id": campaign_id,
+        "campaign_root": str(campaign_path),
+        "task_id": task.task_id,
+        "task_sha256": _stable_digest(task.to_dict()),
+        "source_git_sha": task.artifact.source_commit,
+        "run_generation_id": _persistent_checkpoint_generation_id(
+            campaign_id=campaign_id,
+            task_id=task.task_id,
+        ),
+        "predecessor": None,
+        "target_observed_tick": 0,
+        "evidence_directory": str(evidence_path),
+        "checkpoint_directory": str(checkpoint_path),
+        "aggregate_directory": str(aggregate_path),
+        "checkpoint_interval_ticks": _positive_int(
+            checkpoint_interval_ticks,
+            field="checkpoint_interval_ticks",
+        ),
+        "writer_config": concrete_writer_config.to_dict(),
+    }
+    return _stable_digest(payload)
+
+
+def persistent_interval_attempt_authority_sha256(
+    task: PersistentIslandTask,
+    *,
+    campaign_id: str,
+    predecessor: OpenEcologyAggregateResumePins | None,
+    target_tick: int,
+) -> str:
+    """Derive the coordinator/worker authorization for one barrier attempt."""
+
+    requested_target = _positive_int(target_tick, field="target_tick")
+    if requested_target > task.target_ticks:
+        raise OpenEcologyPersistentIslandError(
+            "interval attempt target exceeds the task target"
+        )
+    if predecessor is not None and not isinstance(
+        predecessor,
+        OpenEcologyAggregateResumePins,
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "interval attempt predecessor must be aggregate resume pins"
+        )
+    run_generation_id = _persistent_checkpoint_generation_id(
+        campaign_id=campaign_id,
+        task_id=task.task_id,
+    )
+    if predecessor is not None:
+        if predecessor.identity.run_generation_id != run_generation_id:
+            raise OpenEcologyPersistentIslandError(
+                "interval attempt predecessor run identity drifted"
+            )
+        predecessor_commit = predecessor.commit_sha256
+    else:
+        predecessor_commit = "genesis"
+    return persistent_interval_attempt_authority_payload_sha256(
+        task_id=task.task_id,
+        run_generation_id=run_generation_id,
+        predecessor_aggregate_commit_sha256=predecessor_commit,
+        requested_target_tick=requested_target,
+    )
+
+
+def persistent_interval_attempt_authority_payload_sha256(
+    *,
+    task_id: str,
+    run_generation_id: str,
+    predecessor_aggregate_commit_sha256: str,
+    requested_target_tick: int,
+) -> str:
+    """Hash the exact newline-canonical authority object stored in an intent."""
+
+    if (
+        not isinstance(task_id, str)
+        or _OPEN_ECOLOGY_PHASE_D_TASK_ID_RE.fullmatch(task_id) is None
+        or not isinstance(run_generation_id, str)
+        or not run_generation_id
+        or len(run_generation_id) > 512
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "interval attempt payload identity is invalid"
+        )
+    if predecessor_aggregate_commit_sha256 != "genesis":
+        _sha256(
+            predecessor_aggregate_commit_sha256,
+            field="predecessor aggregate commit SHA256",
+        )
+    target_tick = _positive_int(
+        requested_target_tick,
+        field="requested_target_tick",
+    )
+    authority = {
+        "task_id": task_id,
+        "run_generation_id": run_generation_id,
+        "predecessor_aggregate_commit_sha256": (predecessor_aggregate_commit_sha256),
+        "requested_target_tick": target_tick,
+    }
+    return hashlib.sha256(canonical_json_bytes(authority)).hexdigest()
+
+
 class PersistentIslandRunner:
     """Advance one real, frozen-policy world without episode or milestone reset."""
 
@@ -783,6 +971,7 @@ class PersistentIslandRunner:
         restored_evidence_continuation: Mapping[str, object] | None = None,
         restored_checkpoint_metadata: Mapping[str, object] | None = None,
         restored_aggregate_metadata: Mapping[str, object] | None = None,
+        task_lock_already_held: bool = False,
     ) -> None:
         if world.config.to_dict() != build_persistent_world_config(task).to_dict():
             raise OpenEcologyPersistentIslandError(
@@ -813,8 +1002,9 @@ class PersistentIslandRunner:
             "source_git_sha": task.artifact.source_commit,
             "task_id": task.task_id,
         }
-        with self._task_mutation_lock(initialize=True, nonblocking=True):
-            pass
+        if not task_lock_already_held:
+            with self._task_mutation_lock(initialize=True, nonblocking=True):
+                pass
         self._checkpoint_directory = checkpoint_directory
         self._aggregate_directory = aggregate_directory
         self._checkpoint_config = checkpoint_config_contract
@@ -926,8 +1116,51 @@ class PersistentIslandRunner:
             OPEN_ECOLOGY_RUNTIME_CHECKPOINT_INTERVAL_TICKS
         ),
     ) -> PersistentIslandRunner:
+        attempt_authority_sha256 = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=campaign_root,
+            campaign_id=campaign_id,
+            evidence_directory=evidence_directory,
+            checkpoint_directory=checkpoint_directory,
+            aggregate_directory=aggregate_directory,
+            writer_config=writer_config,
+            checkpoint_interval_ticks=checkpoint_interval_ticks,
+        )
+        runner, _ = cls.materialize_or_restore_genesis(
+            task,
+            campaign_root=campaign_root,
+            campaign_id=campaign_id,
+            attempt_authority_sha256=attempt_authority_sha256,
+            evidence_directory=evidence_directory,
+            writer_config=writer_config,
+            checkpoint_directory=checkpoint_directory,
+            aggregate_directory=aggregate_directory,
+            checkpoint_interval_ticks=checkpoint_interval_ticks,
+        )
+        return runner
+
+    @classmethod
+    def materialize_or_restore_genesis(
+        cls,
+        task: PersistentIslandTask,
+        *,
+        campaign_root: str | Path,
+        campaign_id: str,
+        attempt_authority_sha256: str,
+        evidence_directory: str | Path | None = None,
+        writer_config: RotatingEvidenceConfig | None = None,
+        checkpoint_directory: str | Path | None = None,
+        aggregate_directory: str | Path | None = None,
+        checkpoint_interval_ticks: int = (
+            OPEN_ECOLOGY_RUNTIME_CHECKPOINT_INTERVAL_TICKS
+        ),
+    ) -> tuple[PersistentIslandRunner, bool]:
         campaign_path = Path(campaign_root)
-        evidence_path = Path(evidence_directory)
+        evidence_path = (
+            campaign_path / task.task_id
+            if evidence_directory is None
+            else Path(evidence_directory)
+        )
         if not campaign_path.is_absolute() or not evidence_path.is_absolute():
             raise OpenEcologyPersistentIslandError(
                 "campaign_root and evidence_directory must be absolute paths"
@@ -987,6 +1220,26 @@ class PersistentIslandRunner:
         if parsed_checkpoint_interval > task.target_ticks:
             raise OpenEcologyPersistentIslandError(
                 "checkpoint_interval_ticks cannot exceed the task target"
+            )
+        expected_attempt_authority = persistent_genesis_attempt_authority_sha256(
+            task,
+            campaign_root=campaign_path,
+            campaign_id=campaign_id,
+            evidence_directory=evidence_path,
+            checkpoint_directory=checkpoint_path,
+            aggregate_directory=aggregate_path,
+            writer_config=writer_config,
+            checkpoint_interval_ticks=parsed_checkpoint_interval,
+        )
+        if (
+            _sha256(
+                attempt_authority_sha256,
+                field="genesis attempt authority SHA256",
+            )
+            != expected_attempt_authority
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "genesis attempt authority does not match exact task/config scope"
             )
         if len(task.artifact.source_commit) != 40:
             raise OpenEcologyPersistentIslandError(
@@ -1077,46 +1330,611 @@ class PersistentIslandRunner:
             run_generation_id=run_generation_id,
             island_id=task.task_id,
         )
-        writer: RotatingOpenEcologyEvidenceWriter | None = None
-        with CampaignStorageLock(
+        genesis_identity = OpenEcologyAggregateIdentityPins(
+            source_git_sha=task.artifact.source_commit,
+            config_contract_sha256=_versioned_state_sha256(config_contract),
+            seed_contract_sha256=_versioned_state_sha256(seed_contract),
+            run_generation_id=run_generation_id,
+            island_id=task.task_id,
+            simulation_generation_index=0,
+            tick=0,
+        )
+        task_lock_path = (
+            campaign_path.parent
+            / f".{campaign_path.name}.{task.task_id}.open-ecology-task.lock"
+        )
+        task_lock_identity = {
+            "campaign_id": campaign_id,
+            "schema_version": _OPEN_ECOLOGY_TASK_MUTATION_LOCK_SCHEMA_VERSION,
+            "source_git_sha": task.artifact.source_commit,
+            "task_id": task.task_id,
+        }
+        storage_lock = CampaignStorageLock(
             default_storage_lock_path(campaign_path),
             campaign_id=campaign_id,
             source_git_sha=task.artifact.source_commit,
+        )
+        writer: RotatingOpenEcologyEvidenceWriter | None = None
+        with _IdentityFileLock(
+            task_lock_path,
+            identity=task_lock_identity,
+            shared=False,
+            nonblocking=True,
+            initialize=True,
+        ):
+            if not default_storage_lock_path(campaign_path).exists():
+                with storage_lock:
+                    pass
+            with _IdentityFileLock(
+                default_storage_lock_path(campaign_path),
+                identity=storage_lock.identity,
+                shared=True,
+                nonblocking=True,
+            ):
+                if evidence_path.exists() or evidence_path.is_symlink():
+                    genesis = load_or_recover_open_ecology_genesis_generation(
+                        aggregate_path,
+                        evidence_directory=evidence_path,
+                        identity=genesis_identity,
+                    )
+                    if genesis is not None:
+                        aggregate_metadata = _aggregate_metadata_from_loaded_generation(
+                            genesis
+                        )
+                        pins = _aggregate_resume_pins_from_metadata(aggregate_metadata)
+                        commit = _mapping(
+                            genesis.get("commit"),
+                            field="genesis aggregate commit",
+                        )
+                        checkpoint_file = (
+                            aggregate_path
+                            / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+                            / str(commit["directory_name"])
+                            / OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME
+                        )
+                        restored = cls._restore_from_checkpoint(
+                            task,
+                            checkpoint_path=checkpoint_file,
+                            campaign_root=campaign_path,
+                            campaign_id=campaign_id,
+                            allow_aggregate_snapshot=True,
+                            aggregate_metadata=aggregate_metadata,
+                            cooperative_restore_locks_held=True,
+                        )
+                        restore_open_ecology_evidence_manifest_snapshot(
+                            evidence_path,
+                            authoritative_manifest=_mapping(
+                                genesis.get("evidence_manifest"),
+                                field="genesis evidence manifest",
+                            ),
+                            preservation_directory=(
+                                campaign_path / "attempts" / task.task_id / "evidence"
+                            ),
+                        )
+                        if restored.observed_tick != 0:
+                            raise OpenEcologyPersistentIslandError(
+                                "genesis CURRENT does not restore at observed tick zero"
+                            )
+                        reread = inspect_current_open_ecology_aggregate_generation(
+                            aggregate_path,
+                            evidence_directory=evidence_path,
+                            pins=pins,
+                        )
+                        if reread != genesis:
+                            raise OpenEcologyPersistentIslandError(
+                                "genesis CURRENT changed during locked restore"
+                            )
+                        return restored, True
+                    preserve_open_ecology_evidence_attempt_directory(
+                        evidence_path,
+                        preservation_directory=(
+                            campaign_path
+                            / "attempts"
+                            / task.task_id
+                            / "genesis-evidence"
+                        ),
+                    )
+                elif _aggregate_genesis_evidence_is_required(aggregate_path):
+                    raise OpenEcologyPersistentIslandError(
+                        "materialized genesis aggregate evidence is missing"
+                    )
+                if checkpoint_path.exists() or checkpoint_path.is_symlink():
+                    _preserve_genesis_checkpoint_attempt_directory(
+                        checkpoint_path,
+                        preservation_directory=(
+                            campaign_path
+                            / "attempts"
+                            / task.task_id
+                            / "genesis-checkpoints"
+                        ),
+                    )
+                _preserve_genesis_aggregate_stages(
+                    aggregate_path,
+                    preservation_directory=(
+                        campaign_path
+                        / "attempts"
+                        / task.task_id
+                        / "genesis-aggregate-stages"
+                    ),
+                )
+                try:
+                    writer = RotatingOpenEcologyEvidenceWriter(
+                        evidence_path,
+                        run_id=task.task_id,
+                        source_contract=source_contract,
+                        config=concrete_writer_config,
+                    )
+                    world = SimulationWorld(
+                        build_persistent_world_config(task),
+                        policy=policy,
+                    )
+                    runner = cls(
+                        task=task,
+                        world=world,
+                        policy=policy,
+                        evidence_writer=writer,
+                        artifact=artifact,
+                        evidence_directory=evidence_path,
+                        writer_config=concrete_writer_config,
+                        writer_source_contract=source_contract,
+                        campaign_root=campaign_path,
+                        campaign_id=campaign_id,
+                        checkpoint_directory=checkpoint_path,
+                        aggregate_directory=aggregate_path,
+                        checkpoint_interval_ticks=parsed_checkpoint_interval,
+                        checkpoint_config_contract=config_contract,
+                        checkpoint_seed_contract=seed_contract,
+                        task_lock_already_held=True,
+                    )
+                    runner._checkpoint_active_writer()
+                    runner._write_genesis_runtime_checkpoint_locked()
+                    if runner.latest_aggregate_resume_pins is None:
+                        raise OpenEcologyPersistentIslandError(
+                            "fresh genesis did not publish restartable CURRENT"
+                        )
+                    return runner, False
+                except Exception:
+                    if writer is not None:
+                        writer.abort()
+                    raise
+
+    @classmethod
+    def reconcile_interval_attempt(
+        cls,
+        task: PersistentIslandTask,
+        *,
+        campaign_root: str | Path,
+        campaign_id: str,
+        predecessor: OpenEcologyAggregateResumePins | None,
+        predecessor_observed_tick: int,
+        predecessor_terminal: bool,
+        target_tick: int,
+        attempt_authority_sha256: str,
+        evidence_directory: str | Path | None = None,
+        checkpoint_directory: str | Path | None = None,
+        aggregate_directory: str | Path | None = None,
+        writer_config: RotatingEvidenceConfig | None = None,
+        checkpoint_interval_ticks: int = (
+            OPEN_ECOLOGY_RUNTIME_CHECKPOINT_INTERVAL_TICKS
+        ),
+    ) -> tuple[PersistentIslandRunner, str]:
+        """Reconcile one original coordinator attempt without authorizing a new one."""
+
+        campaign_path = Path(campaign_root)
+        evidence_path = (
+            campaign_path / task.task_id
+            if evidence_directory is None
+            else Path(evidence_directory)
+        )
+        checkpoint_path = (
+            campaign_path / "checkpoints" / task.task_id
+            if checkpoint_directory is None
+            else Path(checkpoint_directory)
+        )
+        aggregate_path = (
+            campaign_path / "aggregates" / task.task_id
+            if aggregate_directory is None
+            else Path(aggregate_directory)
+        )
+        if not all(
+            path.is_absolute()
+            for path in (
+                campaign_path,
+                evidence_path,
+                checkpoint_path,
+                aggregate_path,
+            )
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "interval reconciliation paths must be absolute"
+            )
+        for field_name, path in (
+            ("evidence_directory", evidence_path),
+            ("checkpoint_directory", checkpoint_path),
+            ("aggregate_directory", aggregate_path),
         ):
             try:
-                writer = RotatingOpenEcologyEvidenceWriter(
-                    evidence_path,
-                    run_id=task.task_id,
-                    source_contract=source_contract,
-                    config=concrete_writer_config,
+                relative = path.relative_to(campaign_path)
+            except ValueError as error:
+                raise OpenEcologyPersistentIslandError(
+                    f"{field_name} must be inside campaign_root"
+                ) from error
+            if not relative.parts or ".." in relative.parts:
+                raise OpenEcologyPersistentIslandError(
+                    f"{field_name} must be a normalized campaign child"
                 )
-                world = SimulationWorld(
-                    build_persistent_world_config(task),
-                    policy=policy,
+        predecessor_tick = _nonnegative_int(
+            predecessor_observed_tick,
+            field="predecessor_observed_tick",
+        )
+        if not isinstance(predecessor_terminal, bool):
+            raise OpenEcologyPersistentIslandError(
+                "predecessor_terminal must be boolean"
+            )
+        requested_target = _positive_int(target_tick, field="target_tick")
+        parsed_checkpoint_interval = _positive_int(
+            checkpoint_interval_ticks,
+            field="checkpoint_interval_ticks",
+        )
+        if (
+            requested_target > task.target_ticks
+            or requested_target % parsed_checkpoint_interval != 0
+            or requested_target < predecessor_tick
+            or (not predecessor_terminal and requested_target <= predecessor_tick)
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "interval reconciliation target is outside the exact barrier contract"
+            )
+        run_generation_id = _persistent_checkpoint_generation_id(
+            campaign_id=campaign_id,
+            task_id=task.task_id,
+        )
+        if predecessor is None:
+            if predecessor_tick != 0 or predecessor_terminal:
+                raise OpenEcologyPersistentIslandError(
+                    "unpinned interval predecessor must be pending tick zero"
                 )
-                runner = cls(
-                    task=task,
-                    world=world,
-                    policy=policy,
-                    evidence_writer=writer,
-                    artifact=artifact,
+        else:
+            if not isinstance(predecessor, OpenEcologyAggregateResumePins):
+                raise OpenEcologyPersistentIslandError(
+                    "interval predecessor must be aggregate resume pins"
+                )
+            identity = predecessor.identity
+            expected_completed_tick = (
+                0 if predecessor_tick == 0 else predecessor_tick - 1
+            )
+            if (
+                identity.source_git_sha != task.artifact.source_commit
+                or identity.run_generation_id != run_generation_id
+                or identity.island_id != task.task_id
+                or identity.simulation_generation_index != 0
+                or identity.tick != expected_completed_tick
+            ):
+                raise OpenEcologyPersistentIslandError(
+                    "interval predecessor identity does not match task frontier"
+                )
+        expected_attempt_authority = persistent_interval_attempt_authority_sha256(
+            task,
+            campaign_id=campaign_id,
+            predecessor=predecessor,
+            target_tick=requested_target,
+        )
+        if (
+            _sha256(
+                attempt_authority_sha256,
+                field="interval attempt authority SHA256",
+            )
+            != expected_attempt_authority
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "interval attempt authority does not match exact predecessor/target"
+            )
+
+        expected_target_aggregate_index = (
+            1 if predecessor is None else predecessor.aggregate_generation_index + 1
+        )
+        incomplete_before = _interval_attempt_has_loose_or_staged_bytes(
+            evidence_directory=evidence_path,
+            checkpoint_directory=checkpoint_path,
+            aggregate_directory=aggregate_path,
+            target_observed_tick=requested_target,
+            target_aggregate_generation_index=(expected_target_aggregate_index),
+            predecessor_manifest_sha256=(
+                None if predecessor is None else predecessor.evidence_manifest_sha256
+            ),
+        )
+
+        # A genuinely unmaterialized task has no aggregate state to inspect.
+        # Genesis owns its bootstrap locks and returns a selected tick-zero
+        # CURRENT before the long-lived advance begins.
+        if predecessor is None and not _aggregate_genesis_evidence_is_required(
+            aggregate_path
+        ):
+            genesis_authority = persistent_genesis_attempt_authority_sha256(
+                task,
+                campaign_root=campaign_path,
+                campaign_id=campaign_id,
+                evidence_directory=evidence_path,
+                checkpoint_directory=checkpoint_path,
+                aggregate_directory=aggregate_path,
+                writer_config=writer_config,
+                checkpoint_interval_ticks=parsed_checkpoint_interval,
+            )
+            runner, recovered_genesis = cls.materialize_or_restore_genesis(
+                task,
+                campaign_root=campaign_path,
+                campaign_id=campaign_id,
+                attempt_authority_sha256=genesis_authority,
+                evidence_directory=evidence_path,
+                checkpoint_directory=checkpoint_path,
+                aggregate_directory=aggregate_path,
+                writer_config=writer_config,
+                checkpoint_interval_ticks=parsed_checkpoint_interval,
+            )
+            runner.advance_to(requested_target)
+            disposition = (
+                "recovered_original_precurrent_attempt"
+                if incomplete_before or recovered_genesis
+                else "advanced_from_exact_predecessor"
+            )
+            return runner, disposition
+
+        task_lock_path = (
+            campaign_path.parent
+            / f".{campaign_path.name}.{task.task_id}.open-ecology-task.lock"
+        )
+        task_lock_identity = {
+            "campaign_id": campaign_id,
+            "schema_version": _OPEN_ECOLOGY_TASK_MUTATION_LOCK_SCHEMA_VERSION,
+            "source_git_sha": task.artifact.source_commit,
+            "task_id": task.task_id,
+        }
+        storage_lock = CampaignStorageLock(
+            default_storage_lock_path(campaign_path),
+            campaign_id=campaign_id,
+            source_git_sha=task.artifact.source_commit,
+        )
+        with _IdentityFileLock(
+            task_lock_path,
+            identity=task_lock_identity,
+            shared=False,
+            nonblocking=True,
+            initialize=True,
+        ):
+            if not default_storage_lock_path(campaign_path).exists():
+                with storage_lock:
+                    pass
+            with _IdentityFileLock(
+                default_storage_lock_path(campaign_path),
+                identity=storage_lock.identity,
+                shared=True,
+                nonblocking=True,
+            ):
+                frontier = inspect_open_ecology_aggregate_attempt_frontier(
+                    aggregate_path,
                     evidence_directory=evidence_path,
-                    writer_config=concrete_writer_config,
-                    writer_source_contract=source_contract,
+                )
+                current = frontier["current"]
+                successor = frontier["complete_successor"]
+                current_predecessor = frontier["current_predecessor"]
+                current_index = _loaded_aggregate_index(current)
+                successor_index = _loaded_aggregate_index(successor)
+                if current_index == expected_target_aggregate_index:
+                    if successor is not None:
+                        raise OpenEcologyPersistentIslandError(
+                            "interval attempt contains a generation beyond its target"
+                        )
+                    target_loaded = _mapping(
+                        current,
+                        field="attempt target CURRENT",
+                    )
+                    target_was_current = True
+                    base_loaded = current_predecessor
+                elif successor_index == expected_target_aggregate_index:
+                    target_loaded = _mapping(
+                        successor,
+                        field="attempt target successor",
+                    )
+                    target_was_current = False
+                    base_loaded = current
+                else:
+                    target_loaded = None
+                    target_was_current = False
+                    if predecessor is None:
+                        base_loaded = (
+                            current
+                            if current_index == 0
+                            else successor
+                            if current is None and successor_index == 0
+                            else None
+                        )
+                    else:
+                        base_loaded = (
+                            current
+                            if current_index == predecessor.aggregate_generation_index
+                            else None
+                        )
+
+                if target_loaded is not None:
+                    runner, target_pins = cls._restore_loaded_aggregate_task_locked(
+                        task,
+                        loaded=target_loaded,
+                        campaign_root=campaign_path,
+                        campaign_id=campaign_id,
+                        evidence_directory=evidence_path,
+                        aggregate_directory=aggregate_path,
+                        preservation_directory=(
+                            campaign_path / "attempts" / task.task_id / "evidence"
+                        ),
+                    )
+                    _validate_reconciled_target_runner(
+                        runner,
+                        pins=target_pins,
+                        task=task,
+                        campaign_id=campaign_id,
+                        predecessor=predecessor,
+                        predecessor_observed_tick=predecessor_tick,
+                        predecessor_terminal=predecessor_terminal,
+                        requested_target_tick=requested_target,
+                        expected_aggregate_generation_index=(
+                            expected_target_aggregate_index
+                        ),
+                        base_loaded=base_loaded,
+                        target_loaded=target_loaded,
+                    )
+                    if not target_was_current:
+                        selected = select_open_ecology_aggregate_attempt_generation(
+                            aggregate_path,
+                            evidence_directory=evidence_path,
+                            pins=target_pins,
+                            expected_previous_commit_sha256=(
+                                _loaded_aggregate_commit_sha256(base_loaded)
+                            ),
+                        )
+                        if selected != target_loaded:
+                            raise OpenEcologyPersistentIslandError(
+                                "selected attempt target changed after validation"
+                            )
+                    retained = inspect_current_open_ecology_aggregate_generation(
+                        aggregate_path,
+                        evidence_directory=evidence_path,
+                        pins=target_pins,
+                    )
+                    if retained != target_loaded:
+                        raise OpenEcologyPersistentIslandError(
+                            "reconciled target CURRENT changed during locked restore"
+                        )
+                    return (
+                        runner,
+                        (
+                            "already_committed_target"
+                            if target_was_current
+                            else "recovered_original_precurrent_attempt"
+                        ),
+                    )
+
+                if base_loaded is None:
+                    raise OpenEcologyPersistentIslandError(
+                        "interval attempt aggregate frontier is not predecessor/target"
+                    )
+                runner, base_pins = cls._restore_loaded_aggregate_task_locked(
+                    task,
+                    loaded=_mapping(
+                        base_loaded,
+                        field="interval attempt predecessor",
+                    ),
                     campaign_root=campaign_path,
                     campaign_id=campaign_id,
-                    checkpoint_directory=checkpoint_path,
+                    evidence_directory=evidence_path,
                     aggregate_directory=aggregate_path,
-                    checkpoint_interval_ticks=parsed_checkpoint_interval,
-                    checkpoint_config_contract=config_contract,
-                    checkpoint_seed_contract=seed_contract,
+                    preservation_directory=(
+                        campaign_path / "attempts" / task.task_id / "evidence"
+                    ),
                 )
-                runner._checkpoint_active_writer()
-                return runner
-            except Exception:
-                if writer is not None:
-                    writer.abort()
-                raise
+                if predecessor is None:
+                    _validate_exact_genesis_runner(
+                        runner,
+                        pins=base_pins,
+                        task=task,
+                        campaign_id=campaign_id,
+                    )
+                    if current_index is None:
+                        select_open_ecology_aggregate_attempt_generation(
+                            aggregate_path,
+                            evidence_directory=evidence_path,
+                            pins=base_pins,
+                            expected_previous_commit_sha256=None,
+                        )
+                elif (
+                    base_pins != predecessor
+                    or runner.observed_tick != predecessor_tick
+                    or runner.extinct is not predecessor_terminal
+                ):
+                    raise OpenEcologyPersistentIslandError(
+                        "restored interval predecessor does not match intent"
+                    )
+                loose_target = checkpoint_path / (
+                    f"checkpoint-observed-{requested_target:08d}.json"
+                )
+                if loose_target.exists() or loose_target.is_symlink():
+                    _preserve_loose_interval_checkpoint(
+                        loose_target,
+                        preservation_directory=(
+                            campaign_path
+                            / "attempts"
+                            / task.task_id
+                            / "interval-checkpoints"
+                        ),
+                    )
+                _preserve_aggregate_attempt_stages(
+                    aggregate_path,
+                    aggregate_generation_index=(expected_target_aggregate_index),
+                    preservation_directory=(
+                        campaign_path / "attempts" / task.task_id / "aggregate-stages"
+                    ),
+                )
+
+            runner._advance_to_task_locked(requested_target)
+            return (
+                runner,
+                (
+                    "recovered_original_precurrent_attempt"
+                    if incomplete_before
+                    else "advanced_from_exact_predecessor"
+                ),
+            )
+
+    @classmethod
+    def _restore_loaded_aggregate_task_locked(
+        cls,
+        task: PersistentIslandTask,
+        *,
+        loaded: Mapping[str, object],
+        campaign_root: Path,
+        campaign_id: str,
+        evidence_directory: Path,
+        aggregate_directory: Path,
+        preservation_directory: Path,
+    ) -> tuple[PersistentIslandRunner, OpenEcologyAggregateResumePins]:
+        aggregate_metadata = _aggregate_metadata_from_loaded_generation(loaded)
+        pins = _aggregate_resume_pins_from_metadata(aggregate_metadata)
+        commit = _mapping(loaded.get("commit"), field="aggregate commit")
+        directory_name = commit.get("directory_name")
+        if not isinstance(directory_name, str) or not directory_name:
+            raise OpenEcologyPersistentIslandError(
+                "aggregate commit directory name is invalid"
+            )
+        checkpoint_file = (
+            aggregate_directory
+            / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+            / directory_name
+            / OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME
+        )
+        runner = cls._restore_from_checkpoint(
+            task,
+            checkpoint_path=checkpoint_file,
+            campaign_root=campaign_root,
+            campaign_id=campaign_id,
+            allow_aggregate_snapshot=True,
+            aggregate_metadata=aggregate_metadata,
+            cooperative_restore_locks_held=True,
+        )
+        restore_open_ecology_evidence_manifest_snapshot(
+            evidence_directory,
+            authoritative_manifest=_mapping(
+                loaded.get("evidence_manifest"),
+                field="aggregate evidence manifest",
+            ),
+            preservation_directory=preservation_directory,
+        )
+        if (
+            runner._evidence_directory != evidence_directory
+            or runner._aggregate_directory != aggregate_directory
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "aggregate attempt paths do not match checkpoint configuration"
+            )
+        return runner, pins
 
     @classmethod
     def restore_from_checkpoint(
@@ -1136,6 +1954,7 @@ class PersistentIslandRunner:
             campaign_id=campaign_id,
             allow_aggregate_snapshot=False,
             aggregate_metadata=None,
+            cooperative_restore_locks_held=False,
         )
 
     @classmethod
@@ -1170,40 +1989,92 @@ class PersistentIslandRunner:
             raise OpenEcologyPersistentIslandError(
                 "aggregate restore paths must be absolute"
             )
-        loaded = load_current_open_ecology_aggregate_generation(
-            aggregate_path,
-            evidence_directory=evidence_path,
-            pins=pins,
+        task_lock_path = (
+            campaign_path.parent
+            / f".{campaign_path.name}.{task.task_id}.open-ecology-task.lock"
         )
-        commit = _mapping(loaded.get("commit"), field="aggregate commit")
-        directory_name = commit.get("directory_name")
-        if not isinstance(directory_name, str) or not directory_name:
-            raise OpenEcologyPersistentIslandError(
-                "aggregate commit directory name is invalid"
-            )
-        checkpoint_path = (
-            aggregate_path
-            / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
-            / directory_name
-            / OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME
-        )
-        aggregate_metadata = _aggregate_metadata_from_loaded_generation(loaded)
-        runner = cls._restore_from_checkpoint(
-            task,
-            checkpoint_path=checkpoint_path,
-            campaign_root=campaign_path,
+        task_lock_identity = {
+            "campaign_id": campaign_id,
+            "schema_version": _OPEN_ECOLOGY_TASK_MUTATION_LOCK_SCHEMA_VERSION,
+            "source_git_sha": task.artifact.source_commit,
+            "task_id": task.task_id,
+        }
+        storage_lock = CampaignStorageLock(
+            default_storage_lock_path(campaign_path),
             campaign_id=campaign_id,
-            allow_aggregate_snapshot=True,
-            aggregate_metadata=aggregate_metadata,
+            source_git_sha=task.artifact.source_commit,
         )
-        if (
-            runner._evidence_directory != evidence_path
-            or runner._aggregate_directory != aggregate_path
+        attempt_root = campaign_path / "attempts" / task.task_id
+        with _IdentityFileLock(
+            task_lock_path,
+            identity=task_lock_identity,
+            shared=False,
+            nonblocking=True,
         ):
-            raise OpenEcologyPersistentIslandError(
-                "aggregate CURRENT paths do not match checkpoint configuration"
-            )
-        return runner
+            with _IdentityFileLock(
+                default_storage_lock_path(campaign_path),
+                identity=storage_lock.identity,
+                shared=True,
+                nonblocking=True,
+            ):
+                loaded = load_current_open_ecology_aggregate_generation(
+                    aggregate_path,
+                    evidence_directory=evidence_path,
+                    pins=pins,
+                    uncommitted_successor_preservation_directory=(
+                        attempt_root / "aggregate-generations"
+                    ),
+                )
+                commit = _mapping(loaded.get("commit"), field="aggregate commit")
+                directory_name = commit.get("directory_name")
+                if not isinstance(directory_name, str) or not directory_name:
+                    raise OpenEcologyPersistentIslandError(
+                        "aggregate commit directory name is invalid"
+                    )
+                checkpoint_path = (
+                    aggregate_path
+                    / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+                    / directory_name
+                    / OPEN_ECOLOGY_AGGREGATE_CHECKPOINT_NAME
+                )
+                aggregate_metadata = _aggregate_metadata_from_loaded_generation(loaded)
+                runner = cls._restore_from_checkpoint(
+                    task,
+                    checkpoint_path=checkpoint_path,
+                    campaign_root=campaign_path,
+                    campaign_id=campaign_id,
+                    allow_aggregate_snapshot=True,
+                    aggregate_metadata=aggregate_metadata,
+                    cooperative_restore_locks_held=True,
+                )
+                restore_open_ecology_evidence_manifest_snapshot(
+                    evidence_path,
+                    authoritative_manifest=_mapping(
+                        loaded.get("evidence_manifest"),
+                        field="aggregate evidence manifest",
+                    ),
+                    preservation_directory=attempt_root / "evidence",
+                )
+                reread = load_current_open_ecology_aggregate_generation(
+                    aggregate_path,
+                    evidence_directory=evidence_path,
+                    pins=pins,
+                    uncommitted_successor_preservation_directory=(
+                        attempt_root / "aggregate-generations"
+                    ),
+                )
+                if reread != loaded:
+                    raise OpenEcologyPersistentIslandError(
+                        "aggregate CURRENT changed during locked restore"
+                    )
+                if (
+                    runner._evidence_directory != evidence_path
+                    or runner._aggregate_directory != aggregate_path
+                ):
+                    raise OpenEcologyPersistentIslandError(
+                        "aggregate CURRENT paths do not match checkpoint configuration"
+                    )
+                return runner
 
     @classmethod
     def _restore_from_checkpoint(
@@ -1215,6 +2086,7 @@ class PersistentIslandRunner:
         campaign_id: str,
         allow_aggregate_snapshot: bool,
         aggregate_metadata: Mapping[str, object] | None,
+        cooperative_restore_locks_held: bool,
     ) -> PersistentIslandRunner:
         """Construct a fresh runtime from one validated interval checkpoint."""
 
@@ -1364,11 +2236,6 @@ class PersistentIslandRunner:
             checkpoint.get("tick"),
             field="checkpoint tick",
         )
-        observed_tick = completed_world_tick + 1
-        if observed_tick <= 0:
-            raise OpenEcologyPersistentIslandError(
-                "checkpoint runner/world tick boundary is inconsistent"
-            )
 
         generation_identity = _mapping(
             checkpoint.get("generation_identity"),
@@ -1479,8 +2346,16 @@ class PersistentIslandRunner:
             getattr(world, _OPEN_ECOLOGY_PERSISTENT_RUNNER_STATE_ATTRIBUTE, None),
             field="checkpoint runner state",
         )
+        observed_tick = _nonnegative_int(
+            runner_state.get("observed_tick"),
+            field="checkpoint runner observed tick",
+        )
+        genesis_boundary = observed_tick == 0 and completed_world_tick == 0
+        completed_boundary = (
+            observed_tick > 0 and completed_world_tick == observed_tick - 1
+        )
         if (
-            runner_state.get("observed_tick") != observed_tick
+            not (genesis_boundary or completed_boundary)
             or runner_state.get("completed_world_tick") != completed_world_tick
         ):
             raise OpenEcologyPersistentIslandError(
@@ -1515,27 +2390,39 @@ class PersistentIslandRunner:
             "restartable": True,
             "byte_size": checkpoint_file.stat().st_size,
         }
-        return cls(
-            task=task,
-            world=world,
-            policy=policy,
-            evidence_writer=None,
-            artifact=artifact,
-            evidence_directory=evidence_path,
-            writer_config=writer_config,
-            writer_source_contract=expected_writer_source,
-            campaign_root=campaign_path,
+
+        def construct_runner() -> PersistentIslandRunner:
+            return cls(
+                task=task,
+                world=world,
+                policy=policy,
+                evidence_writer=None,
+                artifact=artifact,
+                evidence_directory=evidence_path,
+                writer_config=writer_config,
+                writer_source_contract=expected_writer_source,
+                campaign_root=campaign_path,
+                campaign_id=campaign_id,
+                checkpoint_directory=checkpoint_directory,
+                aggregate_directory=aggregate_directory,
+                checkpoint_interval_ticks=checkpoint_interval,
+                checkpoint_config_contract=config_contract,
+                checkpoint_seed_contract=seed_contract,
+                restored_runner_state=runner_state,
+                restored_evidence_continuation=restored_continuation,
+                restored_checkpoint_metadata=checkpoint_metadata,
+                restored_aggregate_metadata=aggregate_metadata,
+                task_lock_already_held=cooperative_restore_locks_held,
+            )
+
+        if cooperative_restore_locks_held:
+            return construct_runner()
+        with CampaignStorageLock(
+            default_storage_lock_path(campaign_path),
             campaign_id=campaign_id,
-            checkpoint_directory=checkpoint_directory,
-            aggregate_directory=aggregate_directory,
-            checkpoint_interval_ticks=checkpoint_interval,
-            checkpoint_config_contract=config_contract,
-            checkpoint_seed_contract=seed_contract,
-            restored_runner_state=runner_state,
-            restored_evidence_continuation=restored_continuation,
-            restored_checkpoint_metadata=checkpoint_metadata,
-            restored_aggregate_metadata=aggregate_metadata,
-        )
+            source_git_sha=task.artifact.source_commit,
+        ):
+            return construct_runner()
 
     @property
     def world(self) -> SimulationWorld:
@@ -1679,6 +2566,9 @@ class PersistentIslandRunner:
             "aggregate_resume_authorized": self._aggregate_resume_authorized,
             "parallel_campaign_advance_authorized": (
                 OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED
+            ),
+            "checkpoint_publication_concurrency": (
+                checkpoint_publication_concurrency_contract()
             ),
             "launch_readiness": False,
         }
@@ -1908,23 +2798,24 @@ class PersistentIslandRunner:
                     except Exception:
                         self._abort_active_writer()
                         raise
-                if self._next_tick > 0:
-                    with self._campaign_boundary_lock():
+                    if self._next_tick > 0:
                         self._write_runtime_checkpoint_locked()
 
-        added_extinction_milestone = False
         if (
             target_tick >= OPEN_ECOLOGY_FIRST_MILESTONE_TICK
             and OPEN_ECOLOGY_FIRST_MILESTONE_TICK not in self._milestones
             and self._extinct
         ):
-            self._milestones[OPEN_ECOLOGY_FIRST_MILESTONE_TICK] = (
-                self._build_milestone()
-            )
-            added_extinction_milestone = True
-        if added_extinction_milestone and self._next_tick > 0:
-            with self._campaign_boundary_lock():
-                self._write_runtime_checkpoint_locked()
+            with self._campaign_shared_publication_lock():
+                self._milestones[OPEN_ECOLOGY_FIRST_MILESTONE_TICK] = (
+                    self._build_milestone()
+                )
+                try:
+                    if self._next_tick > 0:
+                        self._write_runtime_checkpoint_locked()
+                except Exception:
+                    del self._milestones[OPEN_ECOLOGY_FIRST_MILESTONE_TICK]
+                    raise
         self._verify_invariants()
         return PersistentAdvanceResult(
             task_id=self.task.task_id,
@@ -1979,8 +2870,7 @@ class PersistentIslandRunner:
                 except Exception:
                     self._abort_active_writer()
                     raise
-            if self._next_tick > 0:
-                with self._campaign_boundary_lock():
+                if self._next_tick > 0:
                     self._write_runtime_checkpoint_locked()
 
     def finish_evidence(self) -> Mapping[str, object]:
@@ -1990,7 +2880,7 @@ class PersistentIslandRunner:
                     "primary evidence can finish only at extinction or tick 50,000"
                 )
             self._verify_invariants()
-            with self._campaign_boundary_lock():
+            with self._campaign_shared_publication_lock():
                 self._resume_writer()
                 assert self._writer is not None
                 try:
@@ -2006,7 +2896,7 @@ class PersistentIslandRunner:
         with self._task_mutation_lock():
             if self._evidence_finished or self._evidence_aborted:
                 return
-            with self._campaign_boundary_lock():
+            with self._campaign_shared_publication_lock():
                 self._resume_writer()
                 self._abort_active_writer()
                 self._evidence_aborted = True
@@ -2529,9 +3419,12 @@ class PersistentIslandRunner:
             payload["completed_world_tick"],
             field="runner_state.completed_world_tick",
         )
+        genesis_boundary = self._next_tick == 0 and completed_world_tick == 0
+        completed_boundary = (
+            self._next_tick > 0 and completed_world_tick == self._next_tick - 1
+        )
         if (
-            self._next_tick <= 0
-            or completed_world_tick != self._next_tick - 1
+            not (genesis_boundary or completed_boundary)
             or self._world.tick != completed_world_tick
         ):
             raise OpenEcologyPersistentIslandError(
@@ -2713,15 +3606,40 @@ class PersistentIslandRunner:
             )
         return self._checkpoint_config
 
-    def _write_runtime_checkpoint_locked(self) -> None:
+    def _write_genesis_runtime_checkpoint_locked(self) -> None:
+        if (
+            self._next_tick != 0
+            or self._world.tick != 0
+            or self._latest_runtime_checkpoint is not None
+            or self._latest_aggregate_generation is not None
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "genesis checkpoint requires a fresh tick-zero runner"
+            )
+        self._write_runtime_checkpoint_locked(allow_genesis=True)
+
+    def _write_runtime_checkpoint_locked(
+        self,
+        *,
+        allow_genesis: bool = False,
+    ) -> None:
         if not self._aggregate_resume_authorized:
             raise OpenEcologyPersistentIslandError(
                 "loose checkpoint restore cannot publish; resume through "
                 "externally pinned aggregate CURRENT"
             )
-        if self._next_tick <= 0:
+        if self._next_tick <= 0 and not allow_genesis:
             raise OpenEcologyPersistentIslandError(
                 "runtime checkpoint requires at least one completed tick"
+            )
+        if allow_genesis and (
+            self._next_tick != 0
+            or self._world.tick != 0
+            or self._latest_runtime_checkpoint is not None
+            or self._latest_aggregate_generation is not None
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "genesis checkpoint cannot overwrite an existing authority"
             )
         if self._writer is not None or self._continuation_state is None:
             raise OpenEcologyPersistentIslandError(
@@ -2766,7 +3684,13 @@ class PersistentIslandRunner:
             evidence_writer_continuation_state=self._continuation_state,
         )
         capture_elapsed_ns = time.perf_counter_ns() - capture_started_ns
-        self._checkpoint_directory.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_real_directory_tree(
+                self._checkpoint_directory,
+                field="persistent-island checkpoint directory",
+            )
+        except CampaignStorageError as error:
+            raise OpenEcologyPersistentIslandError(str(error)) from error
         destination = self._checkpoint_directory / (
             f"checkpoint-observed-{self._next_tick:08d}.json"
         )
@@ -2903,6 +3827,9 @@ class PersistentIslandRunner:
                 "component_canonical_envelope_total_bytes": sum(
                     component_canonical_bytes.values()
                 ),
+                "publication_concurrency": (
+                    checkpoint_publication_concurrency_contract()
+                ),
             },
         }
         self._latest_aggregate_generation = aggregate_metadata
@@ -2936,12 +3863,14 @@ class PersistentIslandRunner:
             nonblocking=True,
         )
 
-    def _campaign_boundary_lock(self) -> _IdentityFileLock:
+    def _campaign_shared_publication_lock(self) -> _IdentityFileLock:
+        """Join the campaign epoch while this task publishes its durable frontier."""
+
         return _IdentityFileLock(
             self._storage_lock_path,
             identity=self._storage_lock().identity,
-            shared=False,
-            nonblocking=False,
+            shared=True,
+            nonblocking=True,
         )
 
     def _resume_writer(self) -> None:
@@ -3112,22 +4041,22 @@ def _verify_live_source_authority(
 
     def git(*arguments: str) -> str:
         try:
-            result = subprocess.run(
-                ["git", "-C", str(repository_root), *arguments],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=30,
+            return run_pinned_git(
+                git_authority,
+                repository_root=repository_root,
+                arguments=arguments,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except OpenEcologyGitAuthorityError as error:
             raise OpenEcologyPersistentIslandError(
                 "cannot verify persistent runtime Git authority"
             ) from error
-        if result.returncode != 0:
-            raise OpenEcologyPersistentIslandError(
-                "persistent runtime Git authority command failed"
-            )
-        return result.stdout.strip()
+
+    try:
+        git_authority = discover_pinned_git_executable()
+    except OpenEcologyGitAuthorityError as error:
+        raise OpenEcologyPersistentIslandError(
+            "cannot pin persistent runtime Git authority"
+        ) from error
 
     if Path(git("rev-parse", "--show-toplevel")).resolve() != repository_root:
         raise OpenEcologyPersistentIslandError(
@@ -3649,6 +4578,473 @@ def _writer_next_event_index(writer: _EvidenceWriter) -> int:
     return value
 
 
+def _loaded_aggregate_index(loaded: object) -> int | None:
+    if loaded is None:
+        return None
+    commit = _mapping(
+        _mapping(loaded, field="loaded aggregate").get("commit"),
+        field="loaded aggregate commit",
+    )
+    return _nonnegative_int(
+        commit.get("aggregate_generation_index"),
+        field="loaded aggregate generation index",
+    )
+
+
+def _loaded_aggregate_commit_sha256(loaded: object) -> str:
+    if loaded is None:
+        raise OpenEcologyPersistentIslandError("aggregate predecessor is missing")
+    commit = _mapping(
+        _mapping(loaded, field="loaded aggregate").get("commit"),
+        field="loaded aggregate commit",
+    )
+    return _sha256(
+        commit.get("commit_sha256"),
+        field="loaded aggregate commit SHA256",
+    )
+
+
+def _validate_exact_genesis_runner(
+    runner: PersistentIslandRunner,
+    *,
+    pins: OpenEcologyAggregateResumePins,
+    task: PersistentIslandTask,
+    campaign_id: str,
+) -> None:
+    identity = pins.identity
+    if (
+        runner.task != task
+        or runner.observed_tick != 0
+        or runner.extinct
+        or runner.latest_aggregate_resume_pins != pins
+        or pins.aggregate_generation_index != 0
+        or identity.source_git_sha != task.artifact.source_commit
+        or identity.run_generation_id
+        != _persistent_checkpoint_generation_id(
+            campaign_id=campaign_id,
+            task_id=task.task_id,
+        )
+        or identity.island_id != task.task_id
+        or identity.simulation_generation_index != 0
+        or identity.tick != 0
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "restored aggregate is not the exact task genesis"
+        )
+
+
+def _validate_reconciled_target_runner(
+    runner: PersistentIslandRunner,
+    *,
+    pins: OpenEcologyAggregateResumePins,
+    task: PersistentIslandTask,
+    campaign_id: str,
+    predecessor: OpenEcologyAggregateResumePins | None,
+    predecessor_observed_tick: int,
+    predecessor_terminal: bool,
+    requested_target_tick: int,
+    expected_aggregate_generation_index: int,
+    base_loaded: object,
+    target_loaded: Mapping[str, object],
+) -> None:
+    if predecessor_terminal:
+        raise OpenEcologyPersistentIslandError(
+            "terminal predecessor cannot have a later attempt generation"
+        )
+    observed_tick = runner.observed_tick
+    identity = pins.identity
+    if (
+        runner.task != task
+        or runner.latest_aggregate_resume_pins != pins
+        or pins.aggregate_generation_index != expected_aggregate_generation_index
+        or identity.source_git_sha != task.artifact.source_commit
+        or identity.run_generation_id
+        != _persistent_checkpoint_generation_id(
+            campaign_id=campaign_id,
+            task_id=task.task_id,
+        )
+        or identity.island_id != task.task_id
+        or identity.simulation_generation_index != 0
+        or observed_tick <= predecessor_observed_tick
+        or observed_tick > requested_target_tick
+        or identity.tick != observed_tick - 1
+        or (observed_tick < requested_target_tick and not runner.extinct)
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "reconciled attempt target does not satisfy the original intent"
+        )
+    if base_loaded is None:
+        raise OpenEcologyPersistentIslandError(
+            "reconciled attempt target has no exact predecessor generation"
+        )
+    base_metadata = _aggregate_metadata_from_loaded_generation(
+        _mapping(base_loaded, field="attempt target predecessor")
+    )
+    base_pins = _aggregate_resume_pins_from_metadata(base_metadata)
+    if predecessor is None:
+        base_identity = base_pins.identity
+        if (
+            base_pins.aggregate_generation_index != 0
+            or base_identity.source_git_sha != identity.source_git_sha
+            or base_identity.config_contract_sha256 != identity.config_contract_sha256
+            or base_identity.seed_contract_sha256 != identity.seed_contract_sha256
+            or base_identity.run_generation_id != identity.run_generation_id
+            or base_identity.island_id != identity.island_id
+            or base_identity.simulation_generation_index != 0
+            or base_identity.tick != 0
+        ):
+            raise OpenEcologyPersistentIslandError(
+                "initial attempt target does not extend exact task genesis"
+            )
+    elif (
+        base_pins != predecessor
+        or identity.config_contract_sha256
+        != predecessor.identity.config_contract_sha256
+        or identity.seed_contract_sha256 != predecessor.identity.seed_contract_sha256
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "attempt target does not extend the externally pinned predecessor"
+        )
+    target_commit = _mapping(
+        target_loaded.get("commit"),
+        field="reconciled target commit",
+    )
+    target_previous = _mapping(
+        target_commit.get("previous"),
+        field="reconciled target predecessor",
+    )
+    if (
+        target_previous.get("aggregate_generation_index")
+        != base_pins.aggregate_generation_index
+        or target_previous.get("commit_sha256") != base_pins.commit_sha256
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "reconciled target commit predecessor chain drifted"
+        )
+
+
+def _interval_attempt_has_loose_or_staged_bytes(
+    *,
+    evidence_directory: Path,
+    checkpoint_directory: Path,
+    aggregate_directory: Path,
+    target_observed_tick: int,
+    target_aggregate_generation_index: int,
+    predecessor_manifest_sha256: str | None,
+) -> bool:
+    loose_checkpoint = checkpoint_directory / (
+        f"checkpoint-observed-{target_observed_tick:08d}.json"
+    )
+    if loose_checkpoint.exists() or loose_checkpoint.is_symlink():
+        return True
+    stage_prefix = (
+        f".{aggregate_directory.name}."
+        f"generation-{target_aggregate_generation_index:016d}.stage-"
+    )
+    stage_parent = aggregate_directory.parent
+    if stage_parent.exists():
+        try:
+            if any(
+                child.name.startswith(stage_prefix) for child in stage_parent.iterdir()
+            ):
+                return True
+        except OSError as error:
+            raise OpenEcologyPersistentIslandError(
+                f"cannot inspect aggregate attempt stages: {error}"
+            ) from error
+    if not evidence_directory.exists() and not evidence_directory.is_symlink():
+        return False
+    if predecessor_manifest_sha256 is None:
+        return True
+    try:
+        manifest = load_open_ecology_evidence_manifest(
+            evidence_directory,
+            verify_shards=True,
+        )
+    except (OSError, ValueError):
+        return True
+    return manifest.get("manifest_sha256") != predecessor_manifest_sha256
+
+
+def _preserve_loose_interval_checkpoint(
+    checkpoint_path: Path,
+    *,
+    preservation_directory: Path,
+) -> Path:
+    if (
+        not checkpoint_path.is_absolute()
+        or not preservation_directory.is_absolute()
+        or checkpoint_path.parent in preservation_directory.parents
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "loose interval checkpoint preservation paths are invalid"
+        )
+    try:
+        metadata = checkpoint_path.lstat()
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot inspect loose interval checkpoint: {error}"
+        ) from error
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise OpenEcologyPersistentIslandError(
+            "loose interval checkpoint must be one regular file"
+        )
+    try:
+        preservation_directory = ensure_real_directory_tree(
+            preservation_directory,
+            field="interval checkpoint preservation directory",
+        )
+    except CampaignStorageError as error:
+        raise OpenEcologyPersistentIslandError(str(error)) from error
+    base_name = f"{checkpoint_path.name}-{_file_sha256(checkpoint_path)}"
+    destination = _unused_attempt_path(
+        preservation_directory,
+        base_name=base_name,
+    )
+    try:
+        os.rename(checkpoint_path, destination)
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot preserve loose interval checkpoint: {error}"
+        ) from error
+    _fsync_directory_best_effort(checkpoint_path.parent)
+    _fsync_directory_best_effort(preservation_directory)
+    return destination
+
+
+def _aggregate_genesis_evidence_is_required(aggregate_directory: Path) -> bool:
+    """Return whether an aggregate contains authority that needs live evidence."""
+
+    if not aggregate_directory.exists() and not aggregate_directory.is_symlink():
+        return False
+    try:
+        metadata = aggregate_directory.lstat()
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot inspect genesis aggregate directory: {error}"
+        ) from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise OpenEcologyPersistentIslandError(
+            "genesis aggregate path must be a real directory"
+        )
+    current = aggregate_directory / OPEN_ECOLOGY_AGGREGATE_CURRENT_NAME
+    if current.exists() or current.is_symlink():
+        return True
+    generations = aggregate_directory / OPEN_ECOLOGY_AGGREGATE_GENERATIONS_DIRECTORY
+    if not generations.exists() and not generations.is_symlink():
+        return False
+    try:
+        generations_metadata = generations.lstat()
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot inspect genesis aggregate generations: {error}"
+        ) from error
+    if not stat.S_ISDIR(generations_metadata.st_mode):
+        raise OpenEcologyPersistentIslandError(
+            "genesis aggregate generations must be a real directory"
+        )
+    try:
+        return any(generations.iterdir())
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot enumerate genesis aggregate generations: {error}"
+        ) from error
+
+
+def _preserve_genesis_checkpoint_attempt_directory(
+    checkpoint_directory: Path,
+    *,
+    preservation_directory: Path,
+) -> Path:
+    """Move all loose files from one failed genesis attempt without replacement."""
+
+    if (
+        not checkpoint_directory.is_absolute()
+        or not preservation_directory.is_absolute()
+        or preservation_directory == checkpoint_directory
+        or checkpoint_directory in preservation_directory.parents
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "genesis checkpoint attempt paths are invalid"
+        )
+    try:
+        metadata = checkpoint_directory.lstat()
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot inspect genesis checkpoint attempt: {error}"
+        ) from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise OpenEcologyPersistentIslandError(
+            "genesis checkpoint attempt must be a real directory"
+        )
+    entries: list[dict[str, object]] = []
+    try:
+        children = sorted(checkpoint_directory.iterdir(), key=lambda path: path.name)
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot enumerate genesis checkpoint attempt: {error}"
+        ) from error
+    for child in children:
+        try:
+            child_metadata = child.lstat()
+        except OSError as error:
+            raise OpenEcologyPersistentIslandError(
+                f"cannot inspect genesis checkpoint attempt entry: {error}"
+            ) from error
+        if not stat.S_ISREG(child_metadata.st_mode):
+            raise OpenEcologyPersistentIslandError(
+                "genesis checkpoint attempt entries must be regular files"
+            )
+        entries.append(
+            {
+                "name": child.name,
+                "size": child_metadata.st_size,
+            }
+        )
+    try:
+        preservation_directory = ensure_real_directory_tree(
+            preservation_directory,
+            field="genesis checkpoint preservation directory",
+        )
+    except CampaignStorageError as error:
+        raise OpenEcologyPersistentIslandError(str(error)) from error
+    base_name = f"genesis-checkpoints-{_stable_digest({'entries': entries})}"
+    destination = _unused_attempt_path(
+        preservation_directory,
+        base_name=base_name,
+    )
+    try:
+        os.rename(checkpoint_directory, destination)
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot preserve genesis checkpoint attempt: {error}"
+        ) from error
+    _fsync_directory_best_effort(checkpoint_directory.parent)
+    _fsync_directory_best_effort(preservation_directory)
+    return destination
+
+
+def _preserve_genesis_aggregate_stages(
+    aggregate_directory: Path,
+    *,
+    preservation_directory: Path,
+) -> tuple[Path, ...]:
+    return _preserve_aggregate_attempt_stages(
+        aggregate_directory,
+        aggregate_generation_index=0,
+        preservation_directory=preservation_directory,
+    )
+
+
+def _preserve_aggregate_attempt_stages(
+    aggregate_directory: Path,
+    *,
+    aggregate_generation_index: int,
+    preservation_directory: Path,
+) -> tuple[Path, ...]:
+    """Move process-death aggregate stages into the attempt evidence namespace."""
+
+    if (
+        not aggregate_directory.is_absolute()
+        or not preservation_directory.is_absolute()
+        or preservation_directory == aggregate_directory.parent
+        or aggregate_directory.parent in preservation_directory.parents
+    ):
+        raise OpenEcologyPersistentIslandError(
+            "genesis aggregate stage preservation paths are invalid"
+        )
+    stage_parent = aggregate_directory.parent
+    if not stage_parent.exists():
+        return ()
+    try:
+        parent_metadata = stage_parent.lstat()
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot inspect genesis aggregate stage parent: {error}"
+        ) from error
+    if not stat.S_ISDIR(parent_metadata.st_mode):
+        raise OpenEcologyPersistentIslandError(
+            "genesis aggregate stage parent must be a real directory"
+        )
+    stage_prefix = (
+        f".{aggregate_directory.name}."
+        f"generation-{_nonnegative_int(aggregate_generation_index, field='stage index'):016d}."
+        "stage-"
+    )
+    try:
+        stages = sorted(
+            (
+                child
+                for child in stage_parent.iterdir()
+                if child.name.startswith(stage_prefix)
+            ),
+            key=lambda path: path.name,
+        )
+    except OSError as error:
+        raise OpenEcologyPersistentIslandError(
+            f"cannot enumerate genesis aggregate stages: {error}"
+        ) from error
+    if not stages:
+        return ()
+    try:
+        preservation_directory = ensure_real_directory_tree(
+            preservation_directory,
+            field="genesis aggregate stage preservation directory",
+        )
+    except CampaignStorageError as error:
+        raise OpenEcologyPersistentIslandError(str(error)) from error
+    preserved: list[Path] = []
+    for stage in stages:
+        try:
+            stage_metadata = stage.lstat()
+        except OSError as error:
+            raise OpenEcologyPersistentIslandError(
+                f"cannot inspect genesis aggregate stage: {error}"
+            ) from error
+        if not stat.S_ISDIR(stage_metadata.st_mode):
+            raise OpenEcologyPersistentIslandError(
+                "genesis aggregate stage must be a real directory"
+            )
+        destination = _unused_attempt_path(
+            preservation_directory,
+            base_name=stage.name,
+        )
+        try:
+            os.rename(stage, destination)
+        except OSError as error:
+            raise OpenEcologyPersistentIslandError(
+                f"cannot preserve genesis aggregate stage: {error}"
+            ) from error
+        preserved.append(destination)
+    _fsync_directory_best_effort(stage_parent)
+    _fsync_directory_best_effort(preservation_directory)
+    return tuple(preserved)
+
+
+def _unused_attempt_path(directory: Path, *, base_name: str) -> Path:
+    destination = directory / base_name
+    attempt_index = 0
+    while destination.exists() or destination.is_symlink():
+        attempt_index += 1
+        destination = directory / f"{base_name}-attempt-{attempt_index:04d}"
+    return destination
+
+
+def _fsync_directory_best_effort(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        os.fsync(descriptor)
+    except OSError:
+        return
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -3722,17 +5118,28 @@ def _validated_campaign_barrier_frontier(
     observed_tick = normalized["observed_tick"]
     completed_tick = normalized["aggregate_completed_world_tick"]
     aggregate_generation_index = normalized["aggregate_generation_index"]
+    genesis_boundary = (
+        observed_tick == 0 and completed_tick == 0 and aggregate_generation_index == 0
+    )
+    completed_boundary = (
+        isinstance(observed_tick, int)
+        and not isinstance(observed_tick, bool)
+        and observed_tick > 0
+        and isinstance(completed_tick, int)
+        and not isinstance(completed_tick, bool)
+        and completed_tick == observed_tick - 1
+    )
     if (
         isinstance(observed_tick, bool)
         or not isinstance(observed_tick, int)
-        or observed_tick <= 0
+        or observed_tick < 0
         or observed_tick > OPEN_ECOLOGY_PHASE_D_TARGET_TICKS
         or isinstance(completed_tick, bool)
         or not isinstance(completed_tick, int)
-        or completed_tick != observed_tick - 1
         or isinstance(aggregate_generation_index, bool)
         or not isinstance(aggregate_generation_index, int)
         or aggregate_generation_index < 0
+        or not (genesis_boundary or completed_boundary)
     ):
         raise CampaignStorageError(
             "campaign barrier tick or generation frontier is invalid"
@@ -3928,8 +5335,11 @@ def _sha256(value: object, *, field: str) -> str:
 
 
 __all__ = [
+    "OPEN_ECOLOGY_CHECKPOINT_PUBLICATION_CONCURRENCY_SCHEMA_VERSION",
     "OPEN_ECOLOGY_FIRST_MILESTONE_TICK",
+    "OPEN_ECOLOGY_GENESIS_ATTEMPT_AUTHORITY_SCHEMA_VERSION",
     "OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED",
+    "OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED",
     "OPEN_ECOLOGY_PERSISTENT_LAUNCH_BLOCKERS",
     "OPEN_ECOLOGY_PERSISTENT_MILESTONE_SCHEMA_VERSION",
     "OPEN_ECOLOGY_PERSISTENT_RUNNER_SCHEMA_VERSION",
@@ -3946,6 +5356,10 @@ __all__ = [
     "PersistentIslandTask",
     "build_persistent_island_task_matrix",
     "build_persistent_world_config",
+    "checkpoint_publication_concurrency_contract",
+    "persistent_genesis_attempt_authority_sha256",
+    "persistent_interval_attempt_authority_payload_sha256",
+    "persistent_interval_attempt_authority_sha256",
     "persistent_island_writer_source_contract",
     "prioritized_persistent_island_triplet",
 ]

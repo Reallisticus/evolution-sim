@@ -7,7 +7,6 @@ import json
 import multiprocessing
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -15,6 +14,14 @@ from unittest.mock import patch
 
 import torch
 
+from evolution_sim.config import (
+    CombatConfig,
+    DietMatchingConfig,
+    ReproductionConfig,
+    WorldConfig,
+)
+from evolution_sim.env.runtime.state import RunMode
+from evolution_sim.env.world import SimulationWorld
 import evolution_sim.mind.open_ecology_phase_a as phase_a
 import evolution_sim.mind.open_ecology_selection as selection
 from evolution_sim.mind.open_ecology_seed_registry import (
@@ -86,6 +93,14 @@ def _write_run_contract(
             "critic_genome_conditioning": config.critic_genome_conditioning,
             "value_shared_trunk_gradient": config.value_shared_trunk_gradient,
         },
+        "initial_full_model_sha256": selection.recurrent_model_state_sha256(
+            selection.PublicRecurrentActorCritic(
+                config,
+                initialization_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][
+                    learner_index
+                ],
+            )
+        ),
         "terminal_policy": {
             "selection_evaluation_pending": True,
             "runtime_integration_authorized": False,
@@ -116,6 +131,7 @@ def _training_authority(
     cell_id: str = "A0",
     learner_index: int = 0,
 ) -> dict[str, object]:
+    run_contract = json.loads(run_contract_path.read_text(encoding="utf-8"))
     authority: dict[str, object] = {
         "schema_version": (
             selection.OPEN_ECOLOGY_TERMINAL_SELECTION_AUTHORITY_SCHEMA_VERSION
@@ -134,6 +150,10 @@ def _training_authority(
         "terminal_file_sha256": "2" * 64,
         "final_prefix_commit_exact_digest": "3" * 64,
         "terminal_checkpoint_model_state_sha256": model_state_sha256,
+        "initial_model_state_sha256": run_contract["initial_full_model_sha256"],
+        "initial_to_terminal_model_changed": True,
+        "cumulative_accepted_ppo_minibatches": 8,
+        "cumulative_post_step_kl_rejected_steps": 1,
         "run_contract_logical_name": "run-contract.json",
         "run_contract_exact_digest": run_contract_digest,
         "run_contract_file_sha256": selection._file_sha256(run_contract_path),
@@ -156,11 +176,18 @@ class OpenEcologySelectionTests(unittest.TestCase):
         )
         with (
             patch.object(
-                selection.subprocess,
-                "run",
+                selection,
+                "discover_pinned_git_executable",
+                return_value=object(),
+            ),
+            patch.object(
+                selection,
+                "run_pinned_git",
                 side_effect=(
-                    subprocess.CompletedProcess((), 0, f"{_SOURCE_COMMIT}\n", ""),
-                    subprocess.CompletedProcess((), 0, "", ""),
+                    _SOURCE_COMMIT,
+                    "",
+                    _SOURCE_COMMIT,
+                    "",
                 ),
             ) as run,
             patch.object(
@@ -170,7 +197,7 @@ class OpenEcologySelectionTests(unittest.TestCase):
             ),
         ):
             selection._require_live_selection_source(request)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 4)
 
     def test_authoritative_source_binding_rejects_dirty_spawn_source(self) -> None:
         root = Path(selection.__file__).resolve().parents[3]
@@ -181,16 +208,16 @@ class OpenEcologySelectionTests(unittest.TestCase):
         )
         with (
             patch.object(
-                selection.subprocess,
-                "run",
+                selection,
+                "discover_pinned_git_executable",
+                return_value=object(),
+            ),
+            patch.object(
+                selection,
+                "run_pinned_git",
                 side_effect=(
-                    subprocess.CompletedProcess((), 0, f"{_SOURCE_COMMIT}\n", ""),
-                    subprocess.CompletedProcess(
-                        (),
-                        0,
-                        " M python/evolution_sim/mind/open_ecology_selection.py\n",
-                        "",
-                    ),
+                    _SOURCE_COMMIT,
+                    " M python/evolution_sim/mind/open_ecology_selection.py\n",
                 ),
             ),
             self.assertRaisesRegex(
@@ -231,6 +258,7 @@ class OpenEcologySelectionTests(unittest.TestCase):
             cell_id="A0",
             learner_index=0,
             artifact_sha256="a" * 64,
+            initialized_baseline_model_state_sha256="b" * 64,
             local_environment_index=0,
             environment_seed_index=0,
             environment_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_selection"][0],
@@ -292,11 +320,228 @@ class OpenEcologySelectionTests(unittest.TestCase):
         )
 
         self.assertIs(collapsed["collapsed"], True)
-        self.assertEqual(
-            collapsed["longest_consecutive_qualifying_windows_same_action"],
-            3,
-        )
+        self.assertIs(collapsed["evidence_sufficient"], True)
         self.assertIs(diverse["collapsed"], False)
+        self.assertIs(diverse["evidence_sufficient"], True)
+
+    def test_global_action_collapse_is_offset_robust_and_requires_3000_decisions(
+        self,
+    ) -> None:
+        insufficient = selection._action_collapse_evidence(
+            [("eat", 1 + (decision % 10)) for decision in range(2_999)]
+        )
+        offset_collapse = selection._action_collapse_evidence(
+            [
+                (
+                    selection.ACTION_NAMES[decision % len(selection.ACTION_NAMES)],
+                    1 + (decision % 10),
+                )
+                for decision in range(500)
+            ]
+            + [("eat", 1 + (decision % 10)) for decision in range(3_000)]
+            + [
+                (
+                    selection.ACTION_NAMES[decision % len(selection.ACTION_NAMES)],
+                    1 + (decision % 10),
+                )
+                for decision in range(500)
+            ]
+        )
+
+        self.assertIs(insufficient["evidence_sufficient"], False)
+        self.assertIs(insufficient["collapsed"], False)
+        self.assertIs(offset_collapse["evidence_sufficient"], True)
+        self.assertIs(offset_collapse["collapsed"], True)
+        self.assertLessEqual(offset_collapse["first_collapsed_span_start"], 500)
+
+    def test_selection_metrics_bootstrap_only_alive_agents_at_fixed_horizon(
+        self,
+    ) -> None:
+        _normalized, value_rmse, advantage_variance = selection._selection_metrics(
+            rewards_by_agent={1: [0.0], 2: [0.0]},
+            values_by_agent={1: [0.0], 2: [0.0]},
+            terminal_bootstrap_values_by_agent={1: 2.0},
+        )
+        alive_target = selection.OPEN_ECOLOGY_SELECTION_DISCOUNT * 2.0
+        self.assertAlmostEqual(value_rmse, alive_target / (2.0**0.5), places=12)
+        self.assertAlmostEqual(
+            advantage_variance,
+            (alive_target**2) / 4.0,
+            places=12,
+        )
+
+    def test_selection_bootstrap_keeps_horizon_newborn_as_evidence_only(
+        self,
+    ) -> None:
+        model = _model()
+        policy = selection.DeterministicPublicRecurrentPolicy(
+            model,
+            artifact_digest="a" * 64,
+            copy_to_cpu=False,
+            reset_recurrent_state_each_decision=False,
+            sampling_seed=None,
+        )
+        policy.start_world(
+            world_identity="selection-horizon-newborn",
+            genome_stream_seed=61,
+            genome_population_mode=(selection.RecurrentGenomePopulationMode.HERITABLE),
+        )
+        treatment = OpenEcologyBroadWorldTreatment(initial_agents=32)
+        world = SimulationWorld(
+            WorldConfig(
+                seed=59,
+                max_ticks=1,
+                width=5,
+                height=5,
+                initial_agents=1,
+                max_agents=20,
+                water_tile_ratio=0.0,
+                forest_tile_ratio=0.0,
+                wetland_tile_ratio=0.0,
+                rocky_tile_ratio=0.0,
+                base_energy_drain=0.0,
+                base_hydration_drain=0.0,
+                signals=treatment.signals.as_signal_config(),
+                reproduction=ReproductionConfig(
+                    min_age=1,
+                    cooldown_ticks=1_000,
+                    min_hydration_fraction=0.0,
+                    energy_cost=0.0,
+                    child_energy_fraction=0.3,
+                ),
+                diet_matching=DietMatchingConfig(
+                    specialist_threshold=0.0,
+                    omnivore_threshold=0.0,
+                ),
+                combat=CombatConfig(
+                    min_attack_health_ratio=1.0,
+                    min_attack_energy_ratio=1.0,
+                    min_attack_hydration_ratio=1.0,
+                    base_attack_damage=0.0,
+                    attack_energy_cost=0.0,
+                    attack_hydration_cost=0.0,
+                ),
+            ),
+            policy=policy,
+        )
+        founder = world.alive_agents()[0]
+        founder.age = 10
+        founder.energy = founder.genome.max_energy * 1.25
+        founder.hydration = founder.genome.max_hydration
+        founder.health = founder.max_health
+        founder.last_reproduction_tick = -10_000
+
+        result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        children = [
+            agent
+            for agent in world.alive_agents()
+            if agent.parent_id == founder.agent_id
+        ]
+        self.assertEqual(len(children), 1)
+        child = children[0]
+        eligible_agent_ids = {
+            int(record["agent_id"])
+            for record in world.trajectory_records
+            if record.get("action_source") != "passive"
+        }
+        authority_before = selection._selection_boundary_authority_state(
+            world=world,
+            policy=policy,
+        )
+        bootstrap = selection._terminal_alive_agent_bootstrap_values(
+            world=world,
+            policy=policy,
+            tick=1,
+            target_eligible_agent_ids=eligible_agent_ids,
+        )
+
+        self.assertEqual(
+            selection._selection_boundary_authority_state(
+                world=world,
+                policy=policy,
+            ),
+            authority_before,
+        )
+        self.assertEqual(bootstrap["alive_agent_count"], 2)
+        self.assertEqual(bootstrap["target_eligible_agent_count"], 1)
+        self.assertEqual(bootstrap["zero_decision_alive_agent_count"], 1)
+        self.assertEqual(
+            bootstrap["zero_decision_alive_agent_ids"],
+            [child.agent_id],
+        )
+        self.assertEqual(
+            {
+                row["agent_id"]
+                for row in bootstrap["values"]
+                if row["target_eligible"] is True
+            },
+            {founder.agent_id},
+        )
+        selection._validate_terminal_bootstrap_evidence(
+            bootstrap,
+            terminal_summary=result.summary,
+            ticks_per_execution=1,
+        )
+        policy.reconcile_live_agent_ids(
+            live_agent_ids=tuple(
+                sorted(agent.agent_id for agent in world.alive_agents())
+            )
+        )
+        policy.reset_world()
+
+    def test_initialized_baseline_requires_positive_paired_median_improvement(
+        self,
+    ) -> None:
+        positive = selection._paired_normalized_return_evidence(
+            trained_normalized_returns=(0.5, 0.1, 0.2, 0.4),
+            baseline_normalized_returns=(0.1, 0.0, 0.1, 0.1),
+        )
+        tied = selection._paired_normalized_return_evidence(
+            trained_normalized_returns=(0.1, 0.2, 0.3, 0.4),
+            baseline_normalized_returns=(0.1, 0.2, 0.3, 0.4),
+        )
+
+        self.assertGreater(positive["paired_median_normalized_return_improvement"], 0)
+        self.assertIs(positive["positive_paired_median_improvement"], True)
+        self.assertEqual(tied["paired_median_normalized_return_improvement"], 0.0)
+        self.assertIs(tied["positive_paired_median_improvement"], False)
+
+    def test_initialized_baseline_equal_weights_environment_pair_medians(
+        self,
+    ) -> None:
+        environment_deltas = [(-100.0, -100.0, 1.0, 1.0) for _ in range(17)] + [
+            (100.0, 100.0, 100.0, 100.0) for _ in range(15)
+        ]
+        flattened = selection._paired_normalized_return_evidence(
+            trained_normalized_returns=tuple(
+                value for environment in environment_deltas for value in environment
+            ),
+            baseline_normalized_returns=(0.0,) * (32 * 4),
+        )
+        hierarchical = (
+            selection._aggregate_environment_paired_normalized_return_evidence(
+                environment_paired_deltas=environment_deltas,
+            )
+        )
+
+        self.assertIs(flattened["positive_paired_median_improvement"], True)
+        self.assertEqual(hierarchical["environment_count"], 32)
+        self.assertEqual(hierarchical["tapes_per_environment"], 4)
+        self.assertEqual(
+            hierarchical["aggregation_order"],
+            (
+                "paired_tape_median_within_environment_then_equal_weight_"
+                "median_across_environments"
+            ),
+        )
+        self.assertLess(
+            hierarchical["paired_median_normalized_return_improvement"],
+            0.0,
+        )
+        self.assertIs(
+            hierarchical["positive_paired_median_improvement"],
+            False,
+        )
 
     def test_execution_accounting_prices_primary_and_replay_worlds(self) -> None:
         accounting = selection._selection_execution_accounting(
@@ -304,6 +549,7 @@ class OpenEcologySelectionTests(unittest.TestCase):
                 {
                     "execution_count": 5,
                     "exact_replay_execution_count": 0,
+                    "initialized_baseline": {"execution_count": 4},
                 }
                 for _ in range(32)
             ],
@@ -311,15 +557,17 @@ class OpenEcologySelectionTests(unittest.TestCase):
             workers_used=8,
         )
 
-        self.assertEqual(accounting["primary_evaluation_count"], 160)
+        self.assertEqual(accounting["trained_policy_evaluation_count"], 160)
+        self.assertEqual(accounting["initialized_baseline_evaluation_count"], 128)
+        self.assertEqual(accounting["primary_evaluation_count"], 288)
         self.assertEqual(accounting["replay_evaluation_count"], 0)
-        self.assertEqual(accounting["physical_world_run_count"], 160)
+        self.assertEqual(accounting["physical_world_run_count"], 288)
         self.assertEqual(
             selection._authorization_execution_accounting(accounting),
             {
-                "producer_primary_world_run_count": 160,
-                "authorization_reexecution_world_run_count": 160,
-                "total_physical_world_run_count_through_authorization": 320,
+                "producer_primary_world_run_count": 288,
+                "authorization_reexecution_world_run_count": 288,
+                "total_physical_world_run_count_through_authorization": 576,
             },
         )
 
@@ -412,6 +660,9 @@ class OpenEcologySelectionTests(unittest.TestCase):
                 cell_id="A0",
                 learner_index=0,
                 artifact_sha256=str(artifact["artifact_sha256"]),
+                initialized_baseline_model_state_sha256=str(
+                    binding["initialized_baseline_model_state_sha256"]
+                ),
                 local_environment_index=0,
                 environment_seed_index=0,
                 environment_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_selection"][
@@ -436,6 +687,12 @@ class OpenEcologySelectionTests(unittest.TestCase):
                     task,
                     primary_model=primary,
                     replay_model=None,
+                    baseline_model=selection._reconstruct_initialized_baseline_model(
+                        config=primary.config,
+                        learner_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][
+                            0
+                        ],
+                    ),
                 )
             finally:
                 torch.set_num_threads(previous_threads)
@@ -618,7 +875,7 @@ class OpenEcologySelectionTests(unittest.TestCase):
             build_request.assert_called_once()
             self.assertEqual(
                 provisional["execution"]["primary_evaluation_count"],
-                5,
+                9,
             )
             self.assertEqual(
                 provisional["execution"]["replay_evaluation_count"],
@@ -628,13 +885,13 @@ class OpenEcologySelectionTests(unittest.TestCase):
                 learner["evaluation"][
                     "total_physical_world_run_count_through_authorization"
                 ],
-                10,
+                18,
             )
             self.assertIs(
                 learner["gates"]["exact_same_contract_replay"],
                 True,
             )
-            self.assertEqual(run_world.call_count, 10)
+            self.assertEqual(run_world.call_count, 18)
 
     def test_mapping_only_request_has_no_public_learner_authority_path(self) -> None:
         self.assertFalse(
@@ -659,6 +916,9 @@ class OpenEcologySelectionTests(unittest.TestCase):
             cell_id="A0",
             learner_index=0,
             artifact_sha256="a" * 64,
+            initialized_baseline_model_state_sha256=(
+                selection.recurrent_model_state_sha256(model)
+            ),
             local_environment_index=0,
             environment_seed_index=0,
             environment_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_selection"][0],
@@ -679,11 +939,13 @@ class OpenEcologySelectionTests(unittest.TestCase):
             task,
             primary_model=model,
             replay_model=None,
+            baseline_model=selection.frozen_cpu_model_copy(model),
         )
         authoritative_reexecution = selection._evaluate_environment_task(
             task,
             primary_model=selection.frozen_cpu_model_copy(model),
             replay_model=None,
+            baseline_model=selection.frozen_cpu_model_copy(model),
         )
         causal = environment["causal_genome"]
 
@@ -728,6 +990,24 @@ class OpenEcologySelectionTests(unittest.TestCase):
         ):
             selection._validate_environment_evidence(forged)
 
+        forged_target = copy.deepcopy(environment)
+        target_execution = forged_target["executions"][0]
+        target_execution["metrics"]["target_contract"] = "forged_stale_bootstrap_target"
+        target_run_unsigned = dict(target_execution)
+        target_run_unsigned.pop("run_evidence_sha256")
+        target_run_unsigned.pop("exact_replay")
+        target_run_unsigned.pop("exact_digest")
+        target_execution["run_evidence_sha256"] = selection.stable_payload_digest(
+            target_run_unsigned
+        )
+        _resign(target_execution, "exact_digest")
+        _resign(forged_target, "exact_digest")
+        with self.assertRaisesRegex(
+            selection.OpenEcologySelectionError,
+            "target contract",
+        ):
+            selection._validate_environment_evidence(forged_target)
+
         forged_provenance = copy.deepcopy(environment)
         provenance_execution = forged_provenance["executions"][0]
         provenance_execution["genome_population_provenance"][
@@ -771,6 +1051,7 @@ class OpenEcologySelectionTests(unittest.TestCase):
                     cell_id=cell_id,
                     learner_index=learner_index,
                     artifact_sha256=model_sha,
+                    initialized_baseline_model_state_sha256=model_sha,
                     local_environment_index=learner_index,
                     environment_seed_index=learner_index,
                     environment_seed=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_proof"][

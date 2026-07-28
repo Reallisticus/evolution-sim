@@ -8,11 +8,17 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import BinaryIO, Mapping, Sequence, TypeAlias
+
+from evolution_sim.io.open_ecology_campaign_storage import (
+    CampaignStorageError,
+    ensure_real_directory_tree,
+)
 
 
 OPEN_ECOLOGY_EVIDENCE_FORMAT = "evolution_sim_open_ecology_evidence_shard_v1"
@@ -26,6 +32,7 @@ OPEN_ECOLOGY_EVIDENCE_EVENT_SCHEMA = "evolution_sim_open_ecology_event_v1"
 OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME = "manifest.json"
 OPEN_ECOLOGY_EVIDENCE_LOCK_NAME = ".writer.lock"
 OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME = ".pending-transaction.json"
+OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME = ".cleanup-tombstones-v1"
 OPEN_ECOLOGY_EVIDENCE_TRANSACTION_SCHEMA = (
     "evolution_sim_open_ecology_evidence_transaction_v1"
 )
@@ -34,10 +41,17 @@ _OPEN_ECOLOGY_EVIDENCE_LOCK_BYTES = b"evolution_sim_open_ecology_writer_lock_v1\
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHARD_FILE_RE = re.compile(r"^shard-[0-9]{8}\.jsonl\.gz$")
+_CLEANUP_SLOT_RE = re.compile(
+    r"^file-d(?P<device>[0-9a-f]+)-i(?P<inode>[0-9a-f]+)-"
+    r"(?P<nonce>[0-9a-f]{16})$"
+)
 _MAX_JSON_NESTING_DEPTH = 128
 _DEFAULT_SAFE_MANIFEST_READ_BYTES = 16 * 1024 * 1024
 _DEFAULT_SAFE_TRANSACTION_READ_BYTES = 40 * 1024 * 1024
 _ABSOLUTE_SAFE_SHARD_READ_BYTES = 512 * 1024 * 1024
+_CLEANUP_TOMBSTONE_MULTIPLIER = 2
+_CLEANUP_TOMBSTONE_RESERVE = 16
 
 
 class OpenEcologyEvidenceError(ValueError):
@@ -463,6 +477,7 @@ class _ActiveShard:
     index: int
     previous_shard_sha256: str
     temp_path: Path
+    temp_identity: _PathIdentity
     raw_handle: BinaryIO
     gzip_handle: gzip.GzipFile
     first_tick: int
@@ -473,6 +488,12 @@ class _ActiveShard:
     uncompressed_bytes_before_footer: int
     content_hash: object
     event_stream_hash: object
+
+
+@dataclass(frozen=True, slots=True)
+class _PathIdentity:
+    device: int
+    inode: int
 
 
 class RotatingOpenEcologyEvidenceWriter:
@@ -503,6 +524,7 @@ class RotatingOpenEcologyEvidenceWriter:
             max_bytes=self.config.max_source_contract_bytes,
         )
         self._source_contract_sha256 = _digest(self._source_contract)
+        self._max_cleanup_tombstones = _cleanup_tombstone_limit(self.config.max_shards)
         self._manifest_path = (
             self.output_directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME
         )
@@ -524,11 +546,19 @@ class RotatingOpenEcologyEvidenceWriter:
         self._aborted = False
         self._checkpointed = False
 
-        if self.output_directory.exists() and not self.output_directory.is_dir():
-            raise OpenEcologyEvidenceError("output_directory must be a directory")
-        self.output_directory.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_real_directory_tree(
+                self.output_directory,
+                field="open-ecology evidence output directory",
+            )
+        except CampaignStorageError as error:
+            raise OpenEcologyEvidenceError(str(error)) from error
         self._acquire_lock()
         try:
+            _reconcile_evidence_cleanup_tombstones(
+                self.output_directory,
+                max_tombstones=self._max_cleanup_tombstones,
+            )
             if continuation_state is None:
                 self._initialize_new_stream()
             else:
@@ -682,8 +712,14 @@ class RotatingOpenEcologyEvidenceWriter:
             except OSError:
                 pass
             try:
-                active.temp_path.unlink(missing_ok=True)
-            except OSError:
+                _unlink_owned_regular_file(
+                    active.temp_path,
+                    expected_identity=active.temp_identity,
+                    field="active evidence shard temp",
+                    missing_ok=True,
+                    max_tombstones=self._max_cleanup_tombstones,
+                )
+            except (OSError, OpenEcologyEvidenceError):
                 pass
         if not self._finished and not self._checkpointed:
             self._aborted = True
@@ -700,7 +736,11 @@ class RotatingOpenEcologyEvidenceWriter:
         unexpected_entries = {
             path.name
             for path in self.output_directory.iterdir()
-            if path.name != OPEN_ECOLOGY_EVIDENCE_LOCK_NAME
+            if path.name
+            not in {
+                OPEN_ECOLOGY_EVIDENCE_LOCK_NAME,
+                OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME,
+            }
         }
         if unexpected_entries:
             raise OpenEcologyEvidenceError(
@@ -778,6 +818,7 @@ class RotatingOpenEcologyEvidenceWriter:
         ) as temp_file:
             temp_path = Path(temp_file.name)
         raw_handle = temp_path.open("wb")
+        temp_identity = _path_identity_from_stat(os.fstat(raw_handle.fileno()))
         gzip_handle = gzip.GzipFile(
             filename="",
             mode="wb",
@@ -803,6 +844,7 @@ class RotatingOpenEcologyEvidenceWriter:
             index=self._next_shard_index,
             previous_shard_sha256=self._chain_head_sha256,
             temp_path=temp_path,
+            temp_identity=temp_identity,
             raw_handle=raw_handle,
             gzip_handle=gzip_handle,
             first_tick=tick,
@@ -907,7 +949,13 @@ class RotatingOpenEcologyEvidenceWriter:
 
         compressed_bytes = active.temp_path.stat().st_size
         if compressed_bytes > self.config.max_compressed_bytes_per_shard:
-            active.temp_path.unlink(missing_ok=True)
+            _unlink_owned_regular_file(
+                active.temp_path,
+                expected_identity=active.temp_identity,
+                field="oversized evidence shard temp",
+                missing_ok=True,
+                max_tombstones=self._max_cleanup_tombstones,
+            )
             self._active = None
             raise OpenEcologyEvidenceError(
                 "completed shard exceeds max_compressed_bytes_per_shard "
@@ -918,7 +966,13 @@ class RotatingOpenEcologyEvidenceWriter:
             int(entry["compressed_bytes"]) for entry in self._entries
         )
         if prospective_total_compressed_bytes > self.config.max_total_compressed_bytes:
-            active.temp_path.unlink(missing_ok=True)
+            _unlink_owned_regular_file(
+                active.temp_path,
+                expected_identity=active.temp_identity,
+                field="over-budget evidence shard temp",
+                missing_ok=True,
+                max_tombstones=self._max_cleanup_tombstones,
+            )
             self._active = None
             raise OpenEcologyEvidenceError(
                 "evidence stream exceeds max_total_compressed_bytes "
@@ -984,18 +1038,48 @@ class RotatingOpenEcologyEvidenceWriter:
             raise OpenEcologyEvidenceError(
                 "pending evidence transaction exceeds its safe byte ceiling"
             )
-        _atomic_write(self._transaction_path, transaction_bytes)
+        transaction_identity = _atomic_write(
+            self._transaction_path,
+            transaction_bytes,
+            max_cleanup_tombstones=self._max_cleanup_tombstones,
+        )
         try:
+            if (
+                _regular_file_identity(
+                    active.temp_path,
+                    field="evidence shard temp before publication",
+                )
+                != active.temp_identity
+            ):
+                raise OpenEcologyEvidenceError(
+                    "evidence shard temp changed before publication"
+                )
             os.replace(active.temp_path, destination)
+            if (
+                _regular_file_identity(
+                    destination,
+                    field="published evidence shard",
+                )
+                != active.temp_identity
+            ):
+                raise OpenEcologyEvidenceError(
+                    "evidence shard temp changed during publication"
+                )
             _fsync_directory_best_effort(self.output_directory)
             self._publish_manifest(prospective_manifest)
-            self._transaction_path.unlink()
+            _unlink_owned_regular_file(
+                self._transaction_path,
+                expected_identity=transaction_identity,
+                field="completed evidence transaction",
+                max_tombstones=self._max_cleanup_tombstones,
+            )
             _fsync_directory_best_effort(self.output_directory)
         except Exception:
             self._rollback_handled_transaction(
                 previous_manifest=previous_manifest,
                 destination=destination,
                 expected_file_sha256=file_sha256,
+                transaction_identity=transaction_identity,
             )
             raise
 
@@ -1082,7 +1166,9 @@ class RotatingOpenEcologyEvidenceWriter:
         if not self._transaction_path.exists():
             self._cleanup_unpublished_temp_files()
             return
-        transaction = _load_pending_transaction(self._transaction_path)
+        transaction, transaction_identity = _load_pending_transaction(
+            self._transaction_path
+        )
         if transaction["run_id"] != self.run_id:
             raise OpenEcologyEvidenceError(
                 "pending transaction run_id does not match resume"
@@ -1223,7 +1309,10 @@ class RotatingOpenEcologyEvidenceWriter:
                 destination,
                 expected_file_sha256=expected_file_sha256,
             )
-            temp_path.unlink(missing_ok=True)
+            self._unlink_transaction_shard_if_owned(
+                temp_path,
+                expected_file_sha256=expected_file_sha256,
+            )
         elif authoritative_sha256 == prospective_sha256:
             if destination.exists():
                 _require_file_sha256(
@@ -1232,21 +1321,40 @@ class RotatingOpenEcologyEvidenceWriter:
                     max_bytes=self.config.max_compressed_bytes_per_shard,
                 )
             else:
-                _require_file_sha256(
+                temp_identity = _require_file_sha256(
                     temp_path,
                     expected_sha256=expected_file_sha256,
                     max_bytes=self.config.max_compressed_bytes_per_shard,
                 )
                 os.replace(temp_path, destination)
+                if (
+                    _regular_file_identity(
+                        destination,
+                        field="recovered evidence shard",
+                    )
+                    != temp_identity
+                ):
+                    raise OpenEcologyEvidenceError(
+                        "pending transaction temp changed while publishing"
+                    )
                 _fsync_directory_best_effort(self.output_directory)
             self._publish_manifest(prospective_manifest)
-            temp_path.unlink(missing_ok=True)
+            if temp_path.exists() or temp_path.is_symlink():
+                self._unlink_transaction_shard_if_owned(
+                    temp_path,
+                    expected_file_sha256=expected_file_sha256,
+                )
         else:
             raise OpenEcologyEvidenceError(
                 "continuation manifest digest does not authorize either side "
                 "of the pending transaction"
             )
-        self._transaction_path.unlink()
+        _unlink_owned_regular_file(
+            self._transaction_path,
+            expected_identity=transaction_identity,
+            field="recovered evidence transaction",
+            max_tombstones=self._max_cleanup_tombstones,
+        )
         _fsync_directory_best_effort(self.output_directory)
         self._cleanup_unpublished_temp_files()
 
@@ -1256,6 +1364,7 @@ class RotatingOpenEcologyEvidenceWriter:
         previous_manifest: Mapping[str, object],
         destination: Path,
         expected_file_sha256: str,
+        transaction_identity: _PathIdentity,
     ) -> None:
         try:
             self._publish_manifest(previous_manifest)
@@ -1263,7 +1372,13 @@ class RotatingOpenEcologyEvidenceWriter:
                 destination,
                 expected_file_sha256=expected_file_sha256,
             )
-            self._transaction_path.unlink(missing_ok=True)
+            _unlink_owned_regular_file(
+                self._transaction_path,
+                expected_identity=transaction_identity,
+                field="rolled-back evidence transaction",
+                missing_ok=True,
+                max_tombstones=self._max_cleanup_tombstones,
+            )
             _fsync_directory_best_effort(self.output_directory)
         except Exception as error:
             raise OpenEcologyEvidenceError(
@@ -1278,12 +1393,17 @@ class RotatingOpenEcologyEvidenceWriter:
     ) -> None:
         if not path.exists():
             return
-        _require_file_sha256(
+        identity = _require_file_sha256(
             path,
             expected_sha256=expected_file_sha256,
             max_bytes=self.config.max_compressed_bytes_per_shard,
         )
-        path.unlink()
+        _unlink_owned_regular_file(
+            path,
+            expected_identity=identity,
+            field="transaction-owned evidence shard",
+            max_tombstones=self._max_cleanup_tombstones,
+        )
 
     def _cleanup_unpublished_temp_files(self) -> None:
         for path in self.output_directory.iterdir():
@@ -1298,11 +1418,16 @@ class RotatingOpenEcologyEvidenceWriter:
                 and ".jsonl.gz" not in name
             )
             if is_atomic_temp or is_shard_temp:
-                if path.is_symlink() or not path.is_file():
-                    raise OpenEcologyEvidenceError(
-                        "unpublished evidence temp path is not a regular file"
-                    )
-                path.unlink()
+                identity = _regular_file_identity(
+                    path,
+                    field="unpublished evidence temp",
+                )
+                _unlink_owned_regular_file(
+                    path,
+                    expected_identity=identity,
+                    field="unpublished evidence temp",
+                    max_tombstones=self._max_cleanup_tombstones,
+                )
         _fsync_directory_best_effort(self.output_directory)
 
     def _manifest_payload(
@@ -1349,7 +1474,11 @@ class RotatingOpenEcologyEvidenceWriter:
 
     def _publish_manifest(self, manifest: Mapping[str, object]) -> None:
         self._ensure_manifest_fits(manifest)
-        _atomic_write(self._manifest_path, _canonical_line_bytes(manifest))
+        _atomic_write(
+            self._manifest_path,
+            _canonical_line_bytes(manifest),
+            max_cleanup_tombstones=self._max_cleanup_tombstones,
+        )
         self._manifest_sha256 = str(manifest["manifest_sha256"])
         self._durable_manifest = _canonical_mapping_clone(
             manifest,
@@ -1626,12 +1755,15 @@ def validate_open_ecology_event_record(
     return normalized
 
 
-def _load_pending_transaction(path: Path) -> dict[str, object]:
+def _load_pending_transaction(
+    path: Path,
+) -> tuple[dict[str, object], _PathIdentity]:
+    encoded, identity = _safe_read_file_with_identity(
+        path,
+        max_bytes=_DEFAULT_SAFE_TRANSACTION_READ_BYTES,
+    )
     transaction = _parse_canonical_json_line(
-        _safe_read_file(
-            path,
-            max_bytes=_DEFAULT_SAFE_TRANSACTION_READ_BYTES,
-        ),
+        encoded,
         field="pending transaction",
     )
     _exact_keys(
@@ -1700,7 +1832,7 @@ def _load_pending_transaction(path: Path) -> dict[str, object]:
         prospective_manifest,
         field="pending transaction.prospective_manifest",
     )
-    return transaction
+    return transaction, identity
 
 
 def _embedded_manifest_sha256(
@@ -1745,11 +1877,16 @@ def _require_file_sha256(
     *,
     expected_sha256: str,
     max_bytes: int,
-) -> None:
-    if _sha256_file(path, max_bytes=max_bytes) != expected_sha256:
+) -> _PathIdentity:
+    encoded, identity = _safe_read_file_with_identity(
+        path,
+        max_bytes=max_bytes,
+    )
+    if hashlib.sha256(encoded).hexdigest() != expected_sha256:
         raise OpenEcologyEvidenceError(
             f"transaction-owned file {path.name} SHA256 mismatch"
         )
+    return identity
 
 
 def validate_open_ecology_evidence_continuation_state(
@@ -1828,13 +1965,24 @@ def load_open_ecology_evidence_manifest(
     verify_shards: bool = True,
     expected_manifest_sha256: str | None = None,
     expected_status: str | None = None,
+    _manifest_snapshot: Mapping[str, object] | None = None,
+    _allow_additional_directory_entries: bool = False,
 ) -> dict[str, object]:
     directory = Path(output_directory)
-    manifest_path = directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME
-    raw = _safe_read_file(
-        manifest_path,
-        max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
-    )
+    if _manifest_snapshot is None:
+        manifest_path = directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME
+        raw = _safe_read_file(
+            manifest_path,
+            max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
+        )
+    else:
+        raw = _canonical_line_bytes(
+            _canonical_mapping_clone(
+                _manifest_snapshot,
+                field="evidence manifest snapshot",
+                max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
+            )
+        )
     manifest = _parse_canonical_json_line(raw, field="manifest")
     _exact_keys(
         manifest,
@@ -2022,17 +2170,433 @@ def load_open_ecology_evidence_manifest(
         raise OpenEcologyEvidenceError(
             "evidence stream lock does not match its exact control contract"
         )
+    cleanup_path = directory / OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+    try:
+        cleanup_path.lstat()
+    except FileNotFoundError:
+        cleanup_present = False
+    else:
+        cleanup_present = True
+        _reconcile_evidence_cleanup_tombstones(
+            directory,
+            max_tombstones=_cleanup_tombstone_limit(config.max_shards),
+            repair=False,
+        )
     expected_directory_entries = {
         OPEN_ECOLOGY_EVIDENCE_LOCK_NAME,
         OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
         *declared_files,
     }
+    if cleanup_present:
+        expected_directory_entries.add(OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME)
     actual_directory_entries = {path.name for path in directory.iterdir()}
-    if actual_directory_entries != expected_directory_entries:
+    directory_entries_valid = (
+        expected_directory_entries.issubset(actual_directory_entries)
+        if _allow_additional_directory_entries
+        else actual_directory_entries == expected_directory_entries
+    )
+    if not directory_entries_valid:
         raise OpenEcologyEvidenceError(
             "evidence directory entries do not exactly match the manifest"
         )
     return manifest
+
+
+def restore_open_ecology_evidence_manifest_snapshot(
+    output_directory: str | Path,
+    *,
+    authoritative_manifest: Mapping[str, object],
+    preservation_directory: str | Path,
+) -> dict[str, object]:
+    """Reinstate one externally selected manifest without deleting attempt bytes.
+
+    The selected manifest is first validated against its exact shard prefix.
+    A valid live descendant, pending transaction, and any unpublished shard
+    files are retained in an attempt directory outside the authoritative
+    evidence stream.  The existing strict manifest loader remains the final
+    readback gate.
+    """
+
+    directory = Path(output_directory)
+    if not directory.is_absolute():
+        raise OpenEcologyEvidenceError(
+            "evidence snapshot restore directory must be absolute"
+        )
+    try:
+        directory_stat = directory.lstat()
+    except OSError as error:
+        raise OpenEcologyEvidenceError(
+            f"cannot inspect evidence snapshot restore directory: {error}"
+        ) from error
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise OpenEcologyEvidenceError(
+            "evidence snapshot restore directory must be a real directory"
+        )
+    preservation = Path(preservation_directory)
+    if not preservation.is_absolute():
+        raise OpenEcologyEvidenceError(
+            "evidence attempt preservation directory must be absolute"
+        )
+    if preservation == directory or directory in preservation.parents:
+        raise OpenEcologyEvidenceError(
+            "evidence attempts must be preserved outside the evidence stream"
+        )
+
+    authoritative = _canonical_mapping_clone(
+        authoritative_manifest,
+        field="authoritative evidence manifest",
+        max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
+    )
+    authoritative_digest = _embedded_manifest_sha256(
+        authoritative,
+        field="authoritative evidence manifest",
+    )
+
+    lock_path = directory / OPEN_ECOLOGY_EVIDENCE_LOCK_NAME
+    flags = os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(lock_path, flags)
+    except OSError as error:
+        raise OpenEcologyEvidenceError(
+            "cannot safely open evidence writer lock for snapshot restore"
+        ) from error
+    try:
+        lock_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+            raise OpenEcologyEvidenceError(
+                "evidence writer lock must be one regular file"
+            )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise OpenEcologyEvidenceError(
+                "evidence stream already has an active writer"
+            ) from error
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.read(descriptor, len(_OPEN_ECOLOGY_EVIDENCE_LOCK_BYTES) + 1) != (
+            _OPEN_ECOLOGY_EVIDENCE_LOCK_BYTES
+        ):
+            raise OpenEcologyEvidenceError(
+                "evidence stream lock does not match its exact control contract"
+            )
+        _validate_manifest_snapshot_against_directory(
+            directory,
+            manifest=authoritative,
+        )
+
+        live_manifest_bytes = _safe_read_file(
+            directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
+            max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
+        )
+        live_manifest = _parse_canonical_json_line(
+            live_manifest_bytes,
+            field="live evidence manifest",
+        )
+        live_digest = _embedded_manifest_sha256(
+            live_manifest,
+            field="live evidence manifest",
+        )
+        _validate_manifest_snapshot_against_directory(
+            directory,
+            manifest=live_manifest,
+        )
+        _validate_authoritative_manifest_prefix(
+            authoritative=authoritative,
+            live=live_manifest,
+        )
+
+        authoritative_files = {
+            str(entry["file_name"])
+            for entry in _mapping_sequence(authoritative["completed_shards"])
+        }
+        expected_entries = {
+            OPEN_ECOLOGY_EVIDENCE_LOCK_NAME,
+            OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
+            *authoritative_files,
+        }
+        if (directory / OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME).exists():
+            expected_entries.add(OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME)
+        actual_entries = {path.name for path in directory.iterdir()}
+        extras = sorted(actual_entries - expected_entries)
+        for name in extras:
+            if not _is_preservable_attempt_entry(name):
+                raise OpenEcologyEvidenceError(
+                    f"evidence stream contains unrecognized attempt entry {name}"
+                )
+            path = directory / name
+            path_stat = path.lstat()
+            if not stat.S_ISREG(path_stat.st_mode):
+                raise OpenEcologyEvidenceError(
+                    "evidence attempt entry must be a regular file"
+                )
+
+        if live_digest == authoritative_digest and not extras:
+            return load_open_ecology_evidence_manifest(
+                directory,
+                verify_shards=True,
+                expected_manifest_sha256=authoritative_digest,
+            )
+
+        try:
+            preservation = ensure_real_directory_tree(
+                preservation,
+                field="evidence attempt preservation directory",
+            )
+        except CampaignStorageError as error:
+            raise OpenEcologyEvidenceError(str(error)) from error
+        base_name = f"evidence-authority-{authoritative_digest}-displaced-{live_digest}"
+        attempt = preservation / base_name
+        attempt_index = 0
+        while attempt.exists() or attempt.is_symlink():
+            attempt_index += 1
+            attempt = preservation / (f"{base_name}-attempt-{attempt_index:04d}")
+        attempt.mkdir()
+        _atomic_write(
+            attempt / "displaced-manifest.json",
+            live_manifest_bytes,
+        )
+
+        _atomic_write(
+            directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
+            _canonical_line_bytes(authoritative),
+        )
+        for name in extras:
+            os.rename(directory / name, attempt / name)
+            _fsync_directory_best_effort(directory)
+            _fsync_directory_best_effort(attempt)
+
+        restored = load_open_ecology_evidence_manifest(
+            directory,
+            verify_shards=True,
+            expected_manifest_sha256=authoritative_digest,
+        )
+        _fsync_directory_best_effort(preservation)
+        return restored
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def preserve_open_ecology_evidence_attempt_directory(
+    output_directory: str | Path,
+    *,
+    preservation_directory: str | Path,
+) -> Path:
+    """Move one incomplete evidence stream intact outside the live task path."""
+
+    directory = Path(output_directory)
+    preservation = Path(preservation_directory)
+    if not directory.is_absolute() or not preservation.is_absolute():
+        raise OpenEcologyEvidenceError("evidence attempt paths must be absolute")
+    if preservation == directory or directory in preservation.parents:
+        raise OpenEcologyEvidenceError(
+            "evidence attempts must be preserved outside the evidence stream"
+        )
+    try:
+        directory_stat = directory.lstat()
+    except OSError as error:
+        raise OpenEcologyEvidenceError(
+            f"cannot inspect incomplete evidence stream: {error}"
+        ) from error
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise OpenEcologyEvidenceError(
+            "incomplete evidence stream must be a real directory"
+        )
+    entries = sorted(path.name for path in directory.iterdir())
+    max_cleanup_tombstones = _cleanup_tombstone_limit(
+        RotatingEvidenceConfig().max_shards
+    )
+    manifest_path = directory / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME
+    if manifest_path.exists() or manifest_path.is_symlink():
+        manifest = _parse_canonical_json_line(
+            _safe_read_file(
+                manifest_path,
+                max_bytes=_DEFAULT_SAFE_MANIFEST_READ_BYTES,
+            ),
+            field="incomplete evidence manifest",
+        )
+        validated_manifest = load_open_ecology_evidence_manifest(
+            directory,
+            verify_shards=True,
+            _manifest_snapshot=manifest,
+            _allow_additional_directory_entries=True,
+        )
+        config = RotatingEvidenceConfig.from_dict(
+            _mapping(
+                validated_manifest["writer_config"],
+                field="incomplete evidence manifest.writer_config",
+            )
+        )
+        max_cleanup_tombstones = _cleanup_tombstone_limit(config.max_shards)
+    for name in entries:
+        if name == OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME:
+            _reconcile_evidence_cleanup_tombstones(
+                directory,
+                max_tombstones=max_cleanup_tombstones,
+                repair=False,
+            )
+            continue
+        if name not in {
+            OPEN_ECOLOGY_EVIDENCE_LOCK_NAME,
+            OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
+        } and not _is_preservable_attempt_entry(name):
+            raise OpenEcologyEvidenceError(
+                f"incomplete evidence stream contains unrecognized entry {name}"
+            )
+        entry = directory / name
+        if not stat.S_ISREG(entry.lstat().st_mode):
+            raise OpenEcologyEvidenceError(
+                "incomplete evidence entries must be regular files"
+            )
+
+    lock_path = directory / OPEN_ECOLOGY_EVIDENCE_LOCK_NAME
+    descriptor: int | None = None
+    if lock_path.exists() or lock_path.is_symlink():
+        flags = os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(lock_path, flags)
+        except OSError as error:
+            raise OpenEcologyEvidenceError(
+                "cannot safely open incomplete evidence writer lock"
+            ) from error
+        try:
+            lock_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+                raise OpenEcologyEvidenceError(
+                    "incomplete evidence writer lock must be one regular file"
+                )
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise OpenEcologyEvidenceError(
+                    "incomplete evidence stream still has an active writer"
+                ) from error
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            observed_lock = os.read(
+                descriptor,
+                len(_OPEN_ECOLOGY_EVIDENCE_LOCK_BYTES) + 1,
+            )
+            if observed_lock not in {
+                b"",
+                _OPEN_ECOLOGY_EVIDENCE_LOCK_BYTES,
+            }:
+                raise OpenEcologyEvidenceError(
+                    "incomplete evidence writer lock contract drifted"
+                )
+        except BaseException:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(descriptor)
+            raise
+    elif entries:
+        raise OpenEcologyEvidenceError(
+            "nonempty incomplete evidence stream has no writer lock"
+        )
+
+    try:
+        try:
+            preservation = ensure_real_directory_tree(
+                preservation,
+                field="evidence preservation directory",
+            )
+        except CampaignStorageError as error:
+            raise OpenEcologyEvidenceError(str(error)) from error
+        base_name = f"genesis-evidence-{_digest({'entries': entries})}"
+        destination = preservation / base_name
+        attempt_index = 0
+        while destination.exists() or destination.is_symlink():
+            attempt_index += 1
+            destination = preservation / (f"{base_name}-attempt-{attempt_index:04d}")
+        os.rename(directory, destination)
+        _fsync_directory_best_effort(directory.parent)
+        _fsync_directory_best_effort(preservation)
+        return destination
+    finally:
+        if descriptor is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+
+def _validate_manifest_snapshot_against_directory(
+    directory: Path,
+    *,
+    manifest: Mapping[str, object],
+) -> None:
+    """Validate one selected shard prefix in place without linking live bytes.
+
+    Recovery may validate an older authoritative prefix while the live stream
+    contains additional attempt shards.  Passing the captured manifest into
+    the canonical loader retains all schema, chain, and shard verification,
+    but merely relaxes the final directory equality to a subset check.  This
+    avoids hard-linking authoritative shards into a temporary directory: a
+    process death after such a link left the source with ``st_nlink == 2`` and
+    made the next fail-closed storage scan unrecoverable.
+    """
+
+    load_open_ecology_evidence_manifest(
+        directory,
+        verify_shards=True,
+        expected_manifest_sha256=str(manifest.get("manifest_sha256")),
+        _manifest_snapshot=manifest,
+        _allow_additional_directory_entries=True,
+    )
+
+
+def _validate_authoritative_manifest_prefix(
+    *,
+    authoritative: Mapping[str, object],
+    live: Mapping[str, object],
+) -> None:
+    for field_name in (
+        "run_id",
+        "schema_version",
+        "format",
+        "source_contract",
+        "source_contract_sha256",
+        "writer_config",
+        "writer_config_sha256",
+    ):
+        if live.get(field_name) != authoritative.get(field_name):
+            raise OpenEcologyEvidenceError(
+                f"live evidence {field_name} does not match aggregate authority"
+            )
+    authoritative_entries = _mapping_sequence(authoritative.get("completed_shards"))
+    live_entries = _mapping_sequence(live.get("completed_shards"))
+    if len(live_entries) < len(authoritative_entries) or list(
+        live_entries[: len(authoritative_entries)]
+    ) != list(authoritative_entries):
+        raise OpenEcologyEvidenceError(
+            "live evidence does not extend the aggregate-selected shard prefix"
+        )
+
+
+def _is_preservable_attempt_entry(name: str) -> bool:
+    if name == OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME:
+        return True
+    if _SHARD_FILE_RE.fullmatch(name) is not None:
+        return True
+    is_atomic_temp = (
+        name.startswith(f".{OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME}.")
+        or name.startswith(f".{OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME}.")
+    ) and name.endswith(".tmp")
+    is_shard_temp = (
+        name.startswith(".shard-") and name.endswith(".tmp") and ".jsonl.gz" not in name
+    )
+    return is_atomic_temp or is_shard_temp
 
 
 def _validate_manifest_entry(
@@ -2564,6 +3128,20 @@ def _safe_read_file(
     max_bytes: int,
     require_single_link: bool = False,
 ) -> bytes:
+    data, _identity = _safe_read_file_with_identity(
+        path,
+        max_bytes=max_bytes,
+        require_single_link=require_single_link,
+    )
+    return data
+
+
+def _safe_read_file_with_identity(
+    path: Path,
+    *,
+    max_bytes: int,
+    require_single_link: bool = False,
+) -> tuple[bytes, _PathIdentity]:
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -2589,13 +3167,563 @@ def _safe_read_file(
             raise OpenEcologyEvidenceError(
                 f"evidence file {path.name} exceeds its byte ceiling"
             )
-        return data
+        return data, _path_identity_from_stat(file_stat)
     finally:
         os.close(descriptor)
 
 
 def _sha256_file(path: Path, *, max_bytes: int) -> str:
     return hashlib.sha256(_safe_read_file(path, max_bytes=max_bytes)).hexdigest()
+
+
+def _path_identity_from_stat(path_stat: os.stat_result) -> _PathIdentity:
+    return _PathIdentity(
+        device=path_stat.st_dev,
+        inode=path_stat.st_ino,
+    )
+
+
+def _cleanup_tombstone_limit(max_shards: int) -> int:
+    return (
+        _positive_int(max_shards, field="max_shards") * _CLEANUP_TOMBSTONE_MULTIPLIER
+        + _CLEANUP_TOMBSTONE_RESERVE
+    )
+
+
+def _regular_file_identity(path: Path, *, field: str) -> _PathIdentity:
+    try:
+        path_stat = os.lstat(path)
+    except OSError as error:
+        raise OpenEcologyEvidenceError(f"cannot inspect {field}") from error
+    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+        raise OpenEcologyEvidenceError(f"{field} must be a single-link regular file")
+    return _path_identity_from_stat(path_stat)
+
+
+def _directory_descriptor_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required):
+        raise OpenEcologyEvidenceError(
+            "descriptor-relative cleanup requires O_DIRECTORY and O_NOFOLLOW"
+        )
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_cleanup_parent(path: Path, *, field: str) -> tuple[int, os.stat_result]:
+    try:
+        descriptor = os.open(path, _directory_descriptor_flags())
+    except OSError as error:
+        raise OpenEcologyEvidenceError(
+            f"cannot safely open {field} directory"
+        ) from error
+    metadata = os.fstat(descriptor)
+    mode = stat.S_IMODE(metadata.st_mode)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or mode & 0o022
+    ):
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError(
+            f"{field} directory must be real, process-owned, and not "
+            "group/world-writable"
+        )
+    try:
+        current = os.lstat(path)
+    except OSError as error:
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError(
+            f"cannot revalidate {field} directory"
+        ) from error
+    if not stat.S_ISDIR(current.st_mode) or _path_identity_from_stat(
+        current
+    ) != _path_identity_from_stat(metadata):
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError(f"{field} directory namespace changed")
+    return descriptor, metadata
+
+
+def _open_cleanup_directory(
+    parent_descriptor: int,
+    *,
+    parent_metadata: os.stat_result,
+    create: bool,
+) -> tuple[int, os.stat_result] | None:
+    name = OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise OpenEcologyEvidenceError(
+                "cannot create evidence cleanup tombstone directory"
+            ) from error
+    try:
+        descriptor = os.open(
+            name,
+            _directory_descriptor_flags(),
+            dir_fd=parent_descriptor,
+        )
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise
+    except OSError as error:
+        raise OpenEcologyEvidenceError(
+            "cannot safely open evidence cleanup tombstone directory"
+        ) from error
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) not in {0o500, 0o700}
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != parent_metadata.st_dev
+    ):
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError(
+            "evidence cleanup tombstone directory authority is invalid"
+        )
+    try:
+        namespace_metadata = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError(
+            "cannot revalidate evidence cleanup tombstone namespace"
+        ) from error
+    if not stat.S_ISDIR(namespace_metadata.st_mode) or _path_identity_from_stat(
+        namespace_metadata
+    ) != _path_identity_from_stat(metadata):
+        os.close(descriptor)
+        raise OpenEcologyEvidenceError("evidence cleanup tombstone namespace changed")
+    return descriptor, metadata
+
+
+def _cleanup_slot_identity(name: str) -> _PathIdentity:
+    match = _CLEANUP_SLOT_RE.fullmatch(name)
+    if match is None:
+        raise OpenEcologyEvidenceError(
+            "evidence cleanup tombstone directory contains a surplus entry"
+        )
+    return _PathIdentity(
+        device=int(match.group("device"), 16),
+        inode=int(match.group("inode"), 16),
+    )
+
+
+def _validate_cleanup_slot_directory(
+    metadata: os.stat_result,
+    *,
+    cleanup_device: int,
+) -> None:
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) not in {0o500, 0o700}
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != cleanup_device
+    ):
+        raise OpenEcologyEvidenceError(
+            "evidence cleanup tombstone slot authority is invalid"
+        )
+
+
+def _open_cleanup_slot(
+    cleanup_descriptor: int,
+    *,
+    cleanup_metadata: os.stat_result,
+    expected_identity: _PathIdentity,
+) -> tuple[str, int, os.stat_result]:
+    for _attempt in range(128):
+        slot_name = (
+            f"file-d{expected_identity.device:x}-i{expected_identity.inode:x}-"
+            f"{secrets.token_hex(8)}"
+        )
+        try:
+            os.mkdir(slot_name, mode=0o700, dir_fd=cleanup_descriptor)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise OpenEcologyEvidenceError(
+                "cannot create evidence cleanup tombstone slot"
+            ) from error
+        try:
+            slot_descriptor = os.open(
+                slot_name,
+                _directory_descriptor_flags(),
+                dir_fd=cleanup_descriptor,
+            )
+        except OSError as error:
+            raise OpenEcologyEvidenceError(
+                "cannot safely open evidence cleanup tombstone slot"
+            ) from error
+        slot_metadata = os.fstat(slot_descriptor)
+        _validate_cleanup_slot_directory(
+            slot_metadata,
+            cleanup_device=cleanup_metadata.st_dev,
+        )
+        return slot_name, slot_descriptor, slot_metadata
+    raise OpenEcologyEvidenceError(
+        "cannot allocate a unique evidence cleanup tombstone slot"
+    )
+
+
+def _opened_cleanup_candidate_identity(
+    descriptor: int,
+    *,
+    expected_identity: _PathIdentity,
+    cleanup_device: int,
+    field: str,
+    allow_relocated_zero: bool = False,
+) -> os.stat_result:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != cleanup_device
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise OpenEcologyEvidenceError(
+            f"{field} changed before descriptor-bound truncation"
+        )
+    if _path_identity_from_stat(metadata) != expected_identity and not (
+        allow_relocated_zero and metadata.st_size == 0
+    ):
+        raise OpenEcologyEvidenceError(
+            f"{field} changed before descriptor-bound truncation"
+        )
+    return metadata
+
+
+def _reconcile_cleanup_directory_descriptor(
+    cleanup_descriptor: int,
+    *,
+    cleanup_metadata: os.stat_result,
+    max_tombstones: int,
+    repair: bool,
+) -> int:
+    names = sorted(os.listdir(cleanup_descriptor))
+    if len(names) > max_tombstones:
+        raise OpenEcologyEvidenceError("evidence cleanup tombstone limit exceeded")
+    for slot_name in names:
+        expected_identity = _cleanup_slot_identity(slot_name)
+        try:
+            slot_descriptor = os.open(
+                slot_name,
+                _directory_descriptor_flags(),
+                dir_fd=cleanup_descriptor,
+            )
+        except OSError as error:
+            raise OpenEcologyEvidenceError(
+                "cannot safely open evidence cleanup tombstone slot"
+            ) from error
+        try:
+            slot_metadata = os.fstat(slot_descriptor)
+            _validate_cleanup_slot_directory(
+                slot_metadata,
+                cleanup_device=cleanup_metadata.st_dev,
+            )
+            entries = os.listdir(slot_descriptor)
+            if not entries:
+                continue
+            if entries != ["candidate"]:
+                raise OpenEcologyEvidenceError(
+                    "evidence cleanup tombstone slot contains surplus entries"
+                )
+            flags = os.O_RDWR if repair else os.O_RDONLY
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                candidate_descriptor = os.open(
+                    "candidate",
+                    flags,
+                    dir_fd=slot_descriptor,
+                )
+            except OSError as error:
+                raise OpenEcologyEvidenceError(
+                    "cannot safely open evidence cleanup tombstone candidate"
+                ) from error
+            try:
+                candidate_metadata = _opened_cleanup_candidate_identity(
+                    candidate_descriptor,
+                    expected_identity=expected_identity,
+                    cleanup_device=cleanup_metadata.st_dev,
+                    field="evidence cleanup tombstone candidate",
+                    allow_relocated_zero=True,
+                )
+                if candidate_metadata.st_size:
+                    if not repair:
+                        raise OpenEcologyEvidenceError(
+                            "evidence cleanup tombstone candidate is not zero-byte"
+                        )
+                    os.ftruncate(candidate_descriptor, 0)
+                    os.fsync(candidate_descriptor)
+                final_metadata = _opened_cleanup_candidate_identity(
+                    candidate_descriptor,
+                    expected_identity=expected_identity,
+                    cleanup_device=cleanup_metadata.st_dev,
+                    field="evidence cleanup tombstone candidate",
+                    allow_relocated_zero=True,
+                )
+                if final_metadata.st_size != 0:
+                    raise OpenEcologyEvidenceError(
+                        "evidence cleanup tombstone truncation did not persist"
+                    )
+                named_metadata = os.stat(
+                    "candidate",
+                    dir_fd=slot_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    _path_identity_from_stat(named_metadata)
+                    != _path_identity_from_stat(final_metadata)
+                    or named_metadata.st_size != 0
+                ):
+                    raise OpenEcologyEvidenceError(
+                        "evidence cleanup tombstone candidate changed during cleanup"
+                    )
+            finally:
+                os.close(candidate_descriptor)
+            current_slot = os.stat(
+                slot_name,
+                dir_fd=cleanup_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(current_slot.st_mode) or _path_identity_from_stat(
+                current_slot
+            ) != _path_identity_from_stat(slot_metadata):
+                raise OpenEcologyEvidenceError(
+                    "evidence cleanup tombstone slot namespace changed"
+                )
+        finally:
+            os.close(slot_descriptor)
+    return len(names)
+
+
+def _reconcile_evidence_cleanup_tombstones(
+    directory: Path,
+    *,
+    max_tombstones: int,
+    repair: bool = True,
+) -> int:
+    _positive_int(max_tombstones, field="max_tombstones")
+    parent_descriptor, parent_metadata = _open_cleanup_parent(
+        directory,
+        field="evidence cleanup parent",
+    )
+    try:
+        opened = _open_cleanup_directory(
+            parent_descriptor,
+            parent_metadata=parent_metadata,
+            create=False,
+        )
+        if opened is None:
+            return 0
+        cleanup_descriptor, cleanup_metadata = opened
+        try:
+            count = _reconcile_cleanup_directory_descriptor(
+                cleanup_descriptor,
+                cleanup_metadata=cleanup_metadata,
+                max_tombstones=max_tombstones,
+                repair=repair,
+            )
+            current_cleanup = os.stat(
+                OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(current_cleanup.st_mode) or _path_identity_from_stat(
+                current_cleanup
+            ) != _path_identity_from_stat(cleanup_metadata):
+                raise OpenEcologyEvidenceError(
+                    "evidence cleanup tombstone namespace changed"
+                )
+            current_parent = os.lstat(directory)
+            if not stat.S_ISDIR(current_parent.st_mode) or _path_identity_from_stat(
+                current_parent
+            ) != _path_identity_from_stat(parent_metadata):
+                raise OpenEcologyEvidenceError(
+                    "evidence cleanup parent namespace changed"
+                )
+            return count
+        finally:
+            os.close(cleanup_descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+def _unlink_owned_regular_file(
+    path: Path,
+    *,
+    expected_identity: _PathIdentity,
+    field: str,
+    missing_ok: bool = False,
+    max_tombstones: int = (
+        RotatingEvidenceConfig().max_shards * _CLEANUP_TOMBSTONE_MULTIPLIER
+        + _CLEANUP_TOMBSTONE_RESERVE
+    ),
+) -> bool:
+    """Quarantine and descriptor-truncate exactly one previously owned inode."""
+
+    _positive_int(max_tombstones, field="max_tombstones")
+    parent_descriptor, parent_metadata = _open_cleanup_parent(
+        path.parent,
+        field=f"{field} parent",
+    )
+    try:
+        try:
+            observed = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            if missing_ok:
+                return False
+            raise
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or _path_identity_from_stat(observed) != expected_identity
+        ):
+            raise OpenEcologyEvidenceError(
+                f"{field} changed before cleanup; replacement preserved"
+            )
+        opened = _open_cleanup_directory(
+            parent_descriptor,
+            parent_metadata=parent_metadata,
+            create=True,
+        )
+        assert opened is not None
+        cleanup_descriptor, cleanup_metadata = opened
+        try:
+            count = _reconcile_cleanup_directory_descriptor(
+                cleanup_descriptor,
+                cleanup_metadata=cleanup_metadata,
+                max_tombstones=max_tombstones,
+                repair=True,
+            )
+            if count >= max_tombstones:
+                raise OpenEcologyEvidenceError(
+                    "evidence cleanup tombstone limit reached"
+                )
+            slot_name, slot_descriptor, slot_metadata = _open_cleanup_slot(
+                cleanup_descriptor,
+                cleanup_metadata=cleanup_metadata,
+                expected_identity=expected_identity,
+            )
+            try:
+                if os.listdir(slot_descriptor):
+                    raise OpenEcologyEvidenceError(
+                        "new evidence cleanup tombstone slot is not empty"
+                    )
+                current = os.stat(
+                    path.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or current.st_nlink != 1
+                    or _path_identity_from_stat(current) != expected_identity
+                ):
+                    raise OpenEcologyEvidenceError(
+                        f"{field} changed before cleanup; replacement preserved"
+                    )
+                try:
+                    os.rename(
+                        path.name,
+                        "candidate",
+                        src_dir_fd=parent_descriptor,
+                        dst_dir_fd=slot_descriptor,
+                    )
+                except FileNotFoundError:
+                    if missing_ok:
+                        return False
+                    raise
+                flags = (
+                    os.O_RDWR
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                candidate_descriptor = os.open(
+                    "candidate",
+                    flags,
+                    dir_fd=slot_descriptor,
+                )
+                try:
+                    _opened_cleanup_candidate_identity(
+                        candidate_descriptor,
+                        expected_identity=expected_identity,
+                        cleanup_device=cleanup_metadata.st_dev,
+                        field=f"{field} quarantine candidate",
+                    )
+                    os.ftruncate(candidate_descriptor, 0)
+                    os.fsync(candidate_descriptor)
+                    final_metadata = _opened_cleanup_candidate_identity(
+                        candidate_descriptor,
+                        expected_identity=expected_identity,
+                        cleanup_device=cleanup_metadata.st_dev,
+                        field=f"{field} quarantine candidate",
+                    )
+                    if final_metadata.st_size != 0:
+                        raise OpenEcologyEvidenceError(
+                            f"{field} descriptor-bound truncation failed"
+                        )
+                    named_metadata = os.stat(
+                        "candidate",
+                        dir_fd=slot_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        _path_identity_from_stat(named_metadata) != expected_identity
+                        or named_metadata.st_size != 0
+                    ):
+                        raise OpenEcologyEvidenceError(
+                            f"{field} changed during cleanup; replacement preserved"
+                        )
+                finally:
+                    os.close(candidate_descriptor)
+                current_slot = os.stat(
+                    slot_name,
+                    dir_fd=cleanup_descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISDIR(current_slot.st_mode) or _path_identity_from_stat(
+                    current_slot
+                ) != _path_identity_from_stat(slot_metadata):
+                    raise OpenEcologyEvidenceError(
+                        f"{field} cleanup slot namespace changed"
+                    )
+                current_cleanup = os.stat(
+                    OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISDIR(
+                    current_cleanup.st_mode
+                ) or _path_identity_from_stat(
+                    current_cleanup
+                ) != _path_identity_from_stat(cleanup_metadata):
+                    raise OpenEcologyEvidenceError(f"{field} cleanup namespace changed")
+                current_parent = os.lstat(path.parent)
+                if not stat.S_ISDIR(current_parent.st_mode) or _path_identity_from_stat(
+                    current_parent
+                ) != _path_identity_from_stat(parent_metadata):
+                    raise OpenEcologyEvidenceError(f"{field} parent namespace changed")
+                _fsync_directory_descriptor_best_effort(slot_descriptor)
+                _fsync_directory_descriptor_best_effort(cleanup_descriptor)
+                _fsync_directory_descriptor_best_effort(parent_descriptor)
+                return True
+            finally:
+                os.close(slot_descriptor)
+        finally:
+            os.close(cleanup_descriptor)
+    finally:
+        os.close(parent_descriptor)
 
 
 def _bounded_gzip_decompress(data: bytes, *, max_bytes: int) -> bytes:
@@ -2622,9 +3750,24 @@ def _deterministic_gzip_bytes(data: bytes, *, compresslevel: int) -> bytes:
     return buffer.getvalue()
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _atomic_write(
+    path: Path,
+    data: bytes,
+    *,
+    max_cleanup_tombstones: int = (
+        RotatingEvidenceConfig().max_shards * _CLEANUP_TOMBSTONE_MULTIPLIER
+        + _CLEANUP_TOMBSTONE_RESERVE
+    ),
+) -> _PathIdentity:
+    try:
+        ensure_real_directory_tree(
+            path.parent,
+            field="atomic-write parent directory",
+        )
+    except CampaignStorageError as error:
+        raise OpenEcologyEvidenceError(str(error)) from error
     temp_path: Path | None = None
+    temp_identity: _PathIdentity | None = None
     try:
         with NamedTemporaryFile(
             "wb",
@@ -2634,15 +3777,23 @@ def _atomic_write(path: Path, data: bytes) -> None:
             delete=False,
         ) as handle:
             temp_path = Path(handle.name)
+            temp_identity = _path_identity_from_stat(os.fstat(handle.fileno()))
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
         temp_path = None
         _fsync_directory_best_effort(path.parent)
+        return temp_identity
     finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
+        if temp_path is not None and temp_identity is not None:
+            _unlink_owned_regular_file(
+                temp_path,
+                expected_identity=temp_identity,
+                field="atomic-write temp",
+                missing_ok=True,
+                max_tombstones=max_cleanup_tombstones,
+            )
 
 
 def _fsync_directory_best_effort(path: Path) -> None:
@@ -2656,3 +3807,10 @@ def _fsync_directory_best_effort(path: Path) -> None:
         pass
     finally:
         os.close(directory_fd)
+
+
+def _fsync_directory_descriptor_best_effort(descriptor: int) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass

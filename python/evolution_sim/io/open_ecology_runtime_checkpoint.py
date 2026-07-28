@@ -1266,7 +1266,7 @@ def _validated_persistent_runner_state(
             "persistent runner-state digest mismatch"
         )
 
-    observed_tick = _positive_int(
+    observed_tick = _nonnegative_int(
         cloned["observed_tick"],
         field="runner_state.observed_tick",
     )
@@ -1274,7 +1274,11 @@ def _validated_persistent_runner_state(
         cloned["completed_world_tick"],
         field="runner_state.completed_world_tick",
     )
-    if completed_tick != binding.completed_tick or observed_tick != completed_tick + 1:
+    genesis_boundary = observed_tick == 0 and completed_tick == 0
+    completed_boundary = observed_tick > 0 and observed_tick == completed_tick + 1
+    if completed_tick != binding.completed_tick or not (
+        genesis_boundary or completed_boundary
+    ):
         raise OpenEcologyRuntimeCheckpointError(
             "persistent runner-state tick boundary does not match checkpoint"
         )

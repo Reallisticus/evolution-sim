@@ -5,18 +5,36 @@ import json
 import unittest
 
 from evolution_sim.mind.open_ecology_seed_registry import (
+    OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT,
+    OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES,
+    OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
     OPEN_ECOLOGY_CANONICAL_SHA256,
     OPEN_ECOLOGY_EXPECTED_FIRST_GENOME_STREAM_SEEDS,
     OPEN_ECOLOGY_EXPECTED_LEARNER_SEEDS,
     OPEN_ECOLOGY_GENERATED_SHA256,
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+    OPEN_ECOLOGY_PHASE_B_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_B_BENCHMARK_MODEL_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_D_BENCHMARK_ENVIRONMENT_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_D_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_PHASE_D_BENCHMARK_MODEL_SEED_INDEX,
     OPEN_ECOLOGY_SEED_REGISTRY,
     OPEN_ECOLOGY_SEED_REGISTRY_NAMESPACE,
     OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
     OPEN_ECOLOGY_SEED_ROLE_COUNTS,
     OPEN_ECOLOGY_SEED_ROLE_POLICIES,
+    OPEN_ECOLOGY_SELECTION_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+    OPEN_ECOLOGY_SELECTION_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_SELECTION_BENCHMARK_MODEL_SEED_INDEX,
     OPEN_ECOLOGY_UNAVAILABLE_ROLES,
     OpenEcologySeedRegistryError,
     build_open_ecology_seed_registry,
+    open_ecology_operational_benchmark_seed_contract,
     open_ecology_seed_registry_contract,
     open_ecology_seed_registry_json,
     open_ecology_seed_registry_payload,
@@ -34,7 +52,7 @@ class OpenEcologySeedRegistryTests(unittest.TestCase):
     def test_registry_is_pinned_fresh_and_has_declared_axes(self) -> None:
         self.assertEqual(
             OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
-            "mind_v3_open_ecology_development_seed_registry_v2",
+            "mind_v3_open_ecology_development_seed_registry_v4",
         )
         self.assertEqual(
             OPEN_ECOLOGY_SEED_REGISTRY_NAMESPACE,
@@ -89,6 +107,85 @@ class OpenEcologySeedRegistryTests(unittest.TestCase):
         self.assertTrue(all(1 <= seed <= 2_147_483_647 for seed in public_values))
         self.assertEqual(len(genome_values), len(set(genome_values)))
         self.assertTrue(all(2**63 <= seed <= 2**64 - 1 for seed in genome_values))
+
+    def test_benchmark_role_reserves_explicit_operational_subaxes(self) -> None:
+        policy = OPEN_ECOLOGY_SEED_ROLE_POLICIES[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE]
+        self.assertEqual(
+            policy.axis,
+            "operational_benchmark_environment_model_and_genome",
+        )
+        self.assertFalse(policy.may_tune_configuration)
+        self.assertFalse(policy.promotion_evidence)
+        self.assertEqual(OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT, 16)
+        self.assertEqual(OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX, 16)
+        self.assertEqual(OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX, 17)
+        self.assertEqual(
+            OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+            tuple(range(0, 16)),
+        )
+        self.assertEqual(OPEN_ECOLOGY_PHASE_A_BENCHMARK_MODEL_SEED_INDEX, 16)
+        self.assertEqual(OPEN_ECOLOGY_PHASE_A_BENCHMARK_GENOME_STREAM_SEED_INDEX, 17)
+        self.assertEqual(
+            OPEN_ECOLOGY_PHASE_B_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+            tuple(range(18, 34)),
+        )
+        self.assertEqual(OPEN_ECOLOGY_PHASE_B_BENCHMARK_MODEL_SEED_INDEX, 34)
+        self.assertEqual(OPEN_ECOLOGY_PHASE_B_BENCHMARK_GENOME_STREAM_SEED_INDEX, 35)
+        self.assertEqual(
+            OPEN_ECOLOGY_SELECTION_BENCHMARK_ENVIRONMENT_SEED_INDICES,
+            tuple(range(36, 40)),
+        )
+        self.assertEqual(OPEN_ECOLOGY_SELECTION_BENCHMARK_MODEL_SEED_INDEX, 40)
+        self.assertEqual(
+            OPEN_ECOLOGY_SELECTION_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+            41,
+        )
+        self.assertEqual(OPEN_ECOLOGY_PHASE_D_BENCHMARK_ENVIRONMENT_SEED_INDEX, 42)
+        self.assertEqual(OPEN_ECOLOGY_PHASE_D_BENCHMARK_MODEL_SEED_INDEX, 43)
+        self.assertEqual(
+            OPEN_ECOLOGY_PHASE_D_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+            44,
+        )
+        self.assertEqual(
+            OPEN_ECOLOGY_BENCHMARK_RESERVED_SEED_INDICES,
+            tuple(range(45, 64)),
+        )
+        allocation = open_ecology_operational_benchmark_seed_contract()
+        assigned_indices = [
+            *allocation["phase_a_training"]["environment_seed_indices"],
+            allocation["phase_a_training"]["model_initialization_seed_index"],
+            allocation["phase_a_training"]["genome_stream_seed_index"],
+            *allocation["phase_b_training"]["environment_seed_indices"],
+            allocation["phase_b_training"]["model_initialization_seed_index"],
+            allocation["phase_b_training"]["genome_stream_seed_index"],
+            *allocation["selection"]["environment_seed_indices"],
+            allocation["selection"]["model_initialization_seed_index"],
+            allocation["selection"]["genome_stream_seed_index"],
+            *allocation["phase_d_throughput"]["environment_seed_indices"],
+            allocation["phase_d_throughput"]["model_initialization_seed_index"],
+            allocation["phase_d_throughput"]["genome_stream_seed_index"],
+        ]
+        self.assertEqual(len(assigned_indices), len(set(assigned_indices)))
+        self.assertEqual(
+            set(assigned_indices).union(allocation["reserved_seed_indices"]),
+            set(range(64)),
+        )
+        self.assertEqual(allocation["scientific_seed_roles_accessed"], [])
+        benchmark_values = {
+            OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE][index]
+            for index in assigned_indices
+        }
+        scientific_values = {
+            seed
+            for role, values in OPEN_ECOLOGY_SEED_REGISTRY.items()
+            if role
+            not in {
+                OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+                "open_ecology_proof",
+            }
+            for seed in values
+        }
+        self.assertTrue(benchmark_values.isdisjoint(scientific_values))
 
     def test_generation_returns_copies_and_validator_rejects_drift(self) -> None:
         first = build_open_ecology_seed_registry()

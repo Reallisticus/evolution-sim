@@ -1,4 +1,4 @@
-# Artifact storage and verified pruning
+# Artifact storage and verified archival
 
 Generated simulator evidence is intentionally ignored by Git. Git preserves the
 source and experiment contract; an object store preserves large reports,
@@ -23,21 +23,29 @@ cleanup. It:
 3. writes a stable, path-sorted SHA256 manifest for every regular file;
 4. creates a normalized, deterministic `tar.zst` with stable tar metadata;
 5. tests the local zstd stream and rescans the input for drift;
-6. uploads the archive, manifest, and archive-SHA sidecar as three immutable
-   objects;
+6. captures the exact identity, metadata, size, and SHA-256 of each local
+   evidence object, then uploads through an already-open file descriptor rather
+   than reopening a mutable pathname;
 7. streams every remote object back through SHA256 and compares it with the
-   local bytes;
-8. prunes only when `--prune-after-verify` was explicitly supplied and every
-   verification passed.
+   originally captured local digest and size;
+8. never deletes or prunes local inputs or partially written evidence.
 
-Pruning removes only entries in the verified manifest and leaves the named
-input directory itself in place. A new or changed file blocks pruning. Remote
-failure, hash disagreement, source drift, unsupported filesystem entries, or
-missing tools all fail closed.
+Remote failure, hash disagreement, local identity drift, source drift,
+unsupported filesystem entries, or missing tools all fail closed. Failed
+exclusive writes can leave a non-authoritative local object behind; the tool
+does not remove it by pathname because a stat-then-unlink cleanup can delete a
+racing replacement. No success receipt is emitted for such an object, and the
+same immutable name cannot be reused.
 
-Quiesce every process that can write to the input before requesting pruning.
-The tool rescans for drift and will stop when it observes a change, but pruning
-is not a substitute for coordinating active simulator or viewer writers.
+`--prune-after-verify` is retained only as a fail-closed compatibility
+sentinel. It always stops before archival. Remove local source data only as a
+separate, explicitly reviewed offline operation after checking the remote
+archive, manifest, and SHA sidecar.
+
+This generic command is retained for maintenance and historical evidence only.
+It is not an authorized open-ecology campaign publication route and cannot
+produce the sealed campaign receipt. Production open-ecology archival must use
+`scripts/archive_open_ecology_campaign.py`.
 
 ## Operating modes
 
@@ -68,7 +76,7 @@ python3 scripts/archive_evolution_outputs.py \
   --archive-name 20260727T120000Z-evolution-output.tar.zst
 ```
 
-Prune the exact input contents only after all remote verification gates:
+Requests for automatic pruning are rejected:
 
 ```bash
 python3 scripts/archive_evolution_outputs.py \
@@ -77,6 +85,8 @@ python3 scripts/archive_evolution_outputs.py \
   --archive-name 20260727T120000Z-evolution-output.tar.zst \
   --prune-after-verify
 ```
+
+The command above exits nonzero without writing, uploading, or deleting.
 
 Use `--remote REMOTE:ROOT` and `--remote-subdir PATH` to select another
 pre-existing rclone directory. The defaults are
@@ -87,21 +97,31 @@ for the compressed archive but never another uncompressed copy. When the Mac is
 critically full, first remove only already-verified expanded backup copies or
 place `--output-dir` on another volume.
 
-## Stream a GPU-host campaign without using Mac staging space
+## Deprecated legacy GPU-host streaming example
 
-For campaigns generated on `gpu4070`, keep the expanded evidence and temporary
-compressed archive on the server's NVMe. The coordinator can invoke the same
-deterministic archiver remotely and pipe each resulting object directly from
-SSH stdout into rclone stdin:
+`scripts/stream_remote_evolution_archive.py` is not authorized for new
+open-ecology campaigns because it predates the sealed tool/endpoint authority,
+closed-bundle gate, exact Drive inventory, and immutable receipt. The command
+below is retained only to explain historical archives; do not use it for a new
+campaign:
 
 ```bash
 python3 scripts/stream_remote_evolution_archive.py \
-  --ssh-target gpu4070 \
-  --remote-repository-root /home/train/evolution-sim-open-ecology-checkouts/COMMIT \
-  --remote-input-dir /home/train/evolution-sim-open-ecology-runs/CAMPAIGN \
-  --remote-staging-dir /home/train/evolution-sim-open-ecology-archives \
+  --ssh-target "$TRAINER_SSH_TARGET" \
+  --remote-repository-root "$REMOTE_REPOSITORY_ROOT" \
+  --remote-input-dir "$REMOTE_CAMPAIGN_ROOT" \
+  --remote-staging-dir "$REMOTE_ARCHIVE_STAGING_ROOT" \
   --archive-name YYYYMMDDTHHMMSSZ-CAMPAIGN.tar.zst
 ```
+
+The authoritative open-ecology route is
+`scripts/archive_open_ecology_campaign.py`, not the older generic streaming
+example above. It requires the separately SHA-sealed executable/endpoint/helper
+authority described in `docs/open-ecology-campaign-storage-gate.md`, streams
+each of the three objects directly from the compute host to Drive, reads every
+byte back, performs the independent three-row `rclone check`, and writes only a
+small receipt on the Mac. No archive payload is staged on the Mac and this
+route contains no deletion or pruning operation.
 
 This path does not put archive payload bytes on the Mac filesystem. It first
 creates and validates the deterministic archive on the server, refuses any
@@ -117,7 +137,7 @@ explicitly scoped server cleanup. This separation ensures a transfer bug can
 never silently turn into source deletion.
 
 The path was exercised from clean source commit
-`563604b1f77db0103ada5416df690d53fc7599d0` on `gpu4070`. The remote test
+`563604b1f77db0103ada5416df690d53fc7599d0` on a privately configured trainer. The remote test
 archive was streamed directly to Drive and read back with matching SHA256
 `80ea6479d0aef58abe08f185969fd507f8d822d7df4457d8d6de3c783f5d1e32`;
 the manifest and sidecar also matched their independently computed source
@@ -130,7 +150,7 @@ Download all three objects into a new empty directory:
 ```bash
 rclone copy \
   gdrive:evolution-sim-backups/archives/20260727T120000Z-evolution-output.tar.zst \
-  /Users/njm/evolution-sim-restore/
+  /absolute/restore/directory/
 rclone copy \
   gdrive:evolution-sim-backups/archives/20260727T120000Z-evolution-output.tar.zst.manifest.json \
   /Users/njm/evolution-sim-restore/

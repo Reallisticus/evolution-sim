@@ -31,17 +31,20 @@ acceptance. It is an observation record, not a promotion gate.
 
 Every mutating call first acquires a persistent per-task exclusive lock, so two
 processes cannot advance the same island from competing in-memory frontiers.
-World ticks and evidence mutation then hold the campaign lock in shared mode:
-independent H/Z/R/island tasks can execute simultaneously, while a campaign
-storage scan cannot observe a moving tree. At each quiescent 5,000-tick
-boundary, and again before an advancing call returns if it stopped between
-scheduled boundaries, the task seals the active evidence shard under that
-shared lease, releases it, and takes the campaign lock exclusively. It then
-captures all seven real runtime components: world state, environment RNG,
+World ticks, evidence mutation, and task-local checkpoint publication then hold
+the campaign epoch lock in shared mode: independent H/Z/R/island tasks can
+execute and publish simultaneously, while a campaign storage scan cannot
+observe a moving tree. At each quiescent 5,000-tick boundary, and again before
+an advancing call returns if it stopped between scheduled boundaries, the task
+seals the active evidence shard and, while retaining its per-task exclusive
+lock, captures all seven real runtime components: world state, environment RNG,
 frozen recurrent state, prior public feedback/history, sampling RNG, genome
-population, and the exact evidence-writer continuation. The exclusive boundary
-serializes checkpoint and aggregate publication and excludes a campaign scan
-until `CURRENT` matches the returned in-memory frontier.
+population, and the exact evidence-writer continuation. Each task has its own
+checkpoint destination, aggregate writer lock, immutable generation sequence,
+and atomic `CURRENT`, so publication does not need a campaign-wide exclusive
+critical section. The shared campaign lease excludes a storage scan until each
+task's `CURRENT` matches its returned in-memory frontier, while the per-task
+lock continues to exclude competing publications for the same island.
 The same atomic JSON container also binds the immutable task, source, world and
 writer configuration, all seed identities, artifact/model digests, and the
 runner's interval counters, summaries, milestone records, event cursor, and
@@ -65,7 +68,12 @@ container write, readback validation, aggregate publication, and the complete
 checkpoint pipeline. These measurements are deliberately outside the
 deterministic checkpoint payload; the exact-source throughput gate can
 attribute serialization cost without making wall-clock noise part of replay
-identity.
+identity. The same profile records the concurrency contract: per-task
+exclusive, campaign-epoch shared, and storage-barrier exclusive. Its frontier
+latency model is the slowest task publication rather than the sum of all task
+publications. This removes the known global serialization blocker but does not
+prejudge filesystem contention or satisfy the still-required exact-source
+throughput gate.
 
 `PersistentIslandRunner.restore_from_current` requires externally retained
 aggregate resume pins, validates `CURRENT`, its immutable generation,
@@ -75,9 +83,12 @@ components without re-emitting founders or reseeding. A lower-level loose
 checkpoint restore remains available for inspection, but only the pinned
 aggregate path carries continuation authority. The next call resumes the
 hash-chained evidence writer from the captured prefix and extends the aggregate
-chain. The seven-adapter and aggregate-publication blockers are therefore
-removed; a repeatable interval storage check and the exact-source Phase-D
-throughput gate remain launch blockers.
+chain. Because the campaign epoch lock is an external sibling of the campaign
+root, restoration also initializes or validates that lock under its exact
+campaign/source identity; copying a campaign root cannot silently omit the lock
+needed by the resumed worker. The seven-adapter and aggregate-publication
+blockers are therefore removed; a repeatable interval storage check and the
+exact-source Phase-D throughput gate remain launch blockers.
 
 The remaining storage gate is intentionally coordinator-owned.
 `campaign_barrier_frontier()` returns only while the task lock is held, the
@@ -96,27 +107,38 @@ advance during the scan therefore fails closed. The context deliberately does
 not claim to validate cross-task seed roles or completeness; those are
 coordinator gates.
 
-There is necessarily a release/acquire handoff between a worker's shared tick
-lease and its exclusive publication lease. That handoff is not a scan
-authorization. A scan is authorized only after all workers returned from
-`advance_to`, their live frontier receipts were reread, and the exclusive
-barrier successfully acquired all listed task locks. Per-runner scanning would
-hash the same growing tree dozens of times, while reusing the first island's
-scan would incorrectly bless files written by later islands. The runner now
-advertises `OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED=True` because
-hostile tests prove independent shared advances and exclusive publication; it
-keeps `campaign_storage_interval_check_not_integrated` truthful until the
-coordinator persists the global scan receipt and schedules the next frontier
-only after that receipt.
+A scan is authorized only after all workers returned from `advance_to`, their
+live frontier receipts were reread, and the exclusive campaign barrier
+successfully acquired all listed task locks. The barrier uses nonblocking lock
+acquisition. Workers acquire task-exclusive then campaign-shared; the barrier
+acquires campaign-exclusive then task-exclusive. This cannot deadlock: either
+an active shared publisher rejects the barrier, or a barrier that wins the
+campaign lock makes a worker's nonblocking shared acquisition fail and unwind
+its task lock; if the barrier reaches that task first, its own nonblocking
+attempt fails and releases the campaign lock rather than waiting in a cycle.
+Per-runner scanning would hash the same growing tree dozens of times, while
+reusing the first island's scan would incorrectly bless files written by later
+islands. The runner advertises
+both `OPEN_ECOLOGY_PARALLEL_CAMPAIGN_ADVANCE_AUTHORIZED=True` and
+`OPEN_ECOLOGY_PARALLEL_CHECKPOINT_PUBLICATION_AUTHORIZED=True` because hostile
+tests prove independent shared advances and two simultaneously held,
+distinct-task publication hooks. It keeps
+`campaign_storage_interval_check_not_integrated` truthful until the coordinator
+persists the global scan receipt and schedules the next frontier only after that
+receipt.
 
 The focused test uses a real serialized width-256 frozen artifact and real
 64-agent worlds. In addition to task order, treatment state, frozen weights,
 lock exclusion, evidence accounting, and terminal extinction, it forces two
 distinct tasks to block inside `_run_tick` simultaneously while an exclusive
 scan is rejected, rejects a duplicate same-task advance, and holds two
-checkpoint publications against each other to prove a maximum concurrency of
-one. It also forks each of H, Z, and R from a real disk checkpoint into a
-freshly constructed runner.
+checkpoint publications at deterministic barriers to prove both overlap and
+scan exclusion without comparing wall-clock timings. The same hook proves a
+second publication for one task remains excluded. A publication-failure case
+also proves that the prior atomic `CURRENT` bytes and exact resume pins remain
+loadable. The aggregate layer separately injects crashes during generation and
+pointer publication. The runner test also forks each of H, Z, and R from a real
+disk checkpoint into a freshly constructed runner.
 Uninterrupted and restored branches must then match in requested/resolved
 behavior, world and RNG state, recurrent/public-feedback state, genome
 population, summaries, event counts, and final evidence manifests. The test

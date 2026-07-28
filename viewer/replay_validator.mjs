@@ -59,6 +59,18 @@ import {
 
 export { REQUIRED_AGENT_FIELDS } from "./contracts.generated.mjs";
 
+export function validateTrajectoryContractForEvidence(trajectory) {
+  const validation = validateTrajectory(trajectory);
+  return {
+    actionOrdering: trajectory.action_contract.actions.map((spec) => spec.key),
+    communicationTokenCount:
+      trajectory.action_contract.communication.token_count,
+    communicationProfilesPerToken:
+      trajectory.action_contract.communication.profiles_per_token,
+    tokenizedCommunication: validation.tokenizedCommunication,
+  };
+}
+
 export function validateReplayPayload(payload) {
   assertObject(payload, "Replay payload");
   assertObject(payload.summary, "Replay summary");

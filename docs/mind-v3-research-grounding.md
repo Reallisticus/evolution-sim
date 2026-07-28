@@ -36,9 +36,9 @@ Historical campaign evidence must be reused rather than rediscovered:
 - v196 established that coverage and abstention must be reported directly
   before another training slice is considered.
 
-The remote `gpu4070` path must remain hygienic. The default checkout was dirty
-and stale when inspected, so training must not run there. Use a clean remote
-checkout such as `/home/train/Projects/evolution-sim-clean-v197` only after
+The privately configured remote-trainer path must remain hygienic. The default
+checkout was dirty and stale when inspected, so training must not run there.
+Use a separate clean remote checkout from private configuration only after
 verifying git status, commit, CUDA visibility, Python/Torch versions, and the
 exact source/artifact digests required by the route.
 

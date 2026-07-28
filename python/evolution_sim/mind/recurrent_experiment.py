@@ -20,7 +20,12 @@ from evolution_sim.mind.evaluation_harness import (
     _fixture_world,
 )
 from evolution_sim.mind.open_ecology_seed_registry import (
+    OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT,
+    OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
     OPEN_ECOLOGY_CANONICAL_SHA256,
+    OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES,
     OPEN_ECOLOGY_SEED_REGISTRY,
     OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
 )
@@ -62,6 +67,7 @@ from evolution_sim.mind.recurrent_ppo import (
 from evolution_sim.mind.recurrent_rollout import (
     MAX_RECURRENT_GENOME_STREAM_SEED,
     MAX_RECURRENT_POLICY_SAMPLING_SEED,
+    RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION,
     RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
     RECURRENT_GENOME_CONDITIONING_DISABLED,
     OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
@@ -134,10 +140,20 @@ OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION = (
 OPEN_ECOLOGY_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_v3_open_ecology_training_seed_provenance_v1"
 )
+OPEN_ECOLOGY_BENCHMARK_SEED_PROVENANCE_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_benchmark_seed_provenance_v1"
+)
 OPEN_ECOLOGY_POLICY_SAMPLING_TASK_IDENTITY_VERSION = (
     "mind_v3_open_ecology_ippo_training_schedule_task_v1"
 )
 OPEN_ECOLOGY_TRAINING_SEED_ROLE = "open_ecology_train"
+OPEN_ECOLOGY_BENCHMARK_TASK_IDENTITY_VERSION = (
+    "mind_v3_open_ecology_operational_benchmark_task_v1"
+)
+OPEN_ECOLOGY_PROOF_SEED_ROLE = "open_ecology_proof"
+OPEN_ECOLOGY_PROOF_TASK_IDENTITY_VERSION = (
+    "mind_v3_open_ecology_engineering_proof_task_v1"
+)
 OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES: tuple[int, ...] = (32, 64, 128, 256)
 OPEN_ECOLOGY_PHASE_A = "phase_a"
 OPEN_ECOLOGY_PHASE_B = "phase_b"
@@ -180,6 +196,7 @@ _ROLLOUT_SUMMARY_KEYS = frozenset(
         "policy_sampling_seed",
         "policy_sampling_seed_namespace",
         "rollout_ticks",
+        "terminal_bootstrap",
         "summary",
     }
 )
@@ -458,12 +475,32 @@ class RecurrentRolloutTask:
         )
         expected_seed_role = self.seed_role or legacy_seed_role
         open_ecology_task = isinstance(self, OpenEcologyRolloutTask)
+        open_ecology_proof_task = isinstance(
+            self,
+            OpenEcologyProofRolloutTask,
+        )
+        open_ecology_benchmark_task = isinstance(
+            self,
+            OpenEcologyBenchmarkRolloutTask,
+        )
         if expected_seed_role not in {
             legacy_seed_role,
             scale_seed_role,
             scale_v2_seed_role,
             *(
-                (OPEN_ECOLOGY_TRAINING_SEED_ROLE,)
+                (
+                    OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+                    *(
+                        (OPEN_ECOLOGY_PROOF_SEED_ROLE,)
+                        if open_ecology_proof_task
+                        else ()
+                    ),
+                    *(
+                        (OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,)
+                        if open_ecology_benchmark_task
+                        else ()
+                    ),
+                )
                 if self.scenario == RECURRENT_BROAD_SCENARIO and open_ecology_task
                 else ()
             ),
@@ -471,7 +508,11 @@ class RecurrentRolloutTask:
             raise RecurrentExperimentError(
                 "rollout task seed_role does not match its training scenario"
             )
-        if expected_seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE:
+        if expected_seed_role in {
+            OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+            OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+            OPEN_ECOLOGY_PROOF_SEED_ROLE,
+        }:
             seed_registry = OPEN_ECOLOGY_SEED_REGISTRY
         elif expected_seed_role == legacy_seed_role:
             seed_registry = RECURRENT_SEED_REGISTRY
@@ -655,6 +696,193 @@ class OpenEcologyRolloutTask(RecurrentRolloutTask):
             "world_index": self.open_ecology_world_index,
             "treatment": self.open_ecology_treatment.as_contract(),
         }
+
+
+def _open_ecology_proof_policy_sampling_identity(
+    *,
+    environment_seed_index: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"{OPEN_ECOLOGY_PROOF_TASK_IDENTITY_VERSION}|"
+        f"registry={OPEN_ECOLOGY_CANONICAL_SHA256}|"
+        f"role={OPEN_ECOLOGY_PROOF_SEED_ROLE}|"
+        f"model_seed_index=00|genome_stream_seed_index=01|"
+        f"environment_seed_index={environment_seed_index:02d}|"
+        f"world={environment_seed_index:02d}|"
+        f"initial_agents={initial_agents}"
+    )
+
+
+def _open_ecology_proof_task_id(
+    *,
+    environment_seed_index: int,
+    environment_seed: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"open-ecology-proof-world-{environment_seed_index:02d}-"
+        f"seed-{environment_seed}-density-{initial_agents}"
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenEcologyProofRolloutTask(OpenEcologyRolloutTask):
+    """Production open-ecology path bound only to engineering proof seeds."""
+
+    def __post_init__(self) -> None:
+        RecurrentRolloutTask.__post_init__(self)
+        proof_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_PROOF_SEED_ROLE]
+        environment_index = _nonnegative_int(
+            self.open_ecology_environment_seed_index,
+            field="open_ecology proof environment_seed_index",
+        )
+        genome_index = _nonnegative_int(
+            self.open_ecology_genome_stream_seed_index,
+            field="open_ecology proof genome_stream_seed_index",
+        )
+        if (
+            self.scenario != RECURRENT_BROAD_SCENARIO
+            or self.seed_role != OPEN_ECOLOGY_PROOF_SEED_ROLE
+            or environment_index >= len(proof_seeds)
+            or self.environment_seed != proof_seeds[environment_index]
+            or self.open_ecology_learner_seed != proof_seeds[0]
+            or genome_index != 1
+            or self.genome_stream_seed != proof_seeds[genome_index]
+            or self.genome_population_mode
+            != RecurrentGenomePopulationMode.HERITABLE.value
+            or self.open_ecology_training_phase != OPEN_ECOLOGY_PHASE_A
+            or self.open_ecology_update_index != 0
+            or self.open_ecology_world_index != environment_index
+            or self.open_ecology_treatment.initial_agents
+            != OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE[0]
+            or self.open_ecology_treatment.max_agents != OPEN_ECOLOGY_MAX_AGENTS
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology proof task is detached from its proof-only contract"
+            )
+        expected_identity = _open_ecology_proof_policy_sampling_identity(
+            environment_seed_index=environment_index,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.policy_sampling_identity != expected_identity:
+            raise RecurrentExperimentError(
+                "open-ecology proof task policy identity drifted"
+            )
+        expected_task_id = _open_ecology_proof_task_id(
+            environment_seed_index=environment_index,
+            environment_seed=self.environment_seed,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.task_id != expected_task_id:
+            raise RecurrentExperimentError("open-ecology proof task_id drifted")
+
+
+def _open_ecology_benchmark_policy_sampling_identity(
+    *,
+    genome_population_mode: str,
+    update_index: int,
+    world_index: int,
+    environment_seed_index: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"{OPEN_ECOLOGY_BENCHMARK_TASK_IDENTITY_VERSION}|"
+        f"registry={OPEN_ECOLOGY_CANONICAL_SHA256}|"
+        f"role={OPEN_ECOLOGY_BENCHMARK_SEED_ROLE}|"
+        f"model_seed_index={OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX:02d}|"
+        "genome_stream_seed_index="
+        f"{OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX:02d}|"
+        f"genome_mode={genome_population_mode}|phase={OPEN_ECOLOGY_PHASE_A}|"
+        f"update={update_index:04d}|world={world_index:06d}|"
+        f"environment_seed_index={environment_seed_index:02d}|"
+        f"initial_agents={initial_agents}"
+    )
+
+
+def _open_ecology_benchmark_task_id(
+    *,
+    genome_population_mode: str,
+    update_index: int,
+    world_index: int,
+    environment_seed_index: int,
+    environment_seed: int,
+    initial_agents: int,
+) -> str:
+    return (
+        f"open-ecology-benchmark-{genome_population_mode}-"
+        f"update-{update_index:04d}-world-{world_index:06d}-"
+        f"environment-{environment_seed_index:02d}-seed-{environment_seed}-"
+        f"density-{initial_agents}"
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenEcologyBenchmarkRolloutTask(OpenEcologyRolloutTask):
+    """Production open-ecology path bound only to operational benchmark seeds."""
+
+    def __post_init__(self) -> None:
+        RecurrentRolloutTask.__post_init__(self)
+        benchmark_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE]
+        environment_index = _nonnegative_int(
+            self.open_ecology_environment_seed_index,
+            field="open_ecology benchmark environment_seed_index",
+        )
+        update_index = _nonnegative_int(
+            self.open_ecology_update_index,
+            field="open_ecology benchmark update_index",
+        )
+        world_index = _nonnegative_int(
+            self.open_ecology_world_index,
+            field="open_ecology benchmark world_index",
+        )
+        if (
+            self.scenario != RECURRENT_BROAD_SCENARIO
+            or self.seed_role != OPEN_ECOLOGY_BENCHMARK_SEED_ROLE
+            or environment_index
+            not in OPEN_ECOLOGY_PHASE_A_BENCHMARK_ENVIRONMENT_SEED_INDICES
+            or self.environment_seed != benchmark_seeds[environment_index]
+            or self.open_ecology_learner_seed
+            != benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX]
+            or self.open_ecology_genome_stream_seed_index
+            != OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX
+            or self.genome_stream_seed
+            != benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX]
+            or self.genome_population_mode
+            not in {
+                RecurrentGenomePopulationMode.HERITABLE.value,
+                RecurrentGenomePopulationMode.ZERO_ALL.value,
+            }
+            or self.open_ecology_training_phase != OPEN_ECOLOGY_PHASE_A
+            or self.open_ecology_treatment.initial_agents
+            != OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE[0]
+            or self.open_ecology_treatment.max_agents != OPEN_ECOLOGY_MAX_AGENTS
+        ):
+            raise RecurrentExperimentError(
+                "open-ecology benchmark task is detached from its "
+                "operational-only contract"
+            )
+        expected_identity = _open_ecology_benchmark_policy_sampling_identity(
+            genome_population_mode=self.genome_population_mode,
+            update_index=update_index,
+            world_index=world_index,
+            environment_seed_index=environment_index,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.policy_sampling_identity != expected_identity:
+            raise RecurrentExperimentError(
+                "open-ecology benchmark task policy identity drifted"
+            )
+        expected_task_id = _open_ecology_benchmark_task_id(
+            genome_population_mode=self.genome_population_mode,
+            update_index=update_index,
+            world_index=world_index,
+            environment_seed_index=environment_index,
+            environment_seed=self.environment_seed,
+            initial_agents=self.open_ecology_treatment.initial_agents,
+        )
+        if self.task_id != expected_task_id:
+            raise RecurrentExperimentError("open-ecology benchmark task_id drifted")
 
 
 @dataclass(frozen=True, slots=True)
@@ -897,6 +1125,107 @@ def build_recurrent_training_schedule(
                     ),
                     genome_stream_seed=resolved_genome_stream_seed,
                     genome_population_mode=resolved_genome_population_mode,
+                )
+            )
+            global_index += 1
+        schedule.append(tuple(tasks))
+    return tuple(schedule)
+
+
+def build_open_ecology_benchmark_schedule(
+    *,
+    update_count: int,
+    worlds_per_update: int,
+    rollout_ticks: int,
+    genome_population_mode: RecurrentGenomePopulationMode | str,
+    environment_seed_offset: int = 0,
+) -> tuple[tuple[OpenEcologyBenchmarkRolloutTask, ...], ...]:
+    """Build a Phase-A-shaped schedule using only operational benchmark seeds."""
+
+    _positive_int(update_count, field="update_count")
+    _positive_int(worlds_per_update, field="worlds_per_update")
+    _positive_int(rollout_ticks, field="rollout_ticks")
+    try:
+        resolved_mode = RecurrentGenomePopulationMode(genome_population_mode)
+    except ValueError as error:
+        raise RecurrentExperimentError(
+            "open-ecology benchmark genome population mode is unsupported"
+        ) from error
+    if resolved_mode not in {
+        RecurrentGenomePopulationMode.HERITABLE,
+        RecurrentGenomePopulationMode.ZERO_ALL,
+    }:
+        raise RecurrentExperimentError(
+            "open-ecology benchmark requires heritable or zero_all genomes"
+        )
+    offset = _nonnegative_int(
+        environment_seed_offset,
+        field="environment_seed_offset",
+    )
+    total_worlds = update_count * worlds_per_update
+    benchmark_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE]
+    if offset + total_worlds > OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT:
+        raise RecurrentExperimentError(
+            "open-ecology benchmark environment range must remain below its "
+            "dedicated model and genome seed indices"
+        )
+    learner_seed = benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX]
+    genome_stream_seed = benchmark_seeds[
+        OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX
+    ]
+    initial_agents = OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE[0]
+    treatment = OpenEcologyBroadWorldTreatment(initial_agents=initial_agents)
+
+    schedule: list[tuple[OpenEcologyBenchmarkRolloutTask, ...]] = []
+    policy_sampling_seeds: set[int] = set()
+    global_index = 0
+    for update_index in range(update_count):
+        tasks: list[OpenEcologyBenchmarkRolloutTask] = []
+        for _ in range(worlds_per_update):
+            environment_seed_index = offset + global_index
+            environment_seed = benchmark_seeds[environment_seed_index]
+            policy_sampling_identity = _open_ecology_benchmark_policy_sampling_identity(
+                genome_population_mode=resolved_mode.value,
+                update_index=update_index,
+                world_index=global_index,
+                environment_seed_index=environment_seed_index,
+                initial_agents=initial_agents,
+            )
+            policy_sampling_seed = derive_recurrent_policy_sampling_seed(
+                task_identity=policy_sampling_identity,
+            )
+            if policy_sampling_seed in policy_sampling_seeds:
+                raise RecurrentExperimentError(
+                    "open-ecology benchmark policy sampling seeds must be unique"
+                )
+            policy_sampling_seeds.add(policy_sampling_seed)
+            tasks.append(
+                OpenEcologyBenchmarkRolloutTask(
+                    task_id=_open_ecology_benchmark_task_id(
+                        genome_population_mode=resolved_mode.value,
+                        update_index=update_index,
+                        world_index=global_index,
+                        environment_seed_index=environment_seed_index,
+                        environment_seed=environment_seed,
+                        initial_agents=initial_agents,
+                    ),
+                    scenario=RECURRENT_BROAD_SCENARIO,
+                    environment_seed=environment_seed,
+                    rollout_ticks=rollout_ticks,
+                    policy_sampling_identity=policy_sampling_identity,
+                    policy_sampling_seed=policy_sampling_seed,
+                    seed_role=OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+                    genome_stream_seed=genome_stream_seed,
+                    genome_population_mode=resolved_mode.value,
+                    open_ecology_treatment=treatment,
+                    open_ecology_learner_seed=learner_seed,
+                    open_ecology_environment_seed_index=environment_seed_index,
+                    open_ecology_genome_stream_seed_index=(
+                        OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX
+                    ),
+                    open_ecology_training_phase=OPEN_ECOLOGY_PHASE_A,
+                    open_ecology_update_index=update_index,
+                    open_ecology_world_index=global_index,
                 )
             )
             global_index += 1
@@ -1252,6 +1581,10 @@ def collect_recurrent_rollout_batch(
                     "genome_population_pre_founder_state_sha256"
                 ],
             }
+            if "genome_world_identity" in worker_provenance:
+                genome_registration["genome_world_identity"] = worker_provenance[
+                    "genome_world_identity"
+                ]
         fixed_batch_registration: dict[str, object] = {}
         if "fixed_batch_runtime" in worker_provenance:
             fixed_batch_registration = {
@@ -1310,6 +1643,11 @@ def _collect_recurrent_rollout_task(
     )
     collector.start_world(
         world_id=task.task_id,
+        genome_world_identity=getattr(
+            task,
+            "phase_a_genome_world_identity",
+            None,
+        ),
         rollout_ticks=task.rollout_ticks,
         environment_seed=task.environment_seed,
         policy_sampling_seed=task.policy_sampling_seed,
@@ -1318,6 +1656,22 @@ def _collect_recurrent_rollout_task(
     )
     world = _world_for_task(task, policy=collector)
     result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+    alive_agents = world.alive_agents()
+    if alive_agents:
+        prepared = world.prepare_policy_visible_tick_start_on_clone(
+            tick=task.rollout_ticks
+        )
+        terminal_bootstrap = collector.finalize_action_free_bootstrap(
+            tick=task.rollout_ticks,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+    else:
+        terminal_bootstrap = collector.finalize_action_free_bootstrap(
+            tick=task.rollout_ticks,
+            ordered_agent_ids=(),
+            observations_by_agent={},
+        )
     collector.finish_world()
     world_seed_provenance = task_buffer.world_seed_provenance
     if set(world_seed_provenance) != {task.task_id}:
@@ -1333,6 +1687,7 @@ def _collect_recurrent_rollout_task(
         "policy_sampling_seed": task.policy_sampling_seed,
         "policy_sampling_seed_namespace": RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE,
         "rollout_ticks": task.rollout_ticks,
+        "terminal_bootstrap": terminal_bootstrap,
         "summary": _compact_world_summary(result.summary),
     }
     if task.genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value:
@@ -2049,7 +2404,12 @@ def _training_seed_provenance(
     }
     if observed_roles == {OPEN_ECOLOGY_TRAINING_SEED_ROLE}:
         return _open_ecology_training_seed_provenance(updates)
-    if OPEN_ECOLOGY_TRAINING_SEED_ROLE in observed_roles:
+    if observed_roles == {OPEN_ECOLOGY_BENCHMARK_SEED_ROLE}:
+        return _open_ecology_benchmark_seed_provenance(updates)
+    if {
+        OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+        OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+    }.intersection(observed_roles):
         raise RecurrentExperimentError(
             "committed updates mix open-ecology and legacy seed registries"
         )
@@ -2232,6 +2592,108 @@ def _open_ecology_training_seed_provenance(
     }
 
 
+def _open_ecology_benchmark_seed_provenance(
+    updates: Sequence[RecurrentTrainingUpdateResult],
+) -> dict[str, object]:
+    tasks = tuple(task for update in updates for task in update.tasks)
+    if not tasks or any(
+        not isinstance(task, OpenEcologyBenchmarkRolloutTask) for task in tasks
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology benchmark updates require exact benchmark rollout tasks"
+        )
+    benchmark_tasks = tuple(
+        task for task in tasks if isinstance(task, OpenEcologyBenchmarkRolloutTask)
+    )
+    environment_indices = [
+        task.open_ecology_environment_seed_index for task in benchmark_tasks
+    ]
+    if environment_indices != list(
+        range(environment_indices[0], environment_indices[0] + len(benchmark_tasks))
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology benchmark seeds must form one ordered non-reused range"
+        )
+    benchmark_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE]
+    environment_seeds = [task.environment_seed for task in benchmark_tasks]
+    if environment_seeds != [
+        benchmark_seeds[index] for index in environment_indices
+    ] or len(environment_seeds) != len(set(environment_seeds)):
+        raise RecurrentExperimentError(
+            "open-ecology benchmark environment seed provenance drifted"
+        )
+    learner_seed = benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX]
+    genome_stream_seed = benchmark_seeds[
+        OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX
+    ]
+    population_modes = {task.genome_population_mode for task in benchmark_tasks}
+    if (
+        {task.open_ecology_learner_seed for task in benchmark_tasks} != {learner_seed}
+        or {task.genome_stream_seed for task in benchmark_tasks} != {genome_stream_seed}
+        or {task.open_ecology_genome_stream_seed_index for task in benchmark_tasks}
+        != {OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX}
+        or len(population_modes) != 1
+    ):
+        raise RecurrentExperimentError(
+            "open-ecology benchmark model or genome seed provenance drifted"
+        )
+    global_index = 0
+    for expected_update_index, update in enumerate(updates):
+        if not update.tasks:
+            raise RecurrentExperimentError(
+                "open-ecology benchmark updates cannot be empty"
+            )
+        for task in update.tasks:
+            if (
+                task.open_ecology_update_index != expected_update_index
+                or task.open_ecology_world_index != global_index
+                or task.open_ecology_training_phase != OPEN_ECOLOGY_PHASE_A
+                or task.open_ecology_treatment.initial_agents
+                != OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE[0]
+            ):
+                raise RecurrentExperimentError(
+                    "open-ecology benchmark task order or Phase-A shape drifted"
+                )
+            global_index += 1
+    return {
+        "schema_version": OPEN_ECOLOGY_BENCHMARK_SEED_PROVENANCE_SCHEMA_VERSION,
+        "seed_registry_contract": {
+            "version": OPEN_ECOLOGY_SEED_REGISTRY_VERSION,
+            "sha256": OPEN_ECOLOGY_CANONICAL_SHA256,
+        },
+        "environment_seed_roles": [OPEN_ECOLOGY_BENCHMARK_SEED_ROLE],
+        "environment_seeds_by_role": {
+            OPEN_ECOLOGY_BENCHMARK_SEED_ROLE: environment_seeds,
+        },
+        "environment_seed_indices": environment_indices,
+        "observed_environment_seed_count": len(environment_seeds),
+        "canonical_registry_membership_valid": True,
+        "registry_ordered_non_reused_range": {
+            "offset": environment_indices[0],
+            "count": len(environment_indices),
+            "exclusive_stop": environment_indices[-1] + 1,
+        },
+        "model_initialization": {
+            "seed": learner_seed,
+            "registry_role": OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+            "registry_index": OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX,
+        },
+        "genome_stream": {
+            "seed": genome_stream_seed,
+            "registry_role": OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+            "registry_index": OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+        },
+        "genome_population_mode": next(iter(population_modes)),
+        "training_phase": OPEN_ECOLOGY_PHASE_A,
+        "initial_agent_density_cycle": list(OPEN_ECOLOGY_PHASE_A_DENSITY_CYCLE),
+        "scientific_environment_seed_roles_accessed": [],
+        "training_seeds_accessed": False,
+        "selection_seeds_accessed": False,
+        "validation_seeds_accessed": False,
+        "lockbox_seeds_accessed": False,
+    }
+
+
 def _require_unique_schedule_values(
     values: Sequence[object],
     *,
@@ -2384,6 +2846,7 @@ def _open_ecology_treatment_from_payload(
 def _open_ecology_task_provenance_from_payload(
     value: object,
     *,
+    seed_role: object,
     environment_seed: int,
     genome_stream_seed: int | None,
     genome_population_mode: str,
@@ -2402,11 +2865,25 @@ def _open_ecology_task_provenance_from_payload(
         raise RecurrentExperimentError(
             "open-ecology task provenance registry contract drifted"
         )
+    resolved_seed_role = str(seed_role)
+    if resolved_seed_role not in {
+        OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+        OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+        OPEN_ECOLOGY_PROOF_SEED_ROLE,
+    }:
+        raise RecurrentExperimentError(
+            "open-ecology task provenance seed role is not authorized"
+        )
     learner_seed = _positive_seed(
         value.get("learner_seed"),
         field="open-ecology task learner_seed",
     )
-    if learner_seed not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"]:
+    expected_learner_role = {
+        OPEN_ECOLOGY_TRAINING_SEED_ROLE: "open_ecology_learner",
+        OPEN_ECOLOGY_BENCHMARK_SEED_ROLE: OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+        OPEN_ECOLOGY_PROOF_SEED_ROLE: OPEN_ECOLOGY_PROOF_SEED_ROLE,
+    }[resolved_seed_role]
+    if learner_seed not in OPEN_ECOLOGY_SEED_REGISTRY[expected_learner_role]:
         raise RecurrentExperimentError(
             "open-ecology task learner seed is not registered"
         )
@@ -2414,11 +2891,11 @@ def _open_ecology_task_provenance_from_payload(
         value.get("environment_seed_index"),
         field="open-ecology task environment_seed_index",
     )
-    train_seeds = OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_TRAINING_SEED_ROLE]
+    environment_seeds = OPEN_ECOLOGY_SEED_REGISTRY[resolved_seed_role]
     if (
         value.get("environment_seed") != environment_seed
-        or environment_seed_index >= len(train_seeds)
-        or train_seeds[environment_seed_index] != environment_seed
+        or environment_seed_index >= len(environment_seeds)
+        or environment_seeds[environment_seed_index] != environment_seed
     ):
         raise RecurrentExperimentError(
             "open-ecology task environment seed provenance drifted"
@@ -2427,7 +2904,12 @@ def _open_ecology_task_provenance_from_payload(
         value.get("genome_stream_seed_index"),
         field="open-ecology task genome_stream_seed_index",
     )
-    genome_seeds = OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"]
+    genome_seed_role = {
+        OPEN_ECOLOGY_TRAINING_SEED_ROLE: "open_ecology_genome_stream",
+        OPEN_ECOLOGY_BENCHMARK_SEED_ROLE: OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+        OPEN_ECOLOGY_PROOF_SEED_ROLE: OPEN_ECOLOGY_PROOF_SEED_ROLE,
+    }[resolved_seed_role]
+    genome_seeds = OPEN_ECOLOGY_SEED_REGISTRY[genome_seed_role]
     if (
         value.get("genome_stream_seed") != genome_stream_seed
         or genome_stream_seed_index >= len(genome_seeds)
@@ -2599,6 +3081,14 @@ def _summary_world_seed_provenance(
         )
     if compact_summary.get("seed") != environment_seed:
         raise RecurrentExperimentError("rollout worker simulator summary seed drifted")
+    _validate_rollout_terminal_bootstrap(
+        summary.get("terminal_bootstrap"),
+        world_id=world_id,
+        rollout_ticks=_positive_int(
+            summary.get("rollout_ticks"),
+            field="world summary rollout_ticks",
+        ),
+    )
     if open_ecology and not conditioned:
         raise RecurrentExperimentError(
             "open-ecology rollout worker provenance requires genome conditioning"
@@ -2616,9 +3106,20 @@ def _summary_world_seed_provenance(
         )
     observed_provenance_keys = set(raw_provenance)
     expected_provenance_keys = _CONDITIONED_WORLD_SEED_PROVENANCE_KEYS
+    paired_provenance_keys = expected_provenance_keys | {"genome_world_identity"}
     fixed_batch_provenance_keys = expected_provenance_keys | {"fixed_batch_runtime"}
-    if observed_provenance_keys != expected_provenance_keys and (
-        not open_ecology or observed_provenance_keys != fixed_batch_provenance_keys
+    paired_fixed_batch_provenance_keys = paired_provenance_keys | {
+        "fixed_batch_runtime"
+    }
+    if observed_provenance_keys not in {
+        expected_provenance_keys,
+        paired_provenance_keys,
+        fixed_batch_provenance_keys,
+        paired_fixed_batch_provenance_keys,
+    } or (
+        not open_ecology
+        and observed_provenance_keys
+        not in {expected_provenance_keys, paired_provenance_keys}
     ):
         raise RecurrentExperimentError(
             "conditioned rollout worker provenance fields do not match the "
@@ -2645,6 +3146,7 @@ def _summary_world_seed_provenance(
     try:
         probe.register_world(
             world_id,
+            genome_world_identity=raw_provenance.get("genome_world_identity"),
             environment_seed=environment_seed,
             policy_sampling_seed=policy_sampling_seed,
             genome_conditioning_mode=raw_provenance.get("genome_conditioning_mode"),
@@ -2689,12 +3191,158 @@ def _summary_world_seed_provenance(
         provenance["open_ecology_task_provenance"] = (
             _open_ecology_task_provenance_from_payload(
                 summary.get("open_ecology_task_provenance"),
+                seed_role=summary.get("seed_role"),
                 environment_seed=environment_seed,
                 genome_stream_seed=stream_seed,
                 genome_population_mode=population_mode,
             )
         )
     return provenance
+
+
+def _validate_rollout_terminal_bootstrap(
+    raw_evidence: object,
+    *,
+    world_id: str,
+    rollout_ticks: int,
+) -> dict[str, object]:
+    if not isinstance(raw_evidence, Mapping):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap evidence must be a mapping"
+        )
+    evidence = copy.deepcopy(dict(raw_evidence))
+    if set(evidence) != {
+        "schema_version",
+        "world_id",
+        "tick",
+        "boundary",
+        "action_sampled",
+        "action_committed",
+        "action_resolved",
+        "alive_agent_count",
+        "target_eligible_agent_count",
+        "zero_decision_alive_agent_count",
+        "zero_decision_alive_agent_ids",
+        "values",
+        "exact_digest",
+    }:
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap evidence fields drifted"
+        )
+    if (
+        evidence.get("schema_version") != RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION
+        or evidence.get("world_id") != world_id
+        or evidence.get("tick") != rollout_ticks
+    ):
+        raise RecurrentExperimentError("rollout terminal bootstrap identity drifted")
+    if evidence.get("boundary") not in {
+        "exact_policy_visible_tick_start_before_action_v1",
+        "terminal_before_horizon_no_bootstrap_v1",
+    }:
+        raise RecurrentExperimentError("rollout terminal bootstrap boundary drifted")
+    if any(
+        evidence.get(field) is not False
+        for field in ("action_sampled", "action_committed", "action_resolved")
+    ):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap must remain action-free"
+        )
+    raw_rows = evidence.get("values")
+    if not isinstance(raw_rows, list):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap values must be a list"
+        )
+    agent_ids: list[int] = []
+    eligible_ids: list[int] = []
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, Mapping):
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap value row must be a mapping"
+            )
+        row = dict(raw_row)
+        if set(row) != {
+            "agent_id",
+            "policy_input_sha256",
+            "value",
+            "target_eligible",
+            "genome_sha256",
+            "exact_digest",
+        }:
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap value row fields drifted"
+            )
+        agent_id = row.get("agent_id")
+        if isinstance(agent_id, bool) or not isinstance(agent_id, int):
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap agent_id must be an integer"
+            )
+        for field in ("policy_input_sha256", "exact_digest"):
+            _validate_sha256(row.get(field), field=f"terminal bootstrap {field}")
+        genome_sha256 = row.get("genome_sha256")
+        if genome_sha256 is not None:
+            _validate_sha256(
+                genome_sha256,
+                field="terminal bootstrap genome_sha256",
+            )
+        value = row.get("value")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap value must be finite"
+            )
+        if type(row.get("target_eligible")) is not bool:
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap target_eligible must be boolean"
+            )
+        row_without_digest = {
+            key: value for key, value in row.items() if key != "exact_digest"
+        }
+        if row["exact_digest"] != stable_payload_digest(row_without_digest):
+            raise RecurrentExperimentError(
+                "rollout terminal bootstrap value digest mismatched"
+            )
+        agent_ids.append(agent_id)
+        if row["target_eligible"] is True:
+            eligible_ids.append(agent_id)
+    if agent_ids != sorted(set(agent_ids)):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap value rows must be unique and sorted"
+        )
+    zero_decision_ids = [
+        agent_id for agent_id in agent_ids if agent_id not in set(eligible_ids)
+    ]
+    if (
+        evidence.get("alive_agent_count") != len(agent_ids)
+        or evidence.get("target_eligible_agent_count") != len(eligible_ids)
+        or evidence.get("zero_decision_alive_agent_count") != len(zero_decision_ids)
+        or evidence.get("zero_decision_alive_agent_ids") != zero_decision_ids
+    ):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap agent counts drifted"
+        )
+    evidence_without_digest = {
+        key: value for key, value in evidence.items() if key != "exact_digest"
+    }
+    if evidence["exact_digest"] != stable_payload_digest(evidence_without_digest):
+        raise RecurrentExperimentError(
+            "rollout terminal bootstrap evidence digest mismatched"
+        )
+    return evidence
+
+
+def _validate_sha256(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or len(value) != 64:
+        raise RecurrentExperimentError(f"{field} must be a SHA256 hex digest")
+    try:
+        int(value, 16)
+    except ValueError as error:
+        raise RecurrentExperimentError(
+            f"{field} must be a SHA256 hex digest"
+        ) from error
+    return value
 
 
 def _validate_rollout_worker_result(
@@ -2741,10 +3389,20 @@ def _validate_rollout_worker_result(
             "rollout worker open-ecology provenance disagrees with its task"
         )
     if conditioned:
+        expected_genome_world_identity = getattr(
+            task,
+            "phase_a_genome_world_identity",
+            None,
+        )
         if (
             genome_conditioning_mode != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
             or provenance.get("genome_population_mode") != task.genome_population_mode
             or provenance.get("genome_stream_seed") != task.genome_stream_seed
+            or (
+                expected_genome_world_identity is not None
+                and provenance.get("genome_world_identity")
+                != expected_genome_world_identity
+            )
         ):
             raise RecurrentExperimentError(
                 "rollout worker genome provenance disagrees with its task or model"
@@ -2977,7 +3635,7 @@ def _world_for_task(
     *,
     policy: object,
 ) -> SimulationWorld:
-    world_ticks = task.rollout_ticks + 1
+    world_ticks = task.rollout_ticks
     if task.scenario == RECURRENT_BROAD_SCENARIO:
         if isinstance(task, OpenEcologyRolloutTask):
             treatment = task.open_ecology_treatment
@@ -3048,21 +3706,25 @@ def _rollout_diagnostics(
             if scenario == RECURRENT_BROAD_SCENARIO
             else "scale_v2_curriculum"
         )
-        open_ecology_seed_role = (
-            OPEN_ECOLOGY_TRAINING_SEED_ROLE
+        open_ecology_seed_roles = (
+            {
+                OPEN_ECOLOGY_TRAINING_SEED_ROLE,
+                OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
+                OPEN_ECOLOGY_PROOF_SEED_ROLE,
+            }
             if scenario == RECURRENT_BROAD_SCENARIO
-            else None
+            else set()
         )
         if seed_role not in {
             legacy_seed_role,
             scale_seed_role,
             scale_v2_seed_role,
-            open_ecology_seed_role,
+            *open_ecology_seed_roles,
         }:
             raise RecurrentExperimentError(
                 "world summary seed role does not match its training scenario"
             )
-        if seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE:
+        if seed_role in open_ecology_seed_roles:
             seed_registry = OPEN_ECOLOGY_SEED_REGISTRY
         elif seed_role == legacy_seed_role:
             seed_registry = RECURRENT_SEED_REGISTRY
@@ -3077,7 +3739,7 @@ def _rollout_diagnostics(
         open_ecology_provenance = summary_seed_provenance.get(
             "open_ecology_task_provenance"
         )
-        if (seed_role == OPEN_ECOLOGY_TRAINING_SEED_ROLE) != (
+        if (seed_role in open_ecology_seed_roles) != (
             open_ecology_provenance is not None
         ):
             raise RecurrentExperimentError(
@@ -3458,6 +4120,12 @@ def _rollout_worker_count(value: object) -> int:
 
 
 __all__ = [
+    "OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT",
+    "OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX",
+    "OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX",
+    "OPEN_ECOLOGY_BENCHMARK_SEED_PROVENANCE_SCHEMA_VERSION",
+    "OPEN_ECOLOGY_BENCHMARK_SEED_ROLE",
+    "OPEN_ECOLOGY_BENCHMARK_TASK_IDENTITY_VERSION",
     "OPEN_ECOLOGY_INITIAL_AGENT_DENSITIES",
     "OPEN_ECOLOGY_MAX_AGENTS",
     "OPEN_ECOLOGY_PHASE_A",
@@ -3465,6 +4133,8 @@ __all__ = [
     "OPEN_ECOLOGY_PHASE_B",
     "OPEN_ECOLOGY_PHASE_B_DENSITY_CYCLE",
     "OPEN_ECOLOGY_POLICY_SAMPLING_TASK_IDENTITY_VERSION",
+    "OPEN_ECOLOGY_PROOF_SEED_ROLE",
+    "OPEN_ECOLOGY_PROOF_TASK_IDENTITY_VERSION",
     "OPEN_ECOLOGY_TASK_PROVENANCE_SCHEMA_VERSION",
     "OPEN_ECOLOGY_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION",
     "OPEN_ECOLOGY_TRAINING_SEED_ROLE",
@@ -3497,13 +4167,16 @@ __all__ = [
     "RecurrentRolloutScopeDiagnostics",
     "RecurrentRolloutTask",
     "OpenEcologyBroadWorldTreatment",
+    "OpenEcologyBenchmarkRolloutTask",
     "OpenEcologyLaunchDependencies",
+    "OpenEcologyProofRolloutTask",
     "OpenEcologyRolloutTask",
     "OpenEcologySignalTreatment",
     "RecurrentTrainingRunResult",
     "RecurrentTrainingUpdateResult",
     "build_recurrent_counterfactual_collection_tasks",
     "build_recurrent_training_schedule",
+    "build_open_ecology_benchmark_schedule",
     "build_open_ecology_training_schedule",
     "collect_recurrent_rollout_batch",
     "configure_recurrent_training_determinism",

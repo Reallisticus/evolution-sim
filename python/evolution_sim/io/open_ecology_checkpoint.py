@@ -6,6 +6,7 @@ import math
 import os
 import re
 import stat
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -526,7 +527,7 @@ def _validate_optional_envelope(
             raise OpenEcologyCheckpointError(
                 f"{field} absent envelope must contain only null state fields"
             )
-        return _canonical_clone(parsed, field=field)
+        return dict(parsed)
 
     schema_version = _schema_version(
         parsed["schema_version"],
@@ -547,7 +548,7 @@ def _validate_optional_envelope(
     )
     if observed_sha256 != expected_sha256:
         raise OpenEcologyCheckpointError(f"{field} state SHA256 mismatch")
-    return _canonical_clone(parsed, field=field)
+    return dict(parsed)
 
 
 def _build_generation_identity(
@@ -618,7 +619,7 @@ def _validate_generation_identity(
     )
     if observed_sha256 != expected_sha256:
         raise OpenEcologyCheckpointError("generation identity SHA256 mismatch")
-    return _canonical_clone(parsed, field="checkpoint.generation_identity")
+    return dict(parsed)
 
 
 def _restartability_payload(
@@ -696,22 +697,10 @@ def _reject_nonfinite_json_constant(value: str) -> object:
 
 
 def _canonical_clone(value: object, *, field: str) -> dict[str, object]:
-    encoded = _canonical_bytes(value)
-    try:
-        cloned = json.loads(
-            encoded,
-            object_pairs_hook=_object_without_duplicate_keys,
-            parse_constant=_reject_nonfinite_json_constant,
-        )
-    except OpenEcologyCheckpointError:
-        raise
-    except (json.JSONDecodeError, RecursionError, ValueError) as error:
-        raise OpenEcologyCheckpointError(
-            f"{field} cannot be represented as canonical JSON"
-        ) from error
-    if not isinstance(cloned, dict):
+    _validate_json_value(value, field=field, depth=0)
+    if type(value) is not dict:
         raise OpenEcologyCheckpointError(f"{field} must be an object")
-    return cloned
+    return deepcopy(value)
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -731,37 +720,41 @@ def _canonical_bytes(value: object) -> bytes:
 
 
 def _validate_json_value(value: object, *, field: str, depth: int) -> None:
-    if depth > _MAX_JSON_NESTING_DEPTH:
-        raise OpenEcologyCheckpointError(f"{field} exceeds maximum JSON nesting depth")
-    if value is None or type(value) in (bool, int, str):
-        return
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise OpenEcologyCheckpointError(f"{field} contains a non-finite float")
-        return
-    if type(value) is list:
-        for index, item in enumerate(value):
-            _validate_json_value(
-                item,
-                field=f"{field}[{index}]",
-                depth=depth + 1,
+    # This validation is on the checkpoint hot path and may visit millions of
+    # scalar tensor values.  Keep one bounded iterative walk rather than
+    # recursively constructing a new diagnostic path string for every scalar.
+    # The accepted type contract is unchanged; the root field still identifies
+    # the offending value without turning validation into quadratic allocation.
+    pending: list[tuple[object, int]] = [(value, depth)]
+    while pending:
+        current, current_depth = pending.pop()
+        if current_depth > _MAX_JSON_NESTING_DEPTH:
+            raise OpenEcologyCheckpointError(
+                f"{field} exceeds maximum JSON nesting depth"
             )
-        return
-    if type(value) is dict:
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise OpenEcologyCheckpointError(
-                    f"{field} contains a non-string object key"
-                )
-            _validate_json_value(
-                item,
-                field=f"{field}.{key}",
-                depth=depth + 1,
-            )
-        return
-    raise OpenEcologyCheckpointError(
-        f"{field} contains unsupported JSON type {type(value).__name__}"
-    )
+        current_type = type(current)
+        if current is None or current_type in (bool, int, str):
+            continue
+        if current_type is float:
+            if not math.isfinite(current):
+                raise OpenEcologyCheckpointError(f"{field} contains a non-finite float")
+            continue
+        if current_type is list:
+            child_depth = current_depth + 1
+            pending.extend((item, child_depth) for item in current)
+            continue
+        if current_type is dict:
+            child_depth = current_depth + 1
+            for key, item in current.items():
+                if not isinstance(key, str):
+                    raise OpenEcologyCheckpointError(
+                        f"{field} contains a non-string object key"
+                    )
+                pending.append((item, child_depth))
+            continue
+        raise OpenEcologyCheckpointError(
+            f"{field} contains unsupported JSON type {current_type.__name__}"
+        )
 
 
 def _digest(value: object) -> str:

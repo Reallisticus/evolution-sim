@@ -5,6 +5,7 @@ import gzip
 import json
 import multiprocessing
 import os
+import shutil
 import tempfile
 import tracemalloc
 import unittest
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 from evolution_sim.io.open_ecology_rotating_writer import (
     OPEN_ECOLOGY_EVIDENCE_CHAIN_GENESIS,
+    OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA,
     OPEN_ECOLOGY_EVIDENCE_LOCK_NAME,
     OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME,
     OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME,
@@ -28,6 +30,8 @@ from evolution_sim.io.open_ecology_rotating_writer import (
     RotatingOpenEcologyEvidenceWriter,
     SignalContributorEvidence,
     load_open_ecology_evidence_manifest,
+    preserve_open_ecology_evidence_attempt_directory,
+    restore_open_ecology_evidence_manifest_snapshot,
     validate_open_ecology_event_record,
     validate_open_ecology_evidence_continuation_state,
 )
@@ -190,6 +194,180 @@ class RotatingOpenEcologyEvidenceWriterTests(unittest.TestCase):
 
         self.assertEqual(control_bytes, resumed_bytes)
         self.assertEqual(control_manifest, resumed_manifest)
+
+    def test_aggregate_selected_prefix_preserves_ahead_attempt_and_replays(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "evidence"
+            preservation = root / "attempts"
+            config = self._config(max_rows_per_shard=1)
+            first = self._writer(output, config=config)
+            first.append(self._death(0))
+            authoritative_state = first.checkpoint()
+            authoritative_manifest = load_open_ecology_evidence_manifest(output)
+
+            ahead = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=authoritative_state,
+            )
+            ahead.append(self._death(1))
+            ahead.checkpoint()
+            ahead_manifest = load_open_ecology_evidence_manifest(output)
+            ahead_shard = output / "shard-00000001.jsonl.gz"
+            ahead_shard_bytes = ahead_shard.read_bytes()
+            authoritative_shard = output / "shard-00000000.jsonl.gz"
+            self.assertEqual(authoritative_shard.stat().st_nlink, 1)
+            self.assertEqual(ahead_shard.stat().st_nlink, 1)
+
+            restored = restore_open_ecology_evidence_manifest_snapshot(
+                output,
+                authoritative_manifest=authoritative_manifest,
+                preservation_directory=preservation,
+            )
+            self.assertEqual(restored, authoritative_manifest)
+            self.assertEqual(authoritative_shard.stat().st_nlink, 1)
+            self.assertFalse((output / "shard-00000001.jsonl.gz").exists())
+            attempts = list(preservation.iterdir())
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(
+                (attempts[0] / "shard-00000001.jsonl.gz").stat().st_nlink,
+                1,
+            )
+            self.assertEqual(
+                json.loads(
+                    (attempts[0] / "displaced-manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                ahead_manifest,
+            )
+            self.assertEqual(
+                (attempts[0] / "shard-00000001.jsonl.gz").read_bytes(),
+                ahead_shard_bytes,
+            )
+
+            replay = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=authoritative_state,
+            )
+            replay.append(self._death(1))
+            completed = replay.finish()
+            self.assertEqual(completed["total_event_count"], 2)
+            self.assertEqual(
+                (output / "shard-00000001.jsonl.gz").read_bytes(),
+                ahead_shard_bytes,
+            )
+
+    def test_snapshot_restore_rejects_symlinked_preservation_ancestor(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            output = root / "evidence"
+            config = self._config(max_rows_per_shard=1)
+            first = self._writer(output, config=config)
+            first.append(self._death(0))
+            authoritative_state = first.checkpoint()
+            authoritative_manifest = load_open_ecology_evidence_manifest(output)
+
+            ahead = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=authoritative_state,
+            )
+            ahead.append(self._death(1))
+            ahead.checkpoint()
+
+            outside = root / "outside"
+            outside.mkdir()
+            preservation = root / "attempts"
+            preservation.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(
+                OpenEcologyEvidenceError,
+                "not a real directory",
+            ):
+                restore_open_ecology_evidence_manifest_snapshot(
+                    output,
+                    authoritative_manifest=authoritative_manifest,
+                    preservation_directory=preservation,
+                )
+
+            self.assertTrue((output / "shard-00000001.jsonl.gz").is_file())
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_aggregate_selected_prefix_preserves_pending_transaction_crash(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "evidence"
+            config = self._config()
+            initial = self._writer(output, config=config)
+            authoritative_state = initial.checkpoint()
+            authoritative_manifest = load_open_ecology_evidence_manifest(output)
+            writer = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=authoritative_state,
+            )
+            writer.append(self._death(0))
+            real_replace = os.replace
+            replacement_count = 0
+
+            def crash_during_manifest_publish(
+                source: object,
+                destination: object,
+            ) -> None:
+                nonlocal replacement_count
+                replacement_count += 1
+                if replacement_count == 3:
+                    raise SystemExit("simulated hard crash before manifest")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_rotating_writer.os.replace",
+                side_effect=crash_during_manifest_publish,
+            ):
+                with self.assertRaisesRegex(SystemExit, "hard crash"):
+                    writer.checkpoint()
+            writer.abort()
+            self.assertTrue((output / OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME).is_file())
+
+            preservation = root / "attempts"
+            restored = restore_open_ecology_evidence_manifest_snapshot(
+                output,
+                authoritative_manifest=authoritative_manifest,
+                preservation_directory=preservation,
+            )
+            self.assertEqual(restored, authoritative_manifest)
+            attempt = next(preservation.iterdir())
+            self.assertTrue(
+                (attempt / OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME).is_file()
+            )
+            self.assertTrue((attempt / "shard-00000000.jsonl.gz").is_file())
+
+            replay = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=authoritative_state,
+            )
+            replay.append(self._death(0))
+            completed = replay.finish()
+            self.assertEqual(completed["total_event_count"], 1)
 
     def test_exclusive_stream_lock_rejects_dual_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -362,6 +540,483 @@ class RotatingOpenEcologyEvidenceWriterTests(unittest.TestCase):
         self.assertEqual(loaded["completed_shard_count"], 0)
         self.assertEqual(loaded["total_event_count"], 0)
 
+    def test_rollback_preserves_shard_replaced_after_digest_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "rollback-replacement-race"
+            writer = self._writer(output)
+            writer.append(self._death(0))
+            destination = output / "shard-00000000.jsonl.gz"
+            validated_backup = output.parent / "validated-shard.jsonl.gz"
+            attacker_bytes = b"replacement-must-not-be-unlinked\n"
+            real_replace = os.replace
+            replacement_count = 0
+
+            def fail_manifest_replace(source: object, destination_path: object) -> None:
+                nonlocal replacement_count
+                replacement_count += 1
+                if replacement_count == 3:
+                    raise OSError("simulated manifest replace failure")
+                real_replace(source, destination_path)
+
+            from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+            real_require = writer_module._require_file_sha256
+            injected = False
+
+            def replace_after_validation(
+                path: Path,
+                *,
+                expected_sha256: str,
+                max_bytes: int,
+            ) -> object:
+                nonlocal injected
+                identity = real_require(
+                    path,
+                    expected_sha256=expected_sha256,
+                    max_bytes=max_bytes,
+                )
+                if path == destination and not injected:
+                    injected = True
+                    path.rename(validated_backup)
+                    path.write_bytes(attacker_bytes)
+                return identity
+
+            with (
+                patch(
+                    "evolution_sim.io.open_ecology_rotating_writer.os.replace",
+                    side_effect=fail_manifest_replace,
+                ),
+                patch(
+                    "evolution_sim.io.open_ecology_rotating_writer."
+                    "_require_file_sha256",
+                    side_effect=replace_after_validation,
+                ),
+            ):
+                with self.assertRaises(Exception):
+                    writer.checkpoint()
+
+            self.assertTrue(injected)
+            self.assertEqual(destination.read_bytes(), attacker_bytes)
+            self.assertTrue(validated_backup.is_file())
+
+    def test_abort_preserves_an_active_temp_replaced_at_the_same_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "abort-replacement-race"
+            writer = self._writer(output)
+            writer.append(self._death(0))
+            assert writer._active is not None
+            temp_path = writer._active.temp_path
+            original_backup = output.parent / "validated-active-temp"
+            attacker_bytes = b"replacement-must-survive-abort\n"
+
+            temp_path.rename(original_backup)
+            temp_path.write_bytes(attacker_bytes)
+            writer.abort()
+
+            self.assertEqual(temp_path.read_bytes(), attacker_bytes)
+            self.assertTrue(original_backup.is_file())
+
+    def test_resume_cleanup_preserves_temp_replaced_after_identity_capture(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "cleanup-replacement-race"
+            initial = self._writer(output)
+            state = initial.checkpoint()
+            temp_path = output / ".shard-00000000.injected.tmp"
+            original_backup = output.parent / "validated-cleanup-temp"
+            attacker_bytes = b"replacement-must-survive-resume-cleanup\n"
+            temp_path.write_bytes(b"validated-temp\n")
+            real_lstat = os.lstat
+            injected = False
+
+            def replace_after_lstat(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ) -> os.stat_result:
+                nonlocal injected
+                observed = real_lstat(path, *args, **kwargs)
+                if Path(path) == temp_path and not injected:
+                    injected = True
+                    temp_path.rename(original_backup)
+                    temp_path.write_bytes(attacker_bytes)
+                return observed
+
+            with patch(
+                "evolution_sim.io.open_ecology_rotating_writer.os.lstat",
+                side_effect=replace_after_lstat,
+            ):
+                with self.assertRaises(OpenEcologyEvidenceError):
+                    RotatingOpenEcologyEvidenceWriter(
+                        output,
+                        run_id="open-ecology-run",
+                        source_contract=self._source_contract(),
+                        config=self._config(),
+                        continuation_state=state,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(temp_path.read_bytes(), attacker_bytes)
+            self.assertTrue(original_backup.is_file())
+
+    def test_cleanup_truncates_opened_inode_and_preserves_postcheck_replacement(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "descriptor-cleanup"
+            output.mkdir()
+            victim = output / ".shard-00000000.injected.tmp"
+            victim.write_bytes(b"validated-owned-bytes\n")
+            identity = writer_module._regular_file_identity(
+                victim,
+                field="cleanup victim",
+            )
+            validated_backup = output / "validated-open-inode"
+            attacker_bytes = b"replacement-must-survive-ftruncate\n"
+            real_ftruncate = os.ftruncate
+            injected = False
+
+            def replace_after_descriptor_validation(
+                descriptor: int,
+                length: int,
+            ) -> None:
+                nonlocal injected
+                if not injected:
+                    tombstone = next(
+                        (
+                            output
+                            / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+                        ).glob("*/candidate")
+                    )
+                    tombstone.rename(validated_backup)
+                    tombstone.write_bytes(attacker_bytes)
+                    injected = True
+                real_ftruncate(descriptor, length)
+
+            with patch.object(
+                writer_module.os,
+                "ftruncate",
+                side_effect=replace_after_descriptor_validation,
+            ):
+                with self.assertRaisesRegex(
+                    OpenEcologyEvidenceError,
+                    "changed during cleanup",
+                ):
+                    writer_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="cleanup victim",
+                        max_tombstones=8,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(
+                next(
+                    (
+                        output
+                        / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+                    ).glob("*/candidate")
+                ).read_bytes(),
+                attacker_bytes,
+            )
+            self.assertEqual(validated_backup.read_bytes(), b"")
+
+    def test_cleanup_namespace_replacement_cannot_redirect_descriptor_move(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "descriptor-namespace"
+            output.mkdir()
+            victim = output / ".shard-00000000.injected.tmp"
+            victim.write_bytes(b"validated-owned-bytes\n")
+            identity = writer_module._regular_file_identity(
+                victim,
+                field="cleanup victim",
+            )
+            cleanup = (
+                output / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+            )
+            displaced = output / "displaced-cleanup-root"
+            outside = output / "attacker-selected"
+            outside.mkdir()
+            real_rename = os.rename
+            injected = False
+
+            def replace_cleanup_namespace(
+                source: object,
+                destination: object,
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                nonlocal injected
+                if (
+                    Path(os.fsdecode(source)).name == victim.name
+                    and Path(os.fsdecode(destination)).name == "candidate"
+                    and not injected
+                ):
+                    cleanup.rename(displaced)
+                    cleanup.symlink_to(outside, target_is_directory=True)
+                    injected = True
+                real_rename(source, destination, *args, **kwargs)
+
+            with patch.object(
+                writer_module.os,
+                "rename",
+                side_effect=replace_cleanup_namespace,
+            ):
+                with self.assertRaisesRegex(
+                    OpenEcologyEvidenceError,
+                    "namespace changed",
+                ):
+                    writer_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="cleanup victim",
+                        max_tombstones=8,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(list(outside.iterdir()), [])
+            retained = next(displaced.glob("*/candidate"))
+            self.assertEqual(retained.read_bytes(), b"")
+
+    def test_cleanup_tombstones_are_same_filesystem_bounded_and_resume_repaired(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "cleanup-lifecycle"
+            initial = self._writer(output)
+            state = initial.checkpoint()
+            victim = output / ".shard-00000000.injected.tmp"
+            victim.write_bytes(b"crash-leftover\n")
+            identity = writer_module._regular_file_identity(
+                victim,
+                field="crash cleanup victim",
+            )
+
+            with patch.object(
+                writer_module.os,
+                "ftruncate",
+                side_effect=SystemExit("simulated truncation crash"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "truncation crash"):
+                    writer_module._unlink_owned_regular_file(
+                        victim,
+                        expected_identity=identity,
+                        field="crash cleanup victim",
+                        max_tombstones=8,
+                    )
+
+            cleanup = (
+                output / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+            )
+            candidate = next(cleanup.glob("*/candidate"))
+            self.assertEqual(candidate.read_bytes(), b"crash-leftover\n")
+            self.assertEqual(cleanup.stat().st_dev, output.stat().st_dev)
+
+            resumed = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=self._config(),
+                continuation_state=state,
+            )
+            resumed.abort()
+            self.assertEqual(candidate.read_bytes(), b"")
+            load_open_ecology_evidence_manifest(output)
+
+            second = output / ".shard-00000001.injected.tmp"
+            second.write_bytes(b"second\n")
+            second_identity = writer_module._regular_file_identity(
+                second,
+                field="second cleanup victim",
+            )
+            with self.assertRaisesRegex(
+                OpenEcologyEvidenceError,
+                "tombstone limit",
+            ):
+                writer_module._unlink_owned_regular_file(
+                    second,
+                    expected_identity=second_identity,
+                    field="second cleanup victim",
+                    max_tombstones=1,
+                )
+            self.assertEqual(second.read_bytes(), b"second\n")
+
+    def test_relocated_zero_tombstones_load_but_nonzero_replacements_fail_closed(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "cleanup-source"
+            writer = self._writer(output, config=self._config(max_rows_per_shard=1))
+            writer.append(self._death(0))
+            manifest = writer.finish()
+
+            relocated = Path(tmpdir) / "cleanup-relocated"
+            shutil.copytree(output, relocated)
+            self.assertEqual(
+                load_open_ecology_evidence_manifest(relocated),
+                manifest,
+            )
+
+            candidate = next(
+                (
+                    relocated
+                    / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+                ).glob("*/candidate")
+            )
+            candidate.write_bytes(b"relocated-nonzero-replacement\n")
+            with self.assertRaisesRegex(
+                OpenEcologyEvidenceError,
+                "changed before descriptor-bound truncation",
+            ):
+                writer_module._reconcile_evidence_cleanup_tombstones(
+                    relocated,
+                    max_tombstones=8,
+                )
+            self.assertEqual(
+                candidate.read_bytes(),
+                b"relocated-nonzero-replacement\n",
+            )
+
+    def test_attempt_preservation_uses_high_custom_manifest_tombstone_limit(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "high-custom-limit"
+            preservation = root / "attempts"
+            config = self._config(max_shards=4_097)
+            writer = self._writer(output, config=config)
+            writer.abort()
+
+            cleanup = (
+                output / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+            )
+            cleanup.mkdir(mode=0o700)
+            device = output.stat().st_dev
+            for index in range(8_209):
+                (cleanup / f"file-d{device:x}-i{index + 1:x}-{index:016x}").mkdir(
+                    mode=0o700
+                )
+
+            archived = preserve_open_ecology_evidence_attempt_directory(
+                output,
+                preservation_directory=preservation,
+            )
+
+            self.assertFalse(output.exists())
+            self.assertEqual(archived.parent.resolve(), preservation.resolve())
+            self.assertEqual(
+                len(
+                    list(
+                        (
+                            archived
+                            / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+                        ).iterdir()
+                    )
+                ),
+                8_209,
+            )
+
+    def test_attempt_preservation_uses_low_custom_manifest_tombstone_limit(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "low-custom-limit"
+            preservation = root / "attempts"
+            config = self._config(max_shards=1)
+            writer = self._writer(output, config=config)
+            writer.abort()
+
+            cleanup = (
+                output / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+            )
+            cleanup.mkdir(mode=0o700)
+            device = output.stat().st_dev
+            for index in range(19):
+                (cleanup / f"file-d{device:x}-i{index + 1:x}-{index:016x}").mkdir(
+                    mode=0o700
+                )
+
+            with self.assertRaisesRegex(
+                OpenEcologyEvidenceError,
+                "tombstone limit exceeded",
+            ):
+                preserve_open_ecology_evidence_attempt_directory(
+                    output,
+                    preservation_directory=preservation,
+                )
+
+            self.assertTrue(output.is_dir())
+            self.assertFalse(preservation.exists())
+            self.assertEqual(len(list(cleanup.iterdir())), 19)
+
+    def test_attempt_preservation_rejects_manifest_config_digest_mismatch(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output = root / "config-mismatch"
+            preservation = root / "attempts"
+            writer = self._writer(output, config=self._config(max_shards=1))
+            writer.abort()
+
+            manifest_path = output / OPEN_ECOLOGY_EVIDENCE_MANIFEST_NAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["writer_config"]["max_shards"] = 2
+            manifest_path.write_bytes(f"{self._canonical(manifest)}\n".encode("utf-8"))
+
+            with self.assertRaisesRegex(
+                OpenEcologyEvidenceError,
+                "writer config SHA256 mismatch",
+            ):
+                preserve_open_ecology_evidence_attempt_directory(
+                    output,
+                    preservation_directory=preservation,
+                )
+
+            self.assertTrue(output.is_dir())
+            self.assertFalse(preservation.exists())
+
+    def test_normal_multishard_cleanup_is_zero_byte_and_manifest_visible(
+        self,
+    ) -> None:
+        from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "normal-cleanup"
+            config = self._config(max_rows_per_shard=1)
+            writer = self._writer(output, config=config)
+            for event in self._all_events()[:4]:
+                writer.append(event)
+            manifest = writer.finish()
+
+            cleanup = (
+                output / writer_module.OPEN_ECOLOGY_EVIDENCE_CLEANUP_DIRECTORY_NAME
+            )
+            candidates = sorted(cleanup.glob("*/candidate"))
+            self.assertEqual(len(candidates), manifest["completed_shard_count"])
+            self.assertTrue(all(path.stat().st_size == 0 for path in candidates))
+            self.assertEqual(
+                load_open_ecology_evidence_manifest(output),
+                manifest,
+            )
+
     def test_pending_transaction_recovers_to_external_checkpoint_after_crash(
         self,
     ) -> None:
@@ -414,6 +1069,260 @@ class RotatingOpenEcologyEvidenceWriterTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["completed_shard_count"], 1)
         self.assertEqual(manifest["total_event_count"], 1)
+
+    def test_previous_side_recovery_preserves_replaced_transaction_temp(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "previous-side-temp-race"
+            config = self._config()
+            initial = self._writer(output, config=config)
+            state = initial.checkpoint()
+            writer = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=state,
+            )
+            writer.append(self._death(0))
+            real_replace = os.replace
+            replacement_count = 0
+
+            def crash_before_shard_publish(
+                source: object,
+                destination: object,
+            ) -> None:
+                nonlocal replacement_count
+                replacement_count += 1
+                if replacement_count == 2:
+                    raise SystemExit("simulated crash before shard publication")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_rotating_writer.os.replace",
+                side_effect=crash_before_shard_publish,
+            ):
+                with self.assertRaisesRegex(SystemExit, "before shard"):
+                    writer.checkpoint()
+            writer._release_lock()
+
+            transaction = json.loads(
+                (output / OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            temp_path = output / transaction["temp_file_name"]
+            validated_backup = output.parent / "validated-transaction-temp"
+            attacker_bytes = b"replacement-must-survive-previous-recovery\n"
+            real_publish = RotatingOpenEcologyEvidenceWriter._publish_manifest
+            injected = False
+
+            def replace_after_manifest_publish(
+                recovering_writer: RotatingOpenEcologyEvidenceWriter,
+                manifest: object,
+            ) -> object:
+                nonlocal injected
+                result = real_publish(recovering_writer, manifest)  # type: ignore[arg-type]
+                if not injected:
+                    injected = True
+                    temp_path.rename(validated_backup)
+                    temp_path.write_bytes(attacker_bytes)
+                return result
+
+            with patch.object(
+                RotatingOpenEcologyEvidenceWriter,
+                "_publish_manifest",
+                new=replace_after_manifest_publish,
+            ):
+                with self.assertRaises(OpenEcologyEvidenceError):
+                    RotatingOpenEcologyEvidenceWriter(
+                        output,
+                        run_id="open-ecology-run",
+                        source_contract=self._source_contract(),
+                        config=config,
+                        continuation_state=state,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(temp_path.read_bytes(), attacker_bytes)
+            self.assertTrue(validated_backup.is_file())
+
+    def test_prospective_side_recovery_preserves_new_same_path_temp(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "prospective-side-temp-race"
+            config = self._config()
+            initial = self._writer(output, config=config)
+            previous_state = initial.checkpoint()
+            writer = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=previous_state,
+            )
+            writer.append(self._death(0))
+            real_replace = os.replace
+            replacement_count = 0
+
+            def crash_before_shard_publish(
+                source: object,
+                destination: object,
+            ) -> None:
+                nonlocal replacement_count
+                replacement_count += 1
+                if replacement_count == 2:
+                    raise SystemExit("simulated crash before shard publication")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_rotating_writer.os.replace",
+                side_effect=crash_before_shard_publish,
+            ):
+                with self.assertRaisesRegex(SystemExit, "before shard"):
+                    writer.checkpoint()
+            writer._release_lock()
+
+            transaction = json.loads(
+                (output / OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            prospective = transaction["prospective_manifest"]
+            from evolution_sim.io import open_ecology_rotating_writer as writer_module
+
+            body = {
+                "chain_head_sha256": prospective["chain_head_sha256"],
+                "completed_shard_count": prospective["completed_shard_count"],
+                "last_tick": prospective["last_tick"],
+                "manifest_sha256": prospective["manifest_sha256"],
+                "next_event_index": prospective["next_event_index"],
+                "next_shard_index": prospective["next_shard_index"],
+                "run_id": prospective["run_id"],
+                "schema_version": OPEN_ECOLOGY_EVIDENCE_CONTINUATION_SCHEMA,
+                "source_contract_sha256": prospective["source_contract_sha256"],
+                "total_compressed_bytes": prospective["total_compressed_bytes"],
+                "total_event_count": prospective["total_event_count"],
+                "writer_config_sha256": prospective["writer_config_sha256"],
+            }
+            prospective_state = {
+                **body,
+                "state_sha256": writer_module._digest(body),
+            }
+            temp_path = output / transaction["temp_file_name"]
+            attacker_bytes = b"replacement-must-survive-prospective-recovery\n"
+            real_publish = RotatingOpenEcologyEvidenceWriter._publish_manifest
+            injected = False
+
+            def recreate_temp_after_manifest_publish(
+                recovering_writer: RotatingOpenEcologyEvidenceWriter,
+                manifest: object,
+            ) -> object:
+                nonlocal injected
+                result = real_publish(recovering_writer, manifest)  # type: ignore[arg-type]
+                if not injected:
+                    injected = True
+                    temp_path.write_bytes(attacker_bytes)
+                return result
+
+            with patch.object(
+                RotatingOpenEcologyEvidenceWriter,
+                "_publish_manifest",
+                new=recreate_temp_after_manifest_publish,
+            ):
+                with self.assertRaises(OpenEcologyEvidenceError):
+                    RotatingOpenEcologyEvidenceWriter(
+                        output,
+                        run_id="open-ecology-run",
+                        source_contract=self._source_contract(),
+                        config=config,
+                        continuation_state=prospective_state,
+                    )
+
+            self.assertTrue(injected)
+            self.assertEqual(temp_path.read_bytes(), attacker_bytes)
+
+    def test_recovery_preserves_transaction_replaced_before_final_cleanup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "transaction-cleanup-race"
+            config = self._config()
+            initial = self._writer(output, config=config)
+            state = initial.checkpoint()
+            writer = RotatingOpenEcologyEvidenceWriter(
+                output,
+                run_id="open-ecology-run",
+                source_contract=self._source_contract(),
+                config=config,
+                continuation_state=state,
+            )
+            writer.append(self._death(0))
+            real_replace = os.replace
+            replacement_count = 0
+
+            def crash_during_manifest_publish(
+                source: object,
+                destination: object,
+            ) -> None:
+                nonlocal replacement_count
+                replacement_count += 1
+                if replacement_count == 3:
+                    raise SystemExit("simulated hard crash before manifest")
+                real_replace(source, destination)
+
+            with patch(
+                "evolution_sim.io.open_ecology_rotating_writer.os.replace",
+                side_effect=crash_during_manifest_publish,
+            ):
+                with self.assertRaisesRegex(SystemExit, "hard crash"):
+                    writer.checkpoint()
+            writer.abort()
+
+            transaction_path = output / OPEN_ECOLOGY_EVIDENCE_TRANSACTION_NAME
+            validated_backup = output.parent / "validated-transaction"
+            attacker_bytes = b"replacement-transaction-must-survive\n"
+            real_unlink_shard = (
+                RotatingOpenEcologyEvidenceWriter._unlink_transaction_shard_if_owned
+            )
+            cleanup_count = 0
+
+            def replace_transaction_after_shard_cleanup(
+                recovering_writer: RotatingOpenEcologyEvidenceWriter,
+                path: Path,
+                *,
+                expected_file_sha256: str,
+            ) -> None:
+                nonlocal cleanup_count
+                real_unlink_shard(
+                    recovering_writer,
+                    path,
+                    expected_file_sha256=expected_file_sha256,
+                )
+                cleanup_count += 1
+                if cleanup_count == 2:
+                    transaction_path.rename(validated_backup)
+                    transaction_path.write_bytes(attacker_bytes)
+
+            with patch.object(
+                RotatingOpenEcologyEvidenceWriter,
+                "_unlink_transaction_shard_if_owned",
+                new=replace_transaction_after_shard_cleanup,
+            ):
+                with self.assertRaises(OpenEcologyEvidenceError):
+                    RotatingOpenEcologyEvidenceWriter(
+                        output,
+                        run_id="open-ecology-run",
+                        source_contract=self._source_contract(),
+                        config=config,
+                        continuation_state=state,
+                    )
+
+            self.assertEqual(cleanup_count, 2)
+            self.assertEqual(transaction_path.read_bytes(), attacker_bytes)
+            self.assertTrue(validated_backup.is_file())
 
     def test_tamper_unknown_nonfinite_and_out_of_order_inputs_fail_closed(
         self,

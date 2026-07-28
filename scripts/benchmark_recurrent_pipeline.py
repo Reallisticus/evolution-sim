@@ -13,7 +13,7 @@ Failures write to stderr and return non-zero without emitting a partial report.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
@@ -29,6 +29,10 @@ import torch
 from evolution_sim.config.schema import SignalConfig
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.open_ecology_seed_registry import (
+    OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT,
+    OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX,
+    OPEN_ECOLOGY_BENCHMARK_SEED_ROLE,
     OPEN_ECOLOGY_SEED_REGISTRY,
 )
 from evolution_sim.mind.recurrent_actor_critic import (
@@ -39,10 +43,12 @@ from evolution_sim.mind.recurrent_actor_critic import (
 from evolution_sim.mind.recurrent_experiment import (
     MAX_RECURRENT_ROLLOUT_WORKERS,
     OPEN_ECOLOGY_PHASE_A,
+    RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION,
     RECURRENT_TRAINING_SCENARIOS,
     OpenEcologySignalTreatment,
     RecurrentExperimentRunner,
-    build_open_ecology_training_schedule,
+    RecurrentTrainingRunResult,
+    build_open_ecology_benchmark_schedule,
     build_recurrent_training_schedule,
 )
 from evolution_sim.mind.recurrent_genome_population import (
@@ -50,9 +56,12 @@ from evolution_sim.mind.recurrent_genome_population import (
 )
 from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
 from evolution_sim.mind.recurrent_ppo import RecurrentPPOConfig
+from evolution_sim.mind.recurrent_rollout import (
+    OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+)
 
 
-REPORT_SCHEMA_VERSION = "mind_recurrent_end_to_end_pipeline_benchmark_v1"
+REPORT_SCHEMA_VERSION = "mind_recurrent_end_to_end_pipeline_benchmark_v2"
 MEASURED_OPERATION = "simulation_rollout_merge_gae_and_ppo_update"
 INPUT_CONTRACTS = ("base", "tokenized")
 GENOME_CONDITIONING_MODES = (
@@ -68,6 +77,80 @@ class PipelineBenchmarkConfigurationError(ValueError):
 
 class PipelineBenchmarkExecutionError(RuntimeError):
     """Raised when a valid benchmark cannot produce complete evidence."""
+
+
+def _observed_collector_contract(
+    result: RecurrentTrainingRunResult,
+) -> dict[str, object]:
+    """Bind the benchmark claim to per-world collector runtime provenance."""
+
+    open_ecology_execution = result.rollout_execution.get("open_ecology")
+    if open_ecology_execution is None:
+        return {
+            "experiment_contract_version": result.contract_version,
+            "fixed_batch_enabled": False,
+            "fixed_batch_capacity": None,
+            "fixed_batch_runtime_contract": None,
+        }
+    if not isinstance(open_ecology_execution, Mapping):
+        raise PipelineBenchmarkExecutionError(
+            "open-ecology runner emitted malformed collector provenance"
+        )
+    declared_runtime_contract = open_ecology_execution.get(
+        "fixed_batch_runtime_contract"
+    )
+    if not isinstance(declared_runtime_contract, Mapping):
+        raise PipelineBenchmarkExecutionError(
+            "open-ecology runner omitted its fixed-batch runtime contract"
+        )
+
+    observed_contract: dict[str, object] | None = None
+    for update in result.updates:
+        task_ids = tuple(task.task_id for task in update.tasks)
+        provenance_by_world = update.rollout.world_seed_provenance
+        if not task_ids or set(provenance_by_world) != set(task_ids):
+            raise PipelineBenchmarkExecutionError(
+                "open-ecology collector runtime provenance coverage drifted"
+            )
+        for task_id in task_ids:
+            provenance = provenance_by_world.get(task_id)
+            if not isinstance(provenance, Mapping):
+                raise PipelineBenchmarkExecutionError(
+                    "open-ecology collector omitted per-world runtime provenance"
+                )
+            runtime = provenance.get("fixed_batch_runtime")
+            if not isinstance(runtime, Mapping):
+                raise PipelineBenchmarkExecutionError(
+                    "open-ecology collector did not execute fixed batching"
+                )
+            contract = runtime.get("contract")
+            if not isinstance(contract, Mapping) or runtime.get(
+                "batch_capacity"
+            ) != contract.get("batch_capacity"):
+                raise PipelineBenchmarkExecutionError(
+                    "open-ecology collector runtime contract is malformed"
+                )
+            canonical_contract = dict(contract)
+            if observed_contract is None:
+                observed_contract = canonical_contract
+            elif canonical_contract != observed_contract:
+                raise PipelineBenchmarkExecutionError(
+                    "open-ecology collector runtime changed across worlds"
+                )
+
+    if (
+        observed_contract is None
+        or dict(declared_runtime_contract) != observed_contract
+    ):
+        raise PipelineBenchmarkExecutionError(
+            "open-ecology runner collector claim differs from executed worlds"
+        )
+    return {
+        "experiment_contract_version": result.contract_version,
+        "fixed_batch_enabled": open_ecology_execution.get("fixed_batch_enabled"),
+        "fixed_batch_capacity": observed_contract.get("batch_capacity"),
+        "fixed_batch_runtime_contract": observed_contract,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +176,7 @@ class PipelineBenchmarkProtocol:
     sequence_minibatch_size: int
     tbptt_steps: int
     burn_in_steps: int
+    fixed_batch_capacity: int | None = None
     preregistered_gate_member: bool = False
 
     def validate(self) -> None:
@@ -130,6 +214,11 @@ class PipelineBenchmarkProtocol:
         if type(self.preregistered_gate_member) is not bool:
             raise PipelineBenchmarkConfigurationError(
                 "preregistered_gate_member must be an exact boolean"
+            )
+        if self.fixed_batch_capacity is not None:
+            _positive_integer(
+                self.fixed_batch_capacity,
+                field="fixed_batch_capacity",
             )
         if not self.scenarios or len(self.scenarios) != len(set(self.scenarios)):
             raise PipelineBenchmarkConfigurationError(
@@ -196,33 +285,47 @@ class PipelineBenchmarkProtocol:
                 raise PipelineBenchmarkConfigurationError(
                     "open-ecology benchmark requires actor_film_v1"
                 )
+            benchmark_seeds = OPEN_ECOLOGY_SEED_REGISTRY[
+                OPEN_ECOLOGY_BENCHMARK_SEED_ROLE
+            ]
             if (
                 self.learner_seed
-                not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"]
+                != benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX]
             ):
                 raise PipelineBenchmarkConfigurationError(
-                    "open-ecology learner seed is not registered"
+                    "open-ecology benchmark model seed is not the dedicated "
+                    "operational seed"
                 )
             if (
                 self.genome_stream_seed
-                not in OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_genome_stream"]
+                != benchmark_seeds[OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX]
             ):
                 raise PipelineBenchmarkConfigurationError(
-                    "open-ecology genome stream seed is not registered"
+                    "open-ecology benchmark genome seed is not the dedicated "
+                    "operational seed"
                 )
-            if self.updates * self.worlds_per_update > len(
-                OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_train"]
+            if (
+                self.updates * self.worlds_per_update
+                > OPEN_ECOLOGY_BENCHMARK_ENVIRONMENT_SEED_COUNT
             ):
                 raise PipelineBenchmarkConfigurationError(
-                    "open-ecology benchmark exceeds the non-reused training seed "
-                    "registry"
+                    "open-ecology benchmark exceeds its non-reused operational "
+                    "environment seed range"
                 )
+            if self.fixed_batch_capacity != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY:
+                raise PipelineBenchmarkConfigurationError(
+                    "open-ecology benchmark requires the canonical fixed-batch "
+                    f"capacity {OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY}"
+                )
+        elif self.fixed_batch_capacity is not None:
+            raise PipelineBenchmarkConfigurationError(
+                "legacy base benchmark does not support fixed-batch collection"
+            )
         if self.preregistered_gate_member:
             mismatches = _preregistered_gate_member_mismatches(self)
             if mismatches:
                 raise PipelineBenchmarkConfigurationError(
-                    "preregistered gate member shape mismatch: "
-                    + ", ".join(mismatches)
+                    "preregistered gate member shape mismatch: " + ", ".join(mismatches)
                 )
 
 
@@ -248,10 +351,13 @@ def _preregistered_gate_member_mismatches(
         ("sequence_minibatch_size", protocol.sequence_minibatch_size, 16),
         ("tbptt_steps", protocol.tbptt_steps, 128),
         ("burn_in_steps", protocol.burn_in_steps, 16),
+        (
+            "fixed_batch_capacity",
+            protocol.fixed_batch_capacity,
+            OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+        ),
     )
-    mismatches = [
-        name for name, observed, required in expected if observed != required
-    ]
+    mismatches = [name for name, observed, required in expected if observed != required]
     if protocol.genome_population_mode not in {
         RecurrentGenomePopulationMode.HERITABLE.value,
         RecurrentGenomePopulationMode.ZERO_ALL.value,
@@ -327,13 +433,10 @@ def run_benchmark(
         )
     )
     schedule = (
-        build_open_ecology_training_schedule(
-            training_phase=OPEN_ECOLOGY_PHASE_A,
+        build_open_ecology_benchmark_schedule(
             update_count=protocol.updates,
             worlds_per_update=protocol.worlds_per_update,
             rollout_ticks=protocol.rollout_ticks,
-            learner_seed=protocol.learner_seed,
-            genome_stream_seed=protocol.genome_stream_seed,
             genome_population_mode=protocol.genome_population_mode,
         )
         if protocol.input_contract == "tokenized"
@@ -350,6 +453,8 @@ def run_benchmark(
     cases: list[dict[str, object]] = []
     expected_model_digest: str | None = None
     expected_semantic_digest: str | None = None
+    expected_seed_access: dict[str, object] | None = None
+    expected_collector_contract: dict[str, object] | None = None
     for worker_count in protocol.worker_counts:
         samples: list[dict[str, object]] = []
         for repeat_index in range(protocol.repeats):
@@ -359,6 +464,7 @@ def run_benchmark(
                 model_config=model_config,
                 ppo_config=ppo_config,
                 rollout_workers=worker_count,
+                fixed_batch_capacity=protocol.fixed_batch_capacity,
             )
             _synchronize(device)
             started_ns = time.perf_counter_ns()
@@ -386,12 +492,30 @@ def run_benchmark(
                     ],
                 }
             )
+            seed_access = dict(result.environment_seed_provenance)
+            collector_contract = _observed_collector_contract(result)
+            if protocol.input_contract == "tokenized" and (
+                collector_contract["experiment_contract_version"]
+                != RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION
+                or collector_contract["fixed_batch_enabled"] is not True
+                or collector_contract["fixed_batch_capacity"]
+                != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+                or collector_contract["fixed_batch_runtime_contract"] is None
+            ):
+                raise PipelineBenchmarkExecutionError(
+                    "open-ecology benchmark did not execute the production "
+                    "fixed-batch collector"
+                )
             if expected_model_digest is None:
                 expected_model_digest = model_digest
                 expected_semantic_digest = semantic_digest
+                expected_seed_access = seed_access
+                expected_collector_contract = collector_contract
             elif (
                 model_digest != expected_model_digest
                 or semantic_digest != expected_semantic_digest
+                or seed_access != expected_seed_access
+                or collector_contract != expected_collector_contract
             ):
                 raise PipelineBenchmarkExecutionError(
                     "worker or repeat configuration changed deterministic training "
@@ -410,6 +534,10 @@ def run_benchmark(
                     "total_transitions": result.total_transitions,
                     "final_model_state_sha256": model_digest,
                     "semantic_evidence_sha256": semantic_digest,
+                    "seed_access_sha256": stable_payload_digest(seed_access),
+                    "collector_contract_sha256": stable_payload_digest(
+                        collector_contract
+                    ),
                 }
             )
             del runner, result
@@ -441,12 +569,17 @@ def run_benchmark(
             "ordered_worker_merge_included": True,
             "gae_included": True,
             "ppo_update_included": True,
+            "fixed_batch_collection_included": (
+                protocol.fixed_batch_capacity is not None
+            ),
             "artifact_serialization_included": False,
             "evaluation_included": False,
             "policy_promotion_authorized": False,
         },
         "source": source,
         "runtime": runtime,
+        "seed_access": expected_seed_access,
+        "collector": expected_collector_contract,
         "protocol": {
             **asdict(protocol),
             "device_resolved": str(device),
@@ -459,14 +592,12 @@ def run_benchmark(
                 * (protocol.rollout_ticks + 1)
             ),
             "schedule_contract": (
-                "canonical_open_ecology_phase_a_broad_treatment_v1"
+                "canonical_open_ecology_operational_benchmark_phase_a_v1"
                 if protocol.input_contract == "tokenized"
                 else "legacy_recurrent_training_schedule"
             ),
             "training_phase": (
-                OPEN_ECOLOGY_PHASE_A
-                if protocol.input_contract == "tokenized"
-                else None
+                OPEN_ECOLOGY_PHASE_A if protocol.input_contract == "tokenized" else None
             ),
             "timing_boundary": "runner.run_only",
             "fresh_identically_seeded_runner_per_sample": True,
@@ -566,17 +697,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--learner-seed",
         type=int,
-        default=OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][0],
+        default=None,
     )
     parser.add_argument("--update-epochs", type=int, default=1)
     parser.add_argument("--sequence-minibatch-size", type=int, default=64)
     parser.add_argument("--tbptt-steps", type=int, default=32)
     parser.add_argument("--burn-in-steps", type=int, default=8)
+    parser.add_argument("--fixed-batch-capacity", type=int)
     parser.add_argument("--preregistered-gate-member", action="store_true")
     return parser
 
 
 def protocol_from_args(args: argparse.Namespace) -> PipelineBenchmarkProtocol:
+    learner_seed = args.learner_seed
+    if learner_seed is None:
+        learner_seed = (
+            OPEN_ECOLOGY_SEED_REGISTRY["open_ecology_learner"][0]
+            if args.input_contract == "base"
+            else OPEN_ECOLOGY_SEED_REGISTRY[OPEN_ECOLOGY_BENCHMARK_SEED_ROLE][
+                OPEN_ECOLOGY_BENCHMARK_LEARNER_SEED_INDEX
+            ]
+        )
     protocol = PipelineBenchmarkProtocol(
         worker_counts=_parse_positive_integer_csv(
             args.worker_counts,
@@ -597,11 +738,12 @@ def protocol_from_args(args: argparse.Namespace) -> PipelineBenchmarkProtocol:
         encoder_size=args.encoder_size,
         hidden_size=args.hidden_size,
         recurrent_layers=args.recurrent_layers,
-        learner_seed=args.learner_seed,
+        learner_seed=learner_seed,
         update_epochs=args.update_epochs,
         sequence_minibatch_size=args.sequence_minibatch_size,
         tbptt_steps=args.tbptt_steps,
         burn_in_steps=args.burn_in_steps,
+        fixed_batch_capacity=args.fixed_batch_capacity,
         preregistered_gate_member=args.preregistered_gate_member,
     )
     protocol.validate()
