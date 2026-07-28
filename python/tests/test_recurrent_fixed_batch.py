@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import unittest
+from unittest import mock
 
 import torch
 
@@ -13,6 +15,7 @@ from evolution_sim.config import (
     WorldConfig,
 )
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
+from evolution_sim.env.runtime.observations import encode_observation_input
 from evolution_sim.env.runtime.state import RunMode
 from evolution_sim.env.runtime.ticks import deterministic_agent_turn_order
 from evolution_sim.env.world import SimulationWorld
@@ -596,6 +599,235 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             )
         self.assertEqual(core.batch_calls, [])
         self.assertEqual(core.scalar_calls, 0)
+
+    def test_fixed_batch_encodes_each_staged_observation_once(self) -> None:
+        core = _ExactBatchCore()
+        with mock.patch(
+            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
+            wraps=encode_observation_input,
+        ) as encode:
+            self._collect(
+                core=core,
+                world_id="fixed-single-encoding",
+                fixed=True,
+                seed=61,
+                initial_agents=4,
+                rollout_ticks=2,
+            )
+
+        staged_row_count = sum(
+            active_rows for active_rows, _capacity, _conditioned in core.batch_calls
+        )
+        self.assertGreater(staged_row_count, 0)
+        self.assertEqual(encode.call_count, staged_row_count)
+
+    def test_fixed_batch_validates_staged_state_without_reencoding_or_partial_commit(
+        self,
+    ) -> None:
+        core = _ExactBatchCore()
+        collector = RecurrentOnPolicyCollector(
+            core,
+            fixed_batch_contract=RecurrentFixedBatchRuntimeContract.open_ecology(),
+        )
+        collector.start_world(
+            world_id="fixed-observation-drift",
+            environment_seed=67,
+            policy_sampling_seed=71,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            self._world_config(
+                seed=67,
+                max_ticks=2,
+                initial_agents=2,
+            ),
+            policy=collector,
+        )
+        ordered_agent_ids = deterministic_agent_turn_order(
+            tuple(world.agents),
+            seed=world.config.seed,
+            tick=world.tick,
+        )
+        observations = {
+            agent_id: world._observe_agent(world.agents[agent_id])
+            for agent_id in ordered_agent_ids
+        }
+        collector.stage_tick_start_batch(
+            tick=world.tick,
+            ordered_agent_ids=ordered_agent_ids,
+            observations_by_agent=observations,
+        )
+        rng_state_before = copy.deepcopy(collector._rng.getstate())
+        staged_before = copy.deepcopy(collector._staged_by_agent)
+        agent_id = ordered_agent_ids[0]
+        self_state = observations[agent_id]["self"]
+        self.assertIsInstance(self_state, dict)
+        original_energy_ratio = self_state["energy_ratio"]
+        self_state["energy_ratio"] = 0.123456789
+
+        with mock.patch(
+            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
+            wraps=encode_observation_input,
+        ) as encode:
+            with self.assertRaisesRegex(
+                RecurrentRolloutError,
+                "staged observation drifted before sampling",
+            ):
+                collector.decide(
+                    observations[agent_id],
+                    dict(observations[agent_id]["action_mask"]),
+                )
+
+            self.assertIn(agent_id, collector._staged_by_agent)
+            self_state["energy_ratio"] = original_energy_ratio
+            drifted_mask = dict(observations[agent_id]["action_mask"])
+            drifted_mask["stay"] = not drifted_mask["stay"]
+            with self.assertRaisesRegex(
+                RecurrentRolloutError,
+                "staged inputs drifted before sampling",
+            ):
+                collector.decide(observations[agent_id], drifted_mask)
+
+            self.assertEqual(collector._rng.getstate(), rng_state_before)
+            self.assertEqual(collector._decision_index, 0)
+            self.assertEqual(collector._pending_by_agent, {})
+            self.assertEqual(collector._hidden_by_agent, {})
+            self.assertEqual(collector._feedback_by_agent, {})
+            self.assertEqual(collector._staged_by_agent, staged_before)
+            collector._hidden_by_agent[agent_id] = (9.0, 9.0, 9.0)
+            with self.assertRaisesRegex(
+                RecurrentRolloutError,
+                "staged inputs drifted before sampling",
+            ):
+                collector.decide(
+                    observations[agent_id],
+                    dict(observations[agent_id]["action_mask"]),
+                )
+
+            self.assertEqual(collector._rng.getstate(), rng_state_before)
+            self.assertEqual(collector._decision_index, 0)
+            self.assertEqual(collector._pending_by_agent, {})
+            self.assertEqual(
+                collector._hidden_by_agent,
+                {agent_id: (9.0, 9.0, 9.0)},
+            )
+            self.assertEqual(collector._feedback_by_agent, {})
+            self.assertEqual(collector._staged_by_agent, staged_before)
+            self.assertIn(agent_id, collector._staged_by_agent)
+            collector._hidden_by_agent.pop(agent_id)
+            decision = collector.decide(
+                copy.deepcopy(observations[agent_id]),
+                dict(observations[agent_id]["action_mask"]),
+            )
+
+        self.assertEqual(encode.call_count, 0)
+        self.assertEqual(decision.source, "learned_recurrent_on_policy")
+        self.assertEqual(collector._decision_index, 1)
+        self.assertIn(agent_id, collector._pending_by_agent)
+        self.assertNotIn(agent_id, collector._staged_by_agent)
+        self.assertEqual(collector._hidden_by_agent[agent_id], (1.0, 1.0, 1.0))
+
+    def test_fixed_action_free_bootstrap_encodes_each_observation_once(self) -> None:
+        core = _ExactBatchCore()
+        collector = RecurrentOnPolicyCollector(
+            core,
+            fixed_batch_contract=RecurrentFixedBatchRuntimeContract.open_ecology(),
+        )
+        collector.start_world(
+            world_id="fixed-action-free-single-encoding",
+            environment_seed=73,
+            policy_sampling_seed=79,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            self._world_config(
+                seed=73,
+                max_ticks=1,
+                initial_agents=4,
+            ),
+            policy=collector,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=1)
+
+        with mock.patch(
+            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
+            wraps=encode_observation_input,
+        ) as encode:
+            evidence = collector.finalize_action_free_bootstrap(
+                tick=1,
+                ordered_agent_ids=prepared.ordered_agent_ids,
+                observations_by_agent=prepared.observation_snapshots,
+            )
+
+        self.assertEqual(encode.call_count, len(prepared.ordered_agent_ids))
+        self.assertFalse(evidence["action_sampled"])
+        collector.finish_world()
+
+    def test_fixed_action_free_bootstrap_is_atomic_on_late_observation_drift(
+        self,
+    ) -> None:
+        core = _ExactBatchCore()
+        collector = RecurrentOnPolicyCollector(
+            core,
+            fixed_batch_contract=RecurrentFixedBatchRuntimeContract.open_ecology(),
+        )
+        collector.start_world(
+            world_id="fixed-action-free-atomicity",
+            environment_seed=83,
+            policy_sampling_seed=89,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            self._world_config(
+                seed=83,
+                max_ticks=1,
+                initial_agents=4,
+            ),
+            policy=collector,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=1)
+        collector.stage_tick_start_batch(
+            tick=1,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+        steps_before = collector.buffer.steps
+        policy_state_before = collector._action_free_policy_state()
+        drifted_agent_id = prepared.ordered_agent_ids[1]
+        self_state = prepared.observation_snapshots[drifted_agent_id]["self"]
+        self.assertIsInstance(self_state, dict)
+        original_energy_ratio = self_state["energy_ratio"]
+        self_state["energy_ratio"] = 0.87654321
+
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "action-free bootstrap staged observation drifted",
+        ):
+            collector.finalize_action_free_bootstrap(
+                tick=1,
+                ordered_agent_ids=prepared.ordered_agent_ids,
+                observations_by_agent=prepared.observation_snapshots,
+            )
+
+        self.assertEqual(collector.buffer.steps, steps_before)
+        self.assertEqual(collector._action_free_policy_state(), policy_state_before)
+        self.assertEqual(collector._staged_by_agent, {})
+        self.assertIsNone(collector._staged_tick)
+        self.assertEqual(collector._bootstrap_value_rows, {})
+
+        self_state["energy_ratio"] = original_energy_ratio
+        evidence = collector.finalize_action_free_bootstrap(
+            tick=1,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+        self.assertEqual(
+            evidence["target_eligible_agent_count"],
+            len(prepared.ordered_agent_ids),
+        )
+        collector.finish_world()
 
     def test_torch_fixed_batch_is_same_contract_exact_and_scalar_close(self) -> None:
         model = PublicRecurrentActorCritic(

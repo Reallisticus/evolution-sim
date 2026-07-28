@@ -662,6 +662,7 @@ class StagedRecurrentDecision:
     tick: int
     turn_rank: int
     active_rows: int
+    observation_snapshot: dict[str, object]
     policy_input: tuple[float, ...]
     previous_feedback: PreviousPublicFeedback
     action_mask: tuple[bool, ...]
@@ -1173,25 +1174,55 @@ class RecurrentRolloutBuffer:
         agent_id: int,
         bootstrap_value: float,
     ) -> bool:
-        key = (world_id, agent_id)
-        indices = self._indices_by_agent.get(key)
-        if not indices:
-            return False
-        index = indices[-1]
-        step = self._steps[index]
-        if step.terminated:
-            return False
-        if step.truncated:
-            raise RecurrentRolloutError("agent rollout was already truncated")
-        self._steps[index] = replace(
-            step,
-            truncated=True,
-            bootstrap_value=_finite_float(
-                bootstrap_value,
-                field="bootstrap value",
-            ),
-        )
-        return True
+        return self.mark_truncated_batch(
+            world_id=world_id,
+            bootstrap_values_by_agent={agent_id: bootstrap_value},
+        )[agent_id]
+
+    def mark_truncated_batch(
+        self,
+        *,
+        world_id: str,
+        bootstrap_values_by_agent: Mapping[int, object],
+    ) -> dict[int, bool]:
+        """Validate every bootstrap row before committing any truncation."""
+
+        planned: list[tuple[int, RecurrentRolloutStep]] = []
+        target_eligibility: dict[int, bool] = {}
+        for raw_agent_id, raw_bootstrap_value in bootstrap_values_by_agent.items():
+            agent_id = _strict_int(
+                raw_agent_id,
+                field="bootstrap agent_id",
+            )
+            key = (world_id, agent_id)
+            indices = self._indices_by_agent.get(key)
+            if not indices:
+                target_eligibility[agent_id] = False
+                continue
+            index = indices[-1]
+            step = self._steps[index]
+            if step.terminated:
+                target_eligibility[agent_id] = False
+                continue
+            if step.truncated:
+                raise RecurrentRolloutError("agent rollout was already truncated")
+            planned.append(
+                (
+                    index,
+                    replace(
+                        step,
+                        truncated=True,
+                        bootstrap_value=_finite_float(
+                            raw_bootstrap_value,
+                            field="bootstrap value",
+                        ),
+                    ),
+                )
+            )
+            target_eligibility[agent_id] = True
+        for index, replacement in planned:
+            self._steps[index] = replacement
+        return target_eligibility
 
     def validate_world_closed(self, world_id: str) -> None:
         open_agents = [
@@ -1674,6 +1705,10 @@ class RecurrentOnPolicyCollector:
 
         state_before = self._action_free_policy_state()
         value_rows: dict[int, dict[str, object]] = {}
+        prepared_value_rows: dict[
+            int,
+            tuple[tuple[float, ...], RecurrentCoreOutput, str | None],
+        ] = {}
         try:
             if (
                 ordered_ids
@@ -1688,20 +1723,23 @@ class RecurrentOnPolicyCollector:
                 )
             for agent_id in ordered_ids:
                 observation = observations_by_agent[agent_id]
-                (
-                    policy_input,
-                    mask,
-                    hidden,
-                    previous_feedback,
-                    genome_values,
-                    genome_sha256,
-                    genome_stream_seed,
-                ) = self._decision_inputs(
-                    observation,
-                    _mapping(observation.get("action_mask"), field="action_mask"),
-                    expected_agent_id=agent_id,
-                )
                 if self._fixed_batch_contract is None:
+                    (
+                        policy_input,
+                        mask,
+                        hidden,
+                        previous_feedback,
+                        genome_values,
+                        genome_sha256,
+                        genome_stream_seed,
+                    ) = self._decision_inputs(
+                        observation,
+                        _mapping(
+                            observation.get("action_mask"),
+                            field="action_mask",
+                        ),
+                        expected_agent_id=agent_id,
+                    )
                     if (
                         self._genome_conditioning_mode
                         == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
@@ -1726,42 +1764,56 @@ class RecurrentOnPolicyCollector:
                         raise RecurrentRolloutError(
                             "action-free bootstrap fixed batch tick drifted"
                         )
-                    staged = self._staged_by_agent.pop(agent_id, None)
-                    if staged is None:
-                        raise RecurrentRolloutError(
+                    staged = self._consume_staged_decision(
+                        observation=observation,
+                        action_mask=_mapping(
+                            observation.get("action_mask"),
+                            field="action_mask",
+                        ),
+                        expected_agent_id=agent_id,
+                        missing_error=(
                             f"agent {agent_id} has no staged bootstrap value"
-                        )
-                    if (
-                        staged.policy_input,
-                        staged.action_mask,
-                        staged.hidden,
-                        staged.previous_feedback,
-                        staged.genome_values,
-                        staged.genome_sha256,
-                        staged.genome_stream_seed,
-                    ) != (
-                        policy_input,
-                        mask,
-                        hidden,
-                        previous_feedback,
-                        genome_values,
-                        genome_sha256,
-                        genome_stream_seed,
-                    ):
-                        raise RecurrentRolloutError(
+                        ),
+                        observation_drift_error=(
+                            "action-free bootstrap staged observation drifted"
+                        ),
+                        state_drift_error=(
                             "action-free bootstrap staged inputs drifted"
-                        )
+                        ),
+                    )
+                    policy_input = staged.policy_input
+                    mask = staged.action_mask
+                    hidden = staged.hidden
+                    previous_feedback = staged.previous_feedback
+                    genome_values = staged.genome_values
+                    genome_sha256 = staged.genome_sha256
                     output = staged.output
-                target_eligible = self.buffer.mark_truncated(
-                    world_id=world_id,
-                    agent_id=agent_id,
-                    bootstrap_value=output.value,
+                prepared_value_rows[agent_id] = (
+                    policy_input,
+                    output,
+                    genome_sha256,
                 )
+            target_eligibility = self.buffer.mark_truncated_batch(
+                world_id=world_id,
+                bootstrap_values_by_agent={
+                    agent_id: output.value
+                    for agent_id, (
+                        _policy_input,
+                        output,
+                        _genome_sha256,
+                    ) in prepared_value_rows.items()
+                },
+            )
+            for agent_id, (
+                policy_input,
+                output,
+                genome_sha256,
+            ) in prepared_value_rows.items():
                 value_rows[agent_id] = _bootstrap_value_evidence_row(
                     agent_id=agent_id,
                     policy_input=policy_input,
                     value=output.value,
-                    target_eligible=target_eligible,
+                    target_eligible=target_eligibility[agent_id],
                     genome_sha256=genome_sha256,
                 )
             if self._staged_by_agent:
@@ -1835,13 +1887,16 @@ class RecurrentOnPolicyCollector:
             )
 
         policy_inputs: list[tuple[float, ...]] = []
+        observation_snapshots: list[dict[str, object]] = []
         masks: list[tuple[bool, ...]] = []
         feedback_rows: list[PreviousPublicFeedback] = []
         hidden_rows: list[tuple[float, ...]] = []
         genome_rows: list[tuple[float, ...]] = []
         genome_bindings: list[tuple[str | None, int | None]] = []
         for agent_id in ordered_ids:
-            observation = observations_by_agent[agent_id]
+            # Bind the encoded input and drift guard to the same immutable
+            # public tick-start value, even for a hostile mutable Mapping.
+            observation = copy.deepcopy(dict(observations_by_agent[agent_id]))
             (
                 policy_input,
                 mask,
@@ -1855,6 +1910,7 @@ class RecurrentOnPolicyCollector:
                 _mapping(observation.get("action_mask"), field="action_mask"),
                 expected_agent_id=agent_id,
             )
+            observation_snapshots.append(observation)
             policy_inputs.append(policy_input)
             masks.append(mask)
             feedback_rows.append(previous_feedback)
@@ -1905,6 +1961,7 @@ class RecurrentOnPolicyCollector:
                 tick=tick,
                 turn_rank=turn_rank,
                 active_rows=len(ordered_ids),
+                observation_snapshot=observation_snapshots[turn_rank],
                 policy_input=policy_inputs[turn_rank],
                 previous_feedback=feedback_rows[turn_rank],
                 action_mask=masks[turn_rank],
@@ -1967,31 +2024,34 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError(
                 f"agent {agent_id} has an unfinalized previous decision"
             )
-        (
-            policy_input,
-            mask,
-            hidden,
-            previous_feedback,
-            genome_values,
-            genome_sha256,
-            genome_stream_seed,
-        ) = self._decision_inputs(
-            observation,
-            action_mask,
-            expected_agent_id=agent_id,
-        )
         staged = None
         if self._fixed_batch_contract is not None:
             if self._staged_tick is None:
                 raise RecurrentRolloutError(
                     "fixed recurrent batch decision has no staged tick-start output"
                 )
-            staged = self._staged_by_agent.pop(agent_id, None)
-            if staged is None:
-                raise RecurrentRolloutError(
-                    f"agent {agent_id} has no staged fixed-batch output"
-                )
-            observed_staged_inputs = (
+            staged = self._consume_staged_decision(
+                observation=observation,
+                action_mask=action_mask,
+                expected_agent_id=agent_id,
+                missing_error=(f"agent {agent_id} has no staged fixed-batch output"),
+                observation_drift_error=(
+                    "fixed recurrent batch staged observation drifted before sampling"
+                ),
+                state_drift_error=(
+                    "fixed recurrent batch staged inputs drifted before sampling"
+                ),
+            )
+            policy_input = staged.policy_input
+            mask = staged.action_mask
+            hidden = staged.hidden
+            previous_feedback = staged.previous_feedback
+            genome_values = staged.genome_values
+            genome_sha256 = staged.genome_sha256
+            genome_stream_seed = staged.genome_stream_seed
+            output = staged.output
+        else:
+            (
                 policy_input,
                 mask,
                 hidden,
@@ -1999,22 +2059,11 @@ class RecurrentOnPolicyCollector:
                 genome_values,
                 genome_sha256,
                 genome_stream_seed,
+            ) = self._decision_inputs(
+                observation,
+                action_mask,
+                expected_agent_id=agent_id,
             )
-            expected_staged_inputs = (
-                staged.policy_input,
-                staged.action_mask,
-                staged.hidden,
-                staged.previous_feedback,
-                staged.genome_values,
-                staged.genome_sha256,
-                staged.genome_stream_seed,
-            )
-            if observed_staged_inputs != expected_staged_inputs:
-                raise RecurrentRolloutError(
-                    "fixed recurrent batch staged inputs drifted before sampling"
-                )
-            output = staged.output
-        else:
             if (
                 self._genome_conditioning_mode
                 == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
@@ -2482,6 +2531,33 @@ class RecurrentOnPolicyCollector:
                 f"{len(policy_input)} != {self._public_input_size}"
             )
         mask = _action_mask_tuple(action_mask)
+        (
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) = self._decision_state_inputs(expected_agent_id)
+        return (
+            tuple(policy_input),
+            mask,
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        )
+
+    def _decision_state_inputs(
+        self,
+        expected_agent_id: int,
+    ) -> tuple[
+        tuple[float, ...],
+        PreviousPublicFeedback,
+        tuple[float, ...] | None,
+        str | None,
+        int | None,
+    ]:
         hidden = (
             None
             if self._reset_recurrent_state_each_decision
@@ -2515,14 +2591,56 @@ class RecurrentOnPolicyCollector:
             genome_sha256 = binding.genome_sha256
             genome_stream_seed = manager.genome_stream_seed
         return (
-            tuple(policy_input),
-            mask,
             hidden,
             previous_feedback,
             genome_values,
             genome_sha256,
             genome_stream_seed,
         )
+
+    def _consume_staged_decision(
+        self,
+        *,
+        observation: Mapping[str, object],
+        action_mask: Mapping[str, object],
+        expected_agent_id: int,
+        missing_error: str,
+        observation_drift_error: str,
+        state_drift_error: str,
+    ) -> StagedRecurrentDecision:
+        staged = self._staged_by_agent.get(expected_agent_id)
+        if staged is None:
+            raise RecurrentRolloutError(missing_error)
+        if dict(observation) != staged.observation_snapshot:
+            raise RecurrentRolloutError(observation_drift_error)
+        mask = _action_mask_tuple(action_mask)
+        (
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) = self._decision_state_inputs(expected_agent_id)
+        if (
+            mask,
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) != (
+            staged.action_mask,
+            staged.hidden,
+            staged.previous_feedback,
+            staged.genome_values,
+            staged.genome_sha256,
+            staged.genome_stream_seed,
+        ):
+            raise RecurrentRolloutError(state_drift_error)
+        consumed = self._staged_by_agent.pop(expected_agent_id)
+        if consumed is not staged:
+            raise AssertionError("staged recurrent decision changed before consume")
+        return staged
 
     def _reconcile_staged_tick(
         self,
