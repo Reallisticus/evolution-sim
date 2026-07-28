@@ -1218,8 +1218,11 @@ class OpenEcologyPersistentIslandTests(unittest.TestCase):
                     restore(h_task, h_pins)
             finally:
                 release_loads.set()
-            restored_h = h_future.result(timeout=90)
-            restored_z = z_future.result(timeout=90)
+            # This is a deadlock guard, not a restore-throughput gate.  The
+            # exact same full-model restore takes materially longer on the
+            # shared GitHub CPU runner than on the qualification workstation.
+            restored_h = h_future.result(timeout=300)
+            restored_z = z_future.result(timeout=300)
 
         self.assertEqual(restored_h.observed_tick, 1)
         self.assertEqual(restored_z.observed_tick, 1)

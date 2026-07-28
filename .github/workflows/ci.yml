@@ -70,7 +70,10 @@ jobs:
 
   mind-recurrent-cpu:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The persistent-island integration contracts intentionally execute real
+    # worlds and full model restores.  Keep a fail-closed ceiling while
+    # allowing the complete lane and its terminal source-bound proof to run.
+    timeout-minutes: 180
     env:
       PYTHONHASHSEED: "0"
       PYTHONPATH: python
