@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import sys
 import unittest
 from unittest import mock
 
@@ -23,6 +24,7 @@ from evolution_sim.env.runtime.ticks import (
     deterministic_agent_turn_order,
 )
 from evolution_sim.env.world import SimulationWorld
+from evolution_sim.mind import recurrent_rollout
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
     ecological_policy_input_values,
@@ -1662,11 +1664,18 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         )
         self.assertIsNotNone(genomes)
         original_forward_sequence = model.forward_sequence
-        with mock.patch.object(
-            model,
-            "forward_sequence",
-            wraps=original_forward_sequence,
-        ) as observed_forward:
+        with (
+            mock.patch.object(
+                model,
+                "forward_sequence",
+                wraps=original_forward_sequence,
+            ) as observed_forward,
+            mock.patch.object(
+                torch,
+                "from_numpy",
+                wraps=torch.from_numpy,
+            ) as observed_numpy_bridge,
+        ):
             core_outputs = core.forward_fixed_batch(
                 observations,
                 masks,
@@ -1677,6 +1686,7 @@ class RecurrentFixedBatchTests(unittest.TestCase):
                 genome_values=genomes,
             )
         observed_forward.assert_called_once()
+        self.assertEqual(observed_numpy_bridge.call_count, 5)
         call = observed_forward.call_args
         padded_observations = call.args[0].detach().clone()
         padded_masks = call.args[1].detach().clone()
@@ -1684,6 +1694,41 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         padded_genomes = call.kwargs["genome_values"].detach().clone()
         padded_state = call.kwargs["initial_state"].detach().clone()
         self.assertEqual(tuple(padded_observations.shape[:2]), (1, 4))
+        expected_observations = torch.zeros_like(padded_observations)
+        expected_observations[0, :3] = torch.tensor(
+            observations,
+            dtype=padded_observations.dtype,
+        )
+        expected_masks = torch.zeros_like(padded_masks)
+        expected_masks[0, :3] = torch.tensor(
+            masks,
+            dtype=torch.bool,
+        )
+        expected_masks[0, 3, ACTION_NAMES.index("stay")] = True
+        expected_feedback = torch.zeros_like(padded_feedback)
+        expected_feedback[0, :3] = torch.tensor(
+            tuple(row.vector() for row in feedback),
+            dtype=padded_feedback.dtype,
+        )
+        expected_genomes = torch.zeros_like(padded_genomes)
+        expected_genomes[0, :3] = torch.tensor(
+            genomes,
+            dtype=padded_genomes.dtype,
+        )
+        expected_state = torch.zeros_like(padded_state)
+        expected_state[:, :3] = (
+            torch.tensor(hidden, dtype=padded_state.dtype)
+            .reshape(3, model.config.recurrent_layers, model.config.hidden_size)
+            .permute(1, 0, 2)
+        )
+        for actual, expected in (
+            (padded_observations.cpu(), expected_observations),
+            (padded_masks.cpu(), expected_masks),
+            (padded_feedback.cpu(), expected_feedback),
+            (padded_genomes.cpu(), expected_genomes),
+            (padded_state.cpu(), expected_state),
+        ):
+            self.assertTrue(torch.equal(actual, expected))
         self.assertEqual(
             int(torch.count_nonzero(padded_observations[0, 3]).item()),
             0,
@@ -1890,6 +1935,200 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             )
             self.assertAlmostEqual(batch_row.value, scalar_row.value, places=6)
 
+    def test_torch_collector_forwards_run_in_inference_mode_and_emit_python_floats(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                recurrent_layers=1,
+            ),
+            initialization_seed=103,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        (
+            observations,
+            masks,
+            feedback,
+            hidden,
+            _genomes,
+            _actions,
+        ) = self._real_core_numeric_inputs(
+            core,
+            active_rows=2,
+            genome_conditioned=False,
+        )
+        observed_contexts: list[tuple[bool, bool]] = []
+        original_forward_sequence = model.forward_sequence
+
+        def observe_context(*args: object, **kwargs: object) -> SequenceEvaluation:
+            observed_contexts.append(
+                (
+                    torch.is_inference_mode_enabled(),
+                    torch.is_grad_enabled(),
+                )
+            )
+            return original_forward_sequence(*args, **kwargs)
+
+        with mock.patch.object(
+            model,
+            "forward_sequence",
+            side_effect=observe_context,
+        ):
+            scalar = core.forward_step(
+                observations[0],
+                masks[0],
+                feedback[0],
+                hidden[0],
+            )
+            batched = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=2,
+            )
+
+        self.assertEqual(observed_contexts, [(True, False), (True, False)])
+        for output in (scalar, *batched):
+            self.assertIs(type(output.value), float)
+            self.assertTrue(all(type(value) is float for value in output.logits))
+            self.assertTrue(all(type(value) is float for value in output.next_hidden))
+        runtime_metadata = core.fixed_batch_runtime_metadata()
+        self.assertEqual(
+            runtime_metadata["implementation"],
+            (
+                "PublicRecurrentActorCritic.forward_sequence_time1_"
+                "bounded_bucket_batch_v3"
+            ),
+        )
+        self.assertEqual(
+            runtime_metadata["tensor_bridge_actual_branch"],
+            "numpy_from_numpy_cpu_float32_bool_native_c_v1",
+        )
+        self.assertEqual(
+            runtime_metadata["inference_context_version"],
+            "torch_inference_mode_v1",
+        )
+        self.assertEqual(
+            runtime_metadata["output_materialization_version"],
+            "detach_cpu_item_tolist_then_validated_python_float_v1",
+        )
+        self.assertEqual(
+            runtime_metadata["observation_projection_version"],
+            "validated_fused_quantized_diagnostic_filter_v1",
+        )
+        self.assertTrue(runtime_metadata["numpy_version"])
+        self.assertIn(runtime_metadata["native_byte_order"], {"little", "big"})
+
+    def test_torch_fixed_batch_preserves_non_float32_model_dtype_fallback(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                recurrent_layers=1,
+            ),
+            initialization_seed=107,
+        ).to(dtype=torch.float64)
+        core = TorchRecurrentPolicyCore(model)
+        (
+            observations,
+            masks,
+            feedback,
+            hidden,
+            genomes,
+            _actions,
+        ) = self._real_core_numeric_inputs(
+            core,
+            active_rows=3,
+            genome_conditioned=False,
+        )
+        self.assertIsNone(genomes)
+        original_forward_sequence = model.forward_sequence
+        with (
+            mock.patch.object(
+                model,
+                "forward_sequence",
+                wraps=original_forward_sequence,
+            ) as observed_forward,
+            mock.patch.object(
+                torch,
+                "from_numpy",
+                wraps=torch.from_numpy,
+            ) as observed_numpy_bridge,
+        ):
+            outputs = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=4,
+            )
+        self.assertEqual(observed_numpy_bridge.call_count, 0)
+        call = observed_forward.call_args
+        self.assertEqual(call.args[0].dtype, torch.float64)
+        self.assertEqual(call.args[1].dtype, torch.bool)
+        self.assertEqual(call.args[2].dtype, torch.float64)
+        self.assertEqual(call.kwargs["initial_state"].dtype, torch.float64)
+        self.assertEqual(len(outputs), 3)
+        self.assertEqual(
+            core.fixed_batch_runtime_metadata()["tensor_bridge_actual_branch"],
+            "torch_tensor_device_dtype_layout_fallback_v1",
+        )
+
+    def test_torch_fixed_batch_preserves_missing_numpy_fallback(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                recurrent_layers=1,
+            ),
+            initialization_seed=109,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        (
+            observations,
+            masks,
+            feedback,
+            hidden,
+            genomes,
+            _actions,
+        ) = self._real_core_numeric_inputs(
+            core,
+            active_rows=3,
+            genome_conditioned=False,
+        )
+        self.assertIsNone(genomes)
+        with (
+            mock.patch.dict(sys.modules, {"numpy": None}),
+            mock.patch.object(
+                torch,
+                "from_numpy",
+                wraps=torch.from_numpy,
+            ) as observed_numpy_bridge,
+        ):
+            outputs = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=4,
+            )
+            runtime_metadata = core.fixed_batch_runtime_metadata()
+        self.assertEqual(observed_numpy_bridge.call_count, 0)
+        self.assertEqual(len(outputs), 3)
+        self.assertIsNone(runtime_metadata["numpy_version"])
+        self.assertEqual(
+            runtime_metadata["tensor_bridge_actual_branch"],
+            "torch_tensor_device_dtype_layout_fallback_v1",
+        )
+
     def test_production_width_phase_b_density_128_is_exact_across_workers(
         self,
     ) -> None:
@@ -2021,6 +2260,36 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             alternate_threads,
         )
         self.assertNotEqual(one_thread["exact_digest"], alternate["exact_digest"])
+
+    def test_runtime_identity_changes_with_observation_projection_version(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+            ),
+            initialization_seed=110,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        baseline = _fixed_batch_runtime_binding(
+            RecurrentFixedBatchRuntimeContract.open_ecology(),
+            core=core,
+        )
+        with mock.patch.object(
+            recurrent_rollout,
+            "ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION",
+            "test_projection_version",
+        ):
+            alternate = _fixed_batch_runtime_binding(
+                RecurrentFixedBatchRuntimeContract.open_ecology(),
+                core=core,
+            )
+        self.assertNotEqual(baseline["exact_digest"], alternate["exact_digest"])
+        self.assertEqual(
+            alternate["observed_runtime"]["observation_projection_version"],
+            "test_projection_version",
+        )
 
     def test_fixed_disabled_legacy_run_retains_v5_contract(self) -> None:
         learner_seed = 113

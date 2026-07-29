@@ -7,6 +7,7 @@ import math
 import os
 import platform
 import random
+import sys
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -32,6 +33,7 @@ from evolution_sim.env.runtime.state import empty_mind_inheritance_metadata
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION,
     TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_values,
     ecological_policy_values_from_observation,
@@ -77,6 +79,13 @@ RECURRENT_GENOME_CONDITIONING_DISABLED = "disabled"
 RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
 RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION = (
     "mind_v3_recurrent_intra_world_fixed_batch_runtime_v2"
+)
+RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION = (
+    "exact_tuple_rows_cpu_float32_bool_native_c_else_torch_tensor_v1"
+)
+RECURRENT_INFERENCE_CONTEXT_VERSION = "torch_inference_mode_v1"
+RECURRENT_OUTPUT_MATERIALIZATION_VERSION = (
+    "detach_cpu_item_tolist_then_validated_python_float_v1"
 )
 RECURRENT_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = (
     "mind_v3_recurrent_rollout_decision_fixed_batch_v2"
@@ -393,6 +402,33 @@ class RecurrentPolicyCore(Protocol):
     def fixed_batch_runtime_metadata(self) -> Mapping[str, object]: ...
 
 
+def _recurrent_inference_context(torch_module: Any) -> Any:
+    """Return the versioned inference context used by the production adapter."""
+
+    return torch_module.inference_mode()
+
+
+def _materialized_float(value: object) -> float:
+    """Preserve the public Python-float boundary without redundant recasting."""
+
+    if type(value) is not float:
+        raise RecurrentRolloutError(
+            "recurrent runtime output materialization did not produce a Python float"
+        )
+    return value
+
+
+def _materialized_float_tuple(values: Sequence[object]) -> tuple[float, ...]:
+    """Preserve an exact tuple of Python floats at the rollout boundary."""
+
+    materialized = tuple(values)
+    if any(type(value) is not float for value in materialized):
+        raise RecurrentRolloutError(
+            "recurrent runtime output materialization did not produce Python floats"
+        )
+    return materialized  # type: ignore[return-value]
+
+
 class TorchRecurrentPolicyCore:
     """No-grad adapter from the shared torch model to the rollout protocol."""
 
@@ -449,11 +485,65 @@ class TorchRecurrentPolicyCore:
         self._layers = int(model.config.recurrent_layers)
         self._layer_hidden_size = int(model.config.hidden_size)
         self.hidden_size = self._layers * self._layer_hidden_size
+        self._last_tensor_bridge_branch: str | None = None
 
     def initial_hidden(self) -> tuple[float, ...]:
         state = self._model.initial_state(1)
-        return tuple(
-            float(value) for value in state.detach().cpu().reshape(-1).tolist()
+        return _materialized_float_tuple(
+            state.detach().cpu().reshape(-1).tolist()
+        )
+
+    def _tensor_from_nested_rows(
+        self,
+        values: Sequence[Sequence[object]],
+        *,
+        reference: Any,
+        dtype: Any,
+    ) -> Any:
+        """Construct public rollout rows through the exact CPU bridge when safe."""
+
+        torch = self._torch
+        numpy_dtype = None
+        numpy = None
+        if (
+            RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            == "exact_tuple_rows_cpu_float32_bool_native_c_else_torch_tensor_v1"
+            and
+            reference.device.type == "cpu"
+            and reference.dtype == torch.float32
+            and type(values) is tuple
+            and all(type(row) is tuple for row in values)
+        ):
+            try:
+                import numpy
+            except ModuleNotFoundError:
+                pass
+        if numpy is not None:
+            if dtype == torch.bool:
+                numpy_dtype = numpy.bool_
+            elif dtype == torch.float32:
+                numpy_dtype = numpy.float32
+        if numpy_dtype is not None:
+            try:
+                array = numpy.asarray(values, dtype=numpy_dtype)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if array.flags.c_contiguous and array.dtype.isnative:
+                    self._last_tensor_bridge_branch = (
+                        "numpy_from_numpy_cpu_float32_bool_native_c_v1"
+                    )
+                    return torch.from_numpy(array)
+        self._last_tensor_bridge_branch = (
+            "torch_tensor_device_dtype_layout_legacy_v0"
+            if RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            == "torch_tensor_device_dtype_layout_legacy_v0"
+            else "torch_tensor_device_dtype_layout_fallback_v1"
+        )
+        return torch.tensor(
+            tuple(tuple(row) for row in values),
+            device=reference.device,
+            dtype=dtype,
         )
 
     def forward_step(
@@ -496,7 +586,7 @@ class TorchRecurrentPolicyCore:
                 dtype=reference.dtype,
             ).reshape(1, 1, RECURRENT_CONTROLLER_GENOME_SIZE)
         )
-        with torch.no_grad():
+        with _recurrent_inference_context(torch):
             output = self._model.forward_sequence(
                 observations,
                 action_masks,
@@ -505,14 +595,14 @@ class TorchRecurrentPolicyCore:
                 initial_state=state,
             )
         return RecurrentCoreOutput(
-            logits=tuple(
-                float(value)
-                for value in output.raw_logits[0, 0].detach().cpu().tolist()
+            logits=_materialized_float_tuple(
+                output.raw_logits[0, 0].detach().cpu().tolist()
             ),
-            value=float(output.values[0, 0].detach().cpu().item()),
-            next_hidden=tuple(
-                float(value)
-                for value in output.final_state.detach().cpu().reshape(-1).tolist()
+            value=_materialized_float(
+                output.values[0, 0].detach().cpu().item()
+            ),
+            next_hidden=_materialized_float_tuple(
+                output.final_state.detach().cpu().reshape(-1).tolist()
             ),
         )
 
@@ -593,24 +683,24 @@ class TorchRecurrentPolicyCore:
             active_rows:,
             RECURRENT_ROLLOUT_ACTIONS.index("stay"),
         ] = True
-        padded_observations[0, :active_rows] = torch.tensor(
-            tuple(tuple(row) for row in observations),
-            device=reference.device,
+        padded_observations[0, :active_rows] = self._tensor_from_nested_rows(
+            observations,
+            reference=reference,
             dtype=reference.dtype,
         )
-        padded_action_masks[0, :active_rows] = torch.tensor(
-            tuple(tuple(row) for row in current_action_masks),
-            device=reference.device,
+        padded_action_masks[0, :active_rows] = self._tensor_from_nested_rows(
+            current_action_masks,
+            reference=reference,
             dtype=torch.bool,
         )
-        padded_feedback[0, :active_rows] = torch.tensor(
+        padded_feedback[0, :active_rows] = self._tensor_from_nested_rows(
             tuple(feedback.vector() for feedback in previous_feedback),
-            device=reference.device,
+            reference=reference,
             dtype=reference.dtype,
         )
-        hidden_tensor = torch.tensor(
-            tuple(tuple(row) for row in hidden),
-            device=reference.device,
+        hidden_tensor = self._tensor_from_nested_rows(
+            hidden,
+            reference=reference,
             dtype=reference.dtype,
         ).reshape(active_rows, self._layers, self._layer_hidden_size)
         padded_state[:, :active_rows] = hidden_tensor.permute(1, 0, 2)
@@ -622,12 +712,12 @@ class TorchRecurrentPolicyCore:
                 device=reference.device,
                 dtype=reference.dtype,
             )
-            padded_genomes[0, :active_rows] = torch.tensor(
-                tuple(tuple(row) for row in genome_values),
-                device=reference.device,
+            padded_genomes[0, :active_rows] = self._tensor_from_nested_rows(
+                genome_values,
+                reference=reference,
                 dtype=reference.dtype,
             )
-        with torch.no_grad():
+        with _recurrent_inference_context(torch):
             output = self._model.forward_sequence(
                 padded_observations,
                 padded_action_masks,
@@ -635,9 +725,7 @@ class TorchRecurrentPolicyCore:
                 genome_values=padded_genomes,
                 initial_state=padded_state,
             )
-        raw_logits = (
-            output.raw_logits[0, :active_rows].detach().cpu().tolist()
-        )
+        raw_logits = output.raw_logits[0, :active_rows].detach().cpu().tolist()
         values = output.values[0, :active_rows].detach().cpu().tolist()
         final_state = (
             output.final_state[:, :active_rows, :]
@@ -649,11 +737,9 @@ class TorchRecurrentPolicyCore:
         )
         return tuple(
             RecurrentCoreOutput(
-                logits=tuple(float(value) for value in raw_logits[row]),
-                value=float(values[row]),
-                next_hidden=tuple(
-                    float(value) for value in final_state[row]
-                ),
+                logits=_materialized_float_tuple(raw_logits[row]),
+                value=_materialized_float(values[row]),
+                next_hidden=_materialized_float_tuple(final_state[row]),
             )
             for row in range(active_rows)
         )
@@ -686,11 +772,54 @@ class TorchRecurrentPolicyCore:
                 "CPU architecture and Torch build identity are required for "
                 "fixed-batch provenance"
             )
+        numpy_version = None
+        try:
+            import numpy
+        except ModuleNotFoundError:
+            pass
+        else:
+            numpy_version = str(numpy.__version__)
+        tensor_bridge_probe_branches: dict[str, str] = {}
+        for probe_name, probe_values, probe_dtype in (
+            ("float32", ((0.0,),), reference.dtype),
+            ("bool", ((False,),), torch.bool),
+        ):
+            self._tensor_from_nested_rows(
+                probe_values,
+                reference=reference,
+                dtype=probe_dtype,
+            )
+            if self._last_tensor_bridge_branch is None:
+                raise RecurrentRolloutError(
+                    "fixed-batch tensor bridge probe did not record its actual branch"
+                )
+            tensor_bridge_probe_branches[probe_name] = (
+                self._last_tensor_bridge_branch
+            )
+        if len(set(tensor_bridge_probe_branches.values())) != 1:
+            raise RecurrentRolloutError(
+                "fixed-batch tensor bridge probes selected different runtime branches"
+            )
+        tensor_bridge_actual_branch = tensor_bridge_probe_branches["float32"]
         return {
             "implementation": (
                 "PublicRecurrentActorCritic.forward_sequence_time1_"
-                "bounded_bucket_batch_v2"
+                "bounded_bucket_batch_v3"
             ),
+            "tensor_bridge_dispatch_version": (
+                RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            ),
+            "tensor_bridge_actual_branch": tensor_bridge_actual_branch,
+            "tensor_bridge_probe_branches": tensor_bridge_probe_branches,
+            "inference_context_version": RECURRENT_INFERENCE_CONTEXT_VERSION,
+            "output_materialization_version": (
+                RECURRENT_OUTPUT_MATERIALIZATION_VERSION
+            ),
+            "observation_projection_version": (
+                ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION
+            ),
+            "numpy_version": numpy_version,
+            "native_byte_order": sys.byteorder,
             "device_type": reference.device.type,
             "device_index": reference.device.index,
             "dtype": str(reference.dtype),

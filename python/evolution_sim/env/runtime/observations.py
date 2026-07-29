@@ -50,6 +50,7 @@ OBSERVATION_STORAGE_DTYPE = "int16"
 OBSERVATION_STORAGE_ENCODING = "zlib_base64_little_endian_int16"
 OBSERVATION_QUANTIZATION_SCALE = 32767.0
 OBSERVATION_INPUT_VALUE_RANGE: tuple[float, float] = (-1.0, 1.0)
+_NO_EXCLUDED_OBSERVATION_INPUT_INDICES: frozenset[int] = frozenset()
 LOCAL_PATCH_RADIUS = 2
 NAVIGATION_RADIUS = 10
 METADATA_FIELDS: tuple[str, ...] = ("agent_id",)
@@ -561,16 +562,29 @@ def encode_observation_input(observation: dict[str, object]) -> dict[str, object
 
 def quantized_observation_input_values(
     observation: dict[str, object],
+    *,
+    excluded_indices: frozenset[int] = _NO_EXCLUDED_OBSERVATION_INPUT_INDICES,
 ) -> list[float]:
     """Return the canonical decoded values without constructing a storage payload.
 
     The source observation validation and int16 quantization round trip are
     identical to ``decode_observation_input(encode_observation_input(...))``.
-    Only storage framing, compression, and base64 encoding are skipped.
+    Only storage framing, compression, and base64 encoding are skipped. Callers
+    may exclude validated source indices from the returned projection without
+    quantizing and dequantizing values that cannot reach that projection.
     """
-    _, _, _, values = _validated_observation_input_values(observation)
-    return _dequantize_observation_input_values(
-        _quantize_observation_input_values(values)
+    _, _, expected_size, values = _validated_observation_input_values(observation)
+    for index in excluded_indices:
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index >= expected_size
+        ):
+            raise ValueError("excluded observation input index is invalid")
+    return _quantized_validated_observation_input_values(
+        values,
+        excluded_indices=excluded_indices,
     )
 
 
@@ -1105,6 +1119,22 @@ def _dequantize_observation_input_values(
     ]
     _validate_decoded_values(values)
     return values
+
+
+def _quantized_validated_observation_input_values(
+    values: Sequence[float],
+    *,
+    excluded_indices: frozenset[int],
+) -> list[float]:
+    """Round-trip values already validated by the observation encoder boundary."""
+    return [
+        _round(
+            float(int(round(value * OBSERVATION_QUANTIZATION_SCALE)))
+            / OBSERVATION_QUANTIZATION_SCALE
+        )
+        for index, value in enumerate(values)
+        if index not in excluded_indices
+    ]
 
 
 def _pack_quantized_values(values: list[float]) -> bytes:

@@ -44,6 +44,7 @@ if torch is not None:
         seeded_torch_generator,
         strict_action_mask_tensor,
         _backend_stable_linear,
+        _per_row_bmm_linear_forward,
     )
     from evolution_sim.mind.recurrent_genome import (
         RECURRENT_CONTROLLER_GENOME_SIZE,
@@ -325,15 +326,14 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                     post_handle.remove()
                 reference_output = reference(reference_inputs)
 
-                flattened = stable_inputs.reshape(-1, 13)
-                manual_output = torch.bmm(
-                    stable.weight.unsqueeze(0).expand(flattened.shape[0], -1, -1),
-                    flattened.unsqueeze(-1),
-                ).squeeze(-1)
-                if stable.bias is not None:
-                    manual_output = manual_output + stable.bias
-                manual_output = manual_output.reshape(3, 4, 7)
-                self.assertTrue(torch.equal(stable_output, manual_output))
+                scalar_output = torch.cat(
+                    tuple(
+                        stable(stable_inputs[:, row : row + 1])
+                        for row in range(stable_inputs.shape[1])
+                    ),
+                    dim=1,
+                )
+                self.assertTrue(torch.equal(stable_output, scalar_output))
                 self.assertEqual(hook_events, ["pre", "post"])
 
                 loss_weights = torch.linspace(
@@ -371,6 +371,115 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
                         atol=1.0e-6,
                     )
                     self.assertTrue(torch.isfinite(stable.bias.grad).all())
+
+                learning_rate = 1.0e-3
+                with torch.no_grad():
+                    for stable_parameter, reference_parameter in zip(
+                        stable.parameters(),
+                        reference.parameters(),
+                        strict=True,
+                    ):
+                        stable_parameter.add_(
+                            stable_parameter.grad,
+                            alpha=-learning_rate,
+                        )
+                        reference_parameter.add_(
+                            reference_parameter.grad,
+                            alpha=-learning_rate,
+                        )
+                        self.assertTrue(torch.isfinite(stable_parameter).all())
+                        torch.testing.assert_close(
+                            stable_parameter,
+                            reference_parameter,
+                            rtol=1.0e-5,
+                            atol=1.0e-6,
+                        )
+
+    def test_backend_stable_linear_has_exact_d04_bucket_row_parity(self) -> None:
+        active_row_counts = (1, 2, 3, 5, 9, 17, 33, 64, 65, 129, 257, 319, 320)
+        torch.manual_seed(20260729)
+        inputs = torch.randn(max(active_row_counts), 31)
+        weight = torch.randn(19, 31)
+        bias = torch.randn(19)
+
+        for active_rows in active_row_counts:
+            with self.subTest(active_rows=active_rows):
+                active_inputs = inputs[:active_rows]
+                batched = _backend_stable_linear(active_inputs, weight, bias)
+                scalar = torch.cat(
+                    tuple(
+                        _backend_stable_linear(
+                            active_inputs[row : row + 1],
+                            weight,
+                            bias,
+                        )
+                        for row in range(active_rows)
+                    ),
+                    dim=0,
+                )
+                self.assertTrue(torch.equal(batched, scalar))
+                torch.testing.assert_close(
+                    batched,
+                    _per_row_bmm_linear_forward(active_inputs, weight, bias),
+                    rtol=1.0e-5,
+                    atol=1.0e-6,
+                )
+
+    def test_backend_stable_linear_keeps_compact_dense_backward_exact(self) -> None:
+        torch.manual_seed(20260729)
+        inputs = torch.randn(3, 5, dtype=torch.float64, requires_grad=True)
+        weight = torch.randn(7, 5, dtype=torch.float64, requires_grad=True)
+        bias = torch.randn(7, dtype=torch.float64, requires_grad=True)
+        grad_output = torch.linspace(
+            -0.75,
+            1.25,
+            3 * 7,
+            dtype=torch.float64,
+        ).reshape(3, 7)
+
+        output = _backend_stable_linear(inputs, weight, bias)
+        grad_inputs, grad_weight, grad_bias = torch.autograd.grad(
+            output,
+            (inputs, weight, bias),
+            grad_outputs=grad_output,
+        )
+
+        self.assertTrue(torch.equal(grad_inputs, grad_output @ weight))
+        self.assertTrue(torch.equal(grad_weight, grad_output.T @ inputs))
+        self.assertTrue(torch.equal(grad_bias, grad_output.sum(dim=0)))
+        for gradient in (grad_inputs, grad_weight, grad_bias):
+            self.assertTrue(torch.isfinite(gradient).all())
+
+    def test_backend_stable_linear_rejects_malformed_ranks_and_shapes(self) -> None:
+        cases = (
+            (torch.tensor(1.0), torch.zeros(2, 1), None),
+            (torch.zeros(2, 3), torch.zeros(3), None),
+            (torch.zeros(2, 3), torch.zeros(2, 4), None),
+            (torch.zeros(2, 3), torch.zeros(2, 3), torch.zeros(1, 2)),
+            (torch.zeros(2, 3), torch.zeros(2, 3), torch.zeros(3)),
+        )
+
+        for inputs, weight, bias in cases:
+            with self.subTest(
+                input_shape=tuple(inputs.shape),
+                weight_shape=tuple(weight.shape),
+                bias_shape=None if bias is None else tuple(bias.shape),
+            ):
+                with self.assertRaises(PublicInputError):
+                    _backend_stable_linear(inputs, weight, bias)
+
+    def test_backend_stable_linear_keeps_empty_row_shape_and_gradients(self) -> None:
+        inputs = torch.empty(0, 3, requires_grad=True)
+        weight = torch.randn(2, 3, requires_grad=True)
+        bias = torch.randn(2, requires_grad=True)
+
+        output = _backend_stable_linear(inputs, weight, bias)
+        self.assertEqual(tuple(output.shape), (0, 2))
+        output.sum().backward()
+
+        self.assertEqual(tuple(inputs.grad.shape), (0, 3))
+        self.assertTrue(torch.equal(weight.grad, torch.zeros_like(weight)))
+        self.assertTrue(torch.equal(bias.grad, torch.zeros_like(bias)))
 
     def test_backend_stable_two_layer_gru_matches_native_gradients(self) -> None:
         torch.manual_seed(20260729)

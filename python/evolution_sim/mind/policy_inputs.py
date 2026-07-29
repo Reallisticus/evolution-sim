@@ -21,6 +21,9 @@ from evolution_sim.env.runtime.signals import communication_token_field_names
 ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION = "mind_ecological_policy_input_v1"
 TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION = "mind_ecological_policy_input_v3"
 ECOLOGICAL_POLICY_INPUT_POLICY = "exclude_controller_diagnostics_v1"
+ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION = (
+    "validated_fused_quantized_diagnostic_filter_v1"
+)
 CONTROLLER_DIAGNOSTIC_SELF_FIELDS: tuple[str, ...] = ("mind_inheritance_available",)
 CONTROLLER_DIAGNOSTIC_INPUT_FIELDS: tuple[str, ...] = tuple(
     f"self.{field}" for field in CONTROLLER_DIAGNOSTIC_SELF_FIELDS
@@ -91,10 +94,11 @@ def ecological_policy_input_values(
 def ecological_policy_values_from_observation(
     observation: dict[str, object],
 ) -> tuple[float, ...]:
-    values = quantized_observation_input_values(observation)
-    return ecological_policy_values_from_decoded(
-        values,
-        source_vector_size=len(values),
+    return tuple(
+        quantized_observation_input_values(
+            observation,
+            excluded_indices=_DIAGNOSTIC_SELF_INDICES,
+        )
     )
 
 

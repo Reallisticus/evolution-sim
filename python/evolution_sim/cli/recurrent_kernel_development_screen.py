@@ -1,4 +1,4 @@
-"""Run the bounded, non-authoritative recurrent-kernel development screen."""
+"""Run the bounded, non-authoritative recurrent runtime development screen."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ DEFAULT_REPORT = Path(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Screen a fixed set of recurrent numerical kernels without "
+            "Screen a fixed set of recurrent kernel and adapter lanes without "
             "producing launch authority or a scientific result."
         )
     )

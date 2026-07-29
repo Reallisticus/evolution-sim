@@ -1,9 +1,10 @@
-"""Bounded, non-authoritative screen for recurrent inference kernels.
+"""Bounded, non-authoritative screen for recurrent inference runtime lanes.
 
 This module deliberately reuses the numerical and semantic comparators from
 the sealed Phase-A D04 implementation without producing a D04 report or
-writing into an authority namespace.  Candidate kernels are injected only
-inside one child process and are always restored before that process exits.
+writing into an authority namespace. Candidate kernel/projection combinations
+are injected only inside one child process and are always restored before that
+process exits.
 """
 
 from __future__ import annotations
@@ -23,25 +24,32 @@ import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import torch
-from torch import Tensor, nn
-from torch.nn import functional as F
+from torch import Tensor
 
+from evolution_sim.env.runtime import observations
 from evolution_sim.mind import recurrent_actor_critic
 from evolution_sim.mind import open_ecology_phase_a_behavioral_evidence
+from evolution_sim.mind import policy_inputs
 from evolution_sim.mind import recurrent_experiment
 from evolution_sim.mind import recurrent_rollout
 from evolution_sim.mind.open_ecology_phase_a_behavioral_evidence import (
     _d4_collector_equivalence,
     _d4_collector_path_facts,
     _d4_phase_a_collection_inputs,
+    _d4_proof_seed_contract,
     _isolated_torch_process_state,
     _run_d4_equivalence,
     _validated_d4_bucket_matrix,
+    _validated_d4_collector_path,
     _validated_d4_timed_samples,
+)
+from evolution_sim.mind.policy_inputs import (
+    ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION,
+    ecological_policy_values_from_decoded,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_actor_critic import (
@@ -57,13 +65,13 @@ from evolution_sim.mind.recurrent_rollout import (
 
 
 RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SCHEMA_VERSION = (
-    "mind_v3_recurrent_kernel_development_screen_v1"
+    "mind_v3_recurrent_adapter_development_screen_v3"
 )
 RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES = (
-    "per_row_bmm_manual_gru_baseline_v1",
-    "native_linear_manual_gru_v1",
-    "native_linear_fused_gru_speed_ceiling_v1",
-    "fixed_row_tile_4_linear_manual_gru_v1",
+    "per_row_bmm_legacy_adapter_baseline_v2",
+    "per_row_bmm_fast_adapter_candidate_v2",
+    "fixed_row_tile_4_fast_adapter_control_v2",
+    "fixed_row_tile_4_legacy_adapter_control_v2",
 )
 RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE = {
     "worlds": 1,
@@ -77,39 +85,124 @@ RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP = 0.03
 RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_PAIRED_WINS = 4
 RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MAXIMUM_RSS_RATIO = 1.10
 _SOURCE_SHA_LENGTH = 40
-_TILE_ROWS = 4
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _LOCAL_DEVELOPMENT_SCREEN_ROOT = (
     _REPOSITORY_ROOT / "output" / "open-ecology" / "development-screens"
 )
 _DEVELOPMENT_SCREEN_ROOT_ENV = "EVOLUTION_SIM_OPEN_ECOLOGY_DEVELOPMENT_SCREEN_ROOT"
 _CHILD_TIMEOUT_SECONDS = 30 * 60
+_LEGACY_OBSERVATION_PROJECTION_VERSION = (
+    "quantize_dequantize_then_diagnostic_filter_v1"
+)
+_LEGACY_TENSOR_BRIDGE_DISPATCH_VERSION = (
+    "torch_tensor_device_dtype_layout_legacy_v0"
+)
+_LEGACY_INFERENCE_CONTEXT_VERSION = "torch_no_grad_v0"
+_LEGACY_OUTPUT_MATERIALIZATION_VERSION = (
+    "detach_cpu_explicit_float_item_tolist_v0"
+)
+_ADAPTER_RUNTIME_PROFILE_FIELDS = frozenset(
+    {
+        "implementation",
+        "tensor_bridge_dispatch_version",
+        "tensor_bridge_actual_branch",
+        "tensor_bridge_probe_branches",
+        "inference_context_version",
+        "output_materialization_version",
+        "observation_projection_version",
+    }
+)
+_SOURCE_BOUND_MODULE_PATHS = MappingProxyType(
+    {
+        "observations": "python/evolution_sim/env/runtime/observations.py",
+        "policy_inputs": "python/evolution_sim/mind/policy_inputs.py",
+        "recurrent_actor_critic": (
+            "python/evolution_sim/mind/recurrent_actor_critic.py"
+        ),
+        "recurrent_experiment": "python/evolution_sim/mind/recurrent_experiment.py",
+        "recurrent_rollout": "python/evolution_sim/mind/recurrent_rollout.py",
+        "phase_a_behavioral_evidence": (
+            "python/evolution_sim/mind/"
+            "open_ecology_phase_a_behavioral_evidence.py"
+        ),
+    }
+)
+_SOURCE_BOUND_MODULE_NAMES = frozenset(
+    {
+        "observations",
+        "policy_inputs",
+        "recurrent_actor_critic",
+        "recurrent_experiment",
+        "recurrent_rollout",
+        "phase_a_behavioral_evidence",
+    }
+)
 _CANDIDATE_SELECTABLE = {
-    "per_row_bmm_manual_gru_baseline_v1": False,
-    "native_linear_manual_gru_v1": True,
-    "native_linear_fused_gru_speed_ceiling_v1": False,
-    "fixed_row_tile_4_linear_manual_gru_v1": False,
+    "per_row_bmm_legacy_adapter_baseline_v2": False,
+    "per_row_bmm_fast_adapter_candidate_v2": True,
+    "fixed_row_tile_4_fast_adapter_control_v2": False,
+    "fixed_row_tile_4_legacy_adapter_control_v2": False,
 }
 _CANDIDATE_IMPLEMENTATION = {
-    "per_row_bmm_manual_gru_baseline_v1": {
+    "per_row_bmm_legacy_adapter_baseline_v2": {
         "linear_forward": "per_row_bmm",
         "gru_forward": "manual_equations",
-        "purpose": "frozen_timing_and_semantic_baseline",
+        "observation_projection": _LEGACY_OBSERVATION_PROJECTION_VERSION,
+        "tensor_bridge_dispatch": _LEGACY_TENSOR_BRIDGE_DISPATCH_VERSION,
+        "tensor_bridge_actual_branch": (
+            "torch_tensor_device_dtype_layout_legacy_v0"
+        ),
+        "inference_context": _LEGACY_INFERENCE_CONTEXT_VERSION,
+        "output_materialization": _LEGACY_OUTPUT_MATERIALIZATION_VERSION,
+        "purpose": "bracketing_timing_and_semantic_baseline",
     },
-    "native_linear_manual_gru_v1": {
-        "linear_forward": "torch_functional_linear",
+    "per_row_bmm_fast_adapter_candidate_v2": {
+        "linear_forward": "per_row_bmm",
         "gru_forward": "manual_equations",
-        "purpose": "selectable_kernel_candidate",
+        "observation_projection": ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION,
+        "tensor_bridge_dispatch": (
+            recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+        ),
+        "tensor_bridge_actual_branch": (
+            "numpy_from_numpy_cpu_float32_bool_native_c_v1"
+        ),
+        "inference_context": (
+            recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION
+        ),
+        "output_materialization": (
+            recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION
+        ),
+        "purpose": "selectable_rollout_adapter_candidate",
     },
-    "native_linear_fused_gru_speed_ceiling_v1": {
-        "linear_forward": "torch_functional_linear",
-        "gru_forward": "torch_native_fused_gru",
-        "purpose": "nonselectable_speed_ceiling",
-    },
-    "fixed_row_tile_4_linear_manual_gru_v1": {
+    "fixed_row_tile_4_fast_adapter_control_v2": {
         "linear_forward": "fixed_four_row_torch_functional_linear_tiles",
         "gru_forward": "manual_equations",
-        "purpose": "nonselectable_architecture_probe",
+        "observation_projection": ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION,
+        "tensor_bridge_dispatch": (
+            recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+        ),
+        "tensor_bridge_actual_branch": (
+            "numpy_from_numpy_cpu_float32_bool_native_c_v1"
+        ),
+        "inference_context": (
+            recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION
+        ),
+        "output_materialization": (
+            recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION
+        ),
+        "purpose": "nonselectable_kernel_speed_ceiling_control",
+    },
+    "fixed_row_tile_4_legacy_adapter_control_v2": {
+        "linear_forward": "fixed_four_row_torch_functional_linear_tiles",
+        "gru_forward": "manual_equations",
+        "observation_projection": _LEGACY_OBSERVATION_PROJECTION_VERSION,
+        "tensor_bridge_dispatch": _LEGACY_TENSOR_BRIDGE_DISPATCH_VERSION,
+        "tensor_bridge_actual_branch": (
+            "torch_tensor_device_dtype_layout_legacy_v0"
+        ),
+        "inference_context": _LEGACY_INFERENCE_CONTEXT_VERSION,
+        "output_materialization": _LEGACY_OUTPUT_MATERIALIZATION_VERSION,
+        "purpose": "nonselectable_kernel_and_legacy_adapter_control",
     },
 }
 _CORE_COMPARISON_COUNT = 1 * 128 * 64
@@ -140,13 +233,17 @@ def _validated_linear_inputs(
         )
 
 
-def _native_linear(
+def _per_row_bmm_linear(
     inputs: Tensor,
     weight: Tensor,
     bias: Tensor | None = None,
 ) -> Tensor:
     _validated_linear_inputs(inputs, weight, bias)
-    return F.linear(inputs, weight, bias)
+    return recurrent_actor_critic._per_row_bmm_linear_forward(
+        inputs,
+        weight,
+        bias,
+    )
 
 
 def _fixed_row_tile_4_linear(
@@ -154,53 +251,412 @@ def _fixed_row_tile_4_linear(
     weight: Tensor,
     bias: Tensor | None = None,
 ) -> Tensor:
-    """Use one invariant dense row shape for scalar and batched projections.
-
-    The final partial tile is zero padded and sliced.  This is a screening
-    implementation only; a selected successor would need a versioned custom
-    autograd implementation and full gradient proof before production use.
-    """
+    """Use the versioned production four-row forward inside the screen."""
 
     _validated_linear_inputs(inputs, weight, bias)
-    leading_shape = inputs.shape[:-1]
-    flattened = inputs.reshape(-1, inputs.shape[-1])
-    projected_tiles: list[Tensor] = []
-    for start in range(0, flattened.shape[0], _TILE_ROWS):
-        active = flattened[start : start + _TILE_ROWS]
-        if active.shape[0] < _TILE_ROWS:
-            padded = active.new_zeros((_TILE_ROWS, active.shape[1]))
-            padded[: active.shape[0]] = active
-        else:
-            padded = active
-        projected_tiles.append(F.linear(padded, weight, bias)[: active.shape[0]])
-    projected = torch.cat(projected_tiles, dim=0)
-    return projected.reshape(*leading_shape, weight.shape[0])
+    return recurrent_actor_critic._fixed_row_tile_4_linear_forward(
+        inputs,
+        weight,
+        bias,
+    )
+
+
+def _legacy_observation_projection(
+    observation: dict[str, object],
+) -> tuple[float, ...]:
+    _, _, _, source_values = observations._validated_observation_input_values(
+        observation
+    )
+    values = observations._dequantize_observation_input_values(
+        observations._quantize_observation_input_values(source_values)
+    )
+    return ecological_policy_values_from_decoded(
+        values,
+        source_vector_size=len(values),
+    )
+
+
+def _legacy_inference_context(torch_module: Any) -> Any:
+    return torch_module.no_grad()
+
+
+def _legacy_materialized_float(value: object) -> float:
+    return float(value)
+
+
+def _legacy_materialized_float_tuple(
+    values: Sequence[object],
+) -> tuple[float, ...]:
+    return tuple(float(value) for value in values)
+
+
+def _legacy_initial_hidden(
+    core: recurrent_rollout.TorchRecurrentPolicyCore,
+) -> tuple[float, ...]:
+    state = core._model.initial_state(1)
+    return tuple(
+        float(value) for value in state.detach().cpu().reshape(-1).tolist()
+    )
+
+
+def _legacy_forward_step(
+    core: recurrent_rollout.TorchRecurrentPolicyCore,
+    observation: Sequence[float],
+    current_action_mask: Sequence[bool],
+    previous_feedback: recurrent_rollout.PreviousPublicFeedback,
+    hidden: Sequence[float],
+    *,
+    genome_values: Sequence[float] | None = None,
+) -> recurrent_rollout.RecurrentCoreOutput:
+    torch_module = core._torch
+    reference = next(core._model.parameters())
+    observations = torch_module.tensor(
+        tuple(observation),
+        device=reference.device,
+        dtype=reference.dtype,
+    ).reshape(1, 1, core.public_input_size)
+    action_masks = torch_module.tensor(
+        tuple(current_action_mask),
+        device=reference.device,
+        dtype=torch_module.bool,
+    ).reshape(1, 1, len(recurrent_rollout.RECURRENT_ROLLOUT_ACTIONS))
+    feedback = torch_module.tensor(
+        previous_feedback.vector(),
+        device=reference.device,
+        dtype=reference.dtype,
+    ).reshape(1, 1, recurrent_rollout.RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE)
+    state = torch_module.tensor(
+        tuple(hidden),
+        device=reference.device,
+        dtype=reference.dtype,
+    ).reshape(core._layers, 1, core._layer_hidden_size)
+    genome_tensor = (
+        None
+        if genome_values is None
+        else torch_module.tensor(
+            tuple(genome_values),
+            device=reference.device,
+            dtype=reference.dtype,
+        ).reshape(1, 1, recurrent_rollout.RECURRENT_CONTROLLER_GENOME_SIZE)
+    )
+    with torch_module.no_grad():
+        output = core._model.forward_sequence(
+            observations,
+            action_masks,
+            feedback,
+            genome_values=genome_tensor,
+            initial_state=state,
+        )
+    return recurrent_rollout.RecurrentCoreOutput(
+        logits=tuple(
+            float(value)
+            for value in output.raw_logits[0, 0].detach().cpu().tolist()
+        ),
+        value=float(output.values[0, 0].detach().cpu().item()),
+        next_hidden=tuple(
+            float(value)
+            for value in output.final_state.detach().cpu().reshape(-1).tolist()
+        ),
+    )
+
+
+def _legacy_forward_fixed_batch(
+    core: recurrent_rollout.TorchRecurrentPolicyCore,
+    observations: Sequence[Sequence[float]],
+    current_action_masks: Sequence[Sequence[bool]],
+    previous_feedback: Sequence[recurrent_rollout.PreviousPublicFeedback],
+    hidden: Sequence[Sequence[float]],
+    *,
+    batch_capacity: int,
+    execution_batch_rows: int | None = None,
+    genome_values: Sequence[Sequence[float]] | None = None,
+) -> tuple[recurrent_rollout.RecurrentCoreOutput, ...]:
+    active_rows = len(observations)
+    selected_execution_rows = recurrent_rollout._fixed_batch_execution_rows(
+        active_rows=active_rows,
+        batch_capacity=batch_capacity,
+    )
+    if execution_batch_rows is None:
+        execution_batch_rows = selected_execution_rows
+    elif (
+        isinstance(execution_batch_rows, bool)
+        or not isinstance(execution_batch_rows, int)
+        or execution_batch_rows != selected_execution_rows
+    ):
+        raise recurrent_rollout.RecurrentRolloutError(
+            "fixed recurrent batch execution rows drifted from the frozen bucket "
+            "contract"
+        )
+    if not (
+        len(current_action_masks)
+        == len(previous_feedback)
+        == len(hidden)
+        == active_rows
+    ):
+        raise recurrent_rollout.RecurrentRolloutError(
+            "fixed recurrent batch input row counts disagree"
+        )
+    conditioned = (
+        core.genome_conditioning_mode
+        == recurrent_rollout.RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+    )
+    if conditioned != (genome_values is not None):
+        raise recurrent_rollout.RecurrentRolloutError(
+            "fixed recurrent batch genome rows disagree with core conditioning"
+        )
+    if genome_values is not None and len(genome_values) != active_rows:
+        raise recurrent_rollout.RecurrentRolloutError(
+            "fixed recurrent batch genome row count disagrees"
+        )
+
+    torch_module = core._torch
+    reference = next(core._model.parameters())
+    padded_observations = torch_module.zeros(
+        (1, execution_batch_rows, core.public_input_size),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    padded_action_masks = torch_module.zeros(
+        (
+            1,
+            execution_batch_rows,
+            len(recurrent_rollout.RECURRENT_ROLLOUT_ACTIONS),
+        ),
+        device=reference.device,
+        dtype=torch_module.bool,
+    )
+    padded_feedback = torch_module.zeros(
+        (
+            1,
+            execution_batch_rows,
+            recurrent_rollout.RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE,
+        ),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    padded_state = torch_module.zeros(
+        (core._layers, execution_batch_rows, core._layer_hidden_size),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    padded_action_masks[
+        0,
+        active_rows:,
+        recurrent_rollout.RECURRENT_ROLLOUT_ACTIONS.index("stay"),
+    ] = True
+    padded_observations[0, :active_rows] = torch_module.tensor(
+        tuple(tuple(row) for row in observations),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    padded_action_masks[0, :active_rows] = torch_module.tensor(
+        tuple(tuple(row) for row in current_action_masks),
+        device=reference.device,
+        dtype=torch_module.bool,
+    )
+    padded_feedback[0, :active_rows] = torch_module.tensor(
+        tuple(feedback.vector() for feedback in previous_feedback),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    hidden_tensor = torch_module.tensor(
+        tuple(tuple(row) for row in hidden),
+        device=reference.device,
+        dtype=reference.dtype,
+    ).reshape(active_rows, core._layers, core._layer_hidden_size)
+    padded_state[:, :active_rows] = hidden_tensor.permute(1, 0, 2)
+
+    padded_genomes = None
+    if genome_values is not None:
+        padded_genomes = torch_module.zeros(
+            (
+                1,
+                execution_batch_rows,
+                recurrent_rollout.RECURRENT_CONTROLLER_GENOME_SIZE,
+            ),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        padded_genomes[0, :active_rows] = torch_module.tensor(
+            tuple(tuple(row) for row in genome_values),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+    with torch_module.no_grad():
+        output = core._model.forward_sequence(
+            padded_observations,
+            padded_action_masks,
+            padded_feedback,
+            genome_values=padded_genomes,
+            initial_state=padded_state,
+        )
+    raw_logits = output.raw_logits[0, :active_rows].detach().cpu().tolist()
+    values = output.values[0, :active_rows].detach().cpu().tolist()
+    final_state = (
+        output.final_state[:, :active_rows, :]
+        .permute(1, 0, 2)
+        .reshape(active_rows, -1)
+        .detach()
+        .cpu()
+        .tolist()
+    )
+    return tuple(
+        recurrent_rollout.RecurrentCoreOutput(
+            logits=tuple(float(value) for value in raw_logits[row]),
+            value=float(values[row]),
+            next_hidden=tuple(float(value) for value in final_state[row]),
+        )
+        for row in range(active_rows)
+    )
 
 
 @contextmanager
 def recurrent_kernel_candidate(candidate: str) -> Iterator[None]:
-    """Inject exactly one candidate into this process and restore it."""
+    """Inject exactly one combined kernel/projection lane and restore it."""
 
     if candidate not in RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES:
         raise RecurrentKernelDevelopmentScreenError(
             f"unknown recurrent kernel candidate {candidate!r}"
         )
-    original_linear = recurrent_actor_critic._backend_stable_linear
-    original_gru_forward = recurrent_actor_critic.BackendStableGRU.forward
+    original_linear_forward = (
+        recurrent_actor_critic._backend_stable_linear_forward
+    )
+    original_projection = recurrent_rollout.ecological_policy_values_from_observation
+    original_projection_version = (
+        recurrent_rollout.ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION
+    )
+    original_tensor_bridge_version = (
+        recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+    )
+    original_inference_context_version = (
+        recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION
+    )
+    original_output_materialization_version = (
+        recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION
+    )
+    original_inference_context = recurrent_rollout._recurrent_inference_context
+    original_materialized_float = recurrent_rollout._materialized_float
+    original_materialized_float_tuple = (
+        recurrent_rollout._materialized_float_tuple
+    )
+    original_initial_hidden = recurrent_rollout.TorchRecurrentPolicyCore.initial_hidden
+    original_forward_step = recurrent_rollout.TorchRecurrentPolicyCore.forward_step
+    original_forward_fixed_batch = (
+        recurrent_rollout.TorchRecurrentPolicyCore.forward_fixed_batch
+    )
     try:
-        if candidate == "per_row_bmm_manual_gru_baseline_v1":
+        if candidate == "per_row_bmm_legacy_adapter_baseline_v2":
+            recurrent_actor_critic._backend_stable_linear_forward = (
+                recurrent_actor_critic._per_row_bmm_linear_forward
+            )
+            recurrent_rollout.ecological_policy_values_from_observation = (
+                _legacy_observation_projection
+            )
+            recurrent_rollout.ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION = (
+                _LEGACY_OBSERVATION_PROJECTION_VERSION
+            )
+            recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION = (
+                _LEGACY_TENSOR_BRIDGE_DISPATCH_VERSION
+            )
+            recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION = (
+                _LEGACY_INFERENCE_CONTEXT_VERSION
+            )
+            recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION = (
+                _LEGACY_OUTPUT_MATERIALIZATION_VERSION
+            )
+            recurrent_rollout._recurrent_inference_context = (
+                _legacy_inference_context
+            )
+            recurrent_rollout._materialized_float = _legacy_materialized_float
+            recurrent_rollout._materialized_float_tuple = (
+                _legacy_materialized_float_tuple
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.initial_hidden = (
+                _legacy_initial_hidden
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.forward_step = (
+                _legacy_forward_step
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.forward_fixed_batch = (
+                _legacy_forward_fixed_batch
+            )
+        elif candidate == "per_row_bmm_fast_adapter_candidate_v2":
             pass
-        elif candidate == "native_linear_manual_gru_v1":
-            recurrent_actor_critic._backend_stable_linear = _native_linear
-        elif candidate == "native_linear_fused_gru_speed_ceiling_v1":
-            recurrent_actor_critic._backend_stable_linear = _native_linear
-            recurrent_actor_critic.BackendStableGRU.forward = nn.GRU.forward
-        elif candidate == "fixed_row_tile_4_linear_manual_gru_v1":
-            recurrent_actor_critic._backend_stable_linear = _fixed_row_tile_4_linear
+        elif candidate == "fixed_row_tile_4_fast_adapter_control_v2":
+            recurrent_actor_critic._backend_stable_linear_forward = (
+                recurrent_actor_critic._fixed_row_tile_4_linear_forward
+            )
+        elif candidate == "fixed_row_tile_4_legacy_adapter_control_v2":
+            recurrent_actor_critic._backend_stable_linear_forward = (
+                recurrent_actor_critic._fixed_row_tile_4_linear_forward
+            )
+            recurrent_rollout.ecological_policy_values_from_observation = (
+                _legacy_observation_projection
+            )
+            recurrent_rollout.ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION = (
+                _LEGACY_OBSERVATION_PROJECTION_VERSION
+            )
+            recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION = (
+                _LEGACY_TENSOR_BRIDGE_DISPATCH_VERSION
+            )
+            recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION = (
+                _LEGACY_INFERENCE_CONTEXT_VERSION
+            )
+            recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION = (
+                _LEGACY_OUTPUT_MATERIALIZATION_VERSION
+            )
+            recurrent_rollout._recurrent_inference_context = (
+                _legacy_inference_context
+            )
+            recurrent_rollout._materialized_float = _legacy_materialized_float
+            recurrent_rollout._materialized_float_tuple = (
+                _legacy_materialized_float_tuple
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.initial_hidden = (
+                _legacy_initial_hidden
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.forward_step = (
+                _legacy_forward_step
+            )
+            recurrent_rollout.TorchRecurrentPolicyCore.forward_fixed_batch = (
+                _legacy_forward_fixed_batch
+            )
         yield
     finally:
-        recurrent_actor_critic._backend_stable_linear = original_linear
-        recurrent_actor_critic.BackendStableGRU.forward = original_gru_forward
+        recurrent_actor_critic._backend_stable_linear_forward = (
+            original_linear_forward
+        )
+        recurrent_rollout.ecological_policy_values_from_observation = (
+            original_projection
+        )
+        recurrent_rollout.ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION = (
+            original_projection_version
+        )
+        recurrent_rollout.RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION = (
+            original_tensor_bridge_version
+        )
+        recurrent_rollout.RECURRENT_INFERENCE_CONTEXT_VERSION = (
+            original_inference_context_version
+        )
+        recurrent_rollout.RECURRENT_OUTPUT_MATERIALIZATION_VERSION = (
+            original_output_materialization_version
+        )
+        recurrent_rollout._recurrent_inference_context = (
+            original_inference_context
+        )
+        recurrent_rollout._materialized_float = original_materialized_float
+        recurrent_rollout._materialized_float_tuple = (
+            original_materialized_float_tuple
+        )
+        recurrent_rollout.TorchRecurrentPolicyCore.initial_hidden = (
+            original_initial_hidden
+        )
+        recurrent_rollout.TorchRecurrentPolicyCore.forward_step = (
+            original_forward_step
+        )
+        recurrent_rollout.TorchRecurrentPolicyCore.forward_fixed_batch = (
+            original_forward_fixed_batch
+        )
 
 
 def _git_source_state(expected_source_sha: str) -> dict[str, object]:
@@ -256,6 +712,8 @@ def _git_source_state(expected_source_sha: str) -> dict[str, object]:
             "development screen repository root binding drifted"
         )
     imported_modules = {
+        "observations": observations,
+        "policy_inputs": policy_inputs,
         "recurrent_actor_critic": recurrent_actor_critic,
         "recurrent_experiment": recurrent_experiment,
         "recurrent_rollout": recurrent_rollout,
@@ -274,6 +732,10 @@ def _git_source_state(expected_source_sha: str) -> dict[str, object]:
                 f"imported module {name!r} is outside the exact checkout"
             )
         imported_paths[name] = str(resolved.relative_to(_REPOSITORY_ROOT))
+    if imported_paths != _SOURCE_BOUND_MODULE_PATHS:
+        raise RecurrentKernelDevelopmentScreenError(
+            "imported modules drifted from the frozen exact-source paths"
+        )
     return {
         "repository_root": str(_REPOSITORY_ROOT),
         "expected_source_sha": expected_source_sha,
@@ -286,6 +748,22 @@ def _git_source_state(expected_source_sha: str) -> dict[str, object]:
 def _peak_rss_bytes() -> int:
     observed = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return observed if sys.platform == "darwin" else observed * 1024
+
+
+def _configure_dedicated_child_torch_runtime() -> None:
+    """Bind the development child to the Phase-A worker thread topology."""
+
+    if torch.get_num_interop_threads() != 1:
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError as exc:
+            raise RecurrentKernelDevelopmentScreenError(
+                "dedicated child could not bind Torch inter-op threads to one"
+            ) from exc
+    if torch.get_num_interop_threads() != 1:
+        raise RecurrentKernelDevelopmentScreenError(
+            "dedicated child Torch inter-op thread binding drifted"
+        )
 
 
 def _collector_once(
@@ -415,6 +893,7 @@ def run_candidate_screen(
             "child nonce must be a lowercase 128-bit hex token"
         )
     source_state = _git_source_state(expected_source_sha)
+    _configure_dedicated_child_torch_runtime()
     started = time.perf_counter_ns()
     with (
         recurrent_kernel_candidate(candidate),
@@ -427,6 +906,10 @@ def run_candidate_screen(
         model, tasks, proof_seed_contract = _d4_phase_a_collection_inputs(
             shape=RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE
         )
+        fixed_batch_runtime_binding = recurrent_rollout._fixed_batch_runtime_binding(
+            RecurrentFixedBatchRuntimeContract.open_ecology(),
+            core=recurrent_rollout.TorchRecurrentPolicyCore(model),
+        )
         timing, first_views = _run_timing_pairs(
             model=model,
             task=tasks[0],
@@ -437,6 +920,60 @@ def run_candidate_screen(
             first_views["scalar"],
             first_views["batched"],
         )
+        runtime_digest = str(fixed_batch_runtime_binding["exact_digest"])
+        for mode, expected_runtime_digests in (
+            ("scalar", []),
+            ("batched", [runtime_digest]),
+        ):
+            samples = timing[mode]["samples"]  # type: ignore[index]
+            if any(
+                sample["collector_path"]["fixed_batch_runtime_sha256"]
+                != expected_runtime_digests
+                for sample in samples
+            ):
+                raise RecurrentKernelDevelopmentScreenError(
+                    f"{mode} timing samples are not bound to the observed runtime"
+                )
+        with recurrent_kernel_candidate(
+            "per_row_bmm_legacy_adapter_baseline_v2"
+        ):
+            legacy_runtime_binding = recurrent_rollout._fixed_batch_runtime_binding(
+                RecurrentFixedBatchRuntimeContract.open_ecology(),
+                core=recurrent_rollout.TorchRecurrentPolicyCore(model),
+            )
+            legacy_scalar_view, legacy_scalar_facts, _ = _collector_once(
+                mode="scalar",
+                model=model,
+                task=tasks[0],
+            )
+            legacy_batched_view, legacy_batched_facts, _ = _collector_once(
+                mode="batched",
+                model=model,
+                task=tasks[0],
+            )
+            legacy_runtime_digest = str(legacy_runtime_binding["exact_digest"])
+            if (
+                legacy_scalar_facts["fixed_batch_runtime_sha256"] != []
+                or legacy_batched_facts["fixed_batch_runtime_sha256"]
+                != [legacy_runtime_digest]
+            ):
+                raise RecurrentKernelDevelopmentScreenError(
+                    "legacy oracle collection is not bound to its runtime"
+                )
+        legacy_runtime_equivalence = {
+            "scalar": _d4_collector_equivalence(
+                legacy_scalar_view,
+                first_views["scalar"],
+            ),
+            "batched": _d4_collector_equivalence(
+                legacy_batched_view,
+                first_views["batched"],
+            ),
+        }
+        observed_thread_runtime = {
+            "torch_num_threads": int(torch.get_num_threads()),
+            "torch_num_interop_threads": int(torch.get_num_interop_threads()),
+        }
     final_source_state = _git_source_state(expected_source_sha)
     if final_source_state != source_state:
         raise RecurrentKernelDevelopmentScreenError(
@@ -457,6 +994,13 @@ def run_candidate_screen(
         "model_contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
         "source_numeric_kernel_version": RECURRENT_NUMERIC_KERNEL_VERSION,
         "proof_seed_contract": proof_seed_contract,
+        "fixed_batch_runtime_binding": fixed_batch_runtime_binding,
+        "legacy_fixed_batch_runtime_binding": legacy_runtime_binding,
+        "legacy_runtime_paths": {
+            "scalar": legacy_scalar_facts,
+            "batched": legacy_batched_facts,
+        },
+        "legacy_runtime_equivalence": legacy_runtime_equivalence,
         "equivalence": equivalence,
         "collector_equivalence": collector_equivalence,
         "timing": timing,
@@ -467,7 +1011,7 @@ def run_candidate_screen(
             "torch_version": str(torch.__version__),
             "platform": platform.platform(),
             "machine": platform.machine(),
-            "torch_num_threads": 1,
+            **observed_thread_runtime,
             "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
         },
     }
@@ -502,6 +1046,126 @@ def _finite_nonnegative(value: object, *, field: str) -> float:
             f"{field} must be finite and nonnegative"
         )
     return float(value)
+
+
+def _validated_adapter_runtime_binding(
+    value: object,
+    *,
+    implementation: Mapping[str, object],
+    field: str,
+) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise RecurrentKernelDevelopmentScreenError(f"{field} is missing")
+    try:
+        validated = recurrent_rollout._validated_fixed_batch_runtime_binding(
+            value
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} is malformed: {exc}"
+        ) from exc
+    observed = validated["observed_runtime"]
+    expected_actual_branch = implementation["tensor_bridge_actual_branch"]
+    if (
+        observed.get("implementation")
+        != "PublicRecurrentActorCritic.forward_sequence_time1_bounded_bucket_batch_v3"
+        or observed.get("tensor_bridge_dispatch_version")
+        != implementation["tensor_bridge_dispatch"]
+        or observed.get("tensor_bridge_actual_branch") != expected_actual_branch
+        or observed.get("tensor_bridge_probe_branches")
+        != {"float32": expected_actual_branch, "bool": expected_actual_branch}
+        or observed.get("inference_context_version")
+        != implementation["inference_context"]
+        or observed.get("output_materialization_version")
+        != implementation["output_materialization"]
+        or observed.get("observation_projection_version")
+        != implementation["observation_projection"]
+        or observed.get("native_byte_order") not in {"little", "big"}
+        or observed.get("device_type") != "cpu"
+        or observed.get("device_index") is not None
+        or observed.get("dtype") != "torch.float32"
+        or observed.get("torch_num_threads") != 1
+        or observed.get("torch_num_interop_threads") != 1
+        or (
+            expected_actual_branch
+            == "numpy_from_numpy_cpu_float32_bool_native_c_v1"
+            and not isinstance(observed.get("numpy_version"), str)
+        )
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} adapter provenance drifted"
+        )
+    return validated
+
+
+def _normalized_common_runtime_binding(
+    value: object,
+    *,
+    field: str,
+) -> dict[str, object]:
+    """Remove only preregistered adapter identity from a validated binding."""
+
+    if not isinstance(value, Mapping):
+        raise RecurrentKernelDevelopmentScreenError(f"{field} is missing")
+    try:
+        validated = recurrent_rollout._validated_fixed_batch_runtime_binding(
+            value
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} is malformed: {exc}"
+        ) from exc
+    observed = validated.get("observed_runtime")
+    if (
+        not isinstance(observed, Mapping)
+        or not _ADAPTER_RUNTIME_PROFILE_FIELDS.issubset(observed)
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} adapter profile fields are incomplete"
+        )
+    normalized = {
+        key: value
+        for key, value in validated.items()
+        if key != "exact_digest"
+    }
+    normalized["observed_runtime"] = {
+        key: value
+        for key, value in observed.items()
+        if key not in _ADAPTER_RUNTIME_PROFILE_FIELDS
+    }
+    return normalized
+
+
+def _validated_source_state(value: object, *, field: str) -> dict[str, object]:
+    expected_keys = {
+        "repository_root",
+        "expected_source_sha",
+        "observed_source_sha",
+        "source_clean_including_untracked",
+        "imported_module_paths",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} source schema drifted"
+        )
+    expected_sha = value.get("expected_source_sha")
+    observed_sha = value.get("observed_source_sha")
+    imported_paths = value.get("imported_module_paths")
+    if (
+        not isinstance(expected_sha, str)
+        or len(expected_sha) != _SOURCE_SHA_LENGTH
+        or any(character not in "0123456789abcdef" for character in expected_sha)
+        or observed_sha != expected_sha
+        or value.get("source_clean_including_untracked") is not True
+        or not isinstance(value.get("repository_root"), str)
+        or Path(str(value["repository_root"])).resolve() != _REPOSITORY_ROOT
+        or not isinstance(imported_paths, Mapping)
+        or imported_paths != _SOURCE_BOUND_MODULE_PATHS
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            f"{field} exact-source binding is malformed"
+        )
+    return dict(value)
 
 
 def _validate_candidate_identity(candidate: Mapping[str, object]) -> str:
@@ -542,21 +1206,32 @@ def _validate_candidate_identity(candidate: Mapping[str, object]) -> str:
         raise RecurrentKernelDevelopmentScreenError(
             "candidate child digest does not match its payload"
         )
-    source = candidate.get("source_state")
-    if (
-        not isinstance(source, Mapping)
-        or source.get("expected_source_sha") != source.get("observed_source_sha")
-        or source.get("source_clean_including_untracked") is not True
-        or not isinstance(source.get("imported_module_paths"), Mapping)
-    ):
-        raise RecurrentKernelDevelopmentScreenError(
-            "candidate exact-source binding is malformed"
-        )
+    _validated_source_state(
+        candidate.get("source_state"),
+        field="candidate",
+    )
+    candidate_runtime_binding = _validated_adapter_runtime_binding(
+        candidate.get("fixed_batch_runtime_binding"),
+        implementation=_CANDIDATE_IMPLEMENTATION[name],
+        field="candidate fixed-batch runtime binding",
+    )
+    legacy_runtime_binding = _validated_adapter_runtime_binding(
+        candidate.get("legacy_fixed_batch_runtime_binding"),
+        implementation=_CANDIDATE_IMPLEMENTATION[
+            "per_row_bmm_legacy_adapter_baseline_v2"
+        ],
+        field="legacy oracle fixed-batch runtime binding",
+    )
     runtime = candidate.get("runtime")
     if (
         not isinstance(runtime, Mapping)
         or runtime.get("pythonhashseed") != "0"
         or runtime.get("torch_num_threads") != 1
+        or runtime.get("torch_num_interop_threads") != 1
+        or candidate_runtime_binding["observed_runtime"].get("torch_version")
+        != runtime.get("torch_version")
+        or legacy_runtime_binding["observed_runtime"].get("torch_version")
+        != runtime.get("torch_version")
     ):
         raise RecurrentKernelDevelopmentScreenError(
             "candidate deterministic runtime binding drifted"
@@ -576,8 +1251,12 @@ def _validate_equivalence(
         raise RecurrentKernelDevelopmentScreenError(
             "candidate core equivalence is missing"
         )
+    expected_proof_seed_contract = _d4_proof_seed_contract(
+        shape=RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE
+    )
     if (
-        equivalence.get("proof_seed_contract") != candidate.get("proof_seed_contract")
+        candidate.get("proof_seed_contract") != expected_proof_seed_contract
+        or equivalence.get("proof_seed_contract") != expected_proof_seed_contract
         or equivalence.get("numeric_contract")
         != {"relative_tolerance": 1e-5, "absolute_tolerance": 1e-6}
         or equivalence.get("comparison_count") != _CORE_COMPARISON_COUNT
@@ -658,6 +1337,11 @@ def _validate_equivalence(
         if key.endswith("tolerance_ratio")
     ]
     max_ratio = max((*ratios, *bucket_ratios))
+    if max_ratio > 1.0:
+        raise RecurrentKernelDevelopmentScreenError(
+            "declared D04 numeric tolerance exceeded: "
+            f"{max_ratio:.9f} > 1.0"
+        )
     if (
         enforce_numeric_headroom
         and max_ratio > RECURRENT_KERNEL_DEVELOPMENT_SCREEN_NUMERIC_HEADROOM
@@ -674,13 +1358,22 @@ def _validate_collector_and_timing(
     candidate: Mapping[str, object],
     *,
     enforce_numeric_headroom: bool,
-) -> None:
+) -> float:
     collector = candidate.get("collector_equivalence")
     timing = candidate.get("timing")
     if not isinstance(collector, Mapping) or not isinstance(timing, Mapping):
         raise RecurrentKernelDevelopmentScreenError(
             "candidate collector or timing evidence is missing"
         )
+    runtime_binding = candidate.get("fixed_batch_runtime_binding")
+    if not isinstance(runtime_binding, Mapping):
+        raise RecurrentKernelDevelopmentScreenError(
+            "candidate runtime binding is missing from timing evidence"
+        )
+    runtime_digest = _strict_sha256(
+        runtime_binding.get("exact_digest"),
+        field="fixed-batch runtime digest",
+    )
     transition_count = _strict_positive_int(
         collector.get("transition_count"), field="collector transition count"
     )
@@ -724,6 +1417,10 @@ def _validate_collector_and_timing(
             "max_bootstrap_value_tolerance_ratio",
         )
     ]
+    if max(collector_ratios) > 1.0:
+        raise RecurrentKernelDevelopmentScreenError(
+            "collector declared D04 numeric tolerance exceeded"
+        )
     if (
         enforce_numeric_headroom
         and max(collector_ratios) > RECURRENT_KERNEL_DEVELOPMENT_SCREEN_NUMERIC_HEADROOM
@@ -807,6 +1504,14 @@ def _validate_collector_and_timing(
             raise RecurrentKernelDevelopmentScreenError(
                 f"candidate {mode} collector path changed across samples"
             )
+        expected_runtime_digests = [] if mode == "scalar" else [runtime_digest]
+        if any(
+            path["fixed_batch_runtime_sha256"] != expected_runtime_digests
+            for path in validated_paths
+        ):
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} runtime binding differs across timed evidence"
+            )
         if any(
             int(path["bootstrap_value_count"])
             != int(collector["bootstrap_value_comparison_count"])
@@ -859,6 +1564,133 @@ def _validate_collector_and_timing(
         )
     ):
         raise RecurrentKernelDevelopmentScreenError("candidate timing speedup drifted")
+    legacy_binding = candidate.get("legacy_fixed_batch_runtime_binding")
+    legacy_paths = candidate.get("legacy_runtime_paths")
+    if not isinstance(legacy_binding, Mapping) or not isinstance(
+        legacy_paths,
+        Mapping,
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "candidate legacy runtime path binding is missing"
+        )
+    legacy_runtime_digest = _strict_sha256(
+        legacy_binding.get("exact_digest"),
+        field="legacy fixed-batch runtime digest",
+    )
+    if set(legacy_paths) != {"scalar", "batched"}:
+        raise RecurrentKernelDevelopmentScreenError(
+            "candidate legacy runtime path coverage drifted"
+        )
+    for mode in ("scalar", "batched"):
+        try:
+            legacy_path = _validated_d4_collector_path(
+                legacy_paths.get(mode),
+                mode=mode,
+                expected_semantic_sha256=all_semantics[0],
+                expected_transition_count=transition_count,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} legacy runtime path is malformed: {exc}"
+            ) from exc
+        expected_runtime_digests = (
+            [] if mode == "scalar" else [legacy_runtime_digest]
+        )
+        if (
+            legacy_path["fixed_batch_runtime_sha256"]
+            != expected_runtime_digests
+            or int(legacy_path["bootstrap_value_count"]) <= 0
+        ):
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} legacy runtime path is not evidence-bound"
+            )
+    legacy_equivalence = candidate.get("legacy_runtime_equivalence")
+    if not isinstance(legacy_equivalence, Mapping) or set(
+        legacy_equivalence
+    ) != {"scalar", "batched"}:
+        raise RecurrentKernelDevelopmentScreenError(
+            "candidate legacy-runtime equivalence is missing"
+        )
+    legacy_ratios: list[float] = []
+    for mode in ("scalar", "batched"):
+        comparison = legacy_equivalence.get(mode)
+        if not isinstance(comparison, Mapping):
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} legacy-runtime comparison is malformed"
+            )
+        if (
+            comparison.get("transition_count") != transition_count
+            or comparison.get("batched_transition_count") != transition_count
+            or comparison.get("paired_transition_count") != transition_count
+            or comparison.get("numeric_transition_comparison_count")
+            != transition_count
+            or comparison.get("hidden_component_comparison_count")
+            != transition_count * _HIDDEN_SIZE
+            or not isinstance(
+                comparison.get("bootstrap_value_comparison_count"),
+                int,
+            )
+            or int(comparison["bootstrap_value_comparison_count"]) <= 0
+            or any(
+                comparison.get(field) != 0
+                for field in (
+                    "semantic_mismatch_count",
+                    "identity_mismatch_count",
+                    "hidden_shape_mismatch_count",
+                    "bootstrap_none_mismatch_count",
+                )
+            )
+        ):
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} differs structurally from the legacy runtime"
+            )
+        for field in (
+            "max_abs_input_hidden_error",
+            "max_abs_logprob_error",
+            "max_abs_entropy_error",
+            "max_abs_value_error",
+            "max_abs_bootstrap_value_error",
+        ):
+            _finite_nonnegative(
+                comparison.get(field),
+                field=f"legacy_runtime.{mode}.{field}",
+            )
+        mode_ratios = [
+            _finite_nonnegative(
+                comparison.get(field),
+                field=f"legacy_runtime.{mode}.{field}",
+            )
+            for field in (
+                "max_input_hidden_tolerance_ratio",
+                "max_logprob_tolerance_ratio",
+                "max_entropy_tolerance_ratio",
+                "max_value_tolerance_ratio",
+                "max_bootstrap_value_tolerance_ratio",
+            )
+        ]
+        if max(mode_ratios) > 1.0:
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} exceeds legacy-runtime numeric tolerance"
+            )
+        candidate_semantics = timing[mode]["semantic_sha256"]  # type: ignore[index]
+        if (
+            comparison.get("ordered_merge_semantic_sha256")
+            != candidate_semantics[0]
+        ):
+            raise RecurrentKernelDevelopmentScreenError(
+                f"candidate {mode} legacy comparison is not bound to timed semantics"
+            )
+        legacy_ratios.extend(mode_ratios)
+    max_collector_ratio = max((*collector_ratios, *legacy_ratios))
+    if (
+        enforce_numeric_headroom
+        and max_collector_ratio
+        > RECURRENT_KERNEL_DEVELOPMENT_SCREEN_NUMERIC_HEADROOM
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "legacy-runtime numeric headroom exceeded"
+        )
+    return max_collector_ratio
 
 
 def _candidate_integrity_gate(
@@ -872,7 +1704,7 @@ def _candidate_integrity_gate(
             candidate,
             enforce_numeric_headroom=enforce_numeric_headroom,
         )
-        _validate_collector_and_timing(
+        max_collector_ratio = _validate_collector_and_timing(
             candidate,
             enforce_numeric_headroom=enforce_numeric_headroom,
         )
@@ -885,7 +1717,7 @@ def _candidate_integrity_gate(
     return {
         "passed": True,
         "reasons": [],
-        "max_numeric_tolerance_ratio": max_ratio,
+        "max_numeric_tolerance_ratio": max(max_ratio, max_collector_ratio),
         "selectable_for_implementation": _CANDIDATE_SELECTABLE[name],
     }
 
@@ -967,13 +1799,66 @@ def select_development_candidate(
             "baseline_confirmation_gate": confirmation_gate,
             "candidate_gates": {},
         }
+    all_results = [*candidate_results, baseline_confirmation]
+    nonces = [result.get("child_nonce") for result in all_results]
+    completed_results = [
+        result for result in all_results if result.get("status") == "completed"
+    ]
+    source_states = [result.get("source_state") for result in completed_results]
+    runtimes = [result.get("runtime") for result in completed_results]
+    try:
+        normalized_runtime_bindings = [
+            _normalized_common_runtime_binding(
+                result.get("fixed_batch_runtime_binding"),
+                field="completed child fixed-batch runtime binding",
+            )
+            for result in completed_results
+        ]
+        legacy_runtime_digests = [
+            _strict_sha256(
+                recurrent_rollout._validated_fixed_batch_runtime_binding(
+                    result["legacy_fixed_batch_runtime_binding"]  # type: ignore[arg-type]
+                ).get("exact_digest"),
+                field="completed child legacy fixed-batch runtime digest",
+            )
+            for result in completed_results
+        ]
+    except (KeyError, TypeError, ValueError, RecurrentKernelDevelopmentScreenError):
+        normalized_runtime_bindings = []
+        legacy_runtime_digests = []
+    if (
+        any(not isinstance(nonce, str) for nonce in nonces)
+        or len(set(nonces)) != len(nonces)
+        or not source_states
+        or any(source != source_states[0] for source in source_states[1:])
+        or any(runtime != runtimes[0] for runtime in runtimes[1:])
+        or not normalized_runtime_bindings
+        or any(
+            binding != normalized_runtime_bindings[0]
+            for binding in normalized_runtime_bindings[1:]
+        )
+        or not legacy_runtime_digests
+        or len(set(legacy_runtime_digests)) != 1
+    ):
+        return {
+            "selected_candidate": None,
+            "selection_authorized": False,
+            "reason": (
+                "child nonce, exact-source, or normalized runtime isolation drifted"
+            ),
+            "baseline_gate": baseline_gate,
+            "baseline_confirmation_gate": confirmation_gate,
+            "candidate_gates": {},
+        }
     baseline_timing = baseline.get("timing")
     confirmation_timing = baseline_confirmation.get("timing")
     if (
         not isinstance(baseline_timing, Mapping)
         or not isinstance(baseline_timing.get("scalar"), Mapping)
+        or not isinstance(baseline_timing.get("batched"), Mapping)
         or not isinstance(confirmation_timing, Mapping)
         or not isinstance(confirmation_timing.get("scalar"), Mapping)
+        or not isinstance(confirmation_timing.get("batched"), Mapping)
     ):
         raise RecurrentKernelDevelopmentScreenError(
             "completed baseline timing is malformed"
@@ -983,6 +1868,11 @@ def select_development_candidate(
         int(confirmation_timing["scalar"]["median_elapsed_ns"]),  # type: ignore[index]
     )
     baseline_scalar_ns = min(baseline_scalar_samples)
+    baseline_batched_samples = (
+        int(baseline_timing["batched"]["median_elapsed_ns"]),  # type: ignore[index]
+        int(confirmation_timing["batched"]["median_elapsed_ns"]),  # type: ignore[index]
+    )
+    baseline_batched_ns = min(baseline_batched_samples)
     baseline_rss_samples = (
         int(baseline["peak_rss_bytes"]),
         int(baseline_confirmation["peak_rss_bytes"]),
@@ -1002,75 +1892,150 @@ def select_development_candidate(
             "bracketing baseline semantic fingerprints differ"
         )
     gates: dict[str, object] = {}
-    eligible: list[tuple[int, str]] = []
-    for name in RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES[1:]:
+    control_names = (
+        "fixed_row_tile_4_fast_adapter_control_v2",
+        "fixed_row_tile_4_legacy_adapter_control_v2",
+    )
+    control_batched_ns: dict[str, int] = {}
+    controls_valid = True
+    for name in control_names:
         result = by_name.get(name)
         if not isinstance(result, Mapping):
             gates[name] = {
-                "passed": False,
+                "evidence_valid": False,
+                "selection_eligible": False,
                 "reasons": ["candidate result is missing"],
             }
+            controls_valid = False
             continue
-        integrity = _candidate_integrity_gate(result)
+        integrity = _candidate_integrity_gate(
+            result,
+            enforce_numeric_headroom=False,
+        )
         reasons = list(integrity["reasons"])
         if _candidate_semantic_fingerprint(result) != baseline_semantics:
             reasons.append(
                 "candidate behavior semantics differ from the frozen baseline"
             )
         timing = result.get("timing")
-        if result.get("status") == "completed" and isinstance(timing, Mapping):
-            scalar = timing.get("scalar")
-            batched = timing.get("batched")
-            if isinstance(scalar, Mapping) and isinstance(batched, Mapping):
-                candidate_scalar_ns = int(scalar["median_elapsed_ns"])
-                candidate_batched_ns = int(batched["median_elapsed_ns"])
-                own_speedup = 1.0 - (candidate_batched_ns / candidate_scalar_ns)
-                absolute_speedup = 1.0 - (candidate_batched_ns / baseline_scalar_ns)
-                paired_wins = int(timing.get("paired_batched_wins", 0))
-                rss_ratio = int(result["peak_rss_bytes"]) / baseline_rss
-                if own_speedup < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP:
-                    reasons.append("candidate batching speedup is below 3%")
-                if (
-                    absolute_speedup
-                    < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP
-                ):
-                    reasons.append(
-                        "candidate batched path does not beat the frozen "
-                        "baseline scalar by 3%"
-                    )
-                if (
-                    paired_wins
-                    < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_PAIRED_WINS
-                ):
-                    reasons.append("candidate won fewer than 4/5 timing pairs")
-                if rss_ratio > RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MAXIMUM_RSS_RATIO:
-                    reasons.append("candidate peak RSS exceeds 1.10x baseline")
-                gate = {
-                    **integrity,
-                    "passed": not reasons,
-                    "reasons": reasons,
-                    "own_path_speedup": own_speedup,
-                    "absolute_speedup_over_baseline_scalar": absolute_speedup,
-                    "paired_batched_wins": paired_wins,
-                    "peak_rss_ratio": rss_ratio,
-                    "selectable_for_implementation": _CANDIDATE_SELECTABLE[name],
-                }
-                if not _CANDIDATE_SELECTABLE[name]:
-                    reasons.append(
-                        "candidate lane is a nonselectable control or ceiling"
-                    )
-                    gate["passed"] = False
-                    gate["reasons"] = reasons
-                gates[name] = gate
-                if not reasons and _CANDIDATE_SELECTABLE[name]:
-                    eligible.append((candidate_batched_ns, name))
-                continue
+        if (
+            result.get("status") != "completed"
+            or not isinstance(timing, Mapping)
+            or not isinstance(timing.get("scalar"), Mapping)
+            or not isinstance(timing.get("batched"), Mapping)
+        ):
+            reasons.append("control timing is incomplete")
+        if reasons:
+            controls_valid = False
+            gates[name] = {
+                **integrity,
+                "evidence_valid": False,
+                "selection_eligible": False,
+                "reasons": reasons,
+            }
+            continue
+        scalar_ns = int(timing["scalar"]["median_elapsed_ns"])  # type: ignore[index]
+        batched_ns = int(timing["batched"]["median_elapsed_ns"])  # type: ignore[index]
+        control_batched_ns[name] = batched_ns
         gates[name] = {
             **integrity,
-            "passed": False,
-            "reasons": reasons or ["candidate timing is incomplete"],
+            "evidence_valid": True,
+            "selection_eligible": False,
+            "reasons": [],
+            "own_path_speedup": 1.0 - (batched_ns / scalar_ns),
+            "batched_median_elapsed_ns": batched_ns,
+            "nonselectable_kernel_control": True,
         }
-    selected = min(eligible)[1] if eligible else None
+
+    selectable_name = "per_row_bmm_fast_adapter_candidate_v2"
+    selectable = by_name.get(selectable_name)
+    candidate_reasons: list[str] = []
+    if not isinstance(selectable, Mapping):
+        candidate_integrity: dict[str, object] = {
+            "passed": False,
+            "reasons": ["selectable candidate result is missing"],
+        }
+        candidate_reasons.extend(candidate_integrity["reasons"])  # type: ignore[arg-type]
+    else:
+        candidate_integrity = _candidate_integrity_gate(selectable)
+        candidate_reasons.extend(candidate_integrity["reasons"])  # type: ignore[arg-type]
+        if _candidate_semantic_fingerprint(selectable) != baseline_semantics:
+            candidate_reasons.append(
+                "candidate behavior semantics differ from the frozen baseline"
+            )
+    candidate_timing = (
+        selectable.get("timing") if isinstance(selectable, Mapping) else None
+    )
+    candidate_batched_ns: int | None = None
+    candidate_metrics: dict[str, object] = {}
+    if (
+        not isinstance(candidate_timing, Mapping)
+        or not isinstance(candidate_timing.get("scalar"), Mapping)
+        or not isinstance(candidate_timing.get("batched"), Mapping)
+        or not isinstance(selectable, Mapping)
+        or selectable.get("status") != "completed"
+    ):
+        candidate_reasons.append("selectable candidate timing is incomplete")
+    else:
+        candidate_scalar_ns = int(
+            candidate_timing["scalar"]["median_elapsed_ns"]  # type: ignore[index]
+        )
+        candidate_batched_ns = int(
+            candidate_timing["batched"]["median_elapsed_ns"]  # type: ignore[index]
+        )
+        own_speedup = 1.0 - (candidate_batched_ns / candidate_scalar_ns)
+        scalar_baseline_speedup = 1.0 - (
+            candidate_batched_ns / baseline_scalar_ns
+        )
+        batched_baseline_speedup = 1.0 - (
+            candidate_batched_ns / baseline_batched_ns
+        )
+        paired_wins = int(candidate_timing.get("paired_batched_wins", 0))
+        rss_ratio = int(selectable["peak_rss_bytes"]) / baseline_rss
+        if own_speedup < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP:
+            candidate_reasons.append("candidate batching speedup is below 3%")
+        if (
+            scalar_baseline_speedup
+            < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP
+        ):
+            candidate_reasons.append(
+                "candidate batched path does not beat legacy scalar by 3%"
+            )
+        if (
+            batched_baseline_speedup
+            < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP
+        ):
+            candidate_reasons.append(
+                "candidate batched path does not beat legacy batched by 3%"
+            )
+        if paired_wins < RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_PAIRED_WINS:
+            candidate_reasons.append("candidate won fewer than 4/5 timing pairs")
+        if rss_ratio > RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MAXIMUM_RSS_RATIO:
+            candidate_reasons.append("candidate peak RSS exceeds 1.10x baseline")
+        candidate_metrics = {
+            "own_path_speedup": own_speedup,
+            "absolute_speedup_over_legacy_scalar": scalar_baseline_speedup,
+            "absolute_speedup_over_legacy_batched": batched_baseline_speedup,
+            "paired_batched_wins": paired_wins,
+            "peak_rss_ratio": rss_ratio,
+            "batched_median_elapsed_ns": candidate_batched_ns,
+            "nonselectable_control_batched_median_elapsed_ns": dict(
+                control_batched_ns
+            ),
+        }
+    candidate_evidence_valid = bool(
+        isinstance(selectable, Mapping)
+        and candidate_integrity.get("passed")
+        and _candidate_semantic_fingerprint(selectable) == baseline_semantics
+    )
+    gates[selectable_name] = {
+        **candidate_integrity,
+        **candidate_metrics,
+        "evidence_valid": candidate_evidence_valid,
+        "selection_eligible": not candidate_reasons,
+        "reasons": candidate_reasons,
+    }
+    selected = selectable_name if not candidate_reasons else None
     return {
         "selected_candidate": selected,
         "selection_authorized": selected is not None,
@@ -1081,12 +2046,18 @@ def select_development_candidate(
         ),
         "baseline_scalar_median_elapsed_ns": baseline_scalar_ns,
         "bracketing_baseline_scalar_median_elapsed_ns": list(baseline_scalar_samples),
+        "baseline_batched_median_elapsed_ns": baseline_batched_ns,
+        "bracketing_baseline_batched_median_elapsed_ns": list(
+            baseline_batched_samples
+        ),
         "baseline_peak_rss_bytes": baseline_rss,
         "bracketing_baseline_peak_rss_bytes": list(baseline_rss_samples),
         "baseline_gate": baseline_gate,
         "baseline_confirmation_gate": confirmation_gate,
         "candidate_gates": gates,
+        "all_kernel_controls_evidence_valid": controls_valid,
         "fresh_exact_sha_d04_required_before_launch": True,
+        "fresh_source_bound_authority_amendment_required_before_d04": True,
     }
 
 
@@ -1137,6 +2108,7 @@ def _run_child_candidate(
         return {
             "candidate": candidate,
             "status": "failed",
+            "child_nonce": child_nonce,
             "failure": "child_timeout",
             "timeout_seconds": _CHILD_TIMEOUT_SECONDS,
             "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
@@ -1146,6 +2118,7 @@ def _run_child_candidate(
         return {
             "candidate": candidate,
             "status": "failed",
+            "child_nonce": child_nonce,
             "failure": "child_nonzero_exit",
             "returncode": completed.returncode,
             "stderr_sha256": hashlib.sha256(
@@ -1170,6 +2143,54 @@ def _run_child_candidate(
             f"candidate {candidate!r} child identity or source binding drifted"
         )
     return parsed
+
+
+def _development_screen_contract() -> dict[str, object]:
+    return {
+        "candidate_order": list(RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES),
+        "selectable_rollout_adapter_candidate": (
+            "per_row_bmm_fast_adapter_candidate_v2"
+        ),
+        "nonselectable_kernel_controls": [
+            "fixed_row_tile_4_fast_adapter_control_v2",
+            "fixed_row_tile_4_legacy_adapter_control_v2",
+        ],
+        "source_default_numeric_kernel_version": (
+            RECURRENT_NUMERIC_KERNEL_VERSION
+        ),
+        "source_default_observation_projection_version": (
+            ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION
+        ),
+        "source_bound_module_paths": dict(_SOURCE_BOUND_MODULE_PATHS),
+        "proof_seed_contract": _d4_proof_seed_contract(
+            shape=RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE
+        ),
+        "fixed_batch_runtime_binding_required": True,
+        "execution_device_type": "cpu",
+        "execution_device_index": None,
+        "execution_dtype": "torch.float32",
+        "torch_thread_topology": {"intra_op": 1, "inter_op": 1},
+        "common_runtime_comparison_excludes_only": sorted(
+            _ADAPTER_RUNTIME_PROFILE_FIELDS
+        ),
+        "identical_legacy_runtime_binding_digest_required": True,
+        "shape": dict(RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE),
+        "timing_repeats": RECURRENT_KERNEL_DEVELOPMENT_SCREEN_TIMING_REPEATS,
+        "warmup_pairs": RECURRENT_KERNEL_DEVELOPMENT_SCREEN_WARMUP_PAIRS,
+        "numeric_headroom": RECURRENT_KERNEL_DEVELOPMENT_SCREEN_NUMERIC_HEADROOM,
+        "minimum_own_and_absolute_speedup": (
+            RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP
+        ),
+        "minimum_paired_wins": (
+            RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_PAIRED_WINS
+        ),
+        "maximum_peak_rss_ratio": (
+            RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MAXIMUM_RSS_RATIO
+        ),
+        "does_not_write_d04_authority": True,
+        "does_not_authorize_phase_a": True,
+        "fresh_source_bound_authority_amendment_required_before_d04": True,
+    }
 
 
 def run_development_screen(
@@ -1224,30 +2245,104 @@ def run_development_screen(
         "runtime_action_selection_changed": False,
         "promotion_authorized": False,
         "source_state": final_source_state,
-        "screen_contract": {
-            "candidate_order": list(RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES),
-            "shape": dict(RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SHAPE),
-            "timing_repeats": (RECURRENT_KERNEL_DEVELOPMENT_SCREEN_TIMING_REPEATS),
-            "warmup_pairs": RECURRENT_KERNEL_DEVELOPMENT_SCREEN_WARMUP_PAIRS,
-            "numeric_headroom": (RECURRENT_KERNEL_DEVELOPMENT_SCREEN_NUMERIC_HEADROOM),
-            "minimum_own_and_absolute_speedup": (
-                RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_SPEEDUP
-            ),
-            "minimum_paired_wins": (
-                RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MINIMUM_PAIRED_WINS
-            ),
-            "maximum_peak_rss_ratio": (
-                RECURRENT_KERNEL_DEVELOPMENT_SCREEN_MAXIMUM_RSS_RATIO
-            ),
-            "does_not_write_d04_authority": True,
-            "does_not_authorize_phase_a": True,
-        },
+        "screen_contract": _development_screen_contract(),
         "candidate_results": results,
         "baseline_confirmation": baseline_confirmation,
         "selection": selection,
     }
     report["exact_digest"] = stable_payload_digest(report)
     return report
+
+
+def validate_development_screen_report(
+    report: Mapping[str, object],
+) -> None:
+    """Reconstruct the non-authoritative report before atomic publication."""
+
+    expected_keys = {
+        "schema_version",
+        "development_only",
+        "launch_authorized",
+        "authority_evidence_eligible",
+        "scientific_result",
+        "training_run",
+        "training_artifact_created",
+        "runtime_action_selection_changed",
+        "promotion_authorized",
+        "source_state",
+        "screen_contract",
+        "candidate_results",
+        "baseline_confirmation",
+        "selection",
+        "exact_digest",
+    }
+    if set(report) != expected_keys:
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen report root schema drifted"
+        )
+    if (
+        report.get("schema_version")
+        != RECURRENT_KERNEL_DEVELOPMENT_SCREEN_SCHEMA_VERSION
+        or report.get("development_only") is not True
+        or report.get("launch_authorized") is not False
+        or report.get("authority_evidence_eligible") is not False
+        or report.get("scientific_result") is not False
+        or report.get("training_run") is not False
+        or report.get("training_artifact_created") is not False
+        or report.get("runtime_action_selection_changed") is not False
+        or report.get("promotion_authorized") is not False
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen lifecycle flags drifted"
+        )
+    source = _validated_source_state(
+        report.get("source_state"),
+        field="development screen",
+    )
+    contract = report.get("screen_contract")
+    if contract != _development_screen_contract():
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen declared contract drifted"
+        )
+    results = report.get("candidate_results")
+    confirmation = report.get("baseline_confirmation")
+    if (
+        not isinstance(results, Sequence)
+        or isinstance(results, (str, bytes, bytearray))
+        or len(results) != len(RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES)
+        or any(not isinstance(result, Mapping) for result in results)
+        or not isinstance(confirmation, Mapping)
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen child evidence is malformed"
+        )
+    typed_results = [result for result in results if isinstance(result, Mapping)]
+    completed_children = [
+        result
+        for result in (*typed_results, confirmation)
+        if result.get("status") == "completed"
+    ]
+    if any(result.get("source_state") != source for result in completed_children):
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen parent and child source bindings differ"
+        )
+    recomputed_selection = select_development_candidate(
+        typed_results,
+        baseline_confirmation=confirmation,
+    )
+    if report.get("selection") != recomputed_selection:
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen selection does not reconstruct"
+        )
+    digest = report.get("exact_digest")
+    payload = dict(report)
+    payload.pop("exact_digest", None)
+    if _strict_sha256(digest, field="report exact digest") != stable_payload_digest(
+        payload
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen report digest does not reconstruct"
+        )
 
 
 def validate_development_screen_report_path(path: Path) -> Path:
@@ -1291,6 +2386,7 @@ def write_development_screen_report(
     path: Path,
     report: Mapping[str, object],
 ) -> None:
+    validate_development_screen_report(report)
     resolved = validate_development_screen_report_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     serialized = (

@@ -1376,18 +1376,20 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         with self.assertRaisesRegex(
             ValueError,
             "communication token observation fields must use contiguous token ids",
-        ):
+        ) as encoded_error:
             encode_observation_input(observation)
         with self.assertRaisesRegex(
             ValueError,
             "communication token observation fields must use contiguous token ids",
-        ):
+        ) as direct_error:
             quantized_observation_input_values(observation)
         with self.assertRaisesRegex(
             ValueError,
             "communication token observation fields must use contiguous token ids",
-        ):
+        ) as policy_error:
             ecological_policy_values_from_observation(observation)
+        self.assertEqual(str(direct_error.exception), str(encoded_error.exception))
+        self.assertEqual(str(policy_error.exception), str(encoded_error.exception))
 
     def test_previous_token_observation_schema_fails_closed(self) -> None:
         world = SimulationWorld(

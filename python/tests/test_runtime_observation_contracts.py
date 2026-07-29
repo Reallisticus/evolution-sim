@@ -34,6 +34,34 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
             ecological_policy_values_from_observation(observation),
             ecological_policy_input_values(encoded),
         )
+        diagnostic_index = SELF_INPUT_FIELDS.index("mind_inheritance_available")
+        decoded = decode_observation_input(encoded)
+        self.assertEqual(
+            ecological_policy_values_from_observation(observation),
+            tuple(decoded[:diagnostic_index] + decoded[diagnostic_index + 1 :]),
+        )
+
+    def test_direct_quantized_projection_rejects_invalid_excluded_indices(
+        self,
+    ) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+
+        for index in (-1, OBSERVATION_INPUT_VECTOR_SIZE, True):
+            with self.subTest(index=index):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "excluded observation input index is invalid",
+                ):
+                    quantized_observation_input_values(
+                        observation,
+                        excluded_indices=frozenset({index}),
+                    )
 
     def test_direct_observation_values_fail_closed_like_encoder(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
@@ -43,6 +71,10 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
             agent,
             observation_context=world._observation_context(agent),
         )
+        nonfinite_value = copy.deepcopy(observation)
+        nonfinite_value["self"]["energy_ratio"] = float("nan")
+        unknown_enum = copy.deepcopy(observation)
+        unknown_enum["local_patch"][0]["terrain"] = "hostile_terrain"
         hostile_observations = {
             "stale schema": {
                 **copy.deepcopy(observation),
@@ -52,6 +84,8 @@ class RuntimeObservationContractTests(RuntimeContractTestHelpers):
                 **copy.deepcopy(observation),
                 "schema_version": TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
             },
+            "nonfinite value": nonfinite_value,
+            "unknown enum": unknown_enum,
         }
 
         for label, hostile in hostile_observations.items():

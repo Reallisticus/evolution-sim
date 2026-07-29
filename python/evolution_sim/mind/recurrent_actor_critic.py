@@ -9,6 +9,7 @@ from types import MappingProxyType
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from evolution_sim.env.runtime.action_contract import (
     ACTION_MASK_CONTRACT_VERSION,
@@ -55,6 +56,7 @@ RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_cr
 RECURRENT_NUMERIC_KERNEL_VERSION = (
     "batch_size_tolerance_stable_per_row_bmm_forward_native_gemm_backward_v1"
 )
+_BACKEND_STABLE_LINEAR_TILE_ROWS = 4
 GENOME_CONDITIONING_DISABLED = "disabled"
 GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
 CRITIC_GENOME_CONDITIONING_NONE = "none"
@@ -744,6 +746,55 @@ class BackendStableLayerNorm(nn.Module):
         return centered * inverse_standard_deviation * self.weight + self.bias
 
 
+def _per_row_bmm_linear_forward(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Frozen v1 forward reference for numerical regression tests."""
+
+    leading_shape = tuple(inputs.shape[:-1])
+    flattened = inputs.reshape(-1, inputs.shape[-1])
+    row_count = int(flattened.shape[0])
+    projected = torch.bmm(
+        weight.unsqueeze(0).expand(row_count, -1, -1),
+        flattened.unsqueeze(-1),
+    ).squeeze(-1)
+    if bias is not None:
+        projected = projected + bias
+    return projected.reshape(*leading_shape, weight.shape[0])
+
+
+def _fixed_row_tile_4_linear_forward(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Project all logical rows through an invariant four-row dense kernel."""
+
+    leading_shape = tuple(inputs.shape[:-1])
+    flattened = inputs.reshape(-1, inputs.shape[-1])
+    projected_tiles: list[Tensor] = []
+    for start in range(0, flattened.shape[0], _BACKEND_STABLE_LINEAR_TILE_ROWS):
+        active = flattened[start : start + _BACKEND_STABLE_LINEAR_TILE_ROWS]
+        if active.shape[0] < _BACKEND_STABLE_LINEAR_TILE_ROWS:
+            padded = active.new_zeros(
+                (_BACKEND_STABLE_LINEAR_TILE_ROWS, active.shape[1])
+            )
+            padded[: active.shape[0]] = active
+        else:
+            padded = active
+        projected_tiles.append(F.linear(padded, weight, bias)[: active.shape[0]])
+    if projected_tiles:
+        projected = torch.cat(projected_tiles, dim=0)
+    else:
+        projected = flattened.new_empty((0, weight.shape[0]))
+    return projected.reshape(*leading_shape, weight.shape[0])
+
+
+_backend_stable_linear_forward = _per_row_bmm_linear_forward
+
+
 class _BackendStableLinearFunction(torch.autograd.Function):
     """Per-row BMM forward with a compact dense-linear backward."""
 
@@ -754,17 +805,9 @@ class _BackendStableLinearFunction(torch.autograd.Function):
         weight: Tensor,
         bias: Tensor | None,
     ) -> Tensor:
-        leading_shape = tuple(inputs.shape[:-1])
-        flattened = inputs.reshape(-1, inputs.shape[-1])
-        row_count = int(flattened.shape[0])
-        projected = torch.bmm(
-            weight.unsqueeze(0).expand(row_count, -1, -1),
-            flattened.unsqueeze(-1),
-        ).squeeze(-1)
-        if bias is not None:
-            projected = projected + bias
+        projected = _backend_stable_linear_forward(inputs, weight, bias)
         ctx.save_for_backward(inputs, weight)  # type: ignore[attr-defined]
-        return projected.reshape(*leading_shape, weight.shape[0])
+        return projected
 
     @staticmethod
     def backward(
