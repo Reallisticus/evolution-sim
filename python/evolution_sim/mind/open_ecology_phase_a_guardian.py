@@ -1,10 +1,11 @@
 """Ephemeral two-party launch authority for the Phase-A training matrix.
 
 Persisted readiness reports remain evidence, not a capability.  A Mac-side
-coordinator must independently reexecute the storage authority and keep one
-authenticated SSH channel open while an exact-source GPU-side guardian
-independently reexecutes D10, throughput, and output-lock authority.  Only an
-in-memory capability issued by that live guardian may admit training updates.
+coordinator statically validates the sealed bundle, independently reexecutes
+storage authority, and keeps one authenticated SSH channel open.  The
+exact-source GPU guardian fully reexecutes launch authority, then independently
+reexecutes D10, throughput, and output-lock authority.  Only an in-memory
+capability issued by that live guardian may admit training updates.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ from evolution_sim.mind.open_ecology_phase_a import (
     _require_live_source,
     run_open_ecology_phase_a_cell,
     validate_open_ecology_phase_a_launch_authorization,
+    validate_open_ecology_phase_a_launch_authorization_static,
     validate_open_ecology_phase_a_preregistration,
 )
 from evolution_sim.mind.open_ecology_phase_a_readiness import (
@@ -125,7 +127,11 @@ namespace = {
 exec(compile(source, path, "exec"), namespace, namespace)
 """.strip()
 _ISSUER = object()
+_FULL_VALIDATION_ISSUER = object()
 _ISSUED_CAPABILITIES: weakref.WeakSet[LivePhaseAUpdateAdmission] = weakref.WeakSet()
+_ISSUED_FULL_AUTHORITY_RECEIPTS: weakref.WeakSet[
+    _FullAuthorityValidationReceipt
+] = weakref.WeakSet()
 
 
 class OpenEcologyTwoPartyAuthorityError(RuntimeError):
@@ -153,6 +159,111 @@ class PhaseAAuthorityBindings:
             "ssh_target": self.ssh_target,
         }
 
+
+class _FullAuthorityValidationReceipt:
+    """Opaque one-shot proof that this process ran full authority validation."""
+
+    __slots__ = (
+        "_authorization_path",
+        "_authorization_time",
+        "_bindings",
+        "_consumed",
+        "_guardian_pgid",
+        "_guardian_pid",
+        "_issuer",
+        "_preregistration",
+        "_report_paths",
+        "__weakref__",
+    )
+
+    def __init__(
+        self,
+        issuer: object,
+        *,
+        bindings: PhaseAAuthorityBindings,
+        preregistration: Mapping[str, object],
+        authorization_time: datetime,
+        authorization_path: Path,
+        report_paths: Mapping[str, Path],
+    ) -> None:
+        if issuer is not _FULL_VALIDATION_ISSUER:
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipts cannot be constructed by callers"
+            )
+        if set(report_paths) != {
+            "d10",
+            "throughput",
+            "storage",
+            "output_lock",
+        }:
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt report topology drifted"
+            )
+        cloned_preregistration = json.loads(canonical_json_bytes(preregistration))
+        if not isinstance(cloned_preregistration, dict):
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt preregistration is malformed"
+            )
+        self._issuer = issuer
+        self._bindings = bindings
+        self._preregistration = cloned_preregistration
+        self._authorization_time = authorization_time
+        self._authorization_path = authorization_path.resolve()
+        self._report_paths = tuple(
+            (name, Path(report_paths[name]).resolve())
+            for name in ("d10", "throughput", "storage", "output_lock")
+        )
+        self._guardian_pid = os.getpid()
+        self._guardian_pgid = os.getpgrp()
+        self._consumed = False
+        _ISSUED_FULL_AUTHORITY_RECEIPTS.add(self)
+
+    def __reduce__(self) -> object:
+        raise TypeError("full authority validation receipt cannot be serialized")
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        raise TypeError("full authority validation receipt cannot be serialized")
+
+    def __copy__(self) -> object:
+        raise TypeError("full authority validation receipt cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> object:
+        del memo
+        raise TypeError("full authority validation receipt cannot be copied")
+
+    def consume(
+        self,
+        *,
+        expected_bindings: PhaseAAuthorityBindings,
+    ) -> tuple[dict[str, object], datetime, dict[str, Path]]:
+        if (
+            self._consumed
+            or self not in _ISSUED_FULL_AUTHORITY_RECEIPTS
+            or self._issuer is not _FULL_VALIDATION_ISSUER
+        ):
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt is closed or replayed"
+            )
+        self._consumed = True
+        _ISSUED_FULL_AUTHORITY_RECEIPTS.discard(self)
+        if os.getpid() != self._guardian_pid or os.getpgrp() != self._guardian_pgid:
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt crossed its process boundary"
+            )
+        if self._bindings != expected_bindings:
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt binding drifted"
+            )
+        if not self._authorization_path.is_absolute():
+            raise OpenEcologyTwoPartyAuthorityError(
+                "full authority validation receipt authorization path drifted"
+            )
+        return (
+            dict(self._preregistration),
+            self._authorization_time,
+            dict(self._report_paths),
+        )
 
 class GuardianChannelLiveness:
     """One-way liveness latch shared by the guardian and update capability."""
@@ -430,7 +541,7 @@ class MacStorageAuthority:
 
 
 class RemoteGuardianAuthority:
-    """GPU-local D10/throughput/lock authority, verified once per lifetime."""
+    """GPU-local live gates entered only through one full-validation receipt."""
 
     def __init__(
         self,
@@ -477,9 +588,7 @@ class RemoteGuardianAuthority:
     def activate(
         self,
         *,
-        report_paths: Mapping[str, Path],
-        preregistration: Mapping[str, object],
-        authorization_time: datetime | None,
+        full_validation_receipt: object,
         github_token: bytearray,
     ) -> LivePhaseAUpdateAdmission:
         if self._attempted:
@@ -487,6 +596,16 @@ class RemoteGuardianAuthority:
                 "remote operational gates may run exactly once per guardian lifetime"
             )
         self._attempted = True
+        if type(full_validation_receipt) is not _FullAuthorityValidationReceipt:
+            raise OpenEcologyTwoPartyAuthorityError(
+                "remote guardian requires a full authority validation receipt"
+            )
+        preregistration, authorization_time, all_report_paths = (
+            full_validation_receipt.consume(expected_bindings=self.bindings)
+        )
+        report_paths = {
+            name: all_report_paths[name] for name in _REMOTE_GATE_NAMES
+        }
         if tuple(self._verifiers) != _REMOTE_GATE_NAMES:
             raise OpenEcologyTwoPartyAuthorityError(
                 "remote guardian verifier topology drifted"
@@ -539,12 +658,93 @@ def load_phase_a_authority_bundle(
     PhaseAAuthorityBindings,
     dict[str, Path],
 ]:
-    """Reopen the authorization and resolve its exact operational reports."""
+    """Fully reexecute authority and resolve its exact operational reports."""
+
+    return _load_phase_a_authority_bundle(
+        preregistration_path=preregistration_path,
+        launch_authorization_path=launch_authorization_path,
+        expected_bindings=expected_bindings,
+        authorization_validator=(
+            validate_open_ecology_phase_a_launch_authorization
+        ),
+    )
+
+
+def _load_phase_a_authority_bundle_for_remote(
+    *,
+    preregistration_path: Path,
+    launch_authorization_path: Path,
+    expected_bindings: PhaseAAuthorityBindings,
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    datetime,
+    PhaseAAuthorityBindings,
+    dict[str, Path],
+    _FullAuthorityValidationReceipt,
+]:
+    """Mint remote launch proof only after the full authority path succeeds."""
+
+    bundle = load_phase_a_authority_bundle(
+        preregistration_path=preregistration_path,
+        launch_authorization_path=launch_authorization_path,
+        expected_bindings=expected_bindings,
+    )
+    preregistration, _authorization, authorization_time, bindings, reports = bundle
+    receipt = _FullAuthorityValidationReceipt(
+        _FULL_VALIDATION_ISSUER,
+        bindings=bindings,
+        preregistration=preregistration,
+        authorization_time=authorization_time,
+        authorization_path=launch_authorization_path,
+        report_paths=reports,
+    )
+    return (*bundle, receipt)
+
+
+def _load_phase_a_authority_bundle_static(
+    *,
+    preregistration_path: Path,
+    launch_authorization_path: Path,
+    expected_bindings: PhaseAAuthorityBindings | None = None,
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    datetime,
+    PhaseAAuthorityBindings,
+    dict[str, Path],
+]:
+    """Load the Mac's static half without host-specific proof reexecution."""
+
+    return _load_phase_a_authority_bundle(
+        preregistration_path=preregistration_path,
+        launch_authorization_path=launch_authorization_path,
+        expected_bindings=expected_bindings,
+        authorization_validator=(
+            validate_open_ecology_phase_a_launch_authorization_static
+        ),
+    )
+
+
+def _load_phase_a_authority_bundle(
+    *,
+    preregistration_path: Path,
+    launch_authorization_path: Path,
+    expected_bindings: PhaseAAuthorityBindings | None,
+    authorization_validator: Callable[..., None],
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    datetime,
+    PhaseAAuthorityBindings,
+    dict[str, Path],
+]:
+    """Resolve one bundle after the caller selected a closed validation path."""
 
     preregistration = _load_strict_json(preregistration_path)
     authorization = _load_strict_json(launch_authorization_path)
     validate_open_ecology_phase_a_preregistration(preregistration)
-    validate_open_ecology_phase_a_launch_authorization(
+    authorization_validator(
         authorization,
         preregistration=preregistration,
         authorization_path=launch_authorization_path,
@@ -744,12 +944,17 @@ def run_remote_guardian_session(
         )
     _sha256(hello.get("mac_storage_facts_digest"), field="Mac storage facts digest")
     try:
-        preregistration, _authorization, authorization_time, bindings, reports = (
-            load_phase_a_authority_bundle(
-                preregistration_path=preregistration_path,
-                launch_authorization_path=launch_authorization_path,
-                expected_bindings=expected_bindings,
-            )
+        (
+            preregistration,
+            _authorization,
+            _authorization_time,
+            bindings,
+            _reports,
+            full_validation_receipt,
+        ) = _load_phase_a_authority_bundle_for_remote(
+            preregistration_path=preregistration_path,
+            launch_authorization_path=launch_authorization_path,
+            expected_bindings=expected_bindings,
         )
         if bindings != expected_bindings:
             raise OpenEcologyTwoPartyAuthorityError(
@@ -762,9 +967,7 @@ def run_remote_guardian_session(
             host_observer=host_observer,
         )
         capability = remote.activate(
-            report_paths={name: reports[name] for name in _REMOTE_GATE_NAMES},
-            preregistration=preregistration,
-            authorization_time=authorization_time,
+            full_validation_receipt=full_validation_receipt,
             github_token=github_token,
         )
     finally:
@@ -896,7 +1099,7 @@ def run_mac_coordinator(
         runtime_venv_authority_sha256=(expected_remote_runtime_venv_authority_sha256),
     )
     preregistration, _authorization, authorization_time, bindings, reports = (
-        load_phase_a_authority_bundle(
+        _load_phase_a_authority_bundle_static(
             preregistration_path=local_preregistration_path,
             launch_authorization_path=local_launch_authorization_path,
             expected_bindings=expected_bindings,

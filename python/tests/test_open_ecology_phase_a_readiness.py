@@ -1741,6 +1741,99 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                     require_current_storage_freshness=False,
                 )
 
+    def test_static_authorization_keeps_semantics_but_skips_host_reexecution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            dependencies, gates = _report_paths(root, self.campaign)
+            with (
+                patch.object(phase_a, "_require_live_source"),
+                patch.object(
+                    readiness,
+                    "_utc_now",
+                    return_value=readiness._parse_utc(
+                        _AUTHORIZED_AT,
+                        field="test.authorized_at",
+                    ),
+                ),
+                patch.object(
+                    readiness,
+                    "REPORT_AUTHORITY_VERIFIERS",
+                    _ALL_AUTHORITY_VERIFIERS,
+                ),
+            ):
+                index = phase_a.build_open_ecology_phase_a_evidence_index(
+                    self.campaign,
+                    evidence_root=root,
+                    dependency_reports=dependencies,
+                    operational_reports=gates,
+                )
+                index_path = root / "evidence-index.json"
+                authorization_path = root / "launch-authorization.json"
+                _write_json(index_path, index)
+                authorization = phase_a.build_open_ecology_phase_a_launch_authorization(
+                    self.campaign,
+                    evidence_index=index,
+                    evidence_index_path=index_path,
+                    authorization_path=authorization_path,
+                )
+                _write_json(authorization_path, authorization)
+
+            semantic_calls: list[str] = []
+            semantic_validators = dict(readiness._SEMANTIC_VALIDATORS)
+            semantic_kind = "fixed_batch_equivalence_and_speed"
+            original_semantic_validator = semantic_validators[semantic_kind]
+
+            def record_semantic_validation(
+                facts: object,
+                preregistration: object,
+                authorization_time: object,
+            ) -> None:
+                semantic_calls.append(semantic_kind)
+                original_semantic_validator(
+                    facts,
+                    preregistration,
+                    authorization_time,
+                )
+
+            semantic_validators[semantic_kind] = record_semantic_validation
+
+            def reject_host_reexecution(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("host-specific authority verifier ran")
+
+            with (
+                patch.object(phase_a, "_require_live_source"),
+                patch.object(
+                    readiness,
+                    "_utc_now",
+                    return_value=readiness._parse_utc(
+                        _AUTHORIZED_AT,
+                        field="test.static_validation_time",
+                    ),
+                ),
+                patch.object(
+                    readiness,
+                    "_SEMANTIC_VALIDATORS",
+                    semantic_validators,
+                ),
+                patch.object(
+                    readiness,
+                    "REPORT_AUTHORITY_VERIFIERS",
+                    {
+                        kind: reject_host_reexecution
+                        for kind in readiness.PROOF_PRODUCER_AVAILABILITY
+                    },
+                ),
+            ):
+                phase_a.validate_open_ecology_phase_a_launch_authorization_static(
+                    authorization,
+                    preregistration=self.campaign,
+                    authorization_path=authorization_path,
+                )
+
+            self.assertEqual(semantic_calls, [semantic_kind])
+
     def test_live_source_drift_after_authorization_assembly_fails_closed(
         self,
     ) -> None:

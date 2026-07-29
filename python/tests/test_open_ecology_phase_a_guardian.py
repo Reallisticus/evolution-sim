@@ -61,6 +61,99 @@ def _observe_host(_campaign_root: Path) -> dict[str, object]:
     return {"injected": True}
 
 
+def _full_validation_receipt(
+) -> object:
+    with tempfile.TemporaryDirectory() as temporary:
+        preregistration_path, authorization_path, _index_path = (
+            _write_authority_bundle_fixture(Path(temporary))
+        )
+        with (
+            mock.patch.object(
+                guardian,
+                "validate_open_ecology_phase_a_preregistration",
+            ),
+            mock.patch.object(
+                guardian,
+                "validate_open_ecology_phase_a_launch_authorization",
+            ),
+        ):
+            return guardian._load_phase_a_authority_bundle_for_remote(
+                preregistration_path=preregistration_path,
+                launch_authorization_path=authorization_path,
+                expected_bindings=_bindings(),
+            )[-1]
+
+
+def _authority_index_fixture(dependency_id: str) -> dict[str, object]:
+    return {
+        "exact_digest": "e" * 64,
+        "dependency_reports": [
+            {
+                "dependency_id": dependency_id,
+                "reports": [
+                    {
+                        "evidence_kind": (
+                            "exact_sha_phase_a_training_and_torch_ci"
+                        ),
+                        "file": {"relative_path": "d10.json"},
+                    }
+                ],
+            }
+        ],
+        "operational_reports": [
+            {
+                "report": {
+                    "evidence_kind": kind,
+                    "file": {"relative_path": f"{name}.json"},
+                }
+            }
+            for kind, name in (
+                ("phase_a_training_throughput", "throughput"),
+                ("campaign_storage_capacity", "storage"),
+                ("output_lock_contention", "output-lock"),
+            )
+        ],
+    }
+
+
+def _write_authority_bundle_fixture(root: Path) -> tuple[Path, Path, Path]:
+    preregistration_path = root / "preregistration.json"
+    authorization_path = root / "authorization.json"
+    index_path = root / "index.json"
+    preregistration_path.write_text(
+        json.dumps(
+            {
+                "exact_digest": "d" * 64,
+                "source": {
+                    "commit": "b" * 40,
+                    "manifest_sha256": "c" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    authorization_path.write_text(
+        json.dumps(
+            {
+                "authorized_at_utc": "2026-07-28T00:00:00Z",
+                "evidence_index": {
+                    "exact_digest": "e" * 64,
+                    "file": {"relative_path": "index.json"},
+                },
+                "exact_digest": "f" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in ("d10", "throughput", "storage", "output-lock"):
+        (root / f"{name}.json").write_text("{}", encoding="utf-8")
+    index_path.write_text(
+        json.dumps(_authority_index_fixture("readiness_dependency_10")),
+        encoding="utf-8",
+    )
+    return preregistration_path, authorization_path, index_path
+
+
 class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
     def test_coordinator_default_timeout_covers_full_live_d10_budget(self) -> None:
         d10_torch_budget_seconds = 30 * 60.0
@@ -310,12 +403,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
         token = bytearray(b"g" * 32)
 
         capability = authority.activate(
-            report_paths={
-                name: Path(f"/tmp/{name}.json")
-                for name in ("d10", "throughput", "output_lock")
-            },
-            preregistration=_preregistration(),
-            authorization_time=None,
+            full_validation_receipt=_full_validation_receipt(),
             github_token=token,
         )
 
@@ -345,12 +433,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             "exactly once",
         ):
             authority.activate(
-                report_paths={
-                    name: Path(f"/tmp/{name}.json")
-                    for name in ("d10", "throughput", "output_lock")
-                },
-                preregistration=_preregistration(),
-                authorization_time=None,
+                full_validation_receipt=_full_validation_receipt(),
                 github_token=bytearray(b"h" * 32),
             )
         self.assertEqual(calls, ["d10", "throughput", "output_lock"])
@@ -358,10 +441,6 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
 
     def test_default_throughput_verifier_receives_cli_host_observer(self) -> None:
         channel = guardian.GuardianChannelLiveness(terminate=lambda _reason: None)
-        reports = {
-            name: Path(f"/tmp/{name}.json")
-            for name in ("d10", "throughput", "output_lock")
-        }
         with (
             mock.patch.object(
                 guardian,
@@ -386,18 +465,22 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                 host_observer=_observe_host,
             )
             capability = authority.activate(
-                report_paths=reports,
-                preregistration=_preregistration(),
-                authorization_time=None,
+                full_validation_receipt=_full_validation_receipt(),
                 github_token=bytearray(b"g" * 32),
             )
             capability.close()
 
-        throughput.assert_called_once_with(
-            reports["throughput"],
-            _preregistration(),
-            None,
-            host_observer=_observe_host,
+        throughput.assert_called_once()
+        throughput_args, throughput_kwargs = throughput.call_args
+        self.assertEqual(Path(throughput_args[0]).name, "throughput.json")
+        self.assertEqual(throughput_args[1], _preregistration())
+        self.assertEqual(
+            throughput_args[2],
+            datetime(2026, 7, 28, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            throughput_kwargs,
+            {"host_observer": _observe_host},
         )
 
     def test_forged_persisted_capability_and_missing_storage_fail_closed(self) -> None:
@@ -744,7 +827,7 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             ),
             mock.patch.object(
                 guardian,
-                "load_phase_a_authority_bundle",
+                "_load_phase_a_authority_bundle_static",
                 return_value=(
                     preregistration,
                     {},
@@ -760,7 +843,11 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                         )
                     },
                 ),
-            ),
+            ) as static_bundle_loader,
+            mock.patch.object(
+                guardian,
+                "load_phase_a_authority_bundle",
+            ) as full_bundle_loader,
             mock.patch.object(
                 guardian,
                 "_revalidate_local_guardian_authority",
@@ -798,6 +885,8 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
         self.assertLess(events.index("archive"), events.index("command"))
         self.assertLess(events.index("archive"), events.index("popen"))
         self.assertLess(events.index("endpoint"), events.index("storage"))
+        static_bundle_loader.assert_called_once()
+        full_bundle_loader.assert_not_called()
         self.assertEqual(Process.stdin.getvalue(), b"")
         self.assertEqual(token, bytearray(len(token)))
 
@@ -868,67 +957,9 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
     def test_d10_is_resolved_only_from_dependency_ten(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            preregistration_path = root / "preregistration.json"
-            authorization_path = root / "authorization.json"
-            index_path = root / "index.json"
-            preregistration_path.write_text(
-                json.dumps(
-                    {
-                        "exact_digest": "d" * 64,
-                        "source": {
-                            "commit": "b" * 40,
-                            "manifest_sha256": "c" * 64,
-                        },
-                    }
-                ),
-                encoding="utf-8",
+            preregistration_path, authorization_path, index_path = (
+                _write_authority_bundle_fixture(root)
             )
-            authorization_path.write_text(
-                json.dumps(
-                    {
-                        "authorized_at_utc": "2026-07-28T00:00:00Z",
-                        "evidence_index": {
-                            "exact_digest": "e" * 64,
-                            "file": {"relative_path": "index.json"},
-                        },
-                        "exact_digest": "f" * 64,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            for name in ("d10", "throughput", "storage", "output-lock"):
-                (root / f"{name}.json").write_text("{}", encoding="utf-8")
-
-            def index(dependency_id: str) -> dict[str, object]:
-                return {
-                    "exact_digest": "e" * 64,
-                    "dependency_reports": [
-                        {
-                            "dependency_id": dependency_id,
-                            "reports": [
-                                {
-                                    "evidence_kind": (
-                                        "exact_sha_phase_a_training_and_torch_ci"
-                                    ),
-                                    "file": {"relative_path": "d10.json"},
-                                }
-                            ],
-                        }
-                    ],
-                    "operational_reports": [
-                        {
-                            "report": {
-                                "evidence_kind": kind,
-                                "file": {"relative_path": f"{name}.json"},
-                            }
-                        }
-                        for kind, name in (
-                            ("phase_a_training_throughput", "throughput"),
-                            ("campaign_storage_capacity", "storage"),
-                            ("output_lock_contention", "output-lock"),
-                        )
-                    ],
-                }
 
             with (
                 mock.patch.object(
@@ -940,10 +971,6 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                     "validate_open_ecology_phase_a_launch_authorization",
                 ),
             ):
-                index_path.write_text(
-                    json.dumps(index("readiness_dependency_10")),
-                    encoding="utf-8",
-                )
                 bundle = guardian.load_phase_a_authority_bundle(
                     preregistration_path=preregistration_path,
                     launch_authorization_path=authorization_path,
@@ -954,7 +981,9 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                 )
 
                 index_path.write_text(
-                    json.dumps(index("readiness_dependency_09")),
+                    json.dumps(
+                        _authority_index_fixture("readiness_dependency_09")
+                    ),
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(
@@ -965,6 +994,230 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
                         preregistration_path=preregistration_path,
                         launch_authorization_path=authorization_path,
                     )
+
+    def test_named_authority_bundle_paths_keep_cuda_reexecution_off_mac(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            preregistration_path, authorization_path, _index_path = (
+                _write_authority_bundle_fixture(root)
+            )
+
+            with (
+                mock.patch.object(
+                    guardian,
+                    "validate_open_ecology_phase_a_preregistration",
+                ),
+                mock.patch.object(
+                    guardian,
+                    "validate_open_ecology_phase_a_launch_authorization",
+                ) as full_validation,
+                mock.patch.object(
+                    guardian,
+                    "validate_open_ecology_phase_a_launch_authorization_static",
+                ) as static_validation,
+            ):
+                static_bundle = guardian._load_phase_a_authority_bundle_static(
+                    preregistration_path=preregistration_path,
+                    launch_authorization_path=authorization_path,
+                )
+                static_validation.assert_called_once()
+                full_validation.assert_not_called()
+                self.assertEqual(len(static_bundle), 5)
+
+                static_validation.reset_mock()
+                full_validation.reset_mock()
+                full_bundle = guardian._load_phase_a_authority_bundle_for_remote(
+                    preregistration_path=preregistration_path,
+                    launch_authorization_path=authorization_path,
+                    expected_bindings=_bindings(),
+                )
+                full_validation.assert_called_once()
+                static_validation.assert_not_called()
+                self.assertEqual(len(full_bundle), 6)
+                self.assertNotIsInstance(
+                    static_bundle[-1],
+                    type(full_bundle[-1]),
+                )
+
+                full_validation.side_effect = RuntimeError(
+                    "full authority validation failed"
+                )
+                with (
+                    mock.patch.object(
+                        guardian,
+                        "_FullAuthorityValidationReceipt",
+                    ) as issue_receipt,
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "full authority validation failed",
+                    ),
+                ):
+                    guardian._load_phase_a_authority_bundle_for_remote(
+                        preregistration_path=preregistration_path,
+                        launch_authorization_path=authorization_path,
+                        expected_bindings=_bindings(),
+                    )
+                issue_receipt.assert_not_called()
+
+    def test_static_bundle_cannot_activate_remote_guardian(self) -> None:
+        calls: list[str] = []
+
+        def remote_authority() -> guardian.RemoteGuardianAuthority:
+            return guardian.RemoteGuardianAuthority(
+                bindings=_bindings(),
+                channel=guardian.GuardianChannelLiveness(
+                    terminate=lambda _reason: None
+                ),
+                source_probe=lambda: calls.append("source"),
+                host_observer=_observe_host,
+                verifiers={
+                    name: (
+                        lambda *_args, name=name: (
+                            calls.append(name) or {"gate": name}
+                        )
+                    )
+                    for name in ("d10", "throughput", "output_lock")
+                },
+            )
+
+        static_bundle = (
+            _preregistration(),
+            {},
+            datetime(2026, 7, 29, tzinfo=timezone.utc),
+            _bindings(),
+            {
+                name: Path(f"/tmp/{name}.json")
+                for name in ("d10", "throughput", "storage", "output_lock")
+            },
+        )
+
+        class ForgedReceipt(guardian._FullAuthorityValidationReceipt):
+            def __init__(self) -> None:
+                pass
+
+            def consume(self, **_kwargs: object) -> object:
+                raise AssertionError("forged receipt consume reached")
+
+        for forged_receipt in (static_bundle, ForgedReceipt()):
+            with (
+                self.subTest(receipt_type=type(forged_receipt).__name__),
+                self.assertRaisesRegex(
+                    guardian.OpenEcologyTwoPartyAuthorityError,
+                    "full authority validation receipt",
+                ),
+            ):
+                remote_authority().activate(
+                    full_validation_receipt=forged_receipt,
+                    github_token=bytearray(b"g" * 32),
+                )
+
+        self.assertEqual(calls, [])
+        with self.assertRaisesRegex(
+            Exception,
+            "persisted launch JSON alone",
+        ):
+            guardian.require_live_phase_a_update_admission(
+                static_bundle,
+                preregistration=_preregistration(),
+                launch_authorization_digest=(
+                    _bindings().launch_authorization_digest
+                ),
+                cell_id="A0",
+                learner_index=0,
+                stage="before_update",
+                update_index=0,
+            )
+
+    def test_full_validation_receipt_is_exact_bound_one_shot(self) -> None:
+        receipt = _full_validation_receipt()
+        with self.assertRaisesRegex(TypeError, "cannot be serialized"):
+            pickle.dumps(receipt)
+
+        mismatched = guardian.RemoteGuardianAuthority(
+            bindings=_bindings(ssh_target="different"),
+            channel=guardian.GuardianChannelLiveness(
+                terminate=lambda _reason: None
+            ),
+            source_probe=lambda: None,
+            host_observer=_observe_host,
+            verifiers={
+                name: (lambda *_args, name=name: {"gate": name})
+                for name in ("d10", "throughput", "output_lock")
+            },
+        )
+        with self.assertRaisesRegex(
+            guardian.OpenEcologyTwoPartyAuthorityError,
+            "binding drifted",
+        ):
+            mismatched.activate(
+                full_validation_receipt=receipt,
+                github_token=bytearray(b"g" * 32),
+            )
+
+        clean = guardian.RemoteGuardianAuthority(
+            bindings=_bindings(),
+            channel=guardian.GuardianChannelLiveness(
+                terminate=lambda _reason: None
+            ),
+            source_probe=lambda: None,
+            host_observer=_observe_host,
+            verifiers={
+                name: (lambda *_args, name=name: {"gate": name})
+                for name in ("d10", "throughput", "output_lock")
+            },
+        )
+        with self.assertRaisesRegex(
+            guardian.OpenEcologyTwoPartyAuthorityError,
+            "closed or replayed",
+        ):
+            clean.activate(
+                full_validation_receipt=receipt,
+                github_token=bytearray(b"h" * 32),
+            )
+
+        failing_receipt = _full_validation_receipt()
+        failing = guardian.RemoteGuardianAuthority(
+            bindings=_bindings(),
+            channel=guardian.GuardianChannelLiveness(
+                terminate=lambda _reason: None
+            ),
+            source_probe=lambda: None,
+            host_observer=_observe_host,
+            verifiers={
+                "d10": lambda *_args: (_ for _ in ()).throw(
+                    RuntimeError("D10 failed")
+                ),
+                "throughput": lambda *_args: {"gate": "throughput"},
+                "output_lock": lambda *_args: {"gate": "output_lock"},
+            },
+        )
+        with self.assertRaisesRegex(RuntimeError, "D10 failed"):
+            failing.activate(
+                full_validation_receipt=failing_receipt,
+                github_token=bytearray(b"i" * 32),
+            )
+        replay = guardian.RemoteGuardianAuthority(
+            bindings=_bindings(),
+            channel=guardian.GuardianChannelLiveness(
+                terminate=lambda _reason: None
+            ),
+            source_probe=lambda: None,
+            host_observer=_observe_host,
+            verifiers={
+                name: (lambda *_args, name=name: {"gate": name})
+                for name in ("d10", "throughput", "output_lock")
+            },
+        )
+        with self.assertRaisesRegex(
+            guardian.OpenEcologyTwoPartyAuthorityError,
+            "closed or replayed",
+        ):
+            replay.activate(
+                full_validation_receipt=failing_receipt,
+                github_token=bytearray(b"j" * 32),
+            )
 
     def test_end_to_end_guardian_pipe_waits_for_both_authorities_and_runs_ordered(
         self,
@@ -1034,13 +1287,14 @@ class OpenEcologyPhaseATwoPartyGuardianTests(unittest.TestCase):
             try:
                 with mock.patch.object(
                     guardian,
-                    "load_phase_a_authority_bundle",
+                    "_load_phase_a_authority_bundle_for_remote",
                     return_value=(
                         preregistration,
                         {},
                         datetime.now(timezone.utc),
                         bindings,
                         reports,
+                        _full_validation_receipt(),
                     ),
                 ):
                     guardian.run_remote_guardian_session(

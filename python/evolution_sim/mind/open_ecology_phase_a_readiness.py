@@ -2131,10 +2131,56 @@ def validate_launch_authorization(
 ) -> None:
     """Reopen and semantically validate every report referenced by authority."""
 
+    _validate_launch_authorization(
+        authorization,
+        preregistration=preregistration,
+        authorization_path=authorization_path,
+        require_current_storage_freshness=require_current_storage_freshness,
+        require_authority_verifiers=True,
+    )
+
+
+def validate_launch_authorization_static(
+    authorization: Mapping[str, object],
+    *,
+    preregistration: Mapping[str, object],
+    authorization_path: str | Path,
+    require_current_storage_freshness: bool = True,
+) -> None:
+    """Validate sealed bindings without reexecuting host-specific proof code.
+
+    This is only the Mac coordinator's static half of two-party launch
+    admission.  It cannot issue an update capability; the exact-source remote
+    guardian must still run the full authority validator and its live
+    operational verifiers before training can begin.
+    """
+
+    _validate_launch_authorization(
+        authorization,
+        preregistration=preregistration,
+        authorization_path=authorization_path,
+        require_current_storage_freshness=require_current_storage_freshness,
+        require_authority_verifiers=False,
+    )
+
+
+def _validate_launch_authorization(
+    authorization: Mapping[str, object],
+    *,
+    preregistration: Mapping[str, object],
+    authorization_path: str | Path,
+    require_current_storage_freshness: bool,
+    require_authority_verifiers: bool,
+) -> None:
+    """Implement full or coordinator-static launch-record validation."""
+
     contract = _contract()
-    if not isinstance(require_current_storage_freshness, bool):
+    if not isinstance(require_current_storage_freshness, bool) or not isinstance(
+        require_authority_verifiers,
+        bool,
+    ):
         raise contract.OpenEcologyPhaseAError(
-            "storage-freshness policy must be boolean"
+            "launch-authorization validation policies must be boolean"
         )
     contract.validate_open_ecology_phase_a_preregistration(preregistration)
     raw_path = Path(authorization_path)
@@ -2285,6 +2331,7 @@ def validate_launch_authorization(
                 expected_kind=kind,
                 preregistration=preregistration,
                 authorization_time=authorized_at,
+                require_authority_verifier=require_authority_verifiers,
             )
             indexed_report = expected_index_reports[report_index]
             if indexed_report.get("evidence_kind") != kind or indexed_report.get(
@@ -2356,6 +2403,7 @@ def validate_launch_authorization(
             expected_kind=kind,
             preregistration=preregistration,
             authorization_time=authorized_at,
+            require_authority_verifier=require_authority_verifiers,
         )
         if indexed_gate_report.get("evidence_kind") != kind or indexed_gate_report.get(
             "semantic_report_digest"
@@ -2664,6 +2712,7 @@ def _load_report_reference(
     expected_kind: str,
     preregistration: Mapping[str, object],
     authorization_time: datetime | None,
+    require_authority_verifier: bool = True,
 ) -> dict[str, object]:
     contract = _contract()
     reference = _mapping(raw_reference, field=f"{expected_kind}.file")
@@ -2685,6 +2734,7 @@ def _load_report_reference(
         preregistration=preregistration,
         authorization_time=authorization_time,
         report_path=report_path,
+        require_authority_verifier=require_authority_verifier,
     )
     return report
 
@@ -7908,6 +7958,7 @@ __all__ = [
     "produce_preregistration_roundtrip_fail_closed_report",
     "produce_runtime_genome_and_action_source_report",
     "validate_launch_authorization",
+    "validate_launch_authorization_static",
     "verify_campaign_storage_capacity_report",
     "verify_cross_surface_and_self_echo_report",
     "verify_critic_gradient_and_density_schedule_report",

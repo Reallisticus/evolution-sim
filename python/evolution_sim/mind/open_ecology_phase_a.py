@@ -1066,6 +1066,30 @@ def validate_open_ecology_phase_a_launch_authorization(
     )
 
 
+def validate_open_ecology_phase_a_launch_authorization_static(
+    authorization: Mapping[str, object],
+    *,
+    preregistration: Mapping[str, object],
+    authorization_path: str | Path,
+) -> None:
+    """Validate coordinator bindings without host-specific proof reexecution.
+
+    This static view is not launch authority.  The exact-source remote guardian
+    must still run the full validator and live operational verifiers before it
+    can issue the in-memory update capability.
+    """
+
+    from evolution_sim.mind.open_ecology_phase_a_readiness import (
+        validate_launch_authorization_static,
+    )
+
+    validate_launch_authorization_static(
+        authorization,
+        preregistration=preregistration,
+        authorization_path=authorization_path,
+    )
+
+
 def build_open_ecology_phase_a_preregistration(
     *,
     source_commit: str,
@@ -6084,6 +6108,7 @@ __all__ = [
     "run_open_ecology_phase_a_cell",
     "validate_open_ecology_phase_a_learner_evidence",
     "validate_open_ecology_phase_a_launch_authorization",
+    "validate_open_ecology_phase_a_launch_authorization_static",
     "validate_open_ecology_phase_a_preregistration",
     "validate_open_ecology_phase_a_resource_envelope",
     "validate_open_ecology_phase_a_runtime_contract",
