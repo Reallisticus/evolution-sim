@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import pickle
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import evolution_sim.env.runtime.actions as runtime_actions
@@ -14,6 +15,144 @@ import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
 
 TURN_ORDER_POLICY = "seed_tick_agent_hash_permutation_v1"
+_RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY = object()
+_RUNTIME_OWNED_POLICY_TICK_START_REGISTRY: dict[
+    int,
+    tuple[
+        RuntimeOwnedPolicyTickStart,
+        tuple[tuple[int, int], ...],
+        tuple[tuple[int, str], ...],
+    ],
+] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeOwnedPolicyTickStart:
+    """Internal witness for the snapshot/order minted by prepare_tick_start."""
+
+    environment_seed: int
+    tick: int
+    ordered_agent_ids: tuple[int, ...]
+    observation_snapshots: dict[int, dict[str, object]]
+    _observation_integrity_sha256_by_agent: dict[int, str] = field(
+        repr=False,
+        compare=False,
+    )
+    _authority: object = field(repr=False, compare=False)
+
+
+def _runtime_owned_observation_integrity_sha256(
+    observation: dict[str, object],
+) -> str:
+    try:
+        payload = pickle.dumps(observation, protocol=5)
+    except (
+        pickle.PickleError,
+        AttributeError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(
+            "runtime-owned observation integrity serialization failed"
+        ) from exc
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_owned_policy_tick_start(
+    *,
+    environment_seed: int,
+    tick: int,
+    ordered_agent_ids: tuple[int, ...],
+    observation_snapshots: dict[int, dict[str, object]],
+) -> RuntimeOwnedPolicyTickStart:
+    observation_integrity_sha256_by_agent = {
+        agent_id: _runtime_owned_observation_integrity_sha256(
+            observation_snapshots[agent_id]
+        )
+        for agent_id in ordered_agent_ids
+    }
+    witness = RuntimeOwnedPolicyTickStart(
+        environment_seed=environment_seed,
+        tick=tick,
+        ordered_agent_ids=ordered_agent_ids,
+        observation_snapshots=observation_snapshots,
+        _observation_integrity_sha256_by_agent=(
+            observation_integrity_sha256_by_agent
+        ),
+        _authority=_RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY,
+    )
+    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY[id(witness)] = (
+        witness,
+        tuple(
+            (agent_id, id(observation_snapshots[agent_id]))
+            for agent_id in ordered_agent_ids
+        ),
+        tuple(
+            (agent_id, observation_integrity_sha256_by_agent[agent_id])
+            for agent_id in ordered_agent_ids
+        ),
+    )
+    return witness
+
+
+def validate_runtime_owned_policy_tick_start(
+    value: object,
+    *,
+    environment_seed: int,
+    tick: int,
+) -> RuntimeOwnedPolicyTickStart:
+    registered = _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY.pop(id(value), None)
+    if (
+        type(value) is not RuntimeOwnedPolicyTickStart
+        or registered is None
+        or registered[0] is not value
+        or value._authority is not _RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY
+        or value.environment_seed != environment_seed
+        or value.tick != tick
+        or set(value.observation_snapshots) != set(value.ordered_agent_ids)
+        or set(value._observation_integrity_sha256_by_agent)
+        != set(value.ordered_agent_ids)
+        or registered[1]
+        != tuple(
+            (agent_id, id(value.observation_snapshots[agent_id]))
+            for agent_id in value.ordered_agent_ids
+        )
+        or registered[2]
+        != tuple(
+            (agent_id, value._observation_integrity_sha256_by_agent[agent_id])
+            for agent_id in value.ordered_agent_ids
+        )
+        or registered[2]
+        != tuple(
+            (
+                agent_id,
+                _runtime_owned_observation_integrity_sha256(
+                    value.observation_snapshots[agent_id]
+                ),
+            )
+            for agent_id in value.ordered_agent_ids
+        )
+        or any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in value._observation_integrity_sha256_by_agent.values()
+        )
+        or any(
+            type(observation) is not dict
+            for observation in value.observation_snapshots.values()
+        )
+    ):
+        raise ValueError("runtime-owned policy tick-start witness is invalid")
+    return value
+
+
+def discard_runtime_owned_policy_tick_start(
+    value: RuntimeOwnedPolicyTickStart,
+) -> None:
+    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY.pop(id(value), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +170,7 @@ class TickPhaseContext:
     animal_resource_reachability_by_meat_mode: Callable[..., dict[str, dict[str, int]]]
     animal_resource_presence_this_tick: Callable[[], dict[str, bool]]
     decay_recent_diet: Callable[[Any], None]
-    stage_policy_tick_start: Callable[
-        [int, tuple[int, ...], dict[int, dict[str, object]]],
-        None,
-    ]
+    stage_policy_tick_start: Callable[[RuntimeOwnedPolicyTickStart], None]
     choose_action: Callable[[Any, dict[str, object] | None], str]
     action_mask: Callable[[Any], dict[str, bool]]
     action_resolution_context: Callable[[Any], runtime_actions.ActionResolutionContext]
@@ -121,11 +257,16 @@ def prepare_tick_start(
     )
     world.tick_action_order = list(action_order)
     if action_order and stage_policy:
-        tick_context.stage_policy_tick_start(
-            world.tick,
-            action_order,
-            observation_snapshots,
+        runtime_owned_tick_start = _runtime_owned_policy_tick_start(
+            environment_seed=world.config.seed,
+            tick=world.tick,
+            ordered_agent_ids=action_order,
+            observation_snapshots=observation_snapshots,
         )
+        try:
+            tick_context.stage_policy_tick_start(runtime_owned_tick_start)
+        finally:
+            discard_runtime_owned_policy_tick_start(runtime_owned_tick_start)
     return PreparedTickStart(
         climate_state=climate_state,
         ordered_agent_ids=action_order,

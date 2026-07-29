@@ -3163,16 +3163,27 @@ class SimulationWorld:
 
     def _stage_policy_tick_start(
         self,
-        tick: int,
-        ordered_agent_ids: tuple[int, ...],
-        observations_by_agent: dict[int, dict[str, object]],
+        runtime_owned_tick_start: runtime_ticks.RuntimeOwnedPolicyTickStart,
     ) -> None:
+        runtime_owned_stage = getattr(
+            self.policy,
+            "_stage_runtime_owned_tick_start_batch",
+            None,
+        )
+        if callable(runtime_owned_stage):
+            runtime_owned_stage(runtime_owned_tick_start)
+            return
         stage = getattr(self.policy, "stage_tick_start_batch", None)
+        runtime_ticks.discard_runtime_owned_policy_tick_start(
+            runtime_owned_tick_start
+        )
         if callable(stage):
             stage(
-                tick=tick,
-                ordered_agent_ids=ordered_agent_ids,
-                observations_by_agent=observations_by_agent,
+                tick=runtime_owned_tick_start.tick,
+                ordered_agent_ids=runtime_owned_tick_start.ordered_agent_ids,
+                observations_by_agent=(
+                    runtime_owned_tick_start.observation_snapshots
+                ),
             )
 
     def _action_scoring_context(

@@ -20,6 +20,8 @@ from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_actor_critic import (
     GENOME_CONDITIONING_ACTOR_FILM_V1,
     PublicRecurrentActorCritic,
+    RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+    RECURRENT_NUMERIC_KERNEL_VERSION,
 )
 from evolution_sim.mind.recurrent_artifact import (
     build_recurrent_training_crash_checkpoint,
@@ -265,6 +267,9 @@ def _runtime_contract(*, workers: int) -> dict[str, object]:
         },
         "rollout_workers": workers,
         "ordered_worker_merge_required": True,
+        "fixed_batch_runtime_contract": (
+            phase_a.RecurrentFixedBatchRuntimeContract.open_ecology().as_contract()
+        ),
     }
     runtime["exact_digest"] = stable_payload_digest(runtime)
     return runtime
@@ -778,6 +783,112 @@ class OpenEcologyPhaseATests(unittest.TestCase):
                         expected_source_commit=_SOURCE_COMMIT,
                     )
 
+    def test_launch_authority_amendment_v3_is_exactly_bound(self) -> None:
+        self.assertEqual(
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION,
+            "mind_v3_open_ecology_launch_authority_amendment_v3",
+        )
+        self.assertEqual(
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH,
+            "docs/research/open-ecology-launch-authority-amendment-v3.md",
+        )
+        repository_root = Path(phase_a.__file__).resolve().parents[3]
+        prior_amendment_document = (
+            repository_root
+            / phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH
+        )
+        self.assertEqual(
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION,
+            "mind_v3_open_ecology_launch_authority_amendment_v2",
+        )
+        self.assertEqual(
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH,
+            "docs/research/open-ecology-launch-authority-amendment-v2.md",
+        )
+        self.assertEqual(
+            hashlib.sha256(prior_amendment_document.read_bytes()).hexdigest(),
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256,
+        )
+        amendment_document = (
+            repository_root / phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH
+        )
+        self.assertEqual(
+            hashlib.sha256(amendment_document.read_bytes()).hexdigest(),
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256,
+        )
+        prior_sealed = self.campaign["sealed_document"][
+            "prior_launch_authority_amendment"
+        ]
+        self.assertEqual(
+            prior_sealed,
+            {
+                "schema_version": (
+                    phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION
+                ),
+                "path": phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH,
+                "file_sha256": (
+                    phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256
+                ),
+            },
+        )
+        sealed = self.campaign["sealed_document"]["launch_authority_amendment"]
+        self.assertEqual(
+            sealed,
+            {
+                "schema_version": (
+                    phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION
+                ),
+                "path": phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH,
+                "file_sha256": (
+                    phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256
+                ),
+            },
+        )
+        self.assertEqual(
+            self.campaign["launch_authority"]["schema_version"],
+            phase_a.OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            self.campaign["architecture"]["model_contract_version"],
+            RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            self.campaign["architecture"]["numeric_kernel"],
+            RECURRENT_NUMERIC_KERNEL_VERSION,
+        )
+
+        hostile = json.loads(json.dumps(self.campaign))
+        del hostile["sealed_document"]["prior_launch_authority_amendment"]
+        hostile["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in hostile.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "sealed Phase A document binding drifted",
+        ):
+            phase_a.validate_open_ecology_phase_a_preregistration(hostile)
+        expected_buckets = list(phase_a.RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
+        self.assertEqual(
+            self.campaign["runtime_contract"]["fixed_batch_runtime_contract"][
+                "execution_batch_buckets"
+            ],
+            expected_buckets,
+        )
+        self.assertEqual(
+            self.campaign["throughput_gate"]["benchmark_contract"][
+                "fixed_batch_execution_buckets"
+            ],
+            expected_buckets,
+        )
+        self.assertEqual(
+            self.campaign["training"]["fixed_batch_execution_buckets"],
+            expected_buckets,
+        )
+
     def test_throughput_gate_and_preregistration_roundtrip_fail_closed(self) -> None:
         phase_a.validate_open_ecology_phase_a_preregistration(self.campaign)
         projection = self.campaign["throughput_gate"]["resource_projection"]
@@ -879,6 +990,29 @@ class OpenEcologyPhaseATests(unittest.TestCase):
             "architecture",
         ):
             phase_a.validate_open_ecology_phase_a_preregistration(tampered)
+        tampered_kernel = json.loads(json.dumps(self.campaign))
+        tampered_kernel["architecture"]["numeric_kernel"] = "unsealed_dense_kernel"
+        tampered_kernel["configuration_sha256"] = stable_payload_digest(
+            {
+                "architecture": tampered_kernel["architecture"],
+                "training": tampered_kernel["training"],
+                "selection": tampered_kernel["selection"],
+                "seed_contract": tampered_kernel["seed_contract"],
+                "throughput_gate": tampered_kernel["throughput_gate"],
+            }
+        )
+        tampered_kernel["exact_digest"] = stable_payload_digest(
+            {
+                key: value
+                for key, value in tampered_kernel.items()
+                if key != "exact_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "architecture",
+        ):
+            phase_a.validate_open_ecology_phase_a_preregistration(tampered_kernel)
 
     def test_scientific_seed_or_scalar_benchmark_cannot_authorize(self) -> None:
         resource_envelope = phase_a.build_open_ecology_phase_a_resource_envelope(

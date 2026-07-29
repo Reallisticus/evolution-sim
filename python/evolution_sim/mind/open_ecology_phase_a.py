@@ -45,6 +45,8 @@ from evolution_sim.mind.recurrent_actor_critic import (
     CRITIC_GENOME_CONDITIONING_FILM_V1,
     CRITIC_GENOME_CONDITIONING_NONE,
     GENOME_CONDITIONING_ACTOR_FILM_V1,
+    RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+    RECURRENT_NUMERIC_KERNEL_VERSION,
     VALUE_SHARED_TRUNK_GRADIENT_SHARED,
     VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     PublicRecurrentActorCritic,
@@ -77,6 +79,7 @@ from evolution_sim.mind.recurrent_policy import recurrent_model_state_sha256
 from evolution_sim.mind.recurrent_ppo import RecurrentPPOConfig
 from evolution_sim.mind.recurrent_rollout import (
     OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+    RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS,
     RecurrentFixedBatchRuntimeContract,
     derive_recurrent_policy_sampling_seed,
 )
@@ -88,16 +91,16 @@ if TYPE_CHECKING:
     )
 
 
-OPEN_ECOLOGY_PHASE_A_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_campaign_v4"
+OPEN_ECOLOGY_PHASE_A_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_campaign_v5"
 OPEN_ECOLOGY_PHASE_A_RUN_CONTRACT_VERSION = (
-    "mind_v3_open_ecology_phase_a_run_contract_v2"
+    "mind_v3_open_ecology_phase_a_run_contract_v3"
 )
 OPEN_ECOLOGY_PHASE_A_TASK_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_rollout_task_v2"
 )
-OPEN_ECOLOGY_PHASE_A_RUNTIME_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_runtime_v1"
+OPEN_ECOLOGY_PHASE_A_RUNTIME_SCHEMA_VERSION = "mind_v3_open_ecology_phase_a_runtime_v2"
 OPEN_ECOLOGY_PHASE_A_THROUGHPUT_GATE_SCHEMA_VERSION = (
-    "mind_v3_open_ecology_phase_a_throughput_gate_v3"
+    "mind_v3_open_ecology_phase_a_throughput_gate_v4"
 )
 OPEN_ECOLOGY_PHASE_A_RESOURCE_PROJECTION_SCHEMA_VERSION = (
     "mind_v3_open_ecology_phase_a_resource_projection_v4"
@@ -150,14 +153,23 @@ OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH = (
 OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256 = (
     "38a4216494cae162661bc575f6beff437898498e8ce140691ab0ece2ec2f1721"
 )
-OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION = (
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION = (
     "mind_v3_open_ecology_launch_authority_amendment_v2"
 )
-OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH = (
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH = (
     "docs/research/open-ecology-launch-authority-amendment-v2.md"
 )
-OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256 = (
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256 = (
     "80e5185ffedf2edd4f4850c7b475fabbaff9c192fcd4b70228477f0f5e0ebfd3"
+)
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION = (
+    "mind_v3_open_ecology_launch_authority_amendment_v3"
+)
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH = (
+    "docs/research/open-ecology-launch-authority-amendment-v3.md"
+)
+OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256 = (
+    "f46b34ab55a930d5b558d2b72b5279178c37acf274422986e26b437d34247813"
 )
 
 OPEN_ECOLOGY_PHASE_A_UPDATE_COUNT = 8
@@ -600,6 +612,9 @@ def build_open_ecology_phase_a_runtime_contract(
         },
         "rollout_workers": workers,
         "ordered_worker_merge_required": True,
+        "fixed_batch_runtime_contract": (
+            RecurrentFixedBatchRuntimeContract.open_ecology().as_contract()
+        ),
     }
     runtime["exact_digest"] = stable_payload_digest(runtime)
     validate_open_ecology_phase_a_runtime_contract(runtime)
@@ -620,6 +635,7 @@ def validate_open_ecology_phase_a_runtime_contract(
             "determinism",
             "rollout_workers",
             "ordered_worker_merge_required",
+            "fixed_batch_runtime_contract",
             "exact_digest",
         },
         field="Phase A runtime contract",
@@ -633,6 +649,13 @@ def validate_open_ecology_phase_a_runtime_contract(
     _positive_int(runtime.get("rollout_workers"), field="runtime.rollout_workers")
     if runtime.get("ordered_worker_merge_required") is not True:
         raise OpenEcologyPhaseAError("Phase A requires ordered rollout-worker merge")
+    expected_fixed_batch_contract = (
+        RecurrentFixedBatchRuntimeContract.open_ecology().as_contract()
+    )
+    if runtime.get("fixed_batch_runtime_contract") != expected_fixed_batch_contract:
+        raise OpenEcologyPhaseAError(
+            "Phase A fixed-batch runtime contract drifted"
+        )
     determinism = _mapping(runtime.get("determinism"), field="runtime.determinism")
     expected_determinism = {
         "deterministic_algorithms_enabled": True,
@@ -781,6 +804,9 @@ def build_open_ecology_phase_a_throughput_gate(
             ),
             "scientific_environment_seed_roles_accessed": [],
             "fixed_batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            "fixed_batch_execution_buckets": list(
+                RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+            ),
             "conditioning_modes": [
                 RecurrentGenomePopulationMode.HERITABLE.value,
                 RecurrentGenomePopulationMode.ZERO_ALL.value,
@@ -871,6 +897,9 @@ def validate_open_ecology_phase_a_throughput_gate(
         "genome_stream_seed_index": (OPEN_ECOLOGY_BENCHMARK_GENOME_STREAM_SEED_INDEX),
         "scientific_environment_seed_roles_accessed": [],
         "fixed_batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+        "fixed_batch_execution_buckets": list(
+            RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+        ),
         "conditioning_modes": [
             RecurrentGenomePopulationMode.HERITABLE.value,
             RecurrentGenomePopulationMode.ZERO_ALL.value,
@@ -1132,6 +1161,13 @@ def build_open_ecology_phase_a_preregistration(
                 "path": OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH,
                 "file_sha256": OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256,
             },
+            "prior_launch_authority_amendment": {
+                "schema_version": (
+                    OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION
+                ),
+                "path": OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH,
+                "file_sha256": OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256,
+            },
             "launch_authority_amendment": {
                 "schema_version": (
                     OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION
@@ -1208,6 +1244,8 @@ def build_open_ecology_phase_a_preregistration(
             "lockbox_accessed": False,
         },
         "architecture": {
+            "model_contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+            "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
             "public_observation": "tokenized_four_opaque_communication_channels",
             "action_count": 20,
             "encoder_size": 256,
@@ -1244,6 +1282,10 @@ def build_open_ecology_phase_a_preregistration(
             "reward_shaping_added": False,
             "heuristic_action_selection": False,
             "counterfactual_auxiliary": False,
+            "fixed_batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            "fixed_batch_execution_buckets": list(
+                RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+            ),
             "update_commit_acceptance": {
                 "accepted_ppo_minibatches_minimum_per_update": 1,
                 "positive_parameter_delta_required": True,
@@ -1433,6 +1475,13 @@ def validate_open_ecology_phase_a_preregistration(
             "path": OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH,
             "file_sha256": OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256,
         },
+        "prior_launch_authority_amendment": {
+            "schema_version": (
+                OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION
+            ),
+            "path": OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH,
+            "file_sha256": OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256,
+        },
         "launch_authority_amendment": {
             "schema_version": (OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION),
             "path": OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH,
@@ -1550,6 +1599,8 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
     if dict(seed_contract) != expected_seed_contract:
         raise OpenEcologyPhaseAError("Phase A seed boundary drifted")
     expected_architecture = {
+        "model_contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+        "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
         "public_observation": "tokenized_four_opaque_communication_channels",
         "action_count": 20,
         "encoder_size": 256,
@@ -1584,6 +1635,8 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
             "reward_shaping_added",
             "heuristic_action_selection",
             "counterfactual_auxiliary",
+            "fixed_batch_capacity",
+            "fixed_batch_execution_buckets",
             "update_commit_acceptance",
             "ppo",
             "run_matrix",
@@ -1604,6 +1657,10 @@ def _validate_phase_a_matrix(preregistration: Mapping[str, object]) -> None:
         or training.get("reward_shaping_added") is not False
         or training.get("heuristic_action_selection") is not False
         or training.get("counterfactual_auxiliary") is not False
+        or training.get("fixed_batch_capacity")
+        != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+        or training.get("fixed_batch_execution_buckets")
+        != list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
         or training.get("update_commit_acceptance")
         != {
             "accepted_ppo_minibatches_minimum_per_update": 1,
@@ -1962,6 +2019,9 @@ def build_phase_a_run_contract(
             "initial_agents": OPEN_ECOLOGY_PHASE_A_INITIAL_AGENTS,
             "collector_device": "cpu",
             "fixed_batch_capacity": (OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY),
+            "fixed_batch_execution_buckets": list(
+                RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+            ),
             "counterfactual_auxiliary": False,
             "validation_accessed": False,
             "lockbox_accessed": False,
@@ -4914,6 +4974,9 @@ def _require_live_source(preregistration: Mapping[str, object]) -> None:
         observed_preregistration_sha256=(OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_SHA256),
     )
     prereg_path = _REPOSITORY_ROOT / OPEN_ECOLOGY_PHASE_A_PREREGISTRATION_PATH
+    prior_amendment_path = (
+        _REPOSITORY_ROOT / OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH
+    )
     amendment_path = _REPOSITORY_ROOT / OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH
     observed_manifest = source_file_hash_manifest(_REPOSITORY_ROOT)["aggregate_sha256"]
     try:
@@ -4942,6 +5005,13 @@ def _require_live_source(preregistration: Mapping[str, object]) -> None:
         observed_manifest_sha256=observed_manifest,
         observed_preregistration_sha256=_file_sha256(prereg_path),
     )
+    if (
+        _file_sha256(prior_amendment_path)
+        != OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256
+    ):
+        raise OpenEcologyPhaseAError(
+            "sealed prior open-ecology launch-authority amendment bytes drifted"
+        )
     if _file_sha256(amendment_path) != OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256:
         raise OpenEcologyPhaseAError(
             "sealed open-ecology launch-authority amendment bytes drifted"
@@ -5990,6 +6060,9 @@ __all__ = [
     "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_PATH",
     "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SCHEMA_VERSION",
     "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_SHA256",
+    "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_PATH",
+    "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SCHEMA_VERSION",
+    "OPEN_ECOLOGY_LAUNCH_AUTHORITY_AMENDMENT_V2_SHA256",
     "OpenEcologyPhaseAError",
     "PhaseAEvidencePrefix",
     "PhaseAOpenEcologyRolloutTask",

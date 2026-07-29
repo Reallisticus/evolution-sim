@@ -91,7 +91,7 @@ from evolution_sim.mind.recurrent_seed_registry import (
 
 RECURRENT_EXPERIMENT_CONTRACT_VERSION = "mind_public_recurrent_ippo_experiment_v5"
 RECURRENT_FIXED_BATCH_EXPERIMENT_CONTRACT_VERSION = (
-    "mind_public_recurrent_ippo_experiment_fixed_batch_v1"
+    "mind_public_recurrent_ippo_experiment_bounded_bucket_batch_v2"
 )
 RECURRENT_TRAINING_SEED_PROVENANCE_SCHEMA_VERSION = (
     "mind_public_recurrent_training_seed_provenance_v1"

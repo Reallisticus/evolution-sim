@@ -2,10 +2,73 @@ from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
 from evolution_sim.mind.feature_policy import feature_keys_from_observation
-from evolution_sim.env.runtime.observations import SELF_INPUT_FIELDS
+from evolution_sim.env.runtime.observations import (
+    SELF_INPUT_FIELDS,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    quantized_observation_input_values,
+)
+from evolution_sim.mind.policy_inputs import (
+    ecological_policy_input_values,
+    ecological_policy_values_from_observation,
+)
 
 
 class RuntimeObservationContractTests(RuntimeContractTestHelpers):
+    def test_direct_quantized_observation_values_match_storage_round_trip(
+        self,
+    ) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+        encoded = encode_observation_input(observation)
+
+        self.assertEqual(
+            quantized_observation_input_values(observation),
+            decode_observation_input(encoded),
+        )
+        self.assertEqual(
+            ecological_policy_values_from_observation(observation),
+            ecological_policy_input_values(encoded),
+        )
+
+    def test_direct_observation_values_fail_closed_like_encoder(self) -> None:
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+        hostile_observations = {
+            "stale schema": {
+                **copy.deepcopy(observation),
+                "schema_version": "mind_observation_v2",
+            },
+            "token schema without channels": {
+                **copy.deepcopy(observation),
+                "schema_version": TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+            },
+        }
+
+        for label, hostile in hostile_observations.items():
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError) as encoded_error:
+                    encode_observation_input(hostile)
+                with self.assertRaises(ValueError) as direct_error:
+                    quantized_observation_input_values(hostile)
+                with self.assertRaises(ValueError) as policy_error:
+                    ecological_policy_values_from_observation(hostile)
+                self.assertEqual(
+                    str(direct_error.exception), str(encoded_error.exception)
+                )
+                self.assertEqual(
+                    str(policy_error.exception), str(encoded_error.exception)
+                )
+
     def test_observation_contract_is_serializable_and_unprivileged(self) -> None:
         world = SimulationWorld(WorldConfig(seed=7, max_ticks=1))
         agent = world.alive_agents()[0]

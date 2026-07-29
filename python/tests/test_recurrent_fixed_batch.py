@@ -17,16 +17,29 @@ from evolution_sim.config import (
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
 from evolution_sim.env.runtime.observations import encode_observation_input
 from evolution_sim.env.runtime.state import RunMode
-from evolution_sim.env.runtime.ticks import deterministic_agent_turn_order
+from evolution_sim.env.runtime.ticks import (
+    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY,
+    _runtime_owned_policy_tick_start,
+    deterministic_agent_turn_order,
+)
 from evolution_sim.env.world import SimulationWorld
-from evolution_sim.mind.policy_inputs import ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
+from evolution_sim.mind.policy_inputs import (
+    ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    ecological_policy_input_values,
+    ecological_policy_values_from_observation,
+)
 from evolution_sim.mind.open_ecology_seed_registry import (
     OPEN_ECOLOGY_SEED_REGISTRY,
 )
 from evolution_sim.mind.recurrent_actor_critic import (
+    CRITIC_GENOME_CONDITIONING_FILM_V1,
+    CRITIC_GENOME_CONDITIONING_NONE,
+    GENOME_CONDITIONING_DISABLED,
     PublicRecurrentActorCritic,
     RecurrentActorCriticConfig,
+    SequenceEvaluation,
 )
+from evolution_sim.mind.recurrent_genome import RECURRENT_CONTROLLER_GENOME_SIZE
 from evolution_sim.mind.recurrent_experiment import (
     OPEN_ECOLOGY_PHASE_A,
     OPEN_ECOLOGY_PHASE_B,
@@ -44,6 +57,7 @@ from evolution_sim.mind.recurrent_experiment import (
 from evolution_sim.mind.recurrent_ppo import RecurrentPPOConfig
 from evolution_sim.mind.recurrent_rollout import (
     OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+    RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS,
     RECURRENT_FIXED_BATCH_RELEASE_STATUS,
     RECURRENT_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
     RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
@@ -56,6 +70,7 @@ from evolution_sim.mind.recurrent_rollout import (
     RecurrentRolloutStep,
     TorchRecurrentPolicyCore,
     _fixed_batch_runtime_binding,
+    _validated_fixed_batch_runtime_binding,
 )
 
 
@@ -67,7 +82,7 @@ class _ExactBatchCore:
 
     def __init__(self, *, preferred_action: str | None = None) -> None:
         self.preferred_action = preferred_action
-        self.batch_calls: list[tuple[int, int, bool]] = []
+        self.batch_calls: list[tuple[int, int, int, bool]] = []
         self.scalar_calls = 0
 
     def initial_hidden(self) -> tuple[float, ...]:
@@ -119,10 +134,18 @@ class _ExactBatchCore:
         hidden: tuple[tuple[float, ...], ...],
         *,
         batch_capacity: int,
+        execution_batch_rows: int | None = None,
         genome_values: tuple[tuple[float, ...], ...] | None = None,
     ) -> tuple[RecurrentCoreOutput, ...]:
+        if execution_batch_rows is None:
+            raise AssertionError("collector must bind the physical execution bucket")
         self.batch_calls.append(
-            (len(observations), batch_capacity, genome_values is not None)
+            (
+                len(observations),
+                batch_capacity,
+                execution_batch_rows,
+                genome_values is not None,
+            )
         )
         return tuple(
             self._output(observation, mask, feedback, state)
@@ -176,6 +199,7 @@ class _ConditionedExactBatchCore(_ExactBatchCore):
         hidden: tuple[tuple[float, ...], ...],
         *,
         batch_capacity: int,
+        execution_batch_rows: int | None = None,
         genome_values: tuple[tuple[float, ...], ...] | None = None,
     ) -> tuple[RecurrentCoreOutput, ...]:
         if genome_values is None:
@@ -187,11 +211,208 @@ class _ConditionedExactBatchCore(_ExactBatchCore):
             previous_feedback,
             hidden,
             batch_capacity=batch_capacity,
+            execution_batch_rows=execution_batch_rows,
             genome_values=genome_values,
         )
 
 
 class RecurrentFixedBatchTests(unittest.TestCase):
+    @staticmethod
+    def _real_core_numeric_inputs(
+        core: TorchRecurrentPolicyCore,
+        *,
+        active_rows: int,
+        genome_conditioned: bool,
+    ) -> tuple[
+        tuple[tuple[float, ...], ...],
+        tuple[tuple[bool, ...], ...],
+        tuple[PreviousPublicFeedback, ...],
+        tuple[tuple[float, ...], ...],
+        tuple[tuple[float, ...], ...] | None,
+        torch.Tensor,
+    ]:
+        observations = tuple(
+            tuple(
+                float(((row * 7) + (column * 3)) % 17) / 100.0
+                for column in range(core.public_input_size)
+            )
+            for row in range(active_rows)
+        )
+        stay_index = ACTION_NAMES.index("stay")
+        selected_action_indices: list[int] = []
+        action_masks: list[tuple[bool, ...]] = []
+        for row in range(active_rows):
+            selected_action = (row * 11 + 3) % len(ACTION_NAMES)
+            selected_action_indices.append(selected_action)
+            action_masks.append(
+                tuple(
+                    index in {stay_index, selected_action}
+                    for index in range(len(ACTION_NAMES))
+                )
+            )
+        feedback = tuple(
+            PreviousPublicFeedback.zero() for _ in range(active_rows)
+        )
+        hidden = tuple(
+            tuple(
+                float(((row * 5) + index) % 13) / 1000.0
+                for index in range(core.hidden_size)
+            )
+            for row in range(active_rows)
+        )
+        genomes = (
+            tuple(
+                tuple(
+                    float(((row * 3) + locus) % 9 - 4) / 10.0
+                    for locus in range(RECURRENT_CONTROLLER_GENOME_SIZE)
+                )
+                for row in range(active_rows)
+            )
+            if genome_conditioned
+            else None
+        )
+        actions = torch.tensor(
+            (selected_action_indices,),
+            dtype=torch.long,
+        )
+        return (
+            observations,
+            tuple(action_masks),
+            feedback,
+            hidden,
+            genomes,
+            actions,
+        )
+
+    @staticmethod
+    def _direct_sequence_evaluation(
+        model: PublicRecurrentActorCritic,
+        *,
+        observations: tuple[tuple[float, ...], ...],
+        action_masks: tuple[tuple[bool, ...], ...],
+        feedback: tuple[PreviousPublicFeedback, ...],
+        hidden: tuple[tuple[float, ...], ...],
+        genomes: tuple[tuple[float, ...], ...] | None,
+        actions: torch.Tensor,
+    ) -> SequenceEvaluation:
+        reference = next(model.parameters())
+        active_rows = len(observations)
+        observation_tensor = torch.tensor(
+            (observations,),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        action_mask_tensor = torch.tensor(
+            (action_masks,),
+            device=reference.device,
+            dtype=torch.bool,
+        )
+        feedback_tensor = torch.tensor(
+            (tuple(row.vector() for row in feedback),),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        hidden_tensor = torch.tensor(
+            hidden,
+            device=reference.device,
+            dtype=reference.dtype,
+        ).reshape(
+            active_rows,
+            model.config.recurrent_layers,
+            model.config.hidden_size,
+        ).permute(1, 0, 2)
+        genome_tensor = (
+            None
+            if genomes is None
+            else torch.tensor(
+                (genomes,),
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+        )
+        with torch.no_grad():
+            return model.evaluate_sequence(
+                observation_tensor,
+                action_mask_tensor,
+                feedback_tensor,
+                actions.to(device=reference.device),
+                genome_values=genome_tensor,
+                initial_state=hidden_tensor,
+            )
+
+    def _assert_core_outputs_match_direct_evaluation(
+        self,
+        outputs: tuple[RecurrentCoreOutput, ...],
+        *,
+        action_masks: tuple[tuple[bool, ...], ...],
+        actions: torch.Tensor,
+        direct: SequenceEvaluation,
+    ) -> None:
+        active_rows = len(outputs)
+        raw_logits = torch.tensor(
+            tuple(output.logits for output in outputs),
+            dtype=torch.float32,
+        )
+        mask = torch.tensor(action_masks, dtype=torch.bool)
+        masked_logits = raw_logits.masked_fill(~mask, -torch.inf)
+        distribution = torch.distributions.Categorical(logits=masked_logits)
+        values = torch.tensor(
+            tuple(output.value for output in outputs),
+            dtype=torch.float32,
+        )
+        hidden = torch.tensor(
+            tuple(output.next_hidden for output in outputs),
+            dtype=torch.float32,
+        ).reshape(
+            len(outputs),
+            direct.final_state.shape[0],
+            direct.final_state.shape[2],
+        ).permute(1, 0, 2)
+        torch.testing.assert_close(
+            raw_logits,
+            direct.raw_logits[0, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            masked_logits,
+            direct.masked_logits[0, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            distribution.probs,
+            torch.distributions.Categorical(
+                logits=direct.masked_logits[0, :active_rows].cpu()
+            ).probs,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            distribution.log_prob(actions[0]),
+            direct.log_probs[0, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            distribution.entropy(),
+            direct.entropy[0, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            values,
+            direct.values[0, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            hidden,
+            direct.final_state[:, :active_rows].cpu(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_open_ecology_batching_is_opt_in_and_same_contract_repeats_exactly(
         self,
     ) -> None:
@@ -380,8 +601,19 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         self.assertTrue(
             all(
                 capacity == OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
-                and active_rows < capacity
-                for active_rows, capacity, _conditioned in first_core.batch_calls
+                and active_rows <= execution_rows <= capacity
+                and execution_rows
+                == next(
+                    bucket
+                    for bucket in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+                    if bucket >= active_rows
+                )
+                for (
+                    active_rows,
+                    capacity,
+                    execution_rows,
+                    _conditioned,
+                ) in first_core.batch_calls
             )
         )
         self.assertEqual(first_core.scalar_calls, 0)
@@ -392,6 +624,14 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             runtime["batch_capacity"],
             OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
         )
+        self.assertEqual(
+            runtime["execution_batch_buckets"],
+            list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS),
+        )
+        self.assertEqual(
+            runtime["contract"]["execution_batch_buckets"],
+            list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS),
+        )
         self.assertFalse(runtime["contract"]["cross_world_batching"])
         self.assertEqual(len(runtime["exact_digest"]), 64)
         self.assertTrue(
@@ -399,15 +639,68 @@ class RecurrentFixedBatchTests(unittest.TestCase):
                 step.fixed_batch_runtime_sha256 == runtime["exact_digest"]
                 and step.fixed_batch_capacity
                 == OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+                and step.fixed_batch_execution_rows
+                == next(
+                    bucket
+                    for bucket in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+                    if bucket >= int(step.fixed_batch_active_rows)
+                )
                 for step in first["steps"]
             )
         )
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "fixed-batch row bounds are invalid",
+        ):
+            dataclasses.replace(
+                first["steps"][0],
+                fixed_batch_execution_rows=8,
+            )
         self.assertTrue(
             all(
                 trace["schema_version"]
                 == RECURRENT_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                and trace["fixed_batch_execution_rows"]
+                in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
                 for trace in first["update_traces"]
             )
+        )
+    def test_capacity_and_execution_rows_are_bound_to_frozen_buckets(self) -> None:
+        self.assertEqual(
+            RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS,
+            (1, 2, 4, 8, 16, 32, 64, 128, 256, 320),
+        )
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "capacity must be a frozen execution bucket",
+        ):
+            RecurrentFixedBatchRuntimeContract(batch_capacity=3)
+        runtime = _fixed_batch_runtime_binding(
+            RecurrentFixedBatchRuntimeContract.open_ecology(),
+            core=_ExactBatchCore(),
+        )
+        tampered_runtime = copy.deepcopy(runtime)
+        tampered_runtime["execution_batch_buckets"] = [1, 2, 4, 320]
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "execution buckets drifted",
+        ):
+            _validated_fixed_batch_runtime_binding(tampered_runtime)
+
+        core = _ExactBatchCore()
+        result = self._collect(
+            core=core,
+            world_id="fixed-bucket-round-up",
+            fixed=True,
+            seed=23,
+            initial_agents=3,
+            rollout_ticks=1,
+        )
+
+        self.assertTrue(core.batch_calls)
+        self.assertEqual(core.batch_calls[0], (3, 320, 4, False))
+        self.assertTrue(
+            all(step.fixed_batch_execution_rows == 4 for step in result["steps"])
         )
 
     def test_earlier_attack_discards_later_staged_row_without_rng_or_hidden_commit(
@@ -450,7 +743,12 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         self.assertTrue(
             all(
                 active_rows == 1
-                for active_rows, _capacity, _ in batch_core.batch_calls[1:]
+                for (
+                    active_rows,
+                    _capacity,
+                    _execution_rows,
+                    _conditioned,
+                ) in batch_core.batch_calls[1:]
             )
         )
         passive_records = [
@@ -472,7 +770,10 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             child_energy_fraction=0.3,
             world_id="fixed-surviving-child",
         )
-        active_rows = [rows for rows, _capacity, _ in surviving_core.batch_calls]
+        active_rows = [
+            rows
+            for rows, _capacity, _execution_rows, _ in surviving_core.batch_calls
+        ]
         self.assertEqual(active_rows[0], 1)
         self.assertGreaterEqual(active_rows[1], 2)
         children = [
@@ -528,7 +829,12 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             dead_children[0].agent_id,
             {step.agent_id for step in dying["steps"]},
         )
-        self.assertTrue(all(rows == 1 for rows, _capacity, _ in dying_core.batch_calls))
+        self.assertTrue(
+            all(
+                rows == 1
+                for rows, _capacity, _execution_rows, _ in dying_core.batch_calls
+            )
+        )
 
     def test_capacity_overflow_fails_before_any_sampling(self) -> None:
         core = _ExactBatchCore()
@@ -600,12 +906,258 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         self.assertEqual(core.batch_calls, [])
         self.assertEqual(core.scalar_calls, 0)
 
-    def test_fixed_batch_encodes_each_staged_observation_once(self) -> None:
+    def test_runtime_owned_tick_start_skips_only_redundant_generic_guards(
+        self,
+    ) -> None:
+        core = _ExactBatchCore()
+        collector = RecurrentOnPolicyCollector(
+            core,
+            fixed_batch_contract=RecurrentFixedBatchRuntimeContract.open_ecology(),
+        )
+        collector.start_world(
+            world_id="fixed-runtime-owned-fast-path",
+            environment_seed=59,
+            policy_sampling_seed=61,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            self._world_config(
+                seed=59,
+                max_ticks=1,
+                initial_agents=4,
+            ),
+            policy=collector,
+        )
+
+        with (
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout."
+                "deterministic_agent_turn_order",
+                side_effect=AssertionError("runtime order was recomputed"),
+            ),
+            mock.patch.object(
+                collector,
+                "stage_tick_start_batch",
+                side_effect=AssertionError("generic staging path was called"),
+            ),
+        ):
+            world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+
+        self.assertGreater(len(core.batch_calls), 0)
+        self.assertIsNone(collector._staged_tick)
+        self.assertEqual(collector._staged_by_agent, {})
+
+    def test_runtime_owned_tick_start_witness_and_identity_fail_closed(
+        self,
+    ) -> None:
+        core = _ExactBatchCore()
+        collector = RecurrentOnPolicyCollector(
+            core,
+            fixed_batch_contract=RecurrentFixedBatchRuntimeContract.open_ecology(),
+        )
+        collector.start_world(
+            world_id="fixed-runtime-owned-witness",
+            environment_seed=63,
+            policy_sampling_seed=67,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            self._world_config(
+                seed=63,
+                max_ticks=1,
+                initial_agents=2,
+            ),
+            policy=collector,
+        )
+        ordered_agent_ids = deterministic_agent_turn_order(
+            tuple(world.agents),
+            seed=world.config.seed,
+            tick=world.tick,
+        )
+        observations = {
+            agent_id: world._observe_agent(world.agents[agent_id])
+            for agent_id in ordered_agent_ids
+        }
+        witness = _runtime_owned_policy_tick_start(
+            environment_seed=world.config.seed,
+            tick=world.tick,
+            ordered_agent_ids=ordered_agent_ids,
+            observation_snapshots=observations,
+        )
+        rng_state_before = collector._rng.getstate()
+        invalid_witnesses = (
+            dataclasses.replace(witness, environment_seed=999),
+            dataclasses.replace(witness, tick=1),
+            dataclasses.replace(witness, _authority=object()),
+            dataclasses.replace(
+                witness,
+                ordered_agent_ids=tuple(reversed(ordered_agent_ids)),
+            ),
+            dataclasses.replace(
+                witness,
+                observation_snapshots=copy.deepcopy(observations),
+            ),
+        )
+        for invalid in invalid_witnesses:
+            with self.assertRaisesRegex(
+                RecurrentRolloutError,
+                "tick-start witness is invalid",
+            ):
+                collector._stage_runtime_owned_tick_start_batch(invalid)
+            self.assertEqual(core.batch_calls, [])
+            self.assertEqual(collector._rng.getstate(), rng_state_before)
+            self.assertIsNone(collector._staged_tick)
+            self.assertEqual(collector._staged_by_agent, {})
+
+        row_replacement_witness = _runtime_owned_policy_tick_start(
+            environment_seed=world.config.seed,
+            tick=world.tick,
+            ordered_agent_ids=ordered_agent_ids,
+            observation_snapshots=observations,
+        )
+        replaced_agent_id = ordered_agent_ids[-1]
+        original_row = observations[replaced_agent_id]
+        observations[replaced_agent_id] = copy.deepcopy(original_row)
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "tick-start witness is invalid",
+        ):
+            collector._stage_runtime_owned_tick_start_batch(
+                row_replacement_witness
+            )
+        observations[replaced_agent_id] = original_row
+        self.assertEqual(core.batch_calls, [])
+        self.assertEqual(collector._rng.getstate(), rng_state_before)
+
+        in_place_mutation_witness = _runtime_owned_policy_tick_start(
+            environment_seed=world.config.seed,
+            tick=world.tick,
+            ordered_agent_ids=ordered_agent_ids,
+            observation_snapshots=observations,
+        )
+        first_agent_id = ordered_agent_ids[0]
+        self_state = observations[first_agent_id]["self"]
+        assert isinstance(self_state, dict)
+        original_energy_ratio = self_state["energy_ratio"]
+        self_state["energy_ratio"] = 0.123456
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "tick-start witness is invalid",
+        ):
+            collector._stage_runtime_owned_tick_start_batch(
+                in_place_mutation_witness
+            )
+        self_state["energy_ratio"] = original_energy_ratio
+        self.assertEqual(core.batch_calls, [])
+        self.assertEqual(collector._rng.getstate(), rng_state_before)
+
+        collector._stage_runtime_owned_tick_start_batch(witness)
+        staged_before = dict(collector._staged_by_agent)
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "tick-start witness is invalid",
+        ):
+            collector._stage_runtime_owned_tick_start_batch(witness)
+        self.assertEqual(collector._staged_by_agent, staged_before)
+
+        replacement = copy.deepcopy(observations[first_agent_id])
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "staged observation drifted before sampling",
+        ):
+            collector.decide(
+                replacement,
+                dict(replacement["action_mask"]),
+            )
+        self.assertEqual(collector._rng.getstate(), rng_state_before)
+        self.assertEqual(collector._staged_by_agent, staged_before)
+
+        decision = collector.decide(
+            observations[first_agent_id],
+            dict(observations[first_agent_id]["action_mask"]),
+        )
+        self.assertEqual(decision.source, "learned_recurrent_on_policy")
+
+        second_agent_id = ordered_agent_ids[1]
+        second_self_state = observations[second_agent_id]["self"]
+        assert isinstance(second_self_state, dict)
+        original_hydration_ratio = second_self_state["hydration_ratio"]
+        second_self_state["hydration_ratio"] = 0.654321
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "staged observation drifted before sampling",
+        ):
+            collector.decide(
+                observations[second_agent_id],
+                dict(observations[second_agent_id]["action_mask"]),
+            )
+        second_self_state["hydration_ratio"] = original_hydration_ratio
+        second_decision = collector.decide(
+            observations[second_agent_id],
+            dict(observations[second_agent_id]["action_mask"]),
+        )
+        self.assertEqual(
+            second_decision.source,
+            "learned_recurrent_on_policy",
+        )
+
+    def test_runtime_owned_witness_registry_is_retired_on_private_hook_failure(
+        self,
+    ) -> None:
+        for label, side_effect in (
+            ("non-consuming", None),
+            ("throwing", RuntimeError("hostile private hook")),
+        ):
+            with self.subTest(label=label):
+                expected_error = (
+                    RecurrentRolloutError
+                    if side_effect is None
+                    else RuntimeError
+                )
+                collector = RecurrentOnPolicyCollector(
+                    _ExactBatchCore(),
+                    fixed_batch_contract=(
+                        RecurrentFixedBatchRuntimeContract.open_ecology()
+                    ),
+                )
+                collector.start_world(
+                    world_id=f"fixed-runtime-owned-cleanup-{label}",
+                    environment_seed=71,
+                    policy_sampling_seed=73,
+                    rollout_ticks=1,
+                )
+                world = SimulationWorld(
+                    self._world_config(
+                        seed=71,
+                        max_ticks=1,
+                        initial_agents=2,
+                    ),
+                    policy=collector,
+                )
+                with (
+                    mock.patch.object(
+                        collector,
+                        "_stage_runtime_owned_tick_start_batch",
+                        side_effect=side_effect,
+                    ),
+                    self.assertRaises(expected_error),
+                ):
+                    world.run(
+                        mode=RunMode.SUMMARY_ONLY,
+                        record_trajectory=True,
+                    )
+                self.assertEqual(
+                    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY,
+                    {},
+                )
+
+    def test_fixed_batch_projects_each_staged_observation_once(self) -> None:
         core = _ExactBatchCore()
         with mock.patch(
-            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
-            wraps=encode_observation_input,
-        ) as encode:
+            "evolution_sim.mind.recurrent_rollout."
+            "ecological_policy_values_from_observation",
+            wraps=ecological_policy_values_from_observation,
+        ) as project:
             self._collect(
                 core=core,
                 world_id="fixed-single-encoding",
@@ -616,10 +1168,88 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             )
 
         staged_row_count = sum(
-            active_rows for active_rows, _capacity, _conditioned in core.batch_calls
+            active_rows
+            for (
+                active_rows,
+                _capacity,
+                _execution_rows,
+                _conditioned,
+            ) in core.batch_calls
         )
         self.assertGreater(staged_row_count, 0)
-        self.assertEqual(encode.call_count, staged_row_count)
+        self.assertEqual(project.call_count, staged_row_count)
+
+    def test_scalar_serialized_projection_remains_fixed_batch_reference(
+        self,
+    ) -> None:
+        scalar_core = _ExactBatchCore()
+        with (
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout.encode_observation_input",
+                wraps=encode_observation_input,
+            ) as scalar_encode,
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout.ecological_policy_input_values",
+                wraps=ecological_policy_input_values,
+            ) as scalar_project,
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout."
+                "ecological_policy_values_from_observation",
+                wraps=ecological_policy_values_from_observation,
+            ) as scalar_direct,
+        ):
+            self._collect(
+                core=scalar_core,
+                world_id="scalar-serialized-projection-reference",
+                fixed=False,
+                seed=73,
+                initial_agents=4,
+                rollout_ticks=2,
+            )
+
+        self.assertGreater(scalar_core.scalar_calls, 0)
+        self.assertEqual(scalar_encode.call_count, scalar_core.scalar_calls)
+        self.assertEqual(scalar_project.call_count, scalar_core.scalar_calls)
+        self.assertEqual(scalar_direct.call_count, 0)
+
+        fixed_core = _ExactBatchCore()
+        with (
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout.encode_observation_input",
+                wraps=encode_observation_input,
+            ) as fixed_encode,
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout.ecological_policy_input_values",
+                wraps=ecological_policy_input_values,
+            ) as fixed_serialized,
+            mock.patch(
+                "evolution_sim.mind.recurrent_rollout."
+                "ecological_policy_values_from_observation",
+                wraps=ecological_policy_values_from_observation,
+            ) as fixed_direct,
+        ):
+            self._collect(
+                core=fixed_core,
+                world_id="fixed-direct-projection-candidate",
+                fixed=True,
+                seed=73,
+                initial_agents=4,
+                rollout_ticks=2,
+            )
+
+        fixed_row_count = sum(
+            active_rows
+            for (
+                active_rows,
+                _capacity,
+                _execution_rows,
+                _conditioned,
+            ) in fixed_core.batch_calls
+        )
+        self.assertGreater(fixed_row_count, 0)
+        self.assertEqual(fixed_encode.call_count, 0)
+        self.assertEqual(fixed_serialized.call_count, 0)
+        self.assertEqual(fixed_direct.call_count, fixed_row_count)
 
     def test_fixed_batch_validates_staged_state_without_reencoding_or_partial_commit(
         self,
@@ -666,9 +1296,10 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         self_state["energy_ratio"] = 0.123456789
 
         with mock.patch(
-            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
-            wraps=encode_observation_input,
-        ) as encode:
+            "evolution_sim.mind.recurrent_rollout."
+            "ecological_policy_values_from_observation",
+            wraps=ecological_policy_values_from_observation,
+        ) as project:
             with self.assertRaisesRegex(
                 RecurrentRolloutError,
                 "staged observation drifted before sampling",
@@ -720,8 +1351,30 @@ class RecurrentFixedBatchTests(unittest.TestCase):
                 dict(observations[agent_id]["action_mask"]),
             )
 
-        self.assertEqual(encode.call_count, 0)
+        self.assertEqual(project.call_count, 0)
         self.assertEqual(decision.source, "learned_recurrent_on_policy")
+        self.assertEqual(
+            decision.diagnostics["fixed_batch"],
+            {
+                "runtime_schema_version": (
+                    "mind_v3_recurrent_intra_world_fixed_batch_runtime_v2"
+                ),
+                "runtime_exact_digest": collector.buffer.world_seed_provenance[
+                    "fixed-observation-drift"
+                ]["fixed_batch_runtime"]["exact_digest"],
+                "batch_capacity": 320,
+                "active_rows": 2,
+                "execution_batch_rows": 2,
+                "padding_rows": 0,
+                "unused_capacity_rows": 318,
+                "turn_rank": 0,
+                "row_order_policy": (
+                    "tick_start_seed_tick_agent_hash_permutation_v1"
+                ),
+                "sequential_sampling": True,
+                "sequential_resolution": True,
+            },
+        )
         self.assertEqual(collector._decision_index, 1)
         self.assertIn(agent_id, collector._pending_by_agent)
         self.assertNotIn(agent_id, collector._staged_by_agent)
@@ -751,16 +1404,17 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         prepared = world.prepare_policy_visible_tick_start_on_clone(tick=1)
 
         with mock.patch(
-            "evolution_sim.mind.recurrent_rollout.encode_observation_input",
-            wraps=encode_observation_input,
-        ) as encode:
+            "evolution_sim.mind.recurrent_rollout."
+            "ecological_policy_values_from_observation",
+            wraps=ecological_policy_values_from_observation,
+        ) as project:
             evidence = collector.finalize_action_free_bootstrap(
                 tick=1,
                 ordered_agent_ids=prepared.ordered_agent_ids,
                 observations_by_agent=prepared.observation_snapshots,
             )
 
-        self.assertEqual(encode.call_count, len(prepared.ordered_agent_ids))
+        self.assertEqual(project.call_count, len(prepared.ordered_agent_ids))
         self.assertFalse(evidence["action_sampled"])
         collector.finish_world()
 
@@ -818,6 +1472,32 @@ class RecurrentFixedBatchTests(unittest.TestCase):
         self.assertEqual(collector._bootstrap_value_rows, {})
 
         self_state["energy_ratio"] = original_energy_ratio
+        next_fixed_batch_tick_before = collector._next_fixed_batch_tick
+        with (
+            mock.patch.object(
+                collector,
+                "_build_bootstrap_evidence",
+                side_effect=RuntimeError("late bootstrap evidence failure"),
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "late bootstrap evidence failure",
+            ),
+        ):
+            collector.finalize_action_free_bootstrap(
+                tick=1,
+                ordered_agent_ids=prepared.ordered_agent_ids,
+                observations_by_agent=prepared.observation_snapshots,
+            )
+        self.assertEqual(collector.buffer.steps, steps_before)
+        self.assertEqual(
+            collector._next_fixed_batch_tick,
+            next_fixed_batch_tick_before,
+        )
+        self.assertEqual(collector._bootstrap_value_rows, {})
+        self.assertEqual(collector._staged_by_agent, {})
+        self.assertIsNone(collector._staged_tick)
+
         evidence = collector.finalize_action_free_bootstrap(
             tick=1,
             ordered_agent_ids=prepared.ordered_agent_ids,
@@ -828,6 +1508,297 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             len(prepared.ordered_agent_ids),
         )
         collector.finish_world()
+
+    def test_real_torch_bucket_boundaries_match_scalar_and_direct_numerics(
+        self,
+    ) -> None:
+        cases = (
+            (3, 4),
+            (64, 64),
+            (65, 128),
+            (
+                OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY - 1,
+                OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            ),
+            (
+                OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            ),
+        )
+        for genome_conditioned in (False, True):
+            model = PublicRecurrentActorCritic(
+                RecurrentActorCriticConfig(
+                    encoder_size=8,
+                    hidden_size=8,
+                    recurrent_layers=1,
+                    genome_conditioning_mode=(
+                        RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                        if genome_conditioned
+                        else GENOME_CONDITIONING_DISABLED
+                    ),
+                    critic_genome_conditioning=(
+                        CRITIC_GENOME_CONDITIONING_FILM_V1
+                        if genome_conditioned
+                        else CRITIC_GENOME_CONDITIONING_NONE
+                    ),
+                ),
+                initialization_seed=401 + int(genome_conditioned),
+            )
+            core = TorchRecurrentPolicyCore(model)
+            for active_rows, expected_execution_rows in cases:
+                with self.subTest(
+                    genome_conditioned=genome_conditioned,
+                    active_rows=active_rows,
+                    execution_rows=expected_execution_rows,
+                ):
+                    (
+                        observations,
+                        masks,
+                        feedback,
+                        hidden,
+                        genomes,
+                        actions,
+                    ) = self._real_core_numeric_inputs(
+                        core,
+                        active_rows=active_rows,
+                        genome_conditioned=genome_conditioned,
+                    )
+                    recurrent_input_shapes: list[tuple[int, ...]] = []
+                    hook = model.recurrent.register_forward_pre_hook(
+                        lambda _module, args: recurrent_input_shapes.append(
+                            tuple(int(value) for value in args[0].shape)
+                        )
+                    )
+                    try:
+                        batched = core.forward_fixed_batch(
+                            observations,
+                            masks,
+                            feedback,
+                            hidden,
+                            batch_capacity=(
+                                OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+                            ),
+                            execution_batch_rows=expected_execution_rows,
+                            genome_values=genomes,
+                        )
+                    finally:
+                        hook.remove()
+                    self.assertEqual(
+                        recurrent_input_shapes,
+                        [(1, expected_execution_rows, model.config.encoder_size)],
+                    )
+                    scalar = tuple(
+                        core.forward_step(
+                            observation,
+                            mask,
+                            previous,
+                            state,
+                            genome_values=genome,
+                        )
+                        for observation, mask, previous, state, genome in zip(
+                            observations,
+                            masks,
+                            feedback,
+                            hidden,
+                            (
+                                genomes
+                                if genomes is not None
+                                else (None,) * active_rows
+                            ),
+                            strict=True,
+                        )
+                    )
+                    direct = self._direct_sequence_evaluation(
+                        model,
+                        observations=observations,
+                        action_masks=masks,
+                        feedback=feedback,
+                        hidden=hidden,
+                        genomes=genomes,
+                        actions=actions,
+                    )
+                    self._assert_core_outputs_match_direct_evaluation(
+                        batched,
+                        action_masks=masks,
+                        actions=actions,
+                        direct=direct,
+                    )
+                    self._assert_core_outputs_match_direct_evaluation(
+                        scalar,
+                        action_masks=masks,
+                        actions=actions,
+                        direct=direct,
+                    )
+
+    def test_real_torch_padding_is_exact_and_hostile_rows_cannot_cross_talk(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                recurrent_layers=1,
+                genome_conditioning_mode=(
+                    RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                ),
+                critic_genome_conditioning=(
+                    CRITIC_GENOME_CONDITIONING_FILM_V1
+                ),
+            ),
+            initialization_seed=409,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        (
+            observations,
+            masks,
+            feedback,
+            hidden,
+            genomes,
+            active_actions,
+        ) = self._real_core_numeric_inputs(
+            core,
+            active_rows=3,
+            genome_conditioned=True,
+        )
+        self.assertIsNotNone(genomes)
+        original_forward_sequence = model.forward_sequence
+        with mock.patch.object(
+            model,
+            "forward_sequence",
+            wraps=original_forward_sequence,
+        ) as observed_forward:
+            core_outputs = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=4,
+                genome_values=genomes,
+            )
+        observed_forward.assert_called_once()
+        call = observed_forward.call_args
+        padded_observations = call.args[0].detach().clone()
+        padded_masks = call.args[1].detach().clone()
+        padded_feedback = call.args[2].detach().clone()
+        padded_genomes = call.kwargs["genome_values"].detach().clone()
+        padded_state = call.kwargs["initial_state"].detach().clone()
+        self.assertEqual(tuple(padded_observations.shape[:2]), (1, 4))
+        self.assertEqual(
+            int(torch.count_nonzero(padded_observations[0, 3]).item()),
+            0,
+        )
+        self.assertEqual(
+            int(torch.count_nonzero(padded_feedback[0, 3]).item()),
+            0,
+        )
+        self.assertEqual(
+            int(torch.count_nonzero(padded_genomes[0, 3]).item()),
+            0,
+        )
+        self.assertEqual(
+            int(torch.count_nonzero(padded_state[:, 3]).item()),
+            0,
+        )
+        expected_padding_mask = torch.zeros(
+            len(ACTION_NAMES),
+            dtype=torch.bool,
+        )
+        expected_padding_mask[ACTION_NAMES.index("stay")] = True
+        self.assertTrue(
+            torch.equal(padded_masks[0, 3].cpu(), expected_padding_mask)
+        )
+
+        padded_actions = torch.cat(
+            (
+                active_actions,
+                torch.tensor(
+                    ((ACTION_NAMES.index("stay"),),),
+                    dtype=torch.long,
+                ),
+            ),
+            dim=1,
+        )
+        with torch.no_grad():
+            zero_padding = model.evaluate_sequence(
+                padded_observations,
+                padded_masks,
+                padded_feedback,
+                padded_actions,
+                genome_values=padded_genomes,
+                initial_state=padded_state,
+            )
+        hostile_observations = padded_observations.clone()
+        hostile_masks = padded_masks.clone()
+        hostile_feedback = padded_feedback.clone()
+        hostile_genomes = padded_genomes.clone()
+        hostile_state = padded_state.clone()
+        hostile_observations[0, 3] = 0.9
+        hostile_masks[0, 3] = True
+        hostile_feedback[0, 3] = torch.tensor(
+            PreviousPublicFeedback(
+                requested_action_index=ACTION_NAMES.index("stay"),
+                resolved_action_index=ACTION_NAMES.index("stay"),
+                resolution_action_valid=True,
+                moved=False,
+                reward_total=0.0,
+            ).vector(),
+            device=hostile_feedback.device,
+            dtype=hostile_feedback.dtype,
+        )
+        hostile_genomes[0, 3] = -0.9
+        hostile_state[:, 3] = 0.8
+        with torch.no_grad():
+            hostile_padding = model.evaluate_sequence(
+                hostile_observations,
+                hostile_masks,
+                hostile_feedback,
+                padded_actions,
+                genome_values=hostile_genomes,
+                initial_state=hostile_state,
+            )
+
+        self._assert_core_outputs_match_direct_evaluation(
+            core_outputs,
+            action_masks=masks,
+            actions=active_actions,
+            direct=zero_padding,
+        )
+        for left, right in (
+            (
+                zero_padding.raw_logits[:, :3],
+                hostile_padding.raw_logits[:, :3],
+            ),
+            (
+                zero_padding.masked_logits[:, :3],
+                hostile_padding.masked_logits[:, :3],
+            ),
+            (
+                torch.distributions.Categorical(
+                    logits=zero_padding.masked_logits[:, :3]
+                ).probs,
+                torch.distributions.Categorical(
+                    logits=hostile_padding.masked_logits[:, :3]
+                ).probs,
+            ),
+            (
+                zero_padding.log_probs[:, :3],
+                hostile_padding.log_probs[:, :3],
+            ),
+            (
+                zero_padding.entropy[:, :3],
+                hostile_padding.entropy[:, :3],
+            ),
+            (
+                zero_padding.values[:, :3],
+                hostile_padding.values[:, :3],
+            ),
+            (
+                zero_padding.final_state[:, :3],
+                hostile_padding.final_state[:, :3],
+            ),
+        ):
+            self.assertTrue(torch.equal(left, right))
 
     def test_torch_fixed_batch_is_same_contract_exact_and_scalar_close(self) -> None:
         model = PublicRecurrentActorCritic(
@@ -855,21 +1826,45 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             PreviousPublicFeedback.zero(),
         )
         hidden = (core.initial_hidden(), core.initial_hidden())
-        first = core.forward_fixed_batch(
-            observations,
-            masks,
-            feedback,
-            hidden,
-            batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+        recurrent_input_shapes: list[tuple[int, ...]] = []
+        hook = model.recurrent.register_forward_pre_hook(
+            lambda _module, args: recurrent_input_shapes.append(
+                tuple(int(value) for value in args[0].shape)
+            )
         )
+        try:
+            first = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=2,
+            )
+        finally:
+            hook.remove()
+        self.assertEqual(recurrent_input_shapes, [(1, 2, 8)])
         second = core.forward_fixed_batch(
             observations,
             masks,
             feedback,
             hidden,
             batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            execution_batch_rows=2,
         )
         self.assertEqual(first, second)
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "execution rows drifted",
+        ):
+            core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=4,
+            )
         scalar = tuple(
             core.forward_step(observation, mask, previous, state)
             for observation, mask, previous, state in zip(
@@ -1224,6 +2219,7 @@ class RecurrentFixedBatchTests(unittest.TestCase):
             "fixed_batch_runtime_sha256",
             "fixed_batch_turn_rank",
             "fixed_batch_active_rows",
+            "fixed_batch_execution_rows",
             "fixed_batch_capacity",
         }
         return tuple(

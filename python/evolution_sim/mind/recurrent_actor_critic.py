@@ -51,7 +51,10 @@ _REWARD_NORMALIZATION_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
 ACTION_INDEX: Mapping[str, int] = MappingProxyType(
     {action: index for index, action in enumerate(ACTION_NAMES)}
 )
-RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v4"
+RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v5"
+RECURRENT_NUMERIC_KERNEL_VERSION = (
+    "batch_size_tolerance_stable_per_row_bmm_forward_native_gemm_backward_v1"
+)
 GENOME_CONDITIONING_DISABLED = "disabled"
 GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
 CRITIC_GENOME_CONDITIONING_NONE = "none"
@@ -348,10 +351,11 @@ def recurrent_actor_critic_contract(
                 "previous_public_reward_total_normalized_1",
             ],
             "input_normalization": "explicit_layer_norm",
-            "encoder": "linear_tanh",
-            "memory": "gru",
-            "actor": "linear_20_logits",
-            "critic": "linear_scalar_value",
+            "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
+            "encoder": "backend_stable_linear_tanh",
+            "memory": "backend_stable_gru",
+            "actor": "backend_stable_linear_20_logits",
+            "critic": "backend_stable_linear_scalar_value",
             "genome_conditioning": {
                 "mode": resolved.genome_conditioning_mode,
                 "required_input": (
@@ -740,6 +744,191 @@ class BackendStableLayerNorm(nn.Module):
         return centered * inverse_standard_deviation * self.weight + self.bias
 
 
+class _BackendStableLinearFunction(torch.autograd.Function):
+    """Per-row BMM forward with a compact dense-linear backward."""
+
+    @staticmethod
+    def forward(
+        ctx: object,
+        inputs: Tensor,
+        weight: Tensor,
+        bias: Tensor | None,
+    ) -> Tensor:
+        leading_shape = tuple(inputs.shape[:-1])
+        flattened = inputs.reshape(-1, inputs.shape[-1])
+        row_count = int(flattened.shape[0])
+        projected = torch.bmm(
+            weight.unsqueeze(0).expand(row_count, -1, -1),
+            flattened.unsqueeze(-1),
+        ).squeeze(-1)
+        if bias is not None:
+            projected = projected + bias
+        ctx.save_for_backward(inputs, weight)  # type: ignore[attr-defined]
+        return projected.reshape(*leading_shape, weight.shape[0])
+
+    @staticmethod
+    def backward(
+        ctx: object,
+        grad_output: Tensor,
+    ) -> tuple[Tensor | None, Tensor | None, Tensor | None]:
+        inputs, weight = ctx.saved_tensors  # type: ignore[attr-defined]
+        flattened = inputs.reshape(-1, inputs.shape[-1])
+        grad_flattened = grad_output.reshape(-1, grad_output.shape[-1])
+        needs_input_grad = ctx.needs_input_grad  # type: ignore[attr-defined]
+
+        grad_inputs = (
+            torch.matmul(grad_flattened, weight).reshape_as(inputs)
+            if needs_input_grad[0]
+            else None
+        )
+        grad_weight = (
+            torch.matmul(grad_flattened.transpose(0, 1), flattened)
+            if needs_input_grad[1]
+            else None
+        )
+        grad_bias = (
+            grad_flattened.sum(dim=0) if needs_input_grad[2] else None
+        )
+        return grad_inputs, grad_weight, grad_bias
+
+
+def _backend_stable_linear(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Project every logical row with the same per-row BMM forward kernel.
+
+    BLAS libraries may select different GEMV and GEMM reduction trees for a
+    single row and a multi-row matrix. Those sub-ULP differences can compound
+    through a free-running recurrent state. Treating each logical row as one
+    member of a batched matrix-vector product keeps the reduction topology
+    stable across the number of concurrently active agents within the sealed
+    D04 tolerance. Exact bit equality across devices or backend kernels is not
+    assumed. The custom backward uses dense matrix products without changing
+    this forward path.
+    """
+
+    if inputs.ndim < 1 or weight.ndim != 2:
+        raise PublicInputError("stable linear inputs and weight must be ranked")
+    if inputs.shape[-1] != weight.shape[1]:
+        raise PublicInputError(
+            "stable linear input width does not match the weight matrix"
+        )
+    if bias is not None and (
+        bias.ndim != 1 or bias.shape[0] != weight.shape[0]
+    ):
+        raise PublicInputError("stable linear bias width is malformed")
+    return _BackendStableLinearFunction.apply(inputs, weight, bias)
+
+
+class BackendStableLinear(nn.Linear):
+    """State-dict-compatible linear layer with batch-size-stable rows."""
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        return _backend_stable_linear(inputs, self.weight, self.bias)
+
+
+class BackendStableGRU(nn.GRU):
+    """GRU with batch-size-stable per-row gate projections.
+
+    The parameter names and state-dict layout remain those of ``nn.GRU``.
+    Phase A uses a unidirectional, non-dropout GRU; unsupported variants fail
+    closed instead of silently taking a numerically different backend path.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int = 1,
+        *,
+        bias: bool = True,
+        batch_first: bool = False,
+        dropout: float = 0.0,
+        bidirectional: bool = False,
+    ) -> None:
+        if batch_first or float(dropout) != 0.0 or bidirectional:
+            raise ValueError(
+                "backend-stable GRU requires time-major, non-dropout, "
+                "unidirectional execution"
+            )
+        super().__init__(
+            input_size,
+            hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=False,
+            dropout=0.0,
+            bidirectional=False,
+        )
+
+    def forward(
+        self,
+        inputs: Tensor,
+        hx: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        if not isinstance(inputs, Tensor) or inputs.ndim != 3:
+            raise RecurrentStateError(
+                "backend-stable GRU input must be [time, batch, feature]"
+            )
+        time_steps, batch_size, input_size = inputs.shape
+        if input_size != self.input_size or time_steps <= 0 or batch_size <= 0:
+            raise RecurrentStateError("backend-stable GRU input shape is malformed")
+        if hx is None:
+            hx = inputs.new_zeros(self.num_layers, batch_size, self.hidden_size)
+        if (
+            not isinstance(hx, Tensor)
+            or tuple(hx.shape)
+            != (self.num_layers, batch_size, self.hidden_size)
+        ):
+            raise RecurrentStateError("backend-stable GRU hidden shape is malformed")
+        if hx.device != inputs.device or hx.dtype != inputs.dtype:
+            raise RecurrentStateError(
+                "backend-stable GRU input and hidden placement disagree"
+            )
+
+        layer_states = [hx[layer] for layer in range(self.num_layers)]
+        outputs: list[Tensor] = []
+        for tick in range(time_steps):
+            layer_input = inputs[tick]
+            next_states: list[Tensor] = []
+            for layer in range(self.num_layers):
+                hidden = layer_states[layer]
+                input_gates = _backend_stable_linear(
+                    layer_input,
+                    getattr(self, f"weight_ih_l{layer}"),
+                    (
+                        getattr(self, f"bias_ih_l{layer}")
+                        if self.bias
+                        else None
+                    ),
+                )
+                hidden_gates = _backend_stable_linear(
+                    hidden,
+                    getattr(self, f"weight_hh_l{layer}"),
+                    (
+                        getattr(self, f"bias_hh_l{layer}")
+                        if self.bias
+                        else None
+                    ),
+                )
+                input_reset, input_update, input_new = input_gates.chunk(3, dim=-1)
+                hidden_reset, hidden_update, hidden_new = hidden_gates.chunk(
+                    3,
+                    dim=-1,
+                )
+                reset = torch.sigmoid(input_reset + hidden_reset)
+                update = torch.sigmoid(input_update + hidden_update)
+                new = torch.tanh(input_new + reset * hidden_new)
+                next_hidden = new + update * (hidden - new)
+                next_states.append(next_hidden)
+                layer_input = next_hidden
+            layer_states = next_states
+            outputs.append(layer_input)
+        return torch.stack(outputs, dim=0), torch.stack(layer_states, dim=0)
+
+
 class PublicRecurrentActorCritic(nn.Module):
     """Parameter-shared masked recurrent actor-critic for public Mind inputs."""
 
@@ -766,19 +955,19 @@ class PublicRecurrentActorCritic(nn.Module):
                 self.config.learned_encoder_input_size
             )
             self.encoder = nn.Sequential(
-                nn.Linear(
+                BackendStableLinear(
                     self.config.learned_encoder_input_size,
                     self.config.encoder_size,
                 ),
                 nn.Tanh(),
             )
-            self.recurrent = nn.GRU(
+            self.recurrent = BackendStableGRU(
                 self.config.encoder_size,
                 self.config.hidden_size,
                 num_layers=self.config.recurrent_layers,
             )
-            self.actor = nn.Linear(self.config.hidden_size, ACTION_COUNT)
-            self.value = nn.Linear(self.config.hidden_size, 1)
+            self.actor = BackendStableLinear(self.config.hidden_size, ACTION_COUNT)
+            self.value = BackendStableLinear(self.config.hidden_size, 1)
             if (
                 self.config.genome_conditioning_mode
                 == GENOME_CONDITIONING_ACTOR_FILM_V1
@@ -1245,16 +1434,16 @@ class PublicRecurrentActorCritic(nn.Module):
         bias_coefficients = self._genome_film_bias_coefficients
         normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
         scale_projection = (
-            torch.matmul(
+            _backend_stable_linear(
                 genome_values,
-                scale_coefficients.transpose(0, 1),
+                scale_coefficients,
             )
             / normalization
         )
         bias_projection = (
-            torch.matmul(
+            _backend_stable_linear(
                 genome_values,
-                bias_coefficients.transpose(0, 1),
+                bias_coefficients,
             )
             / normalization
         )
@@ -1275,16 +1464,16 @@ class PublicRecurrentActorCritic(nn.Module):
             )
         normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
         scale_projection = (
-            torch.matmul(
+            _backend_stable_linear(
                 genome_values,
-                self.critic_genome_film_scale_coefficients.transpose(0, 1),
+                self.critic_genome_film_scale_coefficients,
             )
             / normalization
         )
         bias_projection = (
-            torch.matmul(
+            _backend_stable_linear(
                 genome_values,
-                self.critic_genome_film_bias_coefficients.transpose(0, 1),
+                self.critic_genome_film_bias_coefficients,
             )
             / normalization
         )
@@ -1543,10 +1732,13 @@ __all__ = [
     "PREVIOUS_PUBLIC_FEEDBACK_SIZE",
     "PUBLIC_INPUT_SIZE",
     "RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION",
+    "RECURRENT_NUMERIC_KERNEL_VERSION",
     "ActionMaskError",
     "ActionSelection",
     "ActorCriticSequenceOutput",
+    "BackendStableGRU",
     "BackendStableLayerNorm",
+    "BackendStableLinear",
     "GenomeConditioningError",
     "PerAgentRecurrentStateStore",
     "PreviousPublicFeedbackInput",

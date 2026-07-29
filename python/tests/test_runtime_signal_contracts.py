@@ -8,6 +8,7 @@ from evolution_sim.env.contracts import (
 from evolution_sim.env.runtime.observations import (
     TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
     TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    quantized_observation_input_values,
 )
 from evolution_sim.env.runtime.signals import (
     COMMUNICATION_AGGREGATE_PROJECTION,
@@ -23,6 +24,7 @@ from evolution_sim.env.runtime.trajectory import (
 from evolution_sim.mind.policy_inputs import (
     TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_values,
+    ecological_policy_values_from_observation,
 )
 
 
@@ -1277,6 +1279,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         )
         encoded = encode_observation_input(observation)
         decoded = decode_observation_input(encoded)
+        direct_values = quantized_observation_input_values(observation)
         contract = observation_contract(signal_config)
         policy_input = contract["policy_input"]
         self_fields = policy_input["self_input_fields"]
@@ -1326,8 +1329,13 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             ],
         )
         self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE + 52])
+        self.assertEqual(direct_values, decoded)
         self.assertGreater(decoded[token_1_value_index], 0.0)
         policy_values = ecological_policy_input_values(encoded)
+        self.assertEqual(
+            ecological_policy_values_from_observation(observation),
+            policy_values,
+        )
         self.assertEqual(len(policy_values), encoded["shape"][0] - 1)
         self.assertEqual(
             policy_values[token_1_value_index - 1],
@@ -1370,6 +1378,16 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             "communication token observation fields must use contiguous token ids",
         ):
             encode_observation_input(observation)
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ):
+            quantized_observation_input_values(observation)
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ):
+            ecological_policy_values_from_observation(observation)
 
     def test_previous_token_observation_schema_fails_closed(self) -> None:
         world = SimulationWorld(
@@ -1397,6 +1415,10 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         observation["schema_version"] = "mind_observation_v4"
         with self.assertRaisesRegex(ValueError, "missing or stale"):
             encode_observation_input(observation)
+        with self.assertRaisesRegex(ValueError, "missing or stale"):
+            quantized_observation_input_values(observation)
+        with self.assertRaisesRegex(ValueError, "missing or stale"):
+            ecological_policy_values_from_observation(observation)
 
     def test_tokenized_signal_contracts_are_versioned_without_default_drift(
         self,

@@ -22,11 +22,15 @@ from evolution_sim.mind import recurrent_genome_population
 from evolution_sim.mind.open_ecology_phase_a_behavioral_evidence import (
     _critic_gradient_facts,
     _cross_surface_facts,
+    _d4_input_rows,
     _d4_phase_a_collection_inputs,
+    _d4_probe_spec,
+    _d4_proof_seed_contract,
     _fixed_batch_facts,
     _run_critic_gradient_probe,
     _run_cross_surface_probe,
     _run_fixed_batch_probe,
+    _run_d4_equivalence,
     _run_runtime_genome_probe,
     _run_viewer_validator_process,
     _runtime_genome_facts,
@@ -41,9 +45,14 @@ from evolution_sim.mind.open_ecology_phase_a_behavioral_evidence import (
     verify_runtime_genome_and_action_source_report,
 )
 from evolution_sim.mind.open_ecology_seed_registry import OPEN_ECOLOGY_SEED_REGISTRY
+from evolution_sim.mind.recurrent_actor_critic import (
+    RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+    RECURRENT_NUMERIC_KERNEL_VERSION,
+)
 from evolution_sim.mind.recurrent_genome import RecurrentControllerGenome
 from evolution_sim.mind.recurrent_rollout import (
     OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+    RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS,
     PreviousPublicFeedback,
     RecurrentCoreOutput,
     RecurrentOnPolicyCollector,
@@ -53,6 +62,50 @@ from python.tests.test_open_ecology_phase_a import _campaign
 
 
 REQUIRES_MIND_ML = True
+
+_D4_BUCKET_MATRIX_ACTIVE_ROWS = (
+    1,
+    2,
+    3,
+    5,
+    9,
+    17,
+    33,
+    64,
+    65,
+    129,
+    257,
+    319,
+    320,
+)
+_D4_BUCKET_MATRIX_EXECUTION_ROWS = (
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    64,
+    128,
+    256,
+    320,
+    320,
+    320,
+)
+_D4_BUCKET_MATRIX_CASES = [
+    {
+        "active_rows": active_rows,
+        "execution_rows": execution_rows,
+        "observed_recurrent_input_shape": [1, execution_rows, 256],
+    }
+    for active_rows, execution_rows in zip(
+        _D4_BUCKET_MATRIX_ACTIVE_ROWS,
+        _D4_BUCKET_MATRIX_EXECUTION_ROWS,
+        strict=True,
+    )
+]
+_D4_BUCKET_MATRIX_COMPARISON_COUNT = sum(_D4_BUCKET_MATRIX_ACTIVE_ROWS)
 
 
 class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
@@ -592,12 +645,39 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
                 repeat_count=2,
             )
         facts = _fixed_batch_facts(observed)
+        forged_kernel = copy.deepcopy(observed)
+        forged_kernel["numeric_kernel"] = "unsealed_dense_kernel"
+        with self.assertRaisesRegex(
+            ValueError,
+            "recurrent model or numeric-kernel contract drifted",
+        ):
+            _fixed_batch_facts(forged_kernel)
+        missing_identity = copy.deepcopy(observed)
+        del missing_identity["model_contract_version"]
+        with self.assertRaisesRegex(ValueError, "raw observation root schema drifted"):
+            _fixed_batch_facts(missing_identity)
+        surplus_identity = copy.deepcopy(observed)
+        surplus_identity["legacy_model_contract"] = "v4"
+        with self.assertRaisesRegex(ValueError, "raw observation root schema drifted"):
+            _fixed_batch_facts(surplus_identity)
 
         self.assertEqual(set(capacities), {OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY})
         self.assertTrue(torch.equal(rng_before, torch.get_rng_state()))
         self.assertEqual(torch.get_num_threads(), threads_before)
         self.assertEqual(facts["batch_capacity"], 320)
+        self.assertEqual(
+            facts["fixed_batch_execution_buckets"],
+            list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS),
+        )
         self.assertEqual(facts["device"], "cpu")
+        self.assertEqual(
+            facts["model_contract_version"],
+            RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            facts["numeric_kernel"],
+            RECURRENT_NUMERIC_KERNEL_VERSION,
+        )
         self.assertIsNone(facts["deterministic_cuda_contract"])
         self.assertEqual(
             facts["proof_seed_contract"]["engineering_seed_role"],
@@ -621,6 +701,31 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(facts["scalar_timing_sample_count"], 2)
         self.assertEqual(facts["batched_timing_sample_count"], 2)
+        self.assertEqual(len(observed["scalar"]["samples"]), 2)
+        self.assertEqual(len(observed["batched"]["samples"]), 2)
+        self.assertEqual(
+            [sample["repeat_index"] for sample in observed["scalar"]["samples"]],
+            [0, 1],
+        )
+        self.assertEqual(
+            [
+                sample["timing_order_index"]
+                for sample in observed["batched"]["samples"]
+            ],
+            [1, 0],
+        )
+        self.assertEqual(
+            observed["batched"]["samples"][0]["collector_path"],
+            observed["batched_collector_path"],
+        )
+        self.assertEqual(
+            len(set(facts["scalar_repeat_collector_path_sha256"])),
+            1,
+        )
+        self.assertEqual(
+            len(set(facts["batched_repeat_collector_path_sha256"])),
+            1,
+        )
         self.assertEqual(facts["action_mismatch_count"], 0)
         self.assertEqual(facts["numeric_comparison_count"], 128)
         self.assertEqual(facts["reference_numeric_comparison_count"], 128)
@@ -628,10 +733,128 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
         self.assertEqual(facts["rollout_workers"], 1)
         self.assertGreater(facts["collector_transition_count"], 0)
         self.assertEqual(facts["collector_semantic_mismatch_count"], 0)
+        self.assertEqual(
+            facts["collector_paired_transition_count"],
+            facts["collector_transition_count"],
+        )
+        self.assertEqual(
+            facts["collector_numeric_transition_comparison_count"],
+            facts["collector_transition_count"],
+        )
+        self.assertEqual(
+            facts["collector_hidden_component_comparison_count"],
+            facts["collector_transition_count"] * 256,
+        )
+        bootstrap_value_comparison_count = facts[
+            "collector_bootstrap_value_comparison_count"
+        ]
+        self.assertGreater(bootstrap_value_comparison_count, 0)
+        self.assertLessEqual(
+            bootstrap_value_comparison_count,
+            facts["collector_transition_count"],
+        )
+        for mode in ("scalar", "batched"):
+            self.assertEqual(
+                {
+                    sample["collector_path"]["bootstrap_value_count"]
+                    for sample in observed[mode]["samples"]
+                },
+                {bootstrap_value_comparison_count},
+            )
+        self.assertEqual(facts["collector_identity_mismatch_count"], 0)
+        self.assertEqual(facts["collector_hidden_shape_mismatch_count"], 0)
+        self.assertEqual(facts["collector_bootstrap_none_mismatch_count"], 0)
+        for field in (
+            "collector_max_input_hidden_tolerance_ratio",
+            "collector_max_logprob_tolerance_ratio",
+            "collector_max_entropy_tolerance_ratio",
+            "collector_max_value_tolerance_ratio",
+            "collector_max_bootstrap_value_tolerance_ratio",
+        ):
+            self.assertGreaterEqual(facts[field], 0.0)
+            self.assertLessEqual(facts[field], 1.0)
         self.assertEqual(facts["scalar_fixed_batch_step_count"], 0)
         self.assertEqual(
             facts["batched_fixed_batch_step_count"],
             facts["collector_transition_count"],
+        )
+        execution_bucket_histogram = (
+            facts["batched_fixed_batch_execution_bucket_histogram"]
+        )
+        self.assertEqual(
+            set(execution_bucket_histogram),
+            {str(bucket) for bucket in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS},
+        )
+        self.assertEqual(
+            sum(execution_bucket_histogram.values()),
+            facts["batched_fixed_batch_call_count"],
+        )
+        self.assertEqual(
+            sum(
+                int(bucket) * call_count
+                for bucket, call_count in execution_bucket_histogram.items()
+            ),
+            facts["batched_fixed_batch_execution_row_slots"],
+        )
+        self.assertGreater(facts["batched_fixed_batch_call_count"], 0)
+        self.assertGreater(facts["batched_fixed_batch_active_row_slots"], 0)
+        self.assertLessEqual(
+            facts["batched_fixed_batch_active_row_slots"],
+            facts["batched_fixed_batch_execution_row_slots"],
+        )
+        self.assertAlmostEqual(
+            facts["batched_fixed_batch_slot_utilization"],
+            facts["batched_fixed_batch_active_row_slots"]
+            / facts["batched_fixed_batch_execution_row_slots"],
+        )
+        self.assertEqual(
+            facts["batched_fixed_batch_topology_mismatch_count"],
+            0,
+        )
+        bucket_matrix = facts["bounded_bucket_numeric_matrix"]
+        self.assertEqual(
+            bucket_matrix["cases"],
+            _D4_BUCKET_MATRIX_CASES,
+        )
+        self.assertEqual(bucket_matrix["genome_conditioning_mode"], "actor_film_v1")
+        self.assertEqual(
+            bucket_matrix["genome_conditioned_row_count"],
+            _D4_BUCKET_MATRIX_COMPARISON_COUNT,
+        )
+        self.assertEqual(
+            bucket_matrix["comparison_count"],
+            _D4_BUCKET_MATRIX_COMPARISON_COUNT,
+        )
+        self.assertEqual(
+            bucket_matrix["reference_comparison_count"],
+            _D4_BUCKET_MATRIX_COMPARISON_COUNT,
+        )
+        self.assertEqual(bucket_matrix["action_mismatch_count"], 0)
+        self.assertEqual(
+            bucket_matrix["scalar_reference_action_mismatch_count"],
+            0,
+        )
+        self.assertEqual(
+            bucket_matrix["batched_reference_action_mismatch_count"],
+            0,
+        )
+        self.assertGreater(bucket_matrix["distinct_action_mask_count"], 1)
+        self.assertGreater(bucket_matrix["distinct_feedback_vector_count"], 1)
+        self.assertEqual(
+            bucket_matrix["nonzero_feedback_row_count"],
+            _D4_BUCKET_MATRIX_COMPARISON_COUNT,
+        )
+        self.assertEqual(len(bucket_matrix["action_mask_input_sha256"]), 64)
+        self.assertEqual(len(bucket_matrix["feedback_input_sha256"]), 64)
+        self.assertEqual(
+            len(
+                {
+                    bucket_matrix["scalar_semantic_sha256"],
+                    bucket_matrix["batched_semantic_sha256"],
+                    bucket_matrix["reference_semantic_sha256"],
+                }
+            ),
+            1,
         )
         self.assertEqual(facts["scalar_reference_action_mismatch_count"], 0)
         self.assertEqual(facts["batched_reference_action_mismatch_count"], 0)
@@ -668,6 +891,428 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
             "production collector equivalence failed",
         ):
             _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        del forged["collector_equivalence"][
+            "hidden_component_comparison_count"
+        ]
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector observations are malformed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"][
+            "numeric_transition_comparison_count"
+        ] = True
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector numerical evidence is malformed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"]["unexpected_numeric_claim"] = 0
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector observations are malformed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"]["max_value_tolerance_ratio"] = 1.01
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector equivalence failed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"]["max_abs_value_error"] = float("nan")
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector numerical evidence is malformed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"]["identity_mismatch_count"] = 1
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector equivalence failed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["collector_equivalence"]["bootstrap_value_comparison_count"] = 0
+        forged["collector_equivalence"]["max_abs_bootstrap_value_error"] = 0.0
+        forged["collector_equivalence"][
+            "max_bootstrap_value_tolerance_ratio"
+        ] = 0.0
+        for mode in ("scalar", "batched"):
+            for sample in forged[mode]["samples"]:
+                sample["collector_path"]["bootstrap_value_count"] = 0
+        forged["scalar_collector_path"]["bootstrap_value_count"] = 0
+        forged["batched_collector_path"]["bootstrap_value_count"] = 0
+        with self.assertRaisesRegex(
+            ValueError,
+            "production collector equivalence failed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["batched_collector_path"][
+            "fixed_batch_topology_mismatch_count"
+        ] = 1
+        with self.assertRaisesRegex(
+            ValueError,
+            "timed sample topology or bucket selection failed",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["batched_collector_path"][
+            "fixed_batch_execution_bucket_histogram"
+        ]["3"] = 1
+        with self.assertRaisesRegex(
+            ValueError,
+            "execution bucket provenance drifted",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        forged["batched"]["samples"][1]["elapsed_ns"] = (
+            forged["batched"]["samples"][0]["elapsed_ns"]
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "timed collector sample binding drifted",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        padded_256_case = next(
+            case
+            for case in forged["equivalence"]["bucket_matrix"]["cases"]
+            if case["active_rows"] == 129
+        )
+        padded_256_case["execution_rows"] = 320
+        with self.assertRaisesRegex(
+            ValueError,
+            "bounded-bucket numerical provenance drifted",
+        ):
+            _fixed_batch_facts(forged)
+
+        forged = copy.deepcopy(observed)
+        del forged["equivalence"]["bucket_matrix"]
+        with self.assertRaisesRegex(
+            ValueError,
+            "bounded-bucket numerical matrix is malformed",
+        ):
+            _fixed_batch_facts(forged)
+
+    def test_d4_collector_numeric_corruption_cannot_hide_in_semantic_digest(
+        self,
+    ) -> None:
+        from evolution_sim.mind import (
+            open_ecology_phase_a_behavioral_evidence as behavioral,
+        )
+
+        model, tasks, _proof_seed_contract = _d4_phase_a_collection_inputs(
+            shape={"worlds": 1, "rollout_ticks": 2, "initial_agents": 64}
+        )
+        scalar, _scalar_path, _scalar_elapsed = behavioral._run_d4_collector_mode(
+            mode="scalar",
+            model=model,
+            tasks=tasks,
+            rollout_workers=1,
+        )
+        batched, _batched_path, _batched_elapsed = (
+            behavioral._run_d4_collector_mode(
+                mode="batched",
+                model=model,
+                tasks=tasks,
+                rollout_workers=1,
+            )
+        )
+        corrupted_steps = list(batched.steps)
+        none_index = next(
+            index
+            for index, step in enumerate(corrupted_steps)
+            if step.bootstrap_value is None
+        )
+        bootstrap_index = next(
+            index
+            for index, step in enumerate(corrupted_steps)
+            if index != none_index and step.bootstrap_value is not None
+        )
+        numeric_index = next(
+            index
+            for index in range(len(corrupted_steps))
+            if index not in {none_index, bootstrap_index}
+        )
+        shape_index = next(
+            index
+            for index in range(len(corrupted_steps))
+            if index not in {none_index, bootstrap_index, numeric_index}
+        )
+        none_step = corrupted_steps[none_index]
+        corrupted_steps[none_index] = replace(none_step, bootstrap_value=0.0)
+        bootstrap_step = corrupted_steps[bootstrap_index]
+        assert bootstrap_step.bootstrap_value is not None
+        corrupted_steps[bootstrap_index] = replace(
+            bootstrap_step,
+            bootstrap_value=bootstrap_step.bootstrap_value + 1.0,
+        )
+        numeric_step = corrupted_steps[numeric_index]
+        corrupted_steps[numeric_index] = replace(
+            numeric_step,
+            hidden=tuple(value + 1.0 for value in numeric_step.hidden),
+            logprob=numeric_step.logprob + 1.0,
+            entropy=numeric_step.entropy + 1.0,
+            value=numeric_step.value + 1.0,
+        )
+        shape_step = corrupted_steps[shape_index]
+        corrupted_steps[shape_index] = replace(
+            shape_step,
+            hidden=shape_step.hidden[:-1],
+        )
+
+        class _BufferView:
+            def __init__(self, steps: object) -> None:
+                self.steps = tuple(steps)  # type: ignore[arg-type]
+
+        equivalence = behavioral._d4_collector_equivalence(
+            scalar,
+            _BufferView(corrupted_steps),  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(equivalence["semantic_mismatch_count"], 0)
+        self.assertEqual(equivalence["identity_mismatch_count"], 0)
+        self.assertEqual(equivalence["bootstrap_none_mismatch_count"], 1)
+        self.assertEqual(equivalence["hidden_shape_mismatch_count"], 1)
+        self.assertEqual(
+            equivalence["numeric_transition_comparison_count"],
+            len(scalar.steps) - 2,
+        )
+        self.assertEqual(
+            equivalence["hidden_component_comparison_count"],
+            (len(scalar.steps) - 2) * 256,
+        )
+        for field in (
+            "max_input_hidden_tolerance_ratio",
+            "max_logprob_tolerance_ratio",
+            "max_entropy_tolerance_ratio",
+            "max_value_tolerance_ratio",
+            "max_bootstrap_value_tolerance_ratio",
+        ):
+            self.assertGreater(equivalence[field], 1.0)
+
+    def test_d4_heterogeneous_mask_and_feedback_row_wiring_is_observable(
+        self,
+    ) -> None:
+        proof_seed_contract = _d4_proof_seed_contract(
+            shape={"worlds": 1, "rollout_ticks": 1, "initial_agents": 64}
+        )
+        _observations, masks, feedback, _genomes = _d4_input_rows(
+            initial_agents=64,
+            public_input_size=256,
+            proof_seed_contract=proof_seed_contract,
+        )
+        self.assertGreater(len(set(masks)), 1)
+        self.assertGreater(
+            len({row.vector() for row in feedback}),
+            1,
+        )
+        self.assertTrue(all(any(row.vector()) for row in feedback))
+
+        original = TorchRecurrentPolicyCore.forward_fixed_batch
+
+        def permute_mask_rows(
+            core: TorchRecurrentPolicyCore,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            mutable = list(args)
+            mask_rows = tuple(mutable[1])  # type: ignore[arg-type]
+            if len(mask_rows) > 1:
+                mutable[1] = (*mask_rows[1:], mask_rows[0])
+            return original(core, *mutable, **kwargs)
+
+        def permute_feedback_rows(
+            core: TorchRecurrentPolicyCore,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            mutable = list(args)
+            feedback_rows = tuple(mutable[2])  # type: ignore[arg-type]
+            if len(feedback_rows) > 1:
+                mutable[2] = (*feedback_rows[1:], feedback_rows[0])
+            return original(core, *mutable, **kwargs)
+
+        for field, corrupted in (
+            ("action mask", permute_mask_rows),
+            ("previous feedback", permute_feedback_rows),
+        ):
+            with (
+                self.subTest(field=field),
+                patch.object(
+                    TorchRecurrentPolicyCore,
+                    "forward_fixed_batch",
+                    new=corrupted,
+                ),
+            ):
+                equivalence = _run_d4_equivalence(
+                    device="cpu",
+                    shape={
+                        "worlds": 1,
+                        "rollout_ticks": 1,
+                        "initial_agents": 4,
+                    },
+                )
+            matrix = equivalence["bucket_matrix"]
+            self.assertNotEqual(
+                matrix["batched_semantic_sha256"],
+                matrix["scalar_semantic_sha256"],
+            )
+            self.assertTrue(
+                matrix["action_mismatch_count"] > 0
+                or matrix["max_logit_tolerance_ratio"] > 1.0
+                or matrix["max_value_tolerance_ratio"] > 1.0
+                or matrix["max_hidden_tolerance_ratio"] > 1.0
+            )
+
+    def test_d4_accumulated_sub_tolerance_hidden_drift_is_detected(
+        self,
+    ) -> None:
+        from evolution_sim.mind import (
+            open_ecology_phase_a_behavioral_evidence as behavioral,
+        )
+
+        original = TorchRecurrentPolicyCore.forward_fixed_batch
+        per_tick_hidden_perturbation = 5e-7
+
+        def perturb_next_hidden(
+            core: TorchRecurrentPolicyCore,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            outputs = original(core, *args, **kwargs)
+            return tuple(
+                replace(
+                    output,
+                    next_hidden=tuple(
+                        float(value) + per_tick_hidden_perturbation
+                        for value in output.next_hidden
+                    ),
+                )
+                for output in outputs
+            )
+
+        with (
+            patch.object(
+                behavioral,
+                "_run_d4_bucket_matrix",
+                return_value={},
+            ),
+            patch.object(
+                TorchRecurrentPolicyCore,
+                "forward_fixed_batch",
+                new=perturb_next_hidden,
+            ),
+        ):
+            one_tick = _run_d4_equivalence(
+                device="cpu",
+                shape={
+                    "worlds": 1,
+                    "rollout_ticks": 1,
+                    "initial_agents": 1,
+                },
+            )
+            accumulated = _run_d4_equivalence(
+                device="cpu",
+                shape={
+                    "worlds": 1,
+                    "rollout_ticks": 128,
+                    "initial_agents": 1,
+                },
+            )
+
+        self.assertLess(one_tick["max_hidden_tolerance_ratio"], 1.0)
+        self.assertGreater(accumulated["max_hidden_tolerance_ratio"], 1.0)
+        self.assertGreater(
+            accumulated["max_batched_reference_hidden_tolerance_ratio"],
+            1.0,
+        )
+
+    def test_d4_later_timed_batched_fallback_cannot_influence_median(
+        self,
+    ) -> None:
+        from evolution_sim.mind import (
+            open_ecology_phase_a_behavioral_evidence as behavioral,
+        )
+
+        original = behavioral._run_d4_collector_mode
+        batched_call_count = 0
+
+        def fallback_on_second_batched_sample(
+            *,
+            mode: str,
+            model: object,
+            tasks: object,
+            rollout_workers: int,
+        ) -> object:
+            nonlocal batched_call_count
+            actual_mode = mode
+            if mode == "batched":
+                batched_call_count += 1
+                if batched_call_count == 2:
+                    actual_mode = "scalar"
+            return original(
+                mode=actual_mode,
+                model=model,
+                tasks=tasks,
+                rollout_workers=rollout_workers,
+            )
+
+        with patch.object(
+            behavioral,
+            "_run_d4_collector_mode",
+            new=fallback_on_second_batched_sample,
+        ):
+            observed = _run_fixed_batch_probe(
+                device="cpu",
+                shape={"worlds": 1, "rollout_ticks": 1, "initial_agents": 64},
+                repeat_count=2,
+            )
+
+        self.assertEqual(
+            len(
+                {
+                    *observed["scalar"]["semantic_sha256"],
+                    *observed["batched"]["semantic_sha256"],
+                }
+            ),
+            1,
+        )
+        self.assertGreater(
+            observed["batched"]["samples"][0]["collector_path"][
+                "fixed_batch_step_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            observed["batched"]["samples"][1]["collector_path"][
+                "fixed_batch_step_count"
+            ],
+            0,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "batched timed sample topology or bucket selection failed",
+        ):
+            _fixed_batch_facts(observed)
 
     def test_d4_collection_inputs_are_proof_only_with_canonical_identities(
         self,
@@ -786,6 +1431,45 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
             else:
                 os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 
+    def test_d4_verifier_rejects_pre_identity_probe_spec_transplant(self) -> None:
+        from evolution_sim.mind import (
+            open_ecology_phase_a_behavioral_evidence as behavioral,
+        )
+
+        deterministic_contract = behavioral._sealed_d4_deterministic_cuda_contract()
+        legacy_spec = _d4_probe_spec(
+            device="cuda",
+            rollout_workers=int(
+                self.preregistration["runtime_contract"]["rollout_workers"]
+            ),
+            deterministic_cuda_contract=deterministic_contract,
+        )
+        del legacy_spec["model_contract_version"]
+        del legacy_spec["numeric_kernel"]
+        with (
+            patch.object(
+                behavioral,
+                "_configure_and_verify_d4_deterministic_cuda_contract",
+                return_value=deterministic_contract,
+            ),
+            patch.object(
+                behavioral,
+                "_verify_current_d4_deterministic_cuda_contract",
+                return_value=deterministic_contract,
+            ),
+            patch.object(
+                behavioral,
+                "_load_verified_raw_observations",
+                return_value=(legacy_spec, {"device": "cuda"}),
+            ),
+            self.assertRaisesRegex(Exception, "D4 probe specification drifted"),
+        ):
+            verify_fixed_batch_equivalence_and_speed_report(
+                Path("unused-report.json"),
+                self.preregistration,
+                object(),
+            )
+
     def test_d4_non_argmax_batch_corruption_is_detected_numerically(self) -> None:
         original = TorchRecurrentPolicyCore.forward_fixed_batch
 
@@ -862,6 +1546,7 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
             hidden: object,
             *,
             batch_capacity: int,
+            execution_batch_rows: int | None = None,
             genome_values: object = None,
         ) -> tuple[RecurrentCoreOutput, ...]:
             del (
@@ -869,6 +1554,7 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
                 current_action_masks,
                 previous_feedback,
                 batch_capacity,
+                execution_batch_rows,
                 genome_values,
             )
             return tuple(constant_output(row) for row in hidden[: len(observations)])
@@ -893,7 +1579,7 @@ class OpenEcologyPhaseABehavioralEvidenceTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 ValueError,
-                "production collector equivalence failed",
+                "bounded-bucket physical recurrent shape drifted",
             ):
                 _fixed_batch_facts(
                     _run_fixed_batch_probe(

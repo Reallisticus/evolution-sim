@@ -54,6 +54,8 @@ from evolution_sim.mind.recurrent_actor_critic import (
     CRITIC_GENOME_CONDITIONING_NONE,
     GENOME_CONDITIONING_ACTOR_FILM_V1,
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
+    RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+    RECURRENT_NUMERIC_KERNEL_VERSION,
     VALUE_SHARED_TRUNK_GRADIENT_SHARED,
     VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     PublicRecurrentActorCritic,
@@ -90,6 +92,7 @@ from evolution_sim.mind.open_ecology_seed_registry import (
 )
 from evolution_sim.mind.recurrent_rollout import (
     OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+    RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS,
     RECURRENT_ROLLOUT_ACTION_SOURCE,
     PreviousPublicFeedback,
     RecurrentCoreOutput,
@@ -111,7 +114,7 @@ _PRODUCER_CONTRACTS = {
     D1_KIND: "open_ecology_cross_surface_self_echo_raw_producer_v1",
     D2_KIND: "open_ecology_runtime_genome_action_source_raw_producer_v1",
     D3_KIND: "open_ecology_critic_gradient_density_raw_producer_v1",
-    D4_KIND: "open_ecology_fixed_batch_equivalence_speed_raw_producer_v2",
+    D4_KIND: "open_ecology_fixed_batch_equivalence_speed_raw_producer_v8",
 }
 _PRODUCER_NAMES = {
     D1_KIND: "produce_cross_surface_and_self_echo_report",
@@ -129,6 +132,130 @@ _D4_NUMERIC_RTOL = 1e-5
 _D4_NUMERIC_ATOL = 1e-6
 _D4_MODEL_PROOF_SEED_INDEX = 0
 _D4_GENOME_PROOF_SEED_INDEX = 1
+_D4_SEMANTIC_CONTRACT = (
+    "production_phase_a_collector_ordered_merge_numeric_equivalence_v8"
+)
+_D4_BUCKET_MATRIX_ACTIVE_ROWS = (
+    1,
+    2,
+    3,
+    5,
+    9,
+    17,
+    33,
+    64,
+    65,
+    129,
+    257,
+    319,
+    320,
+)
+_D4_COLLECTOR_PATH_KEYS = frozenset(
+    {
+        "semantic_sha256",
+        "transition_count",
+        "bootstrap_value_count",
+        "fixed_batch_step_count",
+        "fixed_batch_runtime_sha256",
+        "fixed_batch_execution_buckets",
+        "fixed_batch_call_count",
+        "fixed_batch_execution_bucket_histogram",
+        "fixed_batch_active_row_slots",
+        "fixed_batch_execution_row_slots",
+        "fixed_batch_slot_utilization",
+        "fixed_batch_topology_mismatch_count",
+    }
+)
+_D4_TIMED_SAMPLE_KEYS = frozenset(
+    {
+        "repeat_index",
+        "mode",
+        "timing_order_index",
+        "elapsed_ns",
+        "semantic_sha256",
+        "collector_path",
+    }
+)
+_D4_OBSERVATION_KEYS = frozenset(
+    {
+        "device",
+        "model_contract_version",
+        "numeric_kernel",
+        "deterministic_cuda_contract",
+        "collector_device",
+        "rollout_workers",
+        "torch_version",
+        "shape",
+        "batch_capacity",
+        "execution_buckets",
+        "repeat_count",
+        "timing_order",
+        "proof_seed_contract",
+        "equivalence",
+        "scalar",
+        "batched",
+        "collector_equivalence",
+        "scalar_collector_path",
+        "batched_collector_path",
+    }
+)
+_D4_COLLECTOR_EQUIVALENCE_KEYS = frozenset(
+    {
+        "transition_count",
+        "batched_transition_count",
+        "paired_transition_count",
+        "semantic_mismatch_count",
+        "identity_mismatch_count",
+        "hidden_shape_mismatch_count",
+        "bootstrap_none_mismatch_count",
+        "numeric_transition_comparison_count",
+        "hidden_component_comparison_count",
+        "bootstrap_value_comparison_count",
+        "max_abs_input_hidden_error",
+        "max_abs_logprob_error",
+        "max_abs_entropy_error",
+        "max_abs_value_error",
+        "max_abs_bootstrap_value_error",
+        "max_input_hidden_tolerance_ratio",
+        "max_logprob_tolerance_ratio",
+        "max_entropy_tolerance_ratio",
+        "max_value_tolerance_ratio",
+        "max_bootstrap_value_tolerance_ratio",
+        "ordered_merge_semantic_sha256",
+    }
+)
+_D4_BUCKET_MATRIX_KEYS = frozenset(
+    {
+        "cases",
+        "genome_conditioning_mode",
+        "genome_conditioned_row_count",
+        "comparison_count",
+        "reference_comparison_count",
+        "action_mismatch_count",
+        "scalar_reference_action_mismatch_count",
+        "batched_reference_action_mismatch_count",
+        "distinct_action_mask_count",
+        "distinct_feedback_vector_count",
+        "nonzero_feedback_row_count",
+        "max_abs_logit_error",
+        "max_abs_value_error",
+        "max_abs_hidden_error",
+        "max_logit_tolerance_ratio",
+        "max_value_tolerance_ratio",
+        "max_hidden_tolerance_ratio",
+        "max_scalar_reference_logit_tolerance_ratio",
+        "max_scalar_reference_value_tolerance_ratio",
+        "max_scalar_reference_hidden_tolerance_ratio",
+        "max_batched_reference_logit_tolerance_ratio",
+        "max_batched_reference_value_tolerance_ratio",
+        "max_batched_reference_hidden_tolerance_ratio",
+        "scalar_semantic_sha256",
+        "batched_semantic_sha256",
+        "reference_semantic_sha256",
+        "action_mask_input_sha256",
+        "feedback_input_sha256",
+    }
+)
 _VIEWER_PROCESS_TIMEOUT_SECONDS = 30.0
 _VIEWER_PROCESS_GROUP_WAIT_SECONDS = 5.0
 _VIEWER_PROCESS_POLL_SECONDS = 0.05
@@ -1796,6 +1923,54 @@ def _d4_proof_seed_contract(*, shape: Mapping[str, int]) -> dict[str, object]:
     }
 
 
+def _d4_action_mask_rows(
+    row_count: int,
+    *,
+    offset: int = 0,
+) -> tuple[tuple[bool, ...], ...]:
+    stay_index = ACTION_NAMES.index("stay")
+    return tuple(
+        tuple(
+            action_index == stay_index
+            or ((row_index + offset + 1) * 7 + (action_index + 3) * 5) % 11
+            not in {0, 1, 2}
+            for action_index in range(len(ACTION_NAMES))
+        )
+        for row_index in range(row_count)
+    )
+
+
+def _d4_feedback_rows(
+    row_count: int,
+    *,
+    offset: int = 0,
+) -> tuple[PreviousPublicFeedback, ...]:
+    stay_index = ACTION_NAMES.index("stay")
+    rows: list[PreviousPublicFeedback] = []
+    for row_index in range(row_count):
+        index = row_index + offset
+        requested_index = index % len(ACTION_NAMES)
+        resolution_valid = index % 4 != 0
+        rows.append(
+            PreviousPublicFeedback(
+                requested_action_index=requested_index,
+                resolved_action_index=(
+                    requested_index if resolution_valid else stay_index
+                ),
+                resolution_action_valid=resolution_valid,
+                moved=(
+                    resolution_valid
+                    and ACTION_NAMES[requested_index].startswith("move_")
+                ),
+                reward_total=round(
+                    ((index * 3) % 13 - 6) / 10.0,
+                    4,
+                ),
+            )
+        )
+    return tuple(rows)
+
+
 def _d4_input_rows(
     *,
     initial_agents: int,
@@ -1817,8 +1992,8 @@ def _d4_input_rows(
         )
         for agent_index in range(initial_agents)
     )
-    masks = tuple(tuple(True for _ in ACTION_NAMES) for _ in range(initial_agents))
-    feedback = tuple(PreviousPublicFeedback.zero() for _ in range(initial_agents))
+    masks = _d4_action_mask_rows(initial_agents)
+    feedback = _d4_feedback_rows(initial_agents)
     genome_seeds = tuple(int(seed) for seed in proof_seed_contract["core_genome_seeds"])
     if len(genome_seeds) != initial_agents:
         raise ValueError("D4 core genome proof seed coverage drifted")
@@ -2003,6 +2178,7 @@ def _d4_collector_semantic_row(step: RecurrentRolloutStep) -> dict[str, object]:
         "fixed_batch_turn_rank",
         "fixed_batch_active_rows",
         "fixed_batch_capacity",
+        "fixed_batch_execution_rows",
     ):
         row.pop(field)
     return row
@@ -2022,9 +2198,86 @@ def _d4_collector_path_facts(
     fixed_steps = tuple(
         step for step in steps if step.fixed_batch_runtime_sha256 is not None
     )
+    execution_buckets = tuple(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
+    execution_bucket_histogram = {
+        str(bucket): 0 for bucket in execution_buckets
+    }
+    fixed_batch_calls: dict[tuple[str, int], list[RecurrentRolloutStep]] = {}
+    for step in fixed_steps:
+        fixed_batch_calls.setdefault((step.world_id, step.tick), []).append(step)
+    active_row_slots = 0
+    execution_row_slots = 0
+    topology_mismatch_count = 0
+    for call_steps in fixed_batch_calls.values():
+        topology = {
+            (
+                step.fixed_batch_runtime_sha256,
+                step.fixed_batch_active_rows,
+                step.fixed_batch_capacity,
+                step.fixed_batch_execution_rows,
+            )
+            for step in call_steps
+        }
+        if len(topology) != 1:
+            topology_mismatch_count += 1
+            continue
+        (
+            _runtime_sha256,
+            active_rows,
+            batch_capacity,
+            execution_rows,
+        ) = next(iter(topology))
+        if (
+            isinstance(active_rows, bool)
+            or not isinstance(active_rows, int)
+            or isinstance(batch_capacity, bool)
+            or not isinstance(batch_capacity, int)
+            or isinstance(execution_rows, bool)
+            or not isinstance(execution_rows, int)
+            or active_rows <= 0
+            or batch_capacity <= 0
+            or active_rows > batch_capacity
+        ):
+            topology_mismatch_count += 1
+            continue
+        expected_execution_rows = next(
+            (bucket for bucket in execution_buckets if bucket >= active_rows),
+            None,
+        )
+        if (
+            execution_rows not in execution_buckets
+            or execution_rows != expected_execution_rows
+        ):
+            topology_mismatch_count += 1
+            continue
+        turn_ranks = [step.fixed_batch_turn_rank for step in call_steps]
+        if (
+            any(
+                isinstance(rank, bool)
+                or not isinstance(rank, int)
+                or rank < 0
+                or rank >= active_rows
+                for rank in turn_ranks
+            )
+            or len(set(turn_ranks)) != len(turn_ranks)
+        ):
+            topology_mismatch_count += 1
+            continue
+        execution_bucket_histogram[str(execution_rows)] += 1
+        active_row_slots += active_rows
+        execution_row_slots += execution_rows
+    fixed_batch_call_count = len(fixed_batch_calls)
+    slot_utilization = (
+        active_row_slots / execution_row_slots
+        if execution_row_slots > 0
+        else 0.0
+    )
     return {
         "semantic_sha256": _d4_collector_semantic_sha256(buffer),
         "transition_count": len(steps),
+        "bootstrap_value_count": sum(
+            step.bootstrap_value is not None for step in steps
+        ),
         "fixed_batch_step_count": len(fixed_steps),
         "fixed_batch_runtime_sha256": sorted(
             {
@@ -2033,6 +2286,13 @@ def _d4_collector_path_facts(
                 if step.fixed_batch_runtime_sha256 is not None
             }
         ),
+        "fixed_batch_execution_buckets": list(execution_buckets),
+        "fixed_batch_call_count": fixed_batch_call_count,
+        "fixed_batch_execution_bucket_histogram": execution_bucket_histogram,
+        "fixed_batch_active_row_slots": active_row_slots,
+        "fixed_batch_execution_row_slots": execution_row_slots,
+        "fixed_batch_slot_utilization": slot_utilization,
+        "fixed_batch_topology_mismatch_count": topology_mismatch_count,
     }
 
 
@@ -2121,6 +2381,278 @@ def _d4_output_error(
     }
 
 
+def _d4_bucket_matrix_spec() -> dict[str, object]:
+    execution_rows = [
+        next(
+            bucket
+            for bucket in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+            if bucket >= active_rows
+        )
+        for active_rows in _D4_BUCKET_MATRIX_ACTIVE_ROWS
+    ]
+    return {
+        "active_rows": list(_D4_BUCKET_MATRIX_ACTIVE_ROWS),
+        "execution_rows": execution_rows,
+        "recurrent_input_shapes": [
+            [1, execution_row_count, 256]
+            for execution_row_count in execution_rows
+        ],
+        "genome_conditioning_mode": GENOME_CONDITIONING_ACTOR_FILM_V1,
+    }
+
+
+def _run_d4_bucket_matrix(
+    *,
+    model: PublicRecurrentActorCritic,
+    core: TorchRecurrentPolicyCore,
+) -> dict[str, object]:
+    cases = [
+        {
+            "active_rows": active_rows,
+            "execution_rows": execution_rows,
+            "observed_recurrent_input_shape": recurrent_input_shape,
+        }
+        for active_rows, execution_rows, recurrent_input_shape in zip(
+            _D4_BUCKET_MATRIX_ACTIVE_ROWS,
+            _d4_bucket_matrix_spec()["execution_rows"],
+            _d4_bucket_matrix_spec()["recurrent_input_shapes"],
+            strict=True,
+        )
+    ]
+    scalar_hash = hashlib.sha256()
+    batched_hash = hashlib.sha256()
+    reference_hash = hashlib.sha256()
+    action_mask_input_hash = hashlib.sha256()
+    feedback_input_hash = hashlib.sha256()
+    distinct_action_masks: set[tuple[bool, ...]] = set()
+    distinct_feedback_vectors: set[tuple[float, ...]] = set()
+    nonzero_feedback_row_count = 0
+    comparison_count = 0
+    reference_comparison_count = 0
+    action_mismatch_count = 0
+    scalar_reference_action_mismatch_count = 0
+    batched_reference_action_mismatch_count = 0
+    maxima = {
+        "max_abs_logit_error": 0.0,
+        "max_abs_value_error": 0.0,
+        "max_abs_hidden_error": 0.0,
+        "max_logit_tolerance_ratio": 0.0,
+        "max_value_tolerance_ratio": 0.0,
+        "max_hidden_tolerance_ratio": 0.0,
+        "max_scalar_reference_logit_tolerance_ratio": 0.0,
+        "max_scalar_reference_value_tolerance_ratio": 0.0,
+        "max_scalar_reference_hidden_tolerance_ratio": 0.0,
+        "max_batched_reference_logit_tolerance_ratio": 0.0,
+        "max_batched_reference_value_tolerance_ratio": 0.0,
+        "max_batched_reference_hidden_tolerance_ratio": 0.0,
+    }
+    initial_hidden = tuple(core.initial_hidden())
+    for case in cases:
+        active_rows = int(case["active_rows"])
+        execution_rows = int(case["execution_rows"])
+        proof_seed_contract = _d4_proof_seed_contract(
+            shape={
+                "worlds": 1,
+                "rollout_ticks": 1,
+                "initial_agents": active_rows,
+            }
+        )
+        observations, masks, feedback, genomes = _d4_input_rows(
+            initial_agents=active_rows,
+            public_input_size=core.public_input_size,
+            proof_seed_contract=proof_seed_contract,
+        )
+        hidden = tuple(
+            tuple(
+                (
+                    float(value)
+                    + (((row_index + 1) * (field_index + 5)) % 29 - 14) / 290.0
+                )
+                for field_index, value in enumerate(initial_hidden)
+            )
+            for row_index in range(active_rows)
+        )
+        scalar_outputs = tuple(
+            core.forward_step(
+                observation,
+                mask,
+                previous,
+                hidden_row,
+                genome_values=genome,
+            )
+            for observation, mask, previous, hidden_row, genome in zip(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                genomes,
+                strict=True,
+            )
+        )
+        observed_recurrent_shapes: list[list[int]] = []
+
+        def capture_recurrent_input(
+            _module: object,
+            arguments: tuple[object, ...],
+        ) -> None:
+            observed_recurrent_shapes.append(
+                list(arguments[0].shape)  # type: ignore[union-attr]
+            )
+
+        hook = model.recurrent.register_forward_pre_hook(capture_recurrent_input)
+        try:
+            batched_outputs = core.forward_fixed_batch(
+                observations,
+                masks,
+                feedback,
+                hidden,
+                batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+                execution_batch_rows=execution_rows,
+                genome_values=genomes,
+            )
+        finally:
+            hook.remove()
+        if observed_recurrent_shapes != [case["observed_recurrent_input_shape"]]:
+            raise ValueError("D4 bounded-bucket physical recurrent shape drifted")
+        reference_outputs = _run_direct_model_batch(
+            model,
+            observations=observations,
+            masks=masks,
+            feedback=feedback,
+            hidden=hidden,
+            genomes=genomes,
+        )
+        for row_index, (
+            scalar_output,
+            batched_output,
+            reference_output,
+        ) in enumerate(
+            zip(
+                scalar_outputs,
+                batched_outputs,
+                reference_outputs,
+                strict=True,
+            )
+        ):
+            semantic_context = {
+                "active_rows": active_rows,
+                "execution_rows": execution_rows,
+                "row": row_index,
+            }
+            mask_row = tuple(masks[row_index])
+            feedback_row = tuple(feedback[row_index].vector())
+            distinct_action_masks.add(mask_row)
+            distinct_feedback_vectors.add(feedback_row)
+            nonzero_feedback_row_count += int(any(feedback_row))
+            action_mask_input_hash.update(
+                _canonical_json_bytes(
+                    {**semantic_context, "action_mask": mask_row}
+                )
+            )
+            feedback_input_hash.update(
+                _canonical_json_bytes(
+                    {**semantic_context, "previous_feedback": feedback_row}
+                )
+            )
+            scalar_hash.update(
+                _canonical_json_bytes(
+                    {**semantic_context, **_semantic_row(scalar_output)}
+                )
+            )
+            batched_hash.update(
+                _canonical_json_bytes(
+                    {**semantic_context, **_semantic_row(batched_output)}
+                )
+            )
+            reference_hash.update(
+                _canonical_json_bytes(
+                    {**semantic_context, **_semantic_row(reference_output)}
+                )
+            )
+            scalar_batched = _d4_output_error(scalar_output, batched_output)
+            scalar_reference = _d4_output_error(reference_output, scalar_output)
+            batched_reference = _d4_output_error(reference_output, batched_output)
+            action_mismatch_count += int(
+                scalar_batched["action_mismatch_count"]
+            )
+            scalar_reference_action_mismatch_count += int(
+                scalar_reference["action_mismatch_count"]
+            )
+            batched_reference_action_mismatch_count += int(
+                batched_reference["action_mismatch_count"]
+            )
+            for field in (
+                "max_abs_logit_error",
+                "max_abs_value_error",
+                "max_abs_hidden_error",
+                "max_logit_tolerance_ratio",
+                "max_value_tolerance_ratio",
+                "max_hidden_tolerance_ratio",
+            ):
+                maxima[field] = max(
+                    maxima[field],
+                    float(scalar_batched[field]),
+                )
+            for field, source_field in (
+                (
+                    "max_scalar_reference_logit_tolerance_ratio",
+                    "max_logit_tolerance_ratio",
+                ),
+                (
+                    "max_scalar_reference_value_tolerance_ratio",
+                    "max_value_tolerance_ratio",
+                ),
+                (
+                    "max_scalar_reference_hidden_tolerance_ratio",
+                    "max_hidden_tolerance_ratio",
+                ),
+            ):
+                maxima[field] = max(maxima[field], float(scalar_reference[source_field]))
+            for field, source_field in (
+                (
+                    "max_batched_reference_logit_tolerance_ratio",
+                    "max_logit_tolerance_ratio",
+                ),
+                (
+                    "max_batched_reference_value_tolerance_ratio",
+                    "max_value_tolerance_ratio",
+                ),
+                (
+                    "max_batched_reference_hidden_tolerance_ratio",
+                    "max_hidden_tolerance_ratio",
+                ),
+            ):
+                maxima[field] = max(
+                    maxima[field],
+                    float(batched_reference[source_field]),
+                )
+            comparison_count += 1
+            reference_comparison_count += 1
+    return {
+        "cases": cases,
+        "genome_conditioning_mode": core.genome_conditioning_mode,
+        "genome_conditioned_row_count": comparison_count,
+        "comparison_count": comparison_count,
+        "reference_comparison_count": reference_comparison_count,
+        "action_mismatch_count": action_mismatch_count,
+        "scalar_reference_action_mismatch_count": (
+            scalar_reference_action_mismatch_count
+        ),
+        "batched_reference_action_mismatch_count": (
+            batched_reference_action_mismatch_count
+        ),
+        "distinct_action_mask_count": len(distinct_action_masks),
+        "distinct_feedback_vector_count": len(distinct_feedback_vectors),
+        "nonzero_feedback_row_count": nonzero_feedback_row_count,
+        **maxima,
+        "scalar_semantic_sha256": scalar_hash.hexdigest(),
+        "batched_semantic_sha256": batched_hash.hexdigest(),
+        "reference_semantic_sha256": reference_hash.hexdigest(),
+        "action_mask_input_sha256": action_mask_input_hash.hexdigest(),
+        "feedback_input_sha256": feedback_input_hash.hexdigest(),
+    }
+
+
 def _run_d4_equivalence(
     *,
     device: str,
@@ -2135,7 +2667,8 @@ def _run_d4_equivalence(
     ).to(device=device, dtype=torch.float32)
     model.eval()
     core = TorchRecurrentPolicyCore(model)
-    observations, masks, feedback, genomes = _d4_input_rows(
+    bucket_matrix = _run_d4_bucket_matrix(model=model, core=core)
+    observations, _masks, _feedback, genomes = _d4_input_rows(
         initial_agents=int(shape["initial_agents"]),
         public_input_size=core.public_input_size,
         proof_seed_contract=proof_seed_contract,
@@ -2162,11 +2695,24 @@ def _run_d4_equivalence(
     max_batched_reference_hidden_tolerance_ratio = 0.0
     initial_hidden = core.initial_hidden()
     for world_index in range(int(shape["worlds"])):
-        hidden = [initial_hidden for _ in observations]
+        scalar_hidden = [initial_hidden for _ in observations]
+        batched_hidden = [initial_hidden for _ in observations]
+        reference_hidden = [initial_hidden for _ in observations]
         scalar_hash = hashlib.sha256()
         batched_hash = hashlib.sha256()
         reference_hash = hashlib.sha256()
         for tick in range(int(shape["rollout_ticks"])):
+            input_offset = (
+                world_index * int(shape["rollout_ticks"]) + tick
+            )
+            tick_masks = _d4_action_mask_rows(
+                len(observations),
+                offset=input_offset,
+            )
+            tick_feedback = _d4_feedback_rows(
+                len(observations),
+                offset=input_offset,
+            )
             scalar_outputs = tuple(
                 core.forward_step(
                     observation,
@@ -2177,27 +2723,27 @@ def _run_d4_equivalence(
                 )
                 for observation, mask, previous, hidden_row, genome in zip(
                     observations,
-                    masks,
-                    feedback,
-                    hidden,
+                    tick_masks,
+                    tick_feedback,
+                    scalar_hidden,
                     genomes,
                     strict=True,
                 )
             )
             batched_outputs = core.forward_fixed_batch(
                 observations,
-                masks,
-                feedback,
-                tuple(hidden),
+                tick_masks,
+                tick_feedback,
+                tuple(batched_hidden),
                 batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
                 genome_values=genomes,
             )
             reference_outputs = _run_direct_model_batch(
                 model,
                 observations=observations,
-                masks=masks,
-                feedback=feedback,
-                hidden=hidden,
+                masks=tick_masks,
+                feedback=tick_feedback,
+                hidden=reference_hidden,
                 genomes=genomes,
             )
             for agent_index, (
@@ -2311,9 +2857,18 @@ def _run_d4_equivalence(
                 )
                 comparison_count += 1
                 reference_comparison_count += 1
-            # Advance from the independently exercised model API.  Neither
-            # rollout adapter can silently become the reference for the other.
-            hidden = [tuple(output.next_hidden) for output in reference_outputs]
+            # Advance every recurrent path from its own result. A sub-tolerance
+            # error must remain observable if it compounds across later ticks;
+            # none of the exercised adapters may be reset from the reference.
+            scalar_hidden = [
+                tuple(output.next_hidden) for output in scalar_outputs
+            ]
+            batched_hidden = [
+                tuple(output.next_hidden) for output in batched_outputs
+            ]
+            reference_hidden = [
+                tuple(output.next_hidden) for output in reference_outputs
+            ]
         scalar_world_digests.append(scalar_hash.hexdigest())
         batched_world_digests.append(batched_hash.hexdigest())
         reference_world_digests.append(reference_hash.hexdigest())
@@ -2323,6 +2878,7 @@ def _run_d4_equivalence(
             "relative_tolerance": _D4_NUMERIC_RTOL,
             "absolute_tolerance": _D4_NUMERIC_ATOL,
         },
+        "bucket_matrix": bucket_matrix,
         "comparison_count": comparison_count,
         "reference_comparison_count": reference_comparison_count,
         "action_mismatch_count": action_mismatch_count,
@@ -2370,18 +2926,129 @@ def _d4_collector_equivalence(
     batched_steps = batched.steps
     paired_count = min(len(scalar_steps), len(batched_steps))
     semantic_mismatch_count = abs(len(scalar_steps) - len(batched_steps))
-    semantic_mismatch_count += sum(
-        _d4_collector_semantic_row(left) != _d4_collector_semantic_row(right)
-        for left, right in zip(
-            scalar_steps[:paired_count],
-            batched_steps[:paired_count],
-            strict=True,
-        )
+    identity_mismatch_count = 0
+    hidden_shape_mismatch_count = 0
+    bootstrap_none_mismatch_count = 0
+    numeric_transition_comparison_count = 0
+    hidden_component_comparison_count = 0
+    bootstrap_value_comparison_count = 0
+    maxima = {
+        "max_abs_input_hidden_error": 0.0,
+        "max_abs_logprob_error": 0.0,
+        "max_abs_entropy_error": 0.0,
+        "max_abs_value_error": 0.0,
+        "max_abs_bootstrap_value_error": 0.0,
+        "max_input_hidden_tolerance_ratio": 0.0,
+        "max_logprob_tolerance_ratio": 0.0,
+        "max_entropy_tolerance_ratio": 0.0,
+        "max_value_tolerance_ratio": 0.0,
+        "max_bootstrap_value_tolerance_ratio": 0.0,
+    }
+    identity_fields = (
+        "world_id",
+        "world_seed",
+        "environment_seed",
+        "policy_sampling_seed",
+        "tick",
+        "agent_id",
+        "decision_index",
     )
+    for left, right in zip(
+        scalar_steps[:paired_count],
+        batched_steps[:paired_count],
+        strict=True,
+    ):
+        semantic_mismatch_count += int(
+            _d4_collector_semantic_row(left)
+            != _d4_collector_semantic_row(right)
+        )
+        identity_matches = all(
+            getattr(left, field) == getattr(right, field) for field in identity_fields
+        )
+        hidden_shape_matches = len(left.hidden) == len(right.hidden)
+        bootstrap_none_matches = (left.bootstrap_value is None) == (
+            right.bootstrap_value is None
+        )
+        identity_mismatch_count += int(not identity_matches)
+        hidden_shape_mismatch_count += int(not hidden_shape_matches)
+        bootstrap_none_mismatch_count += int(not bootstrap_none_matches)
+        if not (
+            identity_matches
+            and hidden_shape_matches
+            and bootstrap_none_matches
+        ):
+            continue
+
+        numeric_transition_comparison_count += 1
+        hidden_errors = [
+            _numeric_error(float(reference), float(candidate))
+            for reference, candidate in zip(
+                left.hidden,
+                right.hidden,
+                strict=True,
+            )
+        ]
+        hidden_component_comparison_count += len(hidden_errors)
+        maxima["max_abs_input_hidden_error"] = max(
+            maxima["max_abs_input_hidden_error"],
+            *(error for error, _ratio in hidden_errors),
+        )
+        maxima["max_input_hidden_tolerance_ratio"] = max(
+            maxima["max_input_hidden_tolerance_ratio"],
+            *(ratio for _error, ratio in hidden_errors),
+        )
+        for field, absolute_key, tolerance_key in (
+            (
+                "logprob",
+                "max_abs_logprob_error",
+                "max_logprob_tolerance_ratio",
+            ),
+            (
+                "entropy",
+                "max_abs_entropy_error",
+                "max_entropy_tolerance_ratio",
+            ),
+            (
+                "value",
+                "max_abs_value_error",
+                "max_value_tolerance_ratio",
+            ),
+        ):
+            error, ratio = _numeric_error(
+                float(getattr(left, field)),
+                float(getattr(right, field)),
+            )
+            maxima[absolute_key] = max(maxima[absolute_key], error)
+            maxima[tolerance_key] = max(maxima[tolerance_key], ratio)
+        if left.bootstrap_value is not None:
+            assert right.bootstrap_value is not None
+            bootstrap_value_comparison_count += 1
+            error, ratio = _numeric_error(
+                float(left.bootstrap_value),
+                float(right.bootstrap_value),
+            )
+            maxima["max_abs_bootstrap_value_error"] = max(
+                maxima["max_abs_bootstrap_value_error"],
+                error,
+            )
+            maxima["max_bootstrap_value_tolerance_ratio"] = max(
+                maxima["max_bootstrap_value_tolerance_ratio"],
+                ratio,
+            )
     return {
         "transition_count": len(scalar_steps),
         "batched_transition_count": len(batched_steps),
+        "paired_transition_count": paired_count,
         "semantic_mismatch_count": semantic_mismatch_count,
+        "identity_mismatch_count": identity_mismatch_count,
+        "hidden_shape_mismatch_count": hidden_shape_mismatch_count,
+        "bootstrap_none_mismatch_count": bootstrap_none_mismatch_count,
+        "numeric_transition_comparison_count": (
+            numeric_transition_comparison_count
+        ),
+        "hidden_component_comparison_count": hidden_component_comparison_count,
+        "bootstrap_value_comparison_count": bootstrap_value_comparison_count,
+        **maxima,
         # This is recomputed from the actual ordered merged batched buffer. It
         # is not copied from either scalar or core-probe evidence.
         "ordered_merge_semantic_sha256": _d4_collector_semantic_sha256(batched),
@@ -2421,13 +3088,16 @@ def _run_fixed_batch_probe(
         scalar_elapsed: list[int] = []
         batched_shas: list[str] = []
         batched_elapsed: list[int] = []
+        timed_samples: dict[str, list[dict[str, object]]] = {
+            "scalar": [],
+            "batched": [],
+        }
         first_buffers: dict[str, RecurrentRolloutBuffer] = {}
-        first_path_facts: dict[str, dict[str, object]] = {}
         timing_order: list[list[str]] = []
         for repeat in range(repeat_count):
             order = ("scalar", "batched") if repeat % 2 == 0 else ("batched", "scalar")
             timing_order.append(list(order))
-            for mode in order:
+            for timing_order_index, mode in enumerate(order):
                 buffer, path_facts, elapsed_ns = _run_d4_collector_mode(
                     mode=mode,
                     model=collector_model,
@@ -2435,8 +3105,17 @@ def _run_fixed_batch_probe(
                     rollout_workers=rollout_workers,
                 )
                 first_buffers.setdefault(mode, buffer)
-                first_path_facts.setdefault(mode, path_facts)
                 semantic_sha = str(path_facts["semantic_sha256"])
+                timed_samples[mode].append(
+                    {
+                        "repeat_index": repeat,
+                        "mode": mode,
+                        "timing_order_index": timing_order_index,
+                        "elapsed_ns": elapsed_ns,
+                        "semantic_sha256": semantic_sha,
+                        "collector_path": path_facts,
+                    }
+                )
                 if mode == "scalar":
                     scalar_shas.append(semantic_sha)
                     scalar_elapsed.append(elapsed_ns)
@@ -2449,6 +3128,8 @@ def _run_fixed_batch_probe(
         )
         return {
             "device": device,
+            "model_contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+            "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
             "deterministic_cuda_contract": (
                 _verify_current_d4_deterministic_cuda_contract()
                 if device == "cuda"
@@ -2459,6 +3140,7 @@ def _run_fixed_batch_probe(
             "torch_version": str(torch.__version__),
             "shape": dict(shape),
             "batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+            "execution_buckets": list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS),
             "repeat_count": repeat_count,
             "timing_order": timing_order,
             "proof_seed_contract": proof_seed_contract,
@@ -2466,18 +3148,290 @@ def _run_fixed_batch_probe(
             "scalar": {
                 "semantic_sha256": scalar_shas,
                 "elapsed_ns": scalar_elapsed,
+                "samples": timed_samples["scalar"],
             },
             "batched": {
                 "semantic_sha256": batched_shas,
                 "elapsed_ns": batched_elapsed,
+                "samples": timed_samples["batched"],
             },
             "collector_equivalence": collector_equivalence,
-            "scalar_collector_path": first_path_facts["scalar"],
-            "batched_collector_path": first_path_facts["batched"],
+            "scalar_collector_path": timed_samples["scalar"][0]["collector_path"],
+            "batched_collector_path": timed_samples["batched"][0]["collector_path"],
         }
 
 
+def _validated_d4_collector_path(
+    value: object,
+    *,
+    mode: str,
+    expected_semantic_sha256: str,
+    expected_transition_count: int,
+) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _D4_COLLECTOR_PATH_KEYS:
+        raise ValueError("D4 timed sample collector path is malformed")
+    path = dict(value)
+    if (
+        path["semantic_sha256"] != expected_semantic_sha256
+        or isinstance(path["transition_count"], bool)
+        or not isinstance(path["transition_count"], int)
+        or path["transition_count"] != expected_transition_count
+    ):
+        raise ValueError("D4 timed sample collector path provenance drifted")
+    execution_buckets = list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
+    histogram = path["fixed_batch_execution_bucket_histogram"]
+    if (
+        path["fixed_batch_execution_buckets"] != execution_buckets
+        or not isinstance(histogram, Mapping)
+        or set(histogram) != {str(bucket) for bucket in execution_buckets}
+        or any(
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            for count in histogram.values()
+        )
+    ):
+        raise ValueError("D4 fixed-batch execution bucket provenance drifted")
+    integer_fields = (
+        "bootstrap_value_count",
+        "fixed_batch_step_count",
+        "fixed_batch_call_count",
+        "fixed_batch_active_row_slots",
+        "fixed_batch_execution_row_slots",
+        "fixed_batch_topology_mismatch_count",
+    )
+    if any(
+        isinstance(path[field], bool)
+        or not isinstance(path[field], int)
+        or path[field] < 0
+        for field in integer_fields
+    ):
+        raise ValueError("D4 timed sample collector topology is malformed")
+    runtime_sha256 = path["fixed_batch_runtime_sha256"]
+    if not isinstance(runtime_sha256, list) or any(
+        not isinstance(digest, str) or len(digest) != 64
+        for digest in runtime_sha256
+    ):
+        raise ValueError("D4 timed sample collector runtime provenance is malformed")
+    slot_utilization = path["fixed_batch_slot_utilization"]
+    if (
+        isinstance(slot_utilization, bool)
+        or not isinstance(slot_utilization, (int, float))
+        or not math.isfinite(float(slot_utilization))
+    ):
+        raise ValueError("D4 timed sample slot utilization is malformed")
+    histogram_call_count = sum(int(count) for count in histogram.values())
+    histogram_execution_row_slots = sum(
+        bucket * int(histogram[str(bucket)]) for bucket in execution_buckets
+    )
+    fixed_batch_step_count = int(path["fixed_batch_step_count"])
+    call_count = int(path["fixed_batch_call_count"])
+    active_row_slots = int(path["fixed_batch_active_row_slots"])
+    execution_row_slots = int(path["fixed_batch_execution_row_slots"])
+    topology_mismatches = int(path["fixed_batch_topology_mismatch_count"])
+    if int(path["bootstrap_value_count"]) > expected_transition_count:
+        raise ValueError("D4 timed sample bootstrap-value coverage drifted")
+    if mode == "scalar":
+        if (
+            fixed_batch_step_count != 0
+            or runtime_sha256
+            or call_count != 0
+            or histogram_call_count != 0
+            or active_row_slots != 0
+            or execution_row_slots != 0
+            or float(slot_utilization) != 0.0
+            or topology_mismatches != 0
+        ):
+            raise ValueError("D4 scalar timed sample used a fixed-batch path")
+    elif mode == "batched":
+        if (
+            fixed_batch_step_count != expected_transition_count
+            or len(runtime_sha256) != 1
+            or call_count <= 0
+            or histogram_call_count != call_count
+            or active_row_slots < call_count
+            or execution_row_slots != histogram_execution_row_slots
+            or active_row_slots > execution_row_slots
+            or topology_mismatches != 0
+            or not 0.0 < float(slot_utilization) <= 1.0
+            or not math.isclose(
+                float(slot_utilization),
+                active_row_slots / execution_row_slots,
+                rel_tol=1e-15,
+                abs_tol=0.0,
+            )
+        ):
+            raise ValueError(
+                "D4 batched timed sample topology or bucket selection failed"
+            )
+    else:
+        raise ValueError(f"unknown D4 timed sample mode {mode!r}")
+    return copy.deepcopy(path)
+
+
+def _validated_d4_timed_samples(
+    value: object,
+    *,
+    mode: str,
+    elapsed_ns: Sequence[int],
+    semantic_sha256: Sequence[str],
+    timing_order: Sequence[Sequence[str]],
+    expected_transition_count: int,
+) -> list[dict[str, object]]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or len(value) != len(elapsed_ns)
+    ):
+        raise ValueError("D4 timed collector sample count drifted")
+    validated: list[dict[str, object]] = []
+    for repeat_index, raw_sample in enumerate(value):
+        if (
+            not isinstance(raw_sample, Mapping)
+            or set(raw_sample) != _D4_TIMED_SAMPLE_KEYS
+        ):
+            raise ValueError("D4 timed collector sample is malformed")
+        expected_order_index = list(timing_order[repeat_index]).index(mode)
+        expected_elapsed_ns = elapsed_ns[repeat_index]
+        expected_semantic_sha256 = semantic_sha256[repeat_index]
+        if (
+            isinstance(raw_sample["repeat_index"], bool)
+            or not isinstance(raw_sample["repeat_index"], int)
+            or raw_sample["repeat_index"] != repeat_index
+            or raw_sample["mode"] != mode
+            or isinstance(raw_sample["timing_order_index"], bool)
+            or not isinstance(raw_sample["timing_order_index"], int)
+            or raw_sample["timing_order_index"] != expected_order_index
+            or isinstance(raw_sample["elapsed_ns"], bool)
+            or not isinstance(raw_sample["elapsed_ns"], int)
+            or raw_sample["elapsed_ns"] <= 0
+            or raw_sample["elapsed_ns"] != expected_elapsed_ns
+            or not isinstance(raw_sample["semantic_sha256"], str)
+            or len(raw_sample["semantic_sha256"]) != 64
+            or raw_sample["semantic_sha256"] != expected_semantic_sha256
+        ):
+            raise ValueError("D4 timed collector sample binding drifted")
+        collector_path = _validated_d4_collector_path(
+            raw_sample["collector_path"],
+            mode=mode,
+            expected_semantic_sha256=expected_semantic_sha256,
+            expected_transition_count=expected_transition_count,
+        )
+        validated.append(
+            {
+                "repeat_index": repeat_index,
+                "mode": mode,
+                "timing_order_index": expected_order_index,
+                "elapsed_ns": expected_elapsed_ns,
+                "semantic_sha256": expected_semantic_sha256,
+                "collector_path": collector_path,
+            }
+        )
+    return validated
+
+
+def _validated_d4_bucket_matrix(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _D4_BUCKET_MATRIX_KEYS:
+        raise ValueError("D4 bounded-bucket numerical matrix is malformed")
+    matrix = dict(value)
+    spec = _d4_bucket_matrix_spec()
+    expected_cases = [
+        {
+            "active_rows": active_rows,
+            "execution_rows": execution_rows,
+            "observed_recurrent_input_shape": recurrent_input_shape,
+        }
+        for active_rows, execution_rows, recurrent_input_shape in zip(
+            spec["active_rows"],
+            spec["execution_rows"],
+            spec["recurrent_input_shapes"],
+            strict=True,
+        )
+    ]
+    expected_comparisons = sum(_D4_BUCKET_MATRIX_ACTIVE_ROWS)
+    integer_fields = (
+        "genome_conditioned_row_count",
+        "comparison_count",
+        "reference_comparison_count",
+        "action_mismatch_count",
+        "scalar_reference_action_mismatch_count",
+        "batched_reference_action_mismatch_count",
+        "distinct_action_mask_count",
+        "distinct_feedback_vector_count",
+        "nonzero_feedback_row_count",
+    )
+    if any(
+        isinstance(matrix[field], bool)
+        or not isinstance(matrix[field], int)
+        or matrix[field] < 0
+        for field in integer_fields
+    ):
+        raise ValueError("D4 bounded-bucket numerical counts are malformed")
+    absolute_fields = (
+        "max_abs_logit_error",
+        "max_abs_value_error",
+        "max_abs_hidden_error",
+    )
+    tolerance_fields = (
+        "max_logit_tolerance_ratio",
+        "max_value_tolerance_ratio",
+        "max_hidden_tolerance_ratio",
+        "max_scalar_reference_logit_tolerance_ratio",
+        "max_scalar_reference_value_tolerance_ratio",
+        "max_scalar_reference_hidden_tolerance_ratio",
+        "max_batched_reference_logit_tolerance_ratio",
+        "max_batched_reference_value_tolerance_ratio",
+        "max_batched_reference_hidden_tolerance_ratio",
+    )
+    if any(
+        isinstance(matrix[field], bool)
+        or not isinstance(matrix[field], (int, float))
+        or not math.isfinite(float(matrix[field]))
+        or float(matrix[field]) < 0.0
+        for field in absolute_fields
+    ) or any(
+        isinstance(matrix[field], bool)
+        or not isinstance(matrix[field], (int, float))
+        or not math.isfinite(float(matrix[field]))
+        or float(matrix[field]) < 0.0
+        for field in tolerance_fields
+    ):
+        raise ValueError("D4 bounded-bucket numerical metrics are malformed")
+    semantic_digests = (
+        matrix["scalar_semantic_sha256"],
+        matrix["batched_semantic_sha256"],
+        matrix["reference_semantic_sha256"],
+        matrix["action_mask_input_sha256"],
+        matrix["feedback_input_sha256"],
+    )
+    if (
+        matrix["cases"] != expected_cases
+        or matrix["genome_conditioning_mode"]
+        != GENOME_CONDITIONING_ACTOR_FILM_V1
+        or matrix["genome_conditioned_row_count"] != expected_comparisons
+        or matrix["comparison_count"] != expected_comparisons
+        or matrix["reference_comparison_count"] != expected_comparisons
+        or matrix["distinct_action_mask_count"] < 2
+        or matrix["distinct_feedback_vector_count"] < 2
+        or matrix["nonzero_feedback_row_count"] != expected_comparisons
+        or any(
+            not isinstance(digest, str) or len(digest) != 64
+            for digest in semantic_digests
+        )
+    ):
+        raise ValueError("D4 bounded-bucket numerical provenance drifted")
+    return copy.deepcopy(matrix)
+
+
 def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
+    if not isinstance(observed, Mapping) or set(observed) != _D4_OBSERVATION_KEYS:
+        raise ValueError("D4 raw observation root schema drifted")
+    if (
+        observed.get("model_contract_version")
+        != RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION
+        or observed.get("numeric_kernel") != RECURRENT_NUMERIC_KERNEL_VERSION
+    ):
+        raise ValueError("D4 recurrent model or numeric-kernel contract drifted")
     scalar = observed["scalar"]
     batched = observed["batched"]
     if not isinstance(scalar, Mapping) or not isinstance(batched, Mapping):
@@ -2509,23 +3463,149 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
     batched_collector_path = observed["batched_collector_path"]
     if (
         not isinstance(collector_equivalence, Mapping)
+        or set(collector_equivalence) != _D4_COLLECTOR_EQUIVALENCE_KEYS
         or not isinstance(scalar_collector_path, Mapping)
         or not isinstance(batched_collector_path, Mapping)
     ):
         raise ValueError("D4 production collector observations are malformed")
-    if (
-        scalar_collector_path.get("semantic_sha256") != scalar_shas[0]
-        or batched_collector_path.get("semantic_sha256") != batched_shas[0]
+    collector_integer_fields = (
+        "transition_count",
+        "batched_transition_count",
+        "paired_transition_count",
+        "semantic_mismatch_count",
+        "identity_mismatch_count",
+        "hidden_shape_mismatch_count",
+        "bootstrap_none_mismatch_count",
+        "numeric_transition_comparison_count",
+        "hidden_component_comparison_count",
+        "bootstrap_value_comparison_count",
+    )
+    collector_absolute_fields = (
+        "max_abs_input_hidden_error",
+        "max_abs_logprob_error",
+        "max_abs_entropy_error",
+        "max_abs_value_error",
+        "max_abs_bootstrap_value_error",
+    )
+    collector_tolerance_fields = (
+        "max_input_hidden_tolerance_ratio",
+        "max_logprob_tolerance_ratio",
+        "max_entropy_tolerance_ratio",
+        "max_value_tolerance_ratio",
+        "max_bootstrap_value_tolerance_ratio",
+    )
+    if any(
+        isinstance(collector_equivalence[field], bool)
+        or not isinstance(collector_equivalence[field], int)
+        or int(collector_equivalence[field]) < 0
+        for field in collector_integer_fields
+    ) or any(
+        isinstance(collector_equivalence[field], bool)
+        or not isinstance(collector_equivalence[field], (int, float))
+        or not math.isfinite(float(collector_equivalence[field]))
+        or float(collector_equivalence[field]) < 0.0
+        for field in (*collector_absolute_fields, *collector_tolerance_fields)
     ):
-        raise ValueError("D4 production collector digest provenance drifted")
+        raise ValueError("D4 production collector numerical evidence is malformed")
     collector_transition_count = int(collector_equivalence["transition_count"])
     batched_transition_count = int(collector_equivalence["batched_transition_count"])
+    execution_buckets = list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
+    if observed.get("execution_buckets") != execution_buckets:
+        raise ValueError("D4 fixed-batch execution bucket contract drifted")
+    scalar_samples = _validated_d4_timed_samples(
+        scalar.get("samples"),
+        mode="scalar",
+        elapsed_ns=scalar_elapsed,
+        semantic_sha256=scalar_shas,
+        timing_order=timing_order,
+        expected_transition_count=collector_transition_count,
+    )
+    batched_samples = _validated_d4_timed_samples(
+        batched.get("samples"),
+        mode="batched",
+        elapsed_ns=batched_elapsed,
+        semantic_sha256=batched_shas,
+        timing_order=timing_order,
+        expected_transition_count=collector_transition_count,
+    )
+    scalar_paths = [
+        sample["collector_path"]
+        for sample in scalar_samples
+    ]
+    batched_paths = [
+        sample["collector_path"]
+        for sample in batched_samples
+    ]
+    scalar_bootstrap_value_counts = [
+        int(path["bootstrap_value_count"]) for path in scalar_paths
+    ]
+    batched_bootstrap_value_counts = [
+        int(path["bootstrap_value_count"]) for path in batched_paths
+    ]
+    if (
+        scalar_collector_path != scalar_paths[0]
+        or batched_collector_path != batched_paths[0]
+    ):
+        raise ValueError("D4 first collector path convenience summary drifted")
+    if any(path != scalar_paths[0] for path in scalar_paths[1:]) or any(
+        path != batched_paths[0] for path in batched_paths[1:]
+    ):
+        raise ValueError("D4 timed repeat collector path drifted")
+    scalar_collector_path = scalar_paths[0]
+    batched_collector_path = batched_paths[0]
+    scalar_histogram = scalar_collector_path[
+        "fixed_batch_execution_bucket_histogram"
+    ]
+    batched_histogram = batched_collector_path[
+        "fixed_batch_execution_bucket_histogram"
+    ]
+    assert isinstance(scalar_histogram, Mapping)
+    assert isinstance(batched_histogram, Mapping)
+    batched_call_count = int(batched_collector_path["fixed_batch_call_count"])
+    batched_active_row_slots = int(
+        batched_collector_path["fixed_batch_active_row_slots"]
+    )
+    batched_execution_row_slots = int(
+        batched_collector_path["fixed_batch_execution_row_slots"]
+    )
+    batched_slot_utilization = float(
+        batched_collector_path["fixed_batch_slot_utilization"]
+    )
+    batched_topology_mismatches = int(
+        batched_collector_path["fixed_batch_topology_mismatch_count"]
+    )
+    bootstrap_value_comparison_count = int(
+        collector_equivalence["bootstrap_value_comparison_count"]
+    )
+    scalar_path_sha256 = [_sha256_json(path) for path in scalar_paths]
+    batched_path_sha256 = [_sha256_json(path) for path in batched_paths]
     if (
         len(set((*scalar_shas, *batched_shas))) != 1
         or collector_equivalence.get("ordered_merge_semantic_sha256") != scalar_shas[0]
         or int(collector_equivalence["semantic_mismatch_count"]) != 0
         or collector_transition_count <= 0
         or batched_transition_count != collector_transition_count
+        or int(collector_equivalence["paired_transition_count"])
+        != collector_transition_count
+        or int(collector_equivalence["numeric_transition_comparison_count"])
+        != collector_transition_count
+        or int(collector_equivalence["hidden_component_comparison_count"])
+        != collector_transition_count * 256
+        or not 0 < bootstrap_value_comparison_count <= collector_transition_count
+        or any(
+            count != bootstrap_value_comparison_count
+            for count in (
+                *scalar_bootstrap_value_counts,
+                *batched_bootstrap_value_counts,
+            )
+        )
+        or int(collector_equivalence["identity_mismatch_count"]) != 0
+        or int(collector_equivalence["hidden_shape_mismatch_count"]) != 0
+        or int(collector_equivalence["bootstrap_none_mismatch_count"]) != 0
+        or any(
+            float(collector_equivalence[field]) > 1.0
+            for field in collector_tolerance_fields
+        )
         or int(scalar_collector_path["fixed_batch_step_count"]) != 0
         or int(batched_collector_path["fixed_batch_step_count"])
         != collector_transition_count
@@ -2536,6 +3616,9 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
         "absolute_tolerance": _D4_NUMERIC_ATOL,
     }:
         raise ValueError("D4 raw numeric contract drifted")
+    bucket_matrix = _validated_d4_bucket_matrix(
+        equivalence.get("bucket_matrix")
+    )
     declared_shape = dict(observed["shape"])
     expected_proof_seed_contract = _d4_proof_seed_contract(shape=declared_shape)
     proof_seed_contract = observed.get("proof_seed_contract")
@@ -2555,6 +3638,8 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
         raise ValueError("D4 deterministic CUDA provenance drifted")
     return {
         "device": str(observed["device"]),
+        "model_contract_version": str(observed["model_contract_version"]),
+        "numeric_kernel": str(observed["numeric_kernel"]),
         "deterministic_cuda_contract": copy.deepcopy(deterministic_cuda_contract),
         "proof_seed_contract": copy.deepcopy(expected_proof_seed_contract),
         "collector_device": str(observed["collector_device"]),
@@ -2562,14 +3647,18 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
         "torch_version": str(observed["torch_version"]),
         "declared_shape": declared_shape,
         "batch_capacity": int(observed["batch_capacity"]),
+        "fixed_batch_execution_buckets": execution_buckets,
+        "bounded_bucket_numeric_matrix": bucket_matrix,
         "repeat_count": repeat_count,
         "timing_order": timing_order,
         "scalar_timing_sample_count": len(scalar_elapsed),
         "batched_timing_sample_count": len(batched_elapsed),
         "scalar_semantic_sha256": scalar_shas[0],
         "scalar_repeat_semantic_sha256": scalar_shas,
+        "scalar_repeat_collector_path_sha256": scalar_path_sha256,
         "batched_semantic_sha256": batched_shas[0],
         "batched_repeat_semantic_sha256": batched_shas,
+        "batched_repeat_collector_path_sha256": batched_path_sha256,
         "core_scalar_semantic_sha256": str(equivalence["scalar_semantic_sha256"]),
         "core_batched_semantic_sha256": str(equivalence["batched_semantic_sha256"]),
         "reference_semantic_sha256": str(equivalence["reference_semantic_sha256"]),
@@ -2581,6 +3670,57 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
         "collector_semantic_mismatch_count": int(
             collector_equivalence["semantic_mismatch_count"]
         ),
+        "collector_paired_transition_count": int(
+            collector_equivalence["paired_transition_count"]
+        ),
+        "collector_numeric_transition_comparison_count": int(
+            collector_equivalence["numeric_transition_comparison_count"]
+        ),
+        "collector_hidden_component_comparison_count": int(
+            collector_equivalence["hidden_component_comparison_count"]
+        ),
+        "collector_bootstrap_value_comparison_count": int(
+            bootstrap_value_comparison_count
+        ),
+        "collector_identity_mismatch_count": int(
+            collector_equivalence["identity_mismatch_count"]
+        ),
+        "collector_hidden_shape_mismatch_count": int(
+            collector_equivalence["hidden_shape_mismatch_count"]
+        ),
+        "collector_bootstrap_none_mismatch_count": int(
+            collector_equivalence["bootstrap_none_mismatch_count"]
+        ),
+        "collector_max_abs_input_hidden_error": float(
+            collector_equivalence["max_abs_input_hidden_error"]
+        ),
+        "collector_max_abs_logprob_error": float(
+            collector_equivalence["max_abs_logprob_error"]
+        ),
+        "collector_max_abs_entropy_error": float(
+            collector_equivalence["max_abs_entropy_error"]
+        ),
+        "collector_max_abs_value_error": float(
+            collector_equivalence["max_abs_value_error"]
+        ),
+        "collector_max_abs_bootstrap_value_error": float(
+            collector_equivalence["max_abs_bootstrap_value_error"]
+        ),
+        "collector_max_input_hidden_tolerance_ratio": float(
+            collector_equivalence["max_input_hidden_tolerance_ratio"]
+        ),
+        "collector_max_logprob_tolerance_ratio": float(
+            collector_equivalence["max_logprob_tolerance_ratio"]
+        ),
+        "collector_max_entropy_tolerance_ratio": float(
+            collector_equivalence["max_entropy_tolerance_ratio"]
+        ),
+        "collector_max_value_tolerance_ratio": float(
+            collector_equivalence["max_value_tolerance_ratio"]
+        ),
+        "collector_max_bootstrap_value_tolerance_ratio": float(
+            collector_equivalence["max_bootstrap_value_tolerance_ratio"]
+        ),
         "scalar_fixed_batch_step_count": int(
             scalar_collector_path["fixed_batch_step_count"]
         ),
@@ -2589,6 +3729,17 @@ def _fixed_batch_facts(observed: Mapping[str, object]) -> dict[str, object]:
         ),
         "batched_fixed_batch_runtime_sha256": list(
             batched_collector_path["fixed_batch_runtime_sha256"]
+        ),
+        "batched_fixed_batch_call_count": batched_call_count,
+        "batched_fixed_batch_execution_bucket_histogram": {
+            str(bucket): int(batched_histogram[str(bucket)])
+            for bucket in execution_buckets
+        },
+        "batched_fixed_batch_active_row_slots": batched_active_row_slots,
+        "batched_fixed_batch_execution_row_slots": batched_execution_row_slots,
+        "batched_fixed_batch_slot_utilization": batched_slot_utilization,
+        "batched_fixed_batch_topology_mismatch_count": (
+            batched_topology_mismatches
         ),
         "numeric_comparison_count": int(equivalence["comparison_count"]),
         "reference_numeric_comparison_count": int(
@@ -2971,6 +4122,32 @@ def verify_critic_gradient_and_density_schedule_report(
     )
 
 
+def _d4_probe_spec(
+    *,
+    device: str,
+    rollout_workers: int,
+    deterministic_cuda_contract: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "device": device,
+        "model_contract_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
+        "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
+        "shape": _D4_DECLARED_SHAPE,
+        "batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
+        "execution_buckets": list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS),
+        "bounded_bucket_numeric_matrix": _d4_bucket_matrix_spec(),
+        "rollout_workers": rollout_workers,
+        "repeat_count": _D4_REPEAT_COUNT,
+        "semantic_contract": _D4_SEMANTIC_CONTRACT,
+        "numeric_contract": {
+            "relative_tolerance": _D4_NUMERIC_RTOL,
+            "absolute_tolerance": _D4_NUMERIC_ATOL,
+        },
+        "deterministic_cuda_contract": dict(deterministic_cuda_contract),
+        "proof_seed_contract": _d4_proof_seed_contract(shape=_D4_DECLARED_SHAPE),
+    }
+
+
 def produce_fixed_batch_equivalence_and_speed_report(
     preregistration: Mapping[str, object],
     *,
@@ -2986,7 +4163,6 @@ def produce_fixed_batch_equivalence_and_speed_report(
             )
         )
     deterministic_cuda_contract = _configure_and_verify_d4_deterministic_cuda_contract()
-    proof_seed_contract = _d4_proof_seed_contract(shape=_D4_DECLARED_SHAPE)
     rollout_workers = int(
         preregistration["runtime_contract"]["rollout_workers"]  # type: ignore[index]
     )
@@ -3006,22 +4182,11 @@ def produce_fixed_batch_equivalence_and_speed_report(
         preregistration,
         output_directory=output_directory,
         evidence_kind=D4_KIND,
-        probe_spec={
-            "device": device,
-            "shape": _D4_DECLARED_SHAPE,
-            "batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
-            "rollout_workers": rollout_workers,
-            "repeat_count": _D4_REPEAT_COUNT,
-            "semantic_contract": (
-                "production_phase_a_collector_ordered_merge_equivalence_v3"
-            ),
-            "numeric_contract": {
-                "relative_tolerance": _D4_NUMERIC_RTOL,
-                "absolute_tolerance": _D4_NUMERIC_ATOL,
-            },
-            "deterministic_cuda_contract": deterministic_cuda_contract,
-            "proof_seed_contract": proof_seed_contract,
-        },
+        probe_spec=_d4_probe_spec(
+            device=device,
+            rollout_workers=rollout_workers,
+            deterministic_cuda_contract=deterministic_cuda_contract,
+        ),
         run_probe=run_deterministic_probe,
         reconstruct=_fixed_batch_facts,
         pre_publish_check=_verify_current_d4_deterministic_cuda_contract,
@@ -3041,24 +4206,13 @@ def verify_fixed_batch_equivalence_and_speed_report(
         evidence_kind=D4_KIND,
     )
     _verify_current_d4_deterministic_cuda_contract()
-    expected_spec = {
-        "device": "cuda",
-        "shape": _D4_DECLARED_SHAPE,
-        "batch_capacity": OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY,
-        "rollout_workers": int(
+    expected_spec = _d4_probe_spec(
+        device="cuda",
+        rollout_workers=int(
             preregistration["runtime_contract"]["rollout_workers"]  # type: ignore[index]
         ),
-        "repeat_count": _D4_REPEAT_COUNT,
-        "semantic_contract": (
-            "production_phase_a_collector_ordered_merge_equivalence_v3"
-        ),
-        "numeric_contract": {
-            "relative_tolerance": _D4_NUMERIC_RTOL,
-            "absolute_tolerance": _D4_NUMERIC_ATOL,
-        },
-        "deterministic_cuda_contract": deterministic_cuda_contract,
-        "proof_seed_contract": _d4_proof_seed_contract(shape=_D4_DECLARED_SHAPE),
-    }
+        deterministic_cuda_contract=deterministic_cuda_contract,
+    )
     if spec != expected_spec or observed.get("device") != "cuda":
         raise (
             _readiness()
@@ -3078,15 +4232,62 @@ def verify_fixed_batch_equivalence_and_speed_report(
         facts["core_batched_semantic_sha256"],
         facts["reference_semantic_sha256"],
     }
+    bucket_matrix = facts["bounded_bucket_numeric_matrix"]
+    bucket_matrix_semantic_values = {
+        bucket_matrix["scalar_semantic_sha256"],
+        bucket_matrix["batched_semantic_sha256"],
+        bucket_matrix["reference_semantic_sha256"],
+    }
+    bucket_matrix_tolerance_fields = (
+        "max_logit_tolerance_ratio",
+        "max_value_tolerance_ratio",
+        "max_hidden_tolerance_ratio",
+        "max_scalar_reference_logit_tolerance_ratio",
+        "max_scalar_reference_value_tolerance_ratio",
+        "max_scalar_reference_hidden_tolerance_ratio",
+        "max_batched_reference_logit_tolerance_ratio",
+        "max_batched_reference_value_tolerance_ratio",
+        "max_batched_reference_hidden_tolerance_ratio",
+    )
+    collector_absolute_fields = (
+        "collector_max_abs_input_hidden_error",
+        "collector_max_abs_logprob_error",
+        "collector_max_abs_entropy_error",
+        "collector_max_abs_value_error",
+        "collector_max_abs_bootstrap_value_error",
+    )
+    collector_tolerance_fields = (
+        "collector_max_input_hidden_tolerance_ratio",
+        "collector_max_logprob_tolerance_ratio",
+        "collector_max_entropy_tolerance_ratio",
+        "collector_max_value_tolerance_ratio",
+        "collector_max_bootstrap_value_tolerance_ratio",
+    )
+    scalar_path_digests = facts["scalar_repeat_collector_path_sha256"]
+    batched_path_digests = facts["batched_repeat_collector_path_sha256"]
     expected_comparisons = math.prod(_D4_DECLARED_SHAPE.values())
     if (
         len(collector_semantic_values) != 1
         or len(core_semantic_values) != 1
+        or len(bucket_matrix_semantic_values) != 1
+        or bucket_matrix["action_mismatch_count"] != 0
+        or bucket_matrix["scalar_reference_action_mismatch_count"] != 0
+        or bucket_matrix["batched_reference_action_mismatch_count"] != 0
+        or any(
+            not 0.0 <= float(bucket_matrix[field]) <= 1.0
+            for field in bucket_matrix_tolerance_fields
+        )
+        or len(scalar_path_digests) != _D4_REPEAT_COUNT
+        or len(batched_path_digests) != _D4_REPEAT_COUNT
+        or len(set(scalar_path_digests)) != 1
+        or len(set(batched_path_digests)) != 1
         or facts["device"] != "cuda"
         or facts["collector_device"] != "cpu"
         or facts["rollout_workers"] != expected_spec["rollout_workers"]
         or facts["declared_shape"] != _D4_DECLARED_SHAPE
         or facts["batch_capacity"] != OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
+        or facts["fixed_batch_execution_buckets"]
+        != list(RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS)
         or facts["repeat_count"] != _D4_REPEAT_COUNT
         or facts["timing_order"] != [["scalar", "batched"], ["batched", "scalar"]]
         or facts["scalar_timing_sample_count"] != _D4_REPEAT_COUNT
@@ -3099,10 +4300,40 @@ def verify_fixed_batch_equivalence_and_speed_report(
         or facts["collector_batched_transition_count"]
         != facts["collector_transition_count"]
         or facts["collector_semantic_mismatch_count"] != 0
+        or facts["collector_paired_transition_count"]
+        != facts["collector_transition_count"]
+        or facts["collector_numeric_transition_comparison_count"]
+        != facts["collector_transition_count"]
+        or facts["collector_hidden_component_comparison_count"]
+        != facts["collector_transition_count"] * 256
+        or not (
+            0
+            < facts["collector_bootstrap_value_comparison_count"]
+            <= facts["collector_transition_count"]
+        )
+        or facts["collector_identity_mismatch_count"] != 0
+        or facts["collector_hidden_shape_mismatch_count"] != 0
+        or facts["collector_bootstrap_none_mismatch_count"] != 0
+        or any(
+            not math.isfinite(float(facts[field])) or float(facts[field]) < 0.0
+            for field in collector_absolute_fields
+        )
+        or any(
+            not math.isfinite(float(facts[field]))
+            or not 0.0 <= float(facts[field]) <= 1.0
+            for field in collector_tolerance_fields
+        )
         or facts["scalar_fixed_batch_step_count"] != 0
         or facts["batched_fixed_batch_step_count"]
         != facts["collector_transition_count"]
         or len(facts["batched_fixed_batch_runtime_sha256"]) != 1
+        or facts["batched_fixed_batch_call_count"] <= 0
+        or sum(facts["batched_fixed_batch_execution_bucket_histogram"].values())
+        != facts["batched_fixed_batch_call_count"]
+        or facts["batched_fixed_batch_active_row_slots"]
+        > facts["batched_fixed_batch_execution_row_slots"]
+        or facts["batched_fixed_batch_topology_mismatch_count"] != 0
+        or not 0.0 < facts["batched_fixed_batch_slot_utilization"] <= 1.0
         or facts["action_mismatch_count"] != 0
         or facts["scalar_reference_action_mismatch_count"] != 0
         or facts["batched_reference_action_mismatch_count"] != 0
@@ -3175,25 +4406,93 @@ def verify_fixed_batch_equivalence_and_speed_report(
             repeated_batched_buffer,
         )
         _verify_current_d4_deterministic_cuda_contract()
+    repeated_bucket_matrix = _validated_d4_bucket_matrix(
+        repeated.get("bucket_matrix")
+    )
+    collector_replay_bindings = {
+        "paired_transition_count": "collector_paired_transition_count",
+        "numeric_transition_comparison_count": (
+            "collector_numeric_transition_comparison_count"
+        ),
+        "hidden_component_comparison_count": (
+            "collector_hidden_component_comparison_count"
+        ),
+        "bootstrap_value_comparison_count": (
+            "collector_bootstrap_value_comparison_count"
+        ),
+        "identity_mismatch_count": "collector_identity_mismatch_count",
+        "hidden_shape_mismatch_count": (
+            "collector_hidden_shape_mismatch_count"
+        ),
+        "bootstrap_none_mismatch_count": (
+            "collector_bootstrap_none_mismatch_count"
+        ),
+        "max_abs_input_hidden_error": (
+            "collector_max_abs_input_hidden_error"
+        ),
+        "max_abs_logprob_error": "collector_max_abs_logprob_error",
+        "max_abs_entropy_error": "collector_max_abs_entropy_error",
+        "max_abs_value_error": "collector_max_abs_value_error",
+        "max_abs_bootstrap_value_error": (
+            "collector_max_abs_bootstrap_value_error"
+        ),
+        "max_input_hidden_tolerance_ratio": (
+            "collector_max_input_hidden_tolerance_ratio"
+        ),
+        "max_logprob_tolerance_ratio": (
+            "collector_max_logprob_tolerance_ratio"
+        ),
+        "max_entropy_tolerance_ratio": (
+            "collector_max_entropy_tolerance_ratio"
+        ),
+        "max_value_tolerance_ratio": "collector_max_value_tolerance_ratio",
+        "max_bootstrap_value_tolerance_ratio": (
+            "collector_max_bootstrap_value_tolerance_ratio"
+        ),
+    }
     if (
         repeated["proof_seed_contract"] != facts["proof_seed_contract"]
         or repeated_proof_seed_contract != facts["proof_seed_contract"]
+        or repeated_bucket_matrix != facts["bounded_bucket_numeric_matrix"]
         or repeated["scalar_semantic_sha256"] != facts["core_scalar_semantic_sha256"]
         or repeated["batched_semantic_sha256"] != facts["core_scalar_semantic_sha256"]
         or repeated["reference_semantic_sha256"] != facts["core_scalar_semantic_sha256"]
         or repeated_scalar_path["semantic_sha256"] != facts["scalar_semantic_sha256"]
         or repeated_batched_path["semantic_sha256"] != facts["batched_semantic_sha256"]
+        or repeated_scalar_path["bootstrap_value_count"]
+        != facts["collector_bootstrap_value_comparison_count"]
+        or repeated_batched_path["bootstrap_value_count"]
+        != facts["collector_bootstrap_value_comparison_count"]
+        or _sha256_json(repeated_scalar_path) != scalar_path_digests[0]
+        or _sha256_json(repeated_batched_path) != batched_path_digests[0]
         or repeated_collector["ordered_merge_semantic_sha256"]
         != facts["ordered_merge_semantic_sha256"]
         or repeated_collector["transition_count"] != facts["collector_transition_count"]
         or repeated_collector["batched_transition_count"]
         != facts["collector_batched_transition_count"]
         or repeated_collector["semantic_mismatch_count"] != 0
+        or any(
+            repeated_collector[source_field] != facts[fact_field]
+            for source_field, fact_field in collector_replay_bindings.items()
+        )
         or repeated_scalar_path["fixed_batch_step_count"] != 0
         or repeated_batched_path["fixed_batch_step_count"]
         != facts["collector_transition_count"]
         or repeated_batched_path["fixed_batch_runtime_sha256"]
         != facts["batched_fixed_batch_runtime_sha256"]
+        or repeated_batched_path["fixed_batch_execution_buckets"]
+        != facts["fixed_batch_execution_buckets"]
+        or repeated_batched_path["fixed_batch_call_count"]
+        != facts["batched_fixed_batch_call_count"]
+        or repeated_batched_path["fixed_batch_execution_bucket_histogram"]
+        != facts["batched_fixed_batch_execution_bucket_histogram"]
+        or repeated_batched_path["fixed_batch_active_row_slots"]
+        != facts["batched_fixed_batch_active_row_slots"]
+        or repeated_batched_path["fixed_batch_execution_row_slots"]
+        != facts["batched_fixed_batch_execution_row_slots"]
+        or repeated_batched_path["fixed_batch_slot_utilization"]
+        != facts["batched_fixed_batch_slot_utilization"]
+        or repeated_batched_path["fixed_batch_topology_mismatch_count"] != 0
         or repeated["comparison_count"] != expected_comparisons
         or repeated["reference_comparison_count"] != expected_comparisons
         or repeated["action_mismatch_count"] != 0

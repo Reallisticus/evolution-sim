@@ -14,6 +14,7 @@ from evolution_sim.env.runtime.observations import (
     decode_observation_input,
     observation_input_vector_size,
     observation_schema_version,
+    quantized_observation_input_values,
 )
 from evolution_sim.env.runtime.signals import communication_token_field_names
 
@@ -84,6 +85,16 @@ def ecological_policy_input_values(
     return ecological_policy_values_from_decoded(
         decode_observation_input(observation_input),
         source_vector_size=source_vector_size,
+    )
+
+
+def ecological_policy_values_from_observation(
+    observation: dict[str, object],
+) -> tuple[float, ...]:
+    values = quantized_observation_input_values(observation)
+    return ecological_policy_values_from_decoded(
+        values,
+        source_vector_size=len(values),
     )
 
 

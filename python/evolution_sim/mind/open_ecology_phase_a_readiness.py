@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -3110,6 +3111,8 @@ def _validate_fixed_batch(
             "batch_capacity",
             "repeat_count",
             "device",
+            "model_contract_version",
+            "numeric_kernel",
             "deterministic_cuda_contract",
             "proof_seed_contract",
             "collector_device",
@@ -3123,15 +3126,42 @@ def _validate_fixed_batch(
             "core_batched_semantic_sha256",
             "scalar_semantic_sha256",
             "scalar_repeat_semantic_sha256",
+            "scalar_repeat_collector_path_sha256",
             "batched_semantic_sha256",
             "batched_repeat_semantic_sha256",
+            "batched_repeat_collector_path_sha256",
             "ordered_merge_semantic_sha256",
             "collector_transition_count",
             "collector_batched_transition_count",
             "collector_semantic_mismatch_count",
+            "collector_paired_transition_count",
+            "collector_numeric_transition_comparison_count",
+            "collector_hidden_component_comparison_count",
+            "collector_bootstrap_value_comparison_count",
+            "collector_identity_mismatch_count",
+            "collector_hidden_shape_mismatch_count",
+            "collector_bootstrap_none_mismatch_count",
+            "collector_max_abs_input_hidden_error",
+            "collector_max_abs_logprob_error",
+            "collector_max_abs_entropy_error",
+            "collector_max_abs_value_error",
+            "collector_max_abs_bootstrap_value_error",
+            "collector_max_input_hidden_tolerance_ratio",
+            "collector_max_logprob_tolerance_ratio",
+            "collector_max_entropy_tolerance_ratio",
+            "collector_max_value_tolerance_ratio",
+            "collector_max_bootstrap_value_tolerance_ratio",
             "scalar_fixed_batch_step_count",
             "batched_fixed_batch_step_count",
             "batched_fixed_batch_runtime_sha256",
+            "fixed_batch_execution_buckets",
+            "batched_fixed_batch_call_count",
+            "batched_fixed_batch_execution_bucket_histogram",
+            "batched_fixed_batch_active_row_slots",
+            "batched_fixed_batch_execution_row_slots",
+            "batched_fixed_batch_slot_utilization",
+            "batched_fixed_batch_topology_mismatch_count",
+            "bounded_bucket_numeric_matrix",
             "numeric_comparison_count",
             "reference_numeric_comparison_count",
             "action_mismatch_count",
@@ -3160,6 +3190,15 @@ def _validate_fixed_batch(
         "initial_agents": 64,
     }:
         raise _error("fixed batch proof did not use the Phase-A shape")
+    architecture = _mapping(
+        preregistration["architecture"],
+        field="Phase-A architecture",
+    )
+    if (
+        facts["model_contract_version"] != architecture["model_contract_version"]
+        or facts["numeric_kernel"] != architecture["numeric_kernel"]
+    ):
+        raise _error("D4 recurrent model or numeric-kernel contract drifted")
     deterministic_cuda_contract = _mapping(
         facts["deterministic_cuda_contract"],
         field="D4 deterministic CUDA contract",
@@ -3278,6 +3317,14 @@ def _validate_fixed_batch(
         facts["batched_repeat_semantic_sha256"],
         field="batch repeat digests",
     )
+    scalar_path_repeats = _sequence(
+        facts["scalar_repeat_collector_path_sha256"],
+        field="scalar repeat collector path digests",
+    )
+    batched_path_repeats = _sequence(
+        facts["batched_repeat_collector_path_sha256"],
+        field="batch repeat collector path digests",
+    )
     tolerance_ratios = [
         _number(facts[field], field=field)
         for field in (
@@ -3304,6 +3351,165 @@ def _validate_fixed_batch(
         facts["batched_fixed_batch_runtime_sha256"],
         field="fixed batch runtime digests",
     )
+    expected_execution_buckets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 320]
+    execution_buckets = list(
+        _sequence(
+            facts["fixed_batch_execution_buckets"],
+            field="fixed batch execution buckets",
+        )
+    )
+    execution_bucket_histogram = _mapping(
+        facts["batched_fixed_batch_execution_bucket_histogram"],
+        field="fixed batch execution bucket histogram",
+    )
+    expected_histogram_keys = {str(bucket) for bucket in expected_execution_buckets}
+    if set(execution_bucket_histogram) != expected_histogram_keys:
+        raise _error("fixed batch execution bucket histogram keys drifted")
+    parsed_histogram = {
+        key: _integer(value, field=f"fixed batch bucket {key} count", minimum=0)
+        for key, value in execution_bucket_histogram.items()
+    }
+    fixed_batch_call_count = _positive_integer(
+        facts["batched_fixed_batch_call_count"],
+        field="fixed batch call count",
+    )
+    active_row_slots = _positive_integer(
+        facts["batched_fixed_batch_active_row_slots"],
+        field="fixed batch active row slots",
+    )
+    execution_row_slots = _positive_integer(
+        facts["batched_fixed_batch_execution_row_slots"],
+        field="fixed batch execution row slots",
+    )
+    slot_utilization = _number(
+        facts["batched_fixed_batch_slot_utilization"],
+        field="fixed batch slot utilization",
+    )
+    bucket_matrix = _mapping(
+        facts["bounded_bucket_numeric_matrix"],
+        field="bounded bucket numeric matrix",
+    )
+    _exact_key_set(
+        bucket_matrix,
+        {
+            "cases",
+            "genome_conditioning_mode",
+            "genome_conditioned_row_count",
+            "comparison_count",
+            "reference_comparison_count",
+            "action_mismatch_count",
+            "scalar_reference_action_mismatch_count",
+            "batched_reference_action_mismatch_count",
+            "distinct_action_mask_count",
+            "distinct_feedback_vector_count",
+            "nonzero_feedback_row_count",
+            "max_abs_logit_error",
+            "max_abs_value_error",
+            "max_abs_hidden_error",
+            "max_logit_tolerance_ratio",
+            "max_value_tolerance_ratio",
+            "max_hidden_tolerance_ratio",
+            "max_scalar_reference_logit_tolerance_ratio",
+            "max_scalar_reference_value_tolerance_ratio",
+            "max_scalar_reference_hidden_tolerance_ratio",
+            "max_batched_reference_logit_tolerance_ratio",
+            "max_batched_reference_value_tolerance_ratio",
+            "max_batched_reference_hidden_tolerance_ratio",
+            "scalar_semantic_sha256",
+            "batched_semantic_sha256",
+            "reference_semantic_sha256",
+            "action_mask_input_sha256",
+            "feedback_input_sha256",
+        },
+        field="bounded bucket numeric matrix",
+    )
+    expected_bucket_matrix_active_rows = (
+        1,
+        2,
+        3,
+        5,
+        9,
+        17,
+        33,
+        64,
+        65,
+        129,
+        257,
+        319,
+        320,
+    )
+    expected_bucket_matrix_execution_rows = (
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        64,
+        128,
+        256,
+        320,
+        320,
+        320,
+    )
+    expected_bucket_matrix_cases = [
+        {
+            "active_rows": active_rows,
+            "execution_rows": execution_rows,
+            "observed_recurrent_input_shape": [1, execution_rows, 256],
+        }
+        for active_rows, execution_rows in zip(
+            expected_bucket_matrix_active_rows,
+            expected_bucket_matrix_execution_rows,
+            strict=True,
+        )
+    ]
+    expected_bucket_matrix_comparison_count = sum(expected_bucket_matrix_active_rows)
+    bucket_matrix_semantic_digests = {
+        _sha256(
+            bucket_matrix["scalar_semantic_sha256"],
+            field="bounded bucket scalar semantics",
+        ),
+        _sha256(
+            bucket_matrix["batched_semantic_sha256"],
+            field="bounded bucket batch semantics",
+        ),
+        _sha256(
+            bucket_matrix["reference_semantic_sha256"],
+            field="bounded bucket reference semantics",
+        ),
+    }
+    bucket_matrix_action_mask_input_sha256 = _sha256(
+        bucket_matrix["action_mask_input_sha256"],
+        field="bounded bucket action-mask input semantics",
+    )
+    bucket_matrix_feedback_input_sha256 = _sha256(
+        bucket_matrix["feedback_input_sha256"],
+        field="bounded bucket feedback input semantics",
+    )
+    bucket_matrix_tolerance_ratios = [
+        _number(bucket_matrix[field], field=f"bounded bucket {field}")
+        for field in (
+            "max_logit_tolerance_ratio",
+            "max_value_tolerance_ratio",
+            "max_hidden_tolerance_ratio",
+            "max_scalar_reference_logit_tolerance_ratio",
+            "max_scalar_reference_value_tolerance_ratio",
+            "max_scalar_reference_hidden_tolerance_ratio",
+            "max_batched_reference_logit_tolerance_ratio",
+            "max_batched_reference_value_tolerance_ratio",
+            "max_batched_reference_hidden_tolerance_ratio",
+        )
+    ]
+    bucket_matrix_absolute_errors = [
+        _number(bucket_matrix[field], field=f"bounded bucket {field}")
+        for field in (
+            "max_abs_logit_error",
+            "max_abs_value_error",
+            "max_abs_hidden_error",
+        )
+    ]
     runtime_contract = _mapping(
         preregistration["runtime_contract"],
         field="runtime contract",
@@ -3312,6 +3518,42 @@ def _validate_fixed_batch(
         facts["collector_transition_count"],
         field="collector transition count",
     )
+    collector_paired_transition_count = _positive_integer(
+        facts["collector_paired_transition_count"],
+        field="collector paired transition count",
+    )
+    collector_numeric_transition_comparison_count = _positive_integer(
+        facts["collector_numeric_transition_comparison_count"],
+        field="collector numeric transition comparison count",
+    )
+    collector_hidden_component_comparison_count = _positive_integer(
+        facts["collector_hidden_component_comparison_count"],
+        field="collector hidden-component comparison count",
+    )
+    collector_bootstrap_value_comparison_count = _positive_integer(
+        facts["collector_bootstrap_value_comparison_count"],
+        field="collector bootstrap-value comparison count",
+    )
+    collector_absolute_errors = [
+        _number(facts[field], field=field)
+        for field in (
+            "collector_max_abs_input_hidden_error",
+            "collector_max_abs_logprob_error",
+            "collector_max_abs_entropy_error",
+            "collector_max_abs_value_error",
+            "collector_max_abs_bootstrap_value_error",
+        )
+    ]
+    collector_tolerance_ratios = [
+        _number(facts[field], field=field)
+        for field in (
+            "collector_max_input_hidden_tolerance_ratio",
+            "collector_max_logprob_tolerance_ratio",
+            "collector_max_entropy_tolerance_ratio",
+            "collector_max_value_tolerance_ratio",
+            "collector_max_bootstrap_value_tolerance_ratio",
+        )
+    ]
     if (
         facts["device"] != "cuda"
         or facts["collector_device"] != "cpu"
@@ -3337,9 +3579,110 @@ def _validate_fixed_batch(
         )
         != 2
         or _positive_integer(facts["batch_capacity"], field="batch capacity") != 320
+        or execution_buckets != expected_execution_buckets
+        or sum(parsed_histogram.values()) != fixed_batch_call_count
+        or sum(
+            bucket * parsed_histogram[str(bucket)]
+            for bucket in expected_execution_buckets
+        )
+        != execution_row_slots
+        or active_row_slots > execution_row_slots
+        or not 0.0 < slot_utilization <= 1.0
+        or not math.isclose(
+            slot_utilization,
+            active_row_slots / execution_row_slots,
+            rel_tol=1e-15,
+            abs_tol=0.0,
+        )
+        or _integer(
+            facts["batched_fixed_batch_topology_mismatch_count"],
+            field="fixed batch topology mismatch count",
+            minimum=0,
+        )
+        != 0
         or _integer(facts["repeat_count"], field="repeat_count", minimum=2) != 2
         or len(scalar_repeats) != 2
         or len(batched_repeats) != 2
+        or len(scalar_path_repeats) != 2
+        or len(batched_path_repeats) != 2
+        or any(
+            _sha256(value, field="scalar repeat collector path digest")
+            != _sha256(
+                scalar_path_repeats[0],
+                field="first scalar repeat collector path digest",
+            )
+            for value in scalar_path_repeats
+        )
+        or any(
+            _sha256(value, field="batch repeat collector path digest")
+            != _sha256(
+                batched_path_repeats[0],
+                field="first batch repeat collector path digest",
+            )
+            for value in batched_path_repeats
+        )
+        or _sha256(
+            scalar_path_repeats[0],
+            field="scalar repeat collector path digest",
+        )
+        == _sha256(
+            batched_path_repeats[0],
+            field="batch repeat collector path digest",
+        )
+        or bucket_matrix["cases"] != expected_bucket_matrix_cases
+        or bucket_matrix["genome_conditioning_mode"] != "actor_film_v1"
+        or _positive_integer(
+            bucket_matrix["genome_conditioned_row_count"],
+            field="bounded bucket genome-conditioned row count",
+        )
+        != expected_bucket_matrix_comparison_count
+        or _positive_integer(
+            bucket_matrix["comparison_count"],
+            field="bounded bucket comparison count",
+        )
+        != expected_bucket_matrix_comparison_count
+        or _positive_integer(
+            bucket_matrix["reference_comparison_count"],
+            field="bounded bucket reference comparison count",
+        )
+        != expected_bucket_matrix_comparison_count
+        or _integer(
+            bucket_matrix["action_mismatch_count"],
+            field="bounded bucket action mismatch count",
+            minimum=0,
+        )
+        != 0
+        or _integer(
+            bucket_matrix["scalar_reference_action_mismatch_count"],
+            field="bounded bucket scalar/reference action mismatch count",
+            minimum=0,
+        )
+        != 0
+        or _integer(
+            bucket_matrix["batched_reference_action_mismatch_count"],
+            field="bounded bucket batch/reference action mismatch count",
+            minimum=0,
+        )
+        != 0
+        or _positive_integer(
+            bucket_matrix["distinct_action_mask_count"],
+            field="bounded bucket distinct action-mask count",
+        )
+        < 2
+        or _positive_integer(
+            bucket_matrix["distinct_feedback_vector_count"],
+            field="bounded bucket distinct feedback-vector count",
+        )
+        < 2
+        or _positive_integer(
+            bucket_matrix["nonzero_feedback_row_count"],
+            field="bounded bucket nonzero feedback row count",
+        )
+        != expected_bucket_matrix_comparison_count
+        or bucket_matrix_action_mask_input_sha256 == bucket_matrix_feedback_input_sha256
+        or len(bucket_matrix_semantic_digests) != 1
+        or any(value < 0.0 for value in bucket_matrix_absolute_errors)
+        or any(value < 0.0 or value > 1.0 for value in bucket_matrix_tolerance_ratios)
         or any(
             _sha256(value, field="scalar repeat digest") != scalar
             for value in scalar_repeats
@@ -3364,6 +3707,36 @@ def _validate_fixed_batch(
             minimum=0,
         )
         != 0
+        or collector_paired_transition_count != collector_transition_count
+        or collector_numeric_transition_comparison_count
+        != collector_transition_count
+        or collector_hidden_component_comparison_count
+        != collector_transition_count * 256
+        or collector_bootstrap_value_comparison_count
+        > collector_transition_count
+        or _integer(
+            facts["collector_identity_mismatch_count"],
+            field="collector identity mismatch count",
+            minimum=0,
+        )
+        != 0
+        or _integer(
+            facts["collector_hidden_shape_mismatch_count"],
+            field="collector hidden-shape mismatch count",
+            minimum=0,
+        )
+        != 0
+        or _integer(
+            facts["collector_bootstrap_none_mismatch_count"],
+            field="collector bootstrap None mismatch count",
+            minimum=0,
+        )
+        != 0
+        or any(value < 0.0 for value in collector_absolute_errors)
+        or any(
+            value < 0.0 or value > 1.0
+            for value in collector_tolerance_ratios
+        )
         or _integer(
             facts["scalar_fixed_batch_step_count"],
             field="scalar fixed batch step count",

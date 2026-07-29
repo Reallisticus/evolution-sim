@@ -16,7 +16,9 @@ if torch is not None:
     )
     from evolution_sim.mind.recurrent_actor_critic import (
         ACTION_COUNT,
+        BackendStableGRU,
         BackendStableLayerNorm,
+        BackendStableLinear,
         CRITIC_GENOME_CONDITIONING_FILM_V1,
         CRITIC_GENOME_CONDITIONING_NONE,
         GENOME_CONDITIONING_ACTOR_FILM_V1,
@@ -41,6 +43,7 @@ if torch is not None:
         recurrent_actor_critic_contract,
         seeded_torch_generator,
         strict_action_mask_tensor,
+        _backend_stable_linear,
     )
     from evolution_sim.mind.recurrent_genome import (
         RECURRENT_CONTROLLER_GENOME_SIZE,
@@ -66,7 +69,17 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         self.assertEqual(LEARNED_ENCODER_INPUT_SIZE, 604)
         self.assertEqual(contract["public_input_size"], 541)
         self.assertEqual(contract["action_names"], list(ACTION_NAMES))
-        self.assertEqual(contract["architecture"]["actor"], "linear_20_logits")
+        self.assertEqual(
+            contract["architecture"]["numeric_kernel"],
+            (
+                "batch_size_tolerance_stable_per_row_bmm_forward_"
+                "native_gemm_backward_v1"
+            ),
+        )
+        self.assertEqual(
+            contract["architecture"]["actor"],
+            "backend_stable_linear_20_logits",
+        )
         self.assertEqual(
             contract["architecture"]["input_normalization"],
             "explicit_layer_norm",
@@ -210,6 +223,278 @@ class PublicRecurrentActorCriticTests(unittest.TestCase):
         stable_output.square().mean().backward()
         torch.testing.assert_close(stable.weight.grad, reference.weight.grad)
         torch.testing.assert_close(stable.bias.grad, reference.bias.grad)
+
+    def test_backend_stable_model_is_tolerance_stable_across_batch_size(
+        self,
+    ) -> None:
+        config = RecurrentActorCriticConfig(
+            encoder_size=16,
+            hidden_size=16,
+            recurrent_layers=2,
+            genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+        model = PublicRecurrentActorCritic(config, initialization_seed=20260729)
+        time_steps = 4
+        batch_size = 3
+        observations = self._observations(
+            time_steps=time_steps,
+            batch_size=batch_size,
+        )
+        observations[:, 1] = torch.roll(observations[:, 1], shifts=17, dims=-1)
+        observations[:, 2] = torch.roll(observations[:, 2], shifts=31, dims=-1)
+        masks = self._masks(time_steps=time_steps, batch_size=batch_size)
+        feedback = self._feedback(time_steps=time_steps, batch_size=batch_size)
+        genomes = torch.stack(
+            tuple(
+                self._founder_genome_tensor(seed=20260729 + row)
+                for row in range(batch_size)
+            ),
+            dim=0,
+        ).unsqueeze(0).repeat(time_steps, 1, 1)
+        initial_state = torch.linspace(
+            -0.5,
+            0.5,
+            config.recurrent_layers * batch_size * config.hidden_size,
+        ).reshape(config.recurrent_layers, batch_size, config.hidden_size)
+
+        batched = model.forward_sequence(
+            observations,
+            masks,
+            feedback,
+            genome_values=genomes,
+            initial_state=initial_state,
+        )
+        scalar = tuple(
+            model.forward_sequence(
+                observations[:, row : row + 1],
+                masks[:, row : row + 1],
+                feedback[:, row : row + 1],
+                genome_values=genomes[:, row : row + 1],
+                initial_state=initial_state[:, row : row + 1],
+            )
+            for row in range(batch_size)
+        )
+
+        torch.testing.assert_close(
+            batched.raw_logits,
+            torch.cat(tuple(output.raw_logits for output in scalar), dim=1),
+            rtol=1.0e-5,
+            atol=1.0e-6,
+        )
+        torch.testing.assert_close(
+            batched.values,
+            torch.cat(tuple(output.values for output in scalar), dim=1),
+            rtol=1.0e-5,
+            atol=1.0e-6,
+        )
+        torch.testing.assert_close(
+            batched.final_state,
+            torch.cat(tuple(output.final_state for output in scalar), dim=1),
+            rtol=1.0e-5,
+            atol=1.0e-6,
+        )
+
+    def test_backend_stable_linear_preserves_forward_and_native_gradients(
+        self,
+    ) -> None:
+        torch.manual_seed(20260729)
+        for bias in (False, True):
+            with self.subTest(bias=bias):
+                reference = torch.nn.Linear(13, 7, bias=bias)
+                stable = BackendStableLinear(13, 7, bias=bias)
+                stable.load_state_dict(reference.state_dict(), strict=True)
+                self.assertEqual(
+                    tuple(stable.state_dict()),
+                    tuple(reference.state_dict()),
+                )
+
+                base_inputs = torch.randn(3, 4, 13)
+                reference_inputs = base_inputs.clone().requires_grad_(True)
+                stable_inputs = base_inputs.clone().requires_grad_(True)
+                hook_events: list[str] = []
+                pre_handle = stable.register_forward_pre_hook(
+                    lambda _module, _inputs: hook_events.append("pre")
+                )
+                post_handle = stable.register_forward_hook(
+                    lambda _module, _inputs, _output: hook_events.append("post")
+                )
+                try:
+                    stable_output = stable(stable_inputs)
+                finally:
+                    pre_handle.remove()
+                    post_handle.remove()
+                reference_output = reference(reference_inputs)
+
+                flattened = stable_inputs.reshape(-1, 13)
+                manual_output = torch.bmm(
+                    stable.weight.unsqueeze(0).expand(flattened.shape[0], -1, -1),
+                    flattened.unsqueeze(-1),
+                ).squeeze(-1)
+                if stable.bias is not None:
+                    manual_output = manual_output + stable.bias
+                manual_output = manual_output.reshape(3, 4, 7)
+                self.assertTrue(torch.equal(stable_output, manual_output))
+                self.assertEqual(hook_events, ["pre", "post"])
+
+                loss_weights = torch.linspace(
+                    -0.75,
+                    1.25,
+                    stable_output.numel(),
+                ).reshape_as(stable_output)
+                (stable_output.square() * loss_weights).sum().backward()
+                (reference_output.square() * loss_weights).sum().backward()
+
+                torch.testing.assert_close(
+                    stable_output,
+                    reference_output,
+                    rtol=1.0e-5,
+                    atol=1.0e-6,
+                )
+                torch.testing.assert_close(
+                    stable_inputs.grad,
+                    reference_inputs.grad,
+                    rtol=1.0e-5,
+                    atol=1.0e-6,
+                )
+                torch.testing.assert_close(
+                    stable.weight.grad,
+                    reference.weight.grad,
+                    rtol=1.0e-5,
+                    atol=1.0e-6,
+                )
+                self.assertTrue(torch.isfinite(stable.weight.grad).all())
+                if bias:
+                    torch.testing.assert_close(
+                        stable.bias.grad,
+                        reference.bias.grad,
+                        rtol=1.0e-5,
+                        atol=1.0e-6,
+                    )
+                    self.assertTrue(torch.isfinite(stable.bias.grad).all())
+
+    def test_backend_stable_two_layer_gru_matches_native_gradients(self) -> None:
+        torch.manual_seed(20260729)
+        for bias in (False, True):
+            with self.subTest(bias=bias):
+                reference = torch.nn.GRU(11, 9, num_layers=2, bias=bias)
+                stable = BackendStableGRU(11, 9, num_layers=2, bias=bias)
+                stable.load_state_dict(reference.state_dict(), strict=True)
+                self.assertEqual(
+                    tuple(stable.state_dict()),
+                    tuple(reference.state_dict()),
+                )
+
+                base_inputs = torch.randn(5, 4, 11)
+                base_hidden = torch.randn(2, 4, 9)
+                reference_inputs = base_inputs.clone().requires_grad_(True)
+                stable_inputs = base_inputs.clone().requires_grad_(True)
+                reference_hidden = base_hidden.clone().requires_grad_(True)
+                stable_hidden = base_hidden.clone().requires_grad_(True)
+                hook_events: list[str] = []
+                pre_handle = stable.register_forward_pre_hook(
+                    lambda _module, _inputs: hook_events.append("pre")
+                )
+                post_handle = stable.register_forward_hook(
+                    lambda _module, _inputs, _output: hook_events.append("post")
+                )
+                try:
+                    stable_output, stable_final = stable(
+                        stable_inputs,
+                        stable_hidden,
+                    )
+                finally:
+                    pre_handle.remove()
+                    post_handle.remove()
+                reference_output, reference_final = reference(
+                    reference_inputs,
+                    reference_hidden,
+                )
+                self.assertEqual(hook_events, ["pre", "post"])
+
+                output_weights = torch.linspace(
+                    -0.5,
+                    1.0,
+                    stable_output.numel(),
+                ).reshape_as(stable_output)
+                final_weights = torch.linspace(
+                    0.75,
+                    -0.25,
+                    stable_final.numel(),
+                ).reshape_as(stable_final)
+                stable_loss = (
+                    (stable_output.square() * output_weights).sum()
+                    + (stable_final.square() * final_weights).sum()
+                )
+                reference_loss = (
+                    (reference_output.square() * output_weights).sum()
+                    + (reference_final.square() * final_weights).sum()
+                )
+                stable_loss.backward()
+                reference_loss.backward()
+
+                for actual, expected in (
+                    (stable_output, reference_output),
+                    (stable_final, reference_final),
+                    (stable_inputs.grad, reference_inputs.grad),
+                    (stable_hidden.grad, reference_hidden.grad),
+                ):
+                    torch.testing.assert_close(
+                        actual,
+                        expected,
+                        rtol=1.0e-5,
+                        atol=1.0e-6,
+                    )
+                    self.assertTrue(torch.isfinite(actual).all())
+                for name, parameter in stable.named_parameters():
+                    reference_parameter = dict(reference.named_parameters())[name]
+                    torch.testing.assert_close(
+                        parameter.grad,
+                        reference_parameter.grad,
+                        rtol=1.0e-5,
+                        atol=1.0e-6,
+                    )
+                    self.assertTrue(torch.isfinite(parameter.grad).all())
+
+    def test_backend_stable_linear_supports_higher_order_gradients(self) -> None:
+        torch.manual_seed(20260729)
+        for bias in (False, True):
+            with self.subTest(bias=bias):
+                inputs = torch.randn(
+                    2,
+                    3,
+                    dtype=torch.float64,
+                    requires_grad=True,
+                )
+                weight = torch.randn(
+                    2,
+                    3,
+                    dtype=torch.float64,
+                    requires_grad=True,
+                )
+                if bias:
+                    bias_value = torch.randn(
+                        2,
+                        dtype=torch.float64,
+                        requires_grad=True,
+                    )
+                    function = _backend_stable_linear
+                    arguments = (inputs, weight, bias_value)
+                else:
+                    def function(
+                        value: torch.Tensor,
+                        projection: torch.Tensor,
+                    ) -> torch.Tensor:
+                        return _backend_stable_linear(value, projection)
+
+                    arguments = (inputs, weight)
+                self.assertTrue(
+                    torch.autograd.gradgradcheck(
+                        function,
+                        arguments,
+                        rtol=1.0e-5,
+                        atol=1.0e-7,
+                    )
+                )
 
     def test_public_projection_excludes_controller_diagnostic(self) -> None:
         unavailable = [0.0] * OBSERVATION_INPUT_VECTOR_SIZE

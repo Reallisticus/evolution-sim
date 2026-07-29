@@ -1,13 +1,16 @@
 # Phase-A launch-readiness authority
 
 The base scientific protocol remains
-`docs/research/open-ecology-campaign-preregistration-v1.md`. Its prospective
+`docs/research/open-ecology-campaign-preregistration-v1.md`. Its inherited
 launch-timing correction is
-`docs/research/open-ecology-launch-authority-amendment-v2.md`. The machine
-campaign seals both documents by path and SHA-256. The amendment changes when
-engineering evidence is required, not the experiment: the cells, seeds,
-network, optimizer, genome, density schedule, thresholds, horizons, and
-acceptance rules are unchanged.
+`docs/research/open-ecology-launch-authority-amendment-v2.md`, and the current
+prospective fixed-batch engineering authority is
+`docs/research/open-ecology-launch-authority-amendment-v3.md`. The machine
+campaign seals all three documents by path and SHA-256. Amendment v3 preserves
+the scientific experiment while replacing only the bounded-bucket runtime and
+recurrent numerical-kernel contract: the cells, seeds, network dimensions,
+optimizer, genome, density schedule, thresholds, horizons, and acceptance
+rules are unchanged.
 
 The resealed base protocol also closes the prelaunch scientific-contract gaps.
 Every committed PPO update must contain accepted optimization work and an

@@ -27,6 +27,49 @@ REQUIRES_MIND_ML = True
 _PRODUCED_AT = "2026-07-27T10:00:00Z"
 _AUTHORIZED_AT = "2026-07-27T11:00:00Z"
 _SHA = "c" * 64
+_D4_BUCKET_MATRIX_ACTIVE_ROWS = (
+    1,
+    2,
+    3,
+    5,
+    9,
+    17,
+    33,
+    64,
+    65,
+    129,
+    257,
+    319,
+    320,
+)
+_D4_BUCKET_MATRIX_EXECUTION_ROWS = (
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    64,
+    128,
+    256,
+    320,
+    320,
+    320,
+)
+_D4_BUCKET_MATRIX_CASES = [
+    {
+        "active_rows": active_rows,
+        "execution_rows": execution_rows,
+        "observed_recurrent_input_shape": [1, execution_rows, 256],
+    }
+    for active_rows, execution_rows in zip(
+        _D4_BUCKET_MATRIX_ACTIVE_ROWS,
+        _D4_BUCKET_MATRIX_EXECUTION_ROWS,
+        strict=True,
+    )
+]
+_D4_BUCKET_MATRIX_COMPARISON_COUNT = sum(_D4_BUCKET_MATRIX_ACTIVE_ROWS)
 
 
 def _reconstruct_report(
@@ -904,6 +947,13 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
 
         d4 = _facts("fixed_batch_equivalence_and_speed", self.campaign)
         readiness._validate_fixed_batch(d4, self.campaign, None)
+        forged_kernel = json.loads(json.dumps(d4))
+        forged_kernel["numeric_kernel"] = "unsealed_dense_kernel"
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "recurrent model or numeric-kernel contract drifted",
+        ):
+            readiness._validate_fixed_batch(forged_kernel, self.campaign, None)
         for field, replacement in (
             ("device", "cpu"),
             (
@@ -911,6 +961,18 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                 [["scalar", "batched"], ["scalar", "batched"]],
             ),
             ("max_scalar_reference_logit_tolerance_ratio", 1.01),
+            ("collector_numeric_transition_comparison_count", 999),
+            ("collector_hidden_component_comparison_count", 255_999),
+            ("collector_bootstrap_value_comparison_count", 1_001),
+            ("collector_identity_mismatch_count", 1),
+            ("collector_hidden_shape_mismatch_count", 1),
+            ("collector_bootstrap_none_mismatch_count", 1),
+            ("collector_max_input_hidden_tolerance_ratio", 1.01),
+            ("collector_max_logprob_tolerance_ratio", 1.01),
+            ("collector_max_entropy_tolerance_ratio", 1.01),
+            ("collector_max_value_tolerance_ratio", 1.01),
+            ("collector_max_bootstrap_value_tolerance_ratio", 1.01),
+            ("collector_max_abs_value_error", -0.01),
         ):
             forged_d4 = json.loads(json.dumps(d4))
             forged_d4[field] = replacement
@@ -919,6 +981,82 @@ class OpenEcologyPhaseAReadinessTests(unittest.TestCase):
                 "fixed batch equivalence or measured speed benefit failed",
             ):
                 readiness._validate_fixed_batch(forged_d4, self.campaign, None)
+        zero_bootstrap_coverage = json.loads(json.dumps(d4))
+        zero_bootstrap_coverage["collector_bootstrap_value_comparison_count"] = 0
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "bootstrap-value comparison count must be an integer >= 1",
+        ):
+            readiness._validate_fixed_batch(
+                zero_bootstrap_coverage,
+                self.campaign,
+                None,
+            )
+        forged_bucket_topology = json.loads(json.dumps(d4))
+        forged_bucket_topology["batched_fixed_batch_execution_bucket_histogram"][
+            "64"
+        ] = 99
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "fixed batch equivalence or measured speed benefit failed",
+        ):
+            readiness._validate_fixed_batch(
+                forged_bucket_topology,
+                self.campaign,
+                None,
+            )
+        forged_repeat_path = json.loads(json.dumps(d4))
+        forged_repeat_path["batched_repeat_collector_path_sha256"][1] = "e" * 64
+        with self.assertRaisesRegex(
+            phase_a.OpenEcologyPhaseAError,
+            "fixed batch equivalence or measured speed benefit failed",
+        ):
+            readiness._validate_fixed_batch(
+                forged_repeat_path,
+                self.campaign,
+                None,
+            )
+        for mutate_matrix in (
+            lambda matrix: next(
+                case for case in matrix["cases"] if case["active_rows"] == 129
+            ).update({"execution_rows": 320}),
+            lambda matrix: matrix.update({"action_mismatch_count": 1}),
+            lambda matrix: matrix.update({"max_hidden_tolerance_ratio": 1.01}),
+            lambda matrix: matrix.update({"distinct_action_mask_count": 1}),
+            lambda matrix: matrix.update({"distinct_feedback_vector_count": 1}),
+            lambda matrix: matrix.update(
+                {"nonzero_feedback_row_count": (_D4_BUCKET_MATRIX_COMPARISON_COUNT - 1)}
+            ),
+            lambda matrix: matrix.update(
+                {"feedback_input_sha256": matrix["action_mask_input_sha256"]}
+            ),
+        ):
+            forged_matrix = json.loads(json.dumps(d4))
+            mutate_matrix(forged_matrix["bounded_bucket_numeric_matrix"])
+            with self.assertRaisesRegex(
+                phase_a.OpenEcologyPhaseAError,
+                "fixed batch equivalence or measured speed benefit failed",
+            ):
+                readiness._validate_fixed_batch(
+                    forged_matrix,
+                    self.campaign,
+                    None,
+                )
+        for digest_field in (
+            "action_mask_input_sha256",
+            "feedback_input_sha256",
+        ):
+            forged_matrix = json.loads(json.dumps(d4))
+            forged_matrix["bounded_bucket_numeric_matrix"][digest_field] = "0" * 63
+            with self.assertRaisesRegex(
+                phase_a.OpenEcologyPhaseAError,
+                "must be lowercase SHA-256",
+            ):
+                readiness._validate_fixed_batch(
+                    forged_matrix,
+                    self.campaign,
+                    None,
+                )
         forged_determinism = json.loads(json.dumps(d4))
         forged_determinism["deterministic_cuda_contract"][
             "deterministic_algorithms_enabled"
@@ -3095,6 +3233,10 @@ def _facts(kind: str, campaign: dict[str, object]) -> dict[str, object]:
             "batch_capacity": 320,
             "repeat_count": 2,
             "device": "cuda",
+            "model_contract_version": campaign["architecture"][
+                "model_contract_version"
+            ],
+            "numeric_kernel": campaign["architecture"]["numeric_kernel"],
             "deterministic_cuda_contract": (_sealed_d4_deterministic_cuda_contract()),
             "proof_seed_contract": _d4_proof_seed_contract(
                 shape={
@@ -3117,15 +3259,93 @@ def _facts(kind: str, campaign: dict[str, object]) -> dict[str, object]:
             "core_batched_semantic_sha256": _SHA,
             "scalar_semantic_sha256": _SHA,
             "scalar_repeat_semantic_sha256": [_SHA, _SHA],
+            "scalar_repeat_collector_path_sha256": [_SHA, _SHA],
             "batched_semantic_sha256": _SHA,
             "batched_repeat_semantic_sha256": [_SHA, _SHA],
+            "batched_repeat_collector_path_sha256": ["d" * 64, "d" * 64],
             "ordered_merge_semantic_sha256": _SHA,
             "collector_transition_count": 1_000,
             "collector_batched_transition_count": 1_000,
             "collector_semantic_mismatch_count": 0,
+            "collector_paired_transition_count": 1_000,
+            "collector_numeric_transition_comparison_count": 1_000,
+            "collector_hidden_component_comparison_count": 256_000,
+            "collector_bootstrap_value_comparison_count": 100,
+            "collector_identity_mismatch_count": 0,
+            "collector_hidden_shape_mismatch_count": 0,
+            "collector_bootstrap_none_mismatch_count": 0,
+            "collector_max_abs_input_hidden_error": 0.0,
+            "collector_max_abs_logprob_error": 0.0,
+            "collector_max_abs_entropy_error": 0.0,
+            "collector_max_abs_value_error": 0.0,
+            "collector_max_abs_bootstrap_value_error": 0.0,
+            "collector_max_input_hidden_tolerance_ratio": 0.0,
+            "collector_max_logprob_tolerance_ratio": 0.0,
+            "collector_max_entropy_tolerance_ratio": 0.0,
+            "collector_max_value_tolerance_ratio": 0.0,
+            "collector_max_bootstrap_value_tolerance_ratio": 0.0,
             "scalar_fixed_batch_step_count": 0,
             "batched_fixed_batch_step_count": 1_000,
             "batched_fixed_batch_runtime_sha256": [_SHA],
+            "fixed_batch_execution_buckets": [
+                1,
+                2,
+                4,
+                8,
+                16,
+                32,
+                64,
+                128,
+                256,
+                320,
+            ],
+            "batched_fixed_batch_call_count": 100,
+            "batched_fixed_batch_execution_bucket_histogram": {
+                "1": 0,
+                "2": 0,
+                "4": 0,
+                "8": 0,
+                "16": 0,
+                "32": 0,
+                "64": 100,
+                "128": 0,
+                "256": 0,
+                "320": 0,
+            },
+            "batched_fixed_batch_active_row_slots": 5_000,
+            "batched_fixed_batch_execution_row_slots": 6_400,
+            "batched_fixed_batch_slot_utilization": 0.78125,
+            "batched_fixed_batch_topology_mismatch_count": 0,
+            "bounded_bucket_numeric_matrix": {
+                "cases": _D4_BUCKET_MATRIX_CASES,
+                "genome_conditioning_mode": "actor_film_v1",
+                "genome_conditioned_row_count": (_D4_BUCKET_MATRIX_COMPARISON_COUNT),
+                "comparison_count": _D4_BUCKET_MATRIX_COMPARISON_COUNT,
+                "reference_comparison_count": (_D4_BUCKET_MATRIX_COMPARISON_COUNT),
+                "action_mismatch_count": 0,
+                "scalar_reference_action_mismatch_count": 0,
+                "batched_reference_action_mismatch_count": 0,
+                "distinct_action_mask_count": 2,
+                "distinct_feedback_vector_count": 2,
+                "nonzero_feedback_row_count": (_D4_BUCKET_MATRIX_COMPARISON_COUNT),
+                "max_abs_logit_error": 0.0,
+                "max_abs_value_error": 0.0,
+                "max_abs_hidden_error": 0.0,
+                "max_logit_tolerance_ratio": 0.0,
+                "max_value_tolerance_ratio": 0.0,
+                "max_hidden_tolerance_ratio": 0.0,
+                "max_scalar_reference_logit_tolerance_ratio": 0.0,
+                "max_scalar_reference_value_tolerance_ratio": 0.0,
+                "max_scalar_reference_hidden_tolerance_ratio": 0.0,
+                "max_batched_reference_logit_tolerance_ratio": 0.0,
+                "max_batched_reference_value_tolerance_ratio": 0.0,
+                "max_batched_reference_hidden_tolerance_ratio": 0.0,
+                "scalar_semantic_sha256": _SHA,
+                "batched_semantic_sha256": _SHA,
+                "reference_semantic_sha256": _SHA,
+                "action_mask_input_sha256": "a" * 64,
+                "feedback_input_sha256": "b" * 64,
+            },
             "numeric_comparison_count": 16 * 128 * 64,
             "reference_numeric_comparison_count": 16 * 128 * 64,
             "action_mismatch_count": 0,

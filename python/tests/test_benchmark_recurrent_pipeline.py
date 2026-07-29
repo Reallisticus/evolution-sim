@@ -217,7 +217,7 @@ class RecurrentPipelineBenchmarkTests(unittest.TestCase):
             batch_capacity=benchmark.OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY
         ).as_contract()
         observed = RecurrentFixedBatchRuntimeContract(
-            batch_capacity=benchmark.OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY - 1
+            batch_capacity=256
         ).as_contract()
         result = SimpleNamespace(
             contract_version=(

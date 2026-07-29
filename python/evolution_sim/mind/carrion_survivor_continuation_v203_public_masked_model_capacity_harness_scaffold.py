@@ -239,7 +239,7 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
         )
     except (ImportError, ModuleNotFoundError) as exc:
         return {
-            "policy": "m3_carrion_survivor_continuation_v203_public_recurrent_ippo_scaffold_surface_audit_v1",
+            "policy": "m3_carrion_survivor_continuation_v203_public_recurrent_ippo_scaffold_surface_audit_v2",
             "evidence_mode": "exported_contracts_plus_executable_no_training_probes",
             "passed": False,
             "checks": {"optional_mind_ml_surfaces_imported": False},
@@ -425,6 +425,13 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
         "return_targets",
         "episode_starts",
     }
+    allowed_genome_ppo_fields = {
+        "genome_source_values",
+        "genome_values",
+        "genome_sha256",
+        "genome_tensor_sha256",
+        "genome_stream_seed",
+    }
     seed_payload = {
         role: tuple(seeds) for role, seeds in RECURRENT_SEED_REGISTRY.items()
     }
@@ -495,8 +502,8 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
         ),
         "terminated_gae_zero_bootstrap_probe_passed": terminated_gae_ok,
         "truncated_gae_frozen_bootstrap_probe_passed": truncated_gae_ok,
-        "ppo_ordered_sequence_contract_complete": required_ppo_fields
-        == ppo_sequence_fields,
+        "ppo_ordered_sequence_contract_complete": ppo_sequence_fields
+        == required_ppo_fields | allowed_genome_ppo_fields,
         "ppo_uses_stored_observation_masks_and_frozen_statistics": _mapping(
             ppo_contract.get("likelihood_contract")
         )
@@ -505,6 +512,16 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
             "old_log_probs": "frozen_behavior_policy_values",
             "old_values": "frozen_behavior_policy_values",
             "resolution_masks_used_for_likelihood": False,
+            "genome_conditioning": (
+                "required_exact_per_life_tensor_and_source_digest_when_model_enabled"
+            ),
+            "genome_tensor_digest": (
+                "sha256_canonical_dtype_shape_values_source_digest_and_stream_seed"
+            ),
+            "genome_source_digest": (
+                "recomputed_from_exact_quantized_inherited_source_values"
+            ),
+            "within_life_genome": "constant_across_every_agent_sequence",
         },
         "ppo_primary_is_parameter_shared_recurrent_ippo": ppo_contract.get("algorithm")
         == "parameter_shared_recurrent_ippo_clipped_ppo",
@@ -519,7 +536,7 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
         and ppo_contract.get("private_world_features") is False,
         "artifact_schema_is_json_tensor_digest_bound": artifact.get("schema_version")
         == RECURRENT_ARTIFACT_SCHEMA_VERSION
-        and serialization.get("format") == "json_tensor_artifact_v1",
+        and serialization.get("format") == "json_tensor_artifact_v2",
         "artifact_per_tensor_model_and_payload_digests_present": (
             artifact_digests_present
         ),
@@ -547,7 +564,7 @@ def public_recurrent_ippo_scaffold_surface_audit() -> dict[str, object]:
     }
     failures = [name for name, passed in checks.items() if not passed]
     return {
-        "policy": "m3_carrion_survivor_continuation_v203_public_recurrent_ippo_scaffold_surface_audit_v1",
+        "policy": "m3_carrion_survivor_continuation_v203_public_recurrent_ippo_scaffold_surface_audit_v2",
         "evidence_mode": "exported_contracts_plus_executable_no_training_probes",
         "audited_surfaces": [
             "recurrent_actor_critic",

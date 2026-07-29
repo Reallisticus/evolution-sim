@@ -116,6 +116,13 @@ class MindV3V203ScaffoldTests(unittest.TestCase):
         audit = v203.public_recurrent_ippo_scaffold_surface_audit()
         checks = audit["checks"]
 
+        self.assertEqual(
+            audit["policy"],
+            (
+                "m3_carrion_survivor_continuation_v203_"
+                "public_recurrent_ippo_scaffold_surface_audit_v2"
+            ),
+        )
         self.assertTrue(checks["learned_input_parity_is_604"])
         self.assertTrue(checks["hard_mask_selected_only_legal_action"])
         self.assertTrue(checks["empty_action_mask_fails_closed"])

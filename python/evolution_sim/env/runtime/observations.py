@@ -8,7 +8,7 @@ import hashlib
 import json
 from math import isfinite
 import struct
-from typing import Any, Callable
+from typing import Any, Callable, cast
 import zlib
 
 from evolution_sim.env.runtime.action_contract import action_contract, action_names
@@ -494,8 +494,9 @@ def _observation_communication_token_fields(
     return token_fields
 
 
-def encode_observation_input(observation: dict[str, object]) -> dict[str, object]:
-    """Encode the policy-visible observation as a compact, versioned tensor payload."""
+def _validated_observation_input_values(
+    observation: dict[str, object],
+) -> tuple[str, tuple[str, ...], int, list[float]]:
     schema_version = observation.get("schema_version")
     if schema_version not in {
         OBSERVATION_SCHEMA_VERSION,
@@ -528,6 +529,14 @@ def encode_observation_input(observation: dict[str, object]) -> dict[str, object
             f"encoded observation has {len(values)} values; expected "
             f"{expected_size}"
         )
+    return cast(str, schema_version), token_fields, expected_size, values
+
+
+def encode_observation_input(observation: dict[str, object]) -> dict[str, object]:
+    """Encode the policy-visible observation as a compact, versioned tensor payload."""
+    schema_version, token_fields, expected_size, values = (
+        _validated_observation_input_values(observation)
+    )
     packed = _pack_quantized_values(values)
     data = base64.b64encode(zlib.compress(packed, level=6)).decode("ascii")
     payload: dict[str, object] = {
@@ -550,6 +559,21 @@ def encode_observation_input(observation: dict[str, object]) -> dict[str, object
     return payload
 
 
+def quantized_observation_input_values(
+    observation: dict[str, object],
+) -> list[float]:
+    """Return the canonical decoded values without constructing a storage payload.
+
+    The source observation validation and int16 quantization round trip are
+    identical to ``decode_observation_input(encode_observation_input(...))``.
+    Only storage framing, compression, and base64 encoding are skipped.
+    """
+    _, _, _, values = _validated_observation_input_values(observation)
+    return _dequantize_observation_input_values(
+        _quantize_observation_input_values(values)
+    )
+
+
 def decode_observation_input(payload: dict[str, object]) -> list[float]:
     _validate_observation_input_header(payload)
     shape = payload["shape"]
@@ -569,12 +593,9 @@ def decode_observation_input(payload: dict[str, object]) -> list[float]:
         )
     if expected_size == 0:
         return []
-    values = [
-        _round(float(value) / OBSERVATION_QUANTIZATION_SCALE)
-        for value in struct.unpack(f"<{expected_size}h", packed)
-    ]
-    _validate_decoded_values(values)
-    return values
+    return _dequantize_observation_input_values(
+        struct.unpack(f"<{expected_size}h", packed)
+    )
 
 
 def validate_observation_input_payload(payload: dict[str, object]) -> list[str]:
@@ -1061,7 +1082,7 @@ def _navigation_input_values(payload: dict[str, object]) -> list[float]:
     ]
 
 
-def _pack_quantized_values(values: list[float]) -> bytes:
+def _quantize_observation_input_values(values: Sequence[float]) -> list[int]:
     quantized: list[int] = []
     for value in values:
         if not isfinite(value):
@@ -1072,6 +1093,22 @@ def _pack_quantized_values(values: list[float]) -> bytes:
                 f"observation input value {value} is outside range [{low}, {high}]"
             )
         quantized.append(int(round(value * OBSERVATION_QUANTIZATION_SCALE)))
+    return quantized
+
+
+def _dequantize_observation_input_values(
+    quantized: Sequence[int],
+) -> list[float]:
+    values = [
+        _round(float(value) / OBSERVATION_QUANTIZATION_SCALE)
+        for value in quantized
+    ]
+    _validate_decoded_values(values)
+    return values
+
+
+def _pack_quantized_values(values: list[float]) -> bytes:
+    quantized = _quantize_observation_input_values(values)
     return struct.pack(f"<{len(quantized)}h", *quantized)
 
 
