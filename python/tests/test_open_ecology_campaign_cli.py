@@ -975,9 +975,20 @@ class OpenEcologyCampaignCliTests(unittest.TestCase):
             process = real_popen(*args, **kwargs)
             started.append(process)
             deadline = time.monotonic() + 2.0
-            while not child_pid_path.exists() and time.monotonic() < deadline:
+            child_pid: int | None = None
+            while time.monotonic() < deadline:
+                try:
+                    raw_child_pid = child_pid_path.read_text(
+                        encoding="ascii"
+                    ).strip()
+                except OSError:
+                    pass
+                else:
+                    if raw_child_pid.isdecimal() and int(raw_child_pid) > 0:
+                        child_pid = int(raw_child_pid)
+                        break
                 time.sleep(0.01)
-            if not child_pid_path.exists():
+            if child_pid is None:
                 raise AssertionError("probe descendant did not start")
             if setup_step == "fileno":
                 assert process.stdout is not None
