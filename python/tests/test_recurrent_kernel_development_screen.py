@@ -604,6 +604,25 @@ class RecurrentKernelDevelopmentScreenTests(unittest.TestCase):
                 validate_development_screen_report(drifted)
 
     def test_cli_is_explicitly_development_only(self) -> None:
+        self.assertEqual(
+            cli._child_command(
+                "per_row_bmm_fast_adapter_candidate_v2",
+                "a" * 40,
+                "b" * 32,
+            ),
+            (
+                cli.sys.executable,
+                "-m",
+                "evolution_sim.cli.recurrent_kernel_development_screen",
+                "--development-run",
+                "--expected-source-sha",
+                "a" * 40,
+                "--child-candidate",
+                "per_row_bmm_fast_adapter_candidate_v2",
+                "--child-nonce",
+                "b" * 32,
+            ),
+        )
         with self.assertRaisesRegex(SystemExit, "--development-run"):
             cli.main(["--expected-source-sha", "a" * 40])
         with self.assertRaisesRegex(SystemExit, "canonical .json"):
@@ -633,7 +652,11 @@ class RecurrentKernelDevelopmentScreenTests(unittest.TestCase):
         }
         with (
             patch.object(cli, "validate_development_screen_report_path"),
-            patch.object(cli, "run_development_screen", return_value=closed_report),
+            patch.object(
+                cli,
+                "run_development_screen",
+                return_value=closed_report,
+            ) as run_screen,
             patch.object(cli, "write_development_screen_report") as write_report,
         ):
             observed = cli.main(
@@ -644,6 +667,11 @@ class RecurrentKernelDevelopmentScreenTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(observed, 0)
+        run_screen.assert_called_once()
+        run_kwargs = run_screen.call_args.kwargs
+        self.assertEqual(run_kwargs["expected_source_sha"], "a" * 40)
+        self.assertIs(run_kwargs["child_command_factory"], cli._child_command)
+        self.assertTrue(callable(run_kwargs["progress"]))
         write_report.assert_called_once()
 
 

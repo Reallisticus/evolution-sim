@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Sequence
 
 from evolution_sim.mind.recurrent_kernel_development_screen import (
@@ -20,6 +21,27 @@ from evolution_sim.mind.recurrent_kernel_development_screen import (
 DEFAULT_REPORT = Path(
     "output/open-ecology/development-screens/recurrent-kernel-development-screen.json"
 )
+
+
+def _child_command(
+    candidate: str,
+    expected_source_sha: str,
+    child_nonce: str,
+) -> tuple[str, ...]:
+    """Build the CLI-owned isolated child command without reversing layers."""
+
+    return (
+        sys.executable,
+        "-m",
+        "evolution_sim.cli.recurrent_kernel_development_screen",
+        "--development-run",
+        "--expected-source-sha",
+        expected_source_sha,
+        "--child-candidate",
+        candidate,
+        "--child-nonce",
+        child_nonce,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +83,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_development_screen_report_path(args.report)
         report = run_development_screen(
             expected_source_sha=args.expected_source_sha,
+            child_command_factory=_child_command,
             progress=lambda message: print(message, flush=True),
         )
         write_development_screen_report(args.report, report)

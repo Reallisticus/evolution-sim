@@ -2061,39 +2061,30 @@ def select_development_candidate(
     }
 
 
-def _child_command(
-    *,
-    candidate: str,
-    expected_source_sha: str,
-    child_nonce: str,
-) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "evolution_sim.cli.recurrent_kernel_development_screen",
-        "--development-run",
-        "--expected-source-sha",
-        expected_source_sha,
-        "--child-candidate",
-        candidate,
-        "--child-nonce",
-        child_nonce,
-    ]
-
-
 def _run_child_candidate(
     *,
     candidate: str,
     expected_source_sha: str,
+    child_command_factory: Callable[[str, str, str], Sequence[str]],
 ) -> dict[str, object]:
     child_nonce = secrets.token_hex(16)
+    child_command = child_command_factory(
+        candidate,
+        expected_source_sha,
+        child_nonce,
+    )
+    if (
+        not isinstance(child_command, Sequence)
+        or isinstance(child_command, (str, bytes, bytearray))
+        or not child_command
+        or any(not isinstance(part, str) or not part for part in child_command)
+    ):
+        raise RecurrentKernelDevelopmentScreenError(
+            "development screen child command is malformed"
+        )
     try:
         completed = subprocess.run(
-            _child_command(
-                candidate=candidate,
-                expected_source_sha=expected_source_sha,
-                child_nonce=child_nonce,
-            ),
+            list(child_command),
             capture_output=True,
             text=True,
             env={**os.environ, "PYTHONHASHSEED": "0"},
@@ -2196,6 +2187,7 @@ def _development_screen_contract() -> dict[str, object]:
 def run_development_screen(
     *,
     expected_source_sha: str,
+    child_command_factory: Callable[[str, str, str], Sequence[str]],
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Run the fixed candidate set in isolated children and select at most one."""
@@ -2208,6 +2200,7 @@ def run_development_screen(
         result = _run_child_candidate(
             candidate=candidate,
             expected_source_sha=expected_source_sha,
+            child_command_factory=child_command_factory,
         )
         results.append(result)
         emit(
@@ -2219,6 +2212,7 @@ def run_development_screen(
     baseline_confirmation = _run_child_candidate(
         candidate=baseline_name,
         expected_source_sha=expected_source_sha,
+        child_command_factory=child_command_factory,
     )
     emit(
         "recurrent_kernel_screen_finish "
