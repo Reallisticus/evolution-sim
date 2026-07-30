@@ -11,6 +11,7 @@ from typing import Sequence
 from evolution_sim.mind.recurrent_kernel_development_screen import (
     RECURRENT_KERNEL_DEVELOPMENT_SCREEN_CANDIDATES,
     RecurrentKernelDevelopmentScreenError,
+    complete_candidate_holdout_screen,
     run_candidate_screen,
     run_development_screen,
     validate_development_screen_report_path,
@@ -27,6 +28,10 @@ def _child_command(
     candidate: str,
     expected_source_sha: str,
     child_nonce: str,
+    report_path: str,
+    accuracy_preregistration_digest: str,
+    parent_process_id: int,
+    parent_process_start_identity: str,
 ) -> tuple[str, ...]:
     """Build the CLI-owned isolated child command without reversing layers."""
 
@@ -41,6 +46,14 @@ def _child_command(
         candidate,
         "--child-nonce",
         child_nonce,
+        "--report",
+        report_path,
+        "--accuracy-preregistration-digest",
+        accuracy_preregistration_digest,
+        "--parent-process-id",
+        str(parent_process_id),
+        "--parent-process-start-identity",
+        parent_process_start_identity,
     )
 
 
@@ -60,6 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--child-nonce", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--accuracy-preregistration-digest",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parent-process-id",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parent-process-start-identity",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -73,16 +99,83 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.child_candidate is not None:
             if args.child_nonce is None:
                 raise SystemExit("--child-nonce is required for a child candidate")
+            if (
+                args.accuracy_preregistration_digest is None
+                or args.parent_process_id is None
+                or args.parent_process_start_identity is None
+            ):
+                raise SystemExit(
+                    "child candidate requires parent process and accuracy "
+                    "preregistration bindings"
+                )
             result = run_candidate_screen(
                 candidate=args.child_candidate,
                 expected_source_sha=args.expected_source_sha,
                 child_nonce=args.child_nonce,
+                report_path=str(args.report.resolve()),
+                accuracy_preregistration_digest=(
+                    args.accuracy_preregistration_digest
+                ),
+                parent_process_id=args.parent_process_id,
+                parent_process_start_identity=(
+                    args.parent_process_start_identity
+                ),
             )
+            if result.get("status") == "preholdout_completed":
+                print(
+                    json.dumps(
+                        {
+                            "protocol_version": (
+                                "recurrent_accuracy_interactive_child_protocol_v1"
+                            ),
+                            "frame": "preholdout",
+                            "result": result,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+                raw_authorization = sys.stdin.readline()
+                if not raw_authorization:
+                    raise SystemExit(
+                        "interactive candidate authorization is missing"
+                    )
+                authorization = json.loads(raw_authorization)
+                if (
+                    not isinstance(authorization, dict)
+                    or authorization.get("protocol_version")
+                    != "recurrent_accuracy_interactive_child_protocol_v1"
+                ):
+                    raise SystemExit(
+                        "interactive candidate authorization is malformed"
+                    )
+                if authorization.get("decision") == "abort":
+                    return 0
+                result = complete_candidate_holdout_screen(
+                    result,
+                    authorization=authorization,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "protocol_version": (
+                                "recurrent_accuracy_interactive_child_protocol_v1"
+                            ),
+                            "frame": "completed",
+                            "result": result,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                return 0
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
             return 0
         validate_development_screen_report_path(args.report)
         report = run_development_screen(
             expected_source_sha=args.expected_source_sha,
+            report_path=args.report,
             child_command_factory=_child_command,
             progress=lambda message: print(message, flush=True),
         )
