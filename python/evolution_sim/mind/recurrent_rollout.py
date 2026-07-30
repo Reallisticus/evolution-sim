@@ -2,29 +2,62 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
+import os
+import platform
 import random
+import sys
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Protocol, Sequence
 
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.observations import encode_observation_input
+from evolution_sim.env.runtime.observations import (
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    encode_observation_input,
+)
 from evolution_sim.env.runtime.policy import ActionDecision
 from evolution_sim.env.runtime.trajectory import (
     REWARD_COMPONENT_BOUNDS,
     REWARD_SCHEMA_VERSION,
     REWARD_TOTAL_BOUNDS,
 )
+from evolution_sim.env.runtime.ticks import (
+    RuntimeOwnedPolicyTickStart,
+    _runtime_owned_observation_integrity_sha256,
+    deterministic_agent_turn_order,
+    discard_runtime_owned_policy_tick_start,
+    validate_runtime_owned_policy_tick_start,
+)
+from evolution_sim.env.runtime.state import empty_mind_inheritance_metadata
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_values,
+    ecological_policy_values_from_observation,
+)
+from evolution_sim.mind.recurrent_genome import (
+    RECURRENT_CONTROLLER_GENOME_SIZE,
+    RecurrentControllerGenome,
+    RecurrentGenomeError,
+    zero_recurrent_genome,
+)
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationError,
+    RecurrentGenomePopulationManager,
+    RecurrentGenomePopulationMode,
+    recurrent_genome_stream_binding_sha256,
 )
 
 
 RECURRENT_ROLLOUT_POLICY_ID = "mind_v3_recurrent_on_policy"
 RECURRENT_ROLLOUT_POLICY_VERSION = "mind_v3_recurrent_on_policy_v1"
-RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = "mind_v3_recurrent_rollout_decision_v1"
+RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = "mind_v3_recurrent_rollout_decision_v2"
+RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = (
+    "mind_v3_recurrent_rollout_decision_genome_v1"
+)
 RECURRENT_ROLLOUT_ACTION_SOURCE = "learned_recurrent_on_policy"
 RECURRENT_ROLLOUT_ACTIONS: tuple[str, ...] = tuple(ACTION_NAMES)
 RECURRENT_REWARD_COMPONENTS: tuple[str, ...] = tuple(REWARD_COMPONENT_BOUNDS)
@@ -39,12 +72,160 @@ RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE = (
     "evolution-sim|mind-v3-public-recurrent-ippo|policy-action-sampling-v1|2026-07-21"
 )
 MAX_RECURRENT_POLICY_SAMPLING_SEED = 2**63 - 1
+MAX_RECURRENT_GENOME_STREAM_SEED = 2**64 - 1
 _MIN_DERIVED_POLICY_SAMPLING_SEED = 2**31
 _FEEDBACK_REWARD_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
+RECURRENT_GENOME_CONDITIONING_DISABLED = "disabled"
+RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
+RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION = (
+    "mind_v3_recurrent_intra_world_fixed_batch_runtime_v2"
+)
+RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION = (
+    "exact_tuple_rows_cpu_float32_bool_native_c_else_torch_tensor_v1"
+)
+RECURRENT_INFERENCE_CONTEXT_VERSION = "torch_inference_mode_v1"
+RECURRENT_OUTPUT_MATERIALIZATION_VERSION = (
+    "detach_cpu_item_tolist_then_validated_python_float_v1"
+)
+RECURRENT_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = (
+    "mind_v3_recurrent_rollout_decision_fixed_batch_v2"
+)
+RECURRENT_GENOME_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION = (
+    "mind_v3_recurrent_rollout_decision_genome_fixed_batch_v2"
+)
+RECURRENT_FIXED_BATCH_ROW_ORDER_POLICY = (
+    "tick_start_seed_tick_agent_hash_permutation_v1"
+)
+RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS: tuple[int, ...] = (
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    320,
+)
+RECURRENT_FIXED_BATCH_PADDING_POLICY = (
+    "right_pad_to_smallest_frozen_execution_bucket_"
+    "zero_observation_zero_feedback_zero_hidden_stay_mask_v2"
+)
+RECURRENT_FIXED_BATCH_EXECUTION_SCOPE = "single_world_intra_tick_pure_forward_v1"
+RECURRENT_FIXED_BATCH_RELEASE_STATUS = (
+    "experimental_opt_in_repeatability_and_measured_topology_gate_required_v2"
+)
+RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION = (
+    "mind_v3_recurrent_action_free_bootstrap_v1"
+)
+OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY = 320
 
 
 class RecurrentRolloutError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class RecurrentFixedBatchRuntimeContract:
+    """Versioned deterministic contract for one world's staged model forward.
+
+    The contract deliberately excludes action sampling and simulator mutation.
+    It batches only the pure recurrent forward pass over immutable tick-start
+    policy inputs. Sampling, recurrent-state commitment, and action resolution
+    remain in the scalar hash-permuted turn loop.
+    """
+
+    batch_capacity: int
+    schema_version: str = RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION
+    row_order_policy: str = RECURRENT_FIXED_BATCH_ROW_ORDER_POLICY
+    padding_policy: str = RECURRENT_FIXED_BATCH_PADDING_POLICY
+    execution_scope: str = RECURRENT_FIXED_BATCH_EXECUTION_SCOPE
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.batch_capacity, bool)
+            or not isinstance(self.batch_capacity, int)
+            or self.batch_capacity <= 0
+        ):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch capacity must be a positive integer"
+            )
+        if self.batch_capacity not in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch capacity must be a frozen execution bucket"
+            )
+        expected = {
+            "schema_version": RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION,
+            "row_order_policy": RECURRENT_FIXED_BATCH_ROW_ORDER_POLICY,
+            "padding_policy": RECURRENT_FIXED_BATCH_PADDING_POLICY,
+            "execution_scope": RECURRENT_FIXED_BATCH_EXECUTION_SCOPE,
+        }
+        for field_name, expected_value in expected.items():
+            if getattr(self, field_name) != expected_value:
+                raise RecurrentRolloutError(
+                    f"fixed recurrent batch {field_name} contract drifted"
+                )
+
+    @classmethod
+    def open_ecology(cls) -> RecurrentFixedBatchRuntimeContract:
+        return cls(batch_capacity=OPEN_ECOLOGY_RECURRENT_FIXED_BATCH_CAPACITY)
+
+    def as_contract(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": self.schema_version,
+            "batch_capacity": self.batch_capacity,
+            "row_order_policy": self.row_order_policy,
+            "padding_policy": self.padding_policy,
+            "execution_scope": self.execution_scope,
+            "execution_batch_buckets": list(
+                RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+            ),
+            "batch_capacity_is_active_row_admission_ceiling": True,
+            "execution_batch_bucket_selection": (
+                "smallest_frozen_bucket_at_least_active_rows_v1"
+            ),
+            "release_status": RECURRENT_FIXED_BATCH_RELEASE_STATUS,
+            "default_enabled": False,
+            "authoritative_launch_authorized": False,
+            "tick_start_observations": True,
+            "tick_start_action_masks": True,
+            "sequential_policy_sampling": True,
+            "sequential_action_resolution": True,
+            "passive_staged_rows_discarded_without_sampling": True,
+            "passive_staged_rows_discarded_without_hidden_commit": True,
+            "cross_world_batching": False,
+        }
+        payload["contract_sha256"] = _stable_payload_sha256(payload)
+        return payload
+
+
+def _fixed_batch_execution_rows(
+    *,
+    active_rows: int,
+    batch_capacity: int,
+) -> int:
+    parsed_active_rows = _strict_int(
+        active_rows,
+        field="fixed batch active rows",
+    )
+    parsed_capacity = _strict_int(
+        batch_capacity,
+        field="fixed batch capacity",
+    )
+    if parsed_capacity not in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch capacity must be a frozen execution bucket"
+        )
+    if not 0 < parsed_active_rows <= parsed_capacity:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch active rows must be within capacity"
+        )
+    return next(
+        bucket
+        for bucket in RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+        if bucket >= parsed_active_rows
+    )
 
 
 def derive_recurrent_policy_sampling_seed(*, task_identity: str) -> int:
@@ -189,6 +370,10 @@ class PreviousPublicFeedback:
 
 class RecurrentPolicyCore(Protocol):
     hidden_size: int
+    public_input_schema_version: str
+    public_input_size: int
+    learned_input_size: int
+    genome_conditioning_mode: str
 
     def initial_hidden(self) -> Sequence[float]: ...
 
@@ -198,7 +383,50 @@ class RecurrentPolicyCore(Protocol):
         current_action_mask: Sequence[bool],
         previous_feedback: PreviousPublicFeedback,
         hidden: Sequence[float],
+        *,
+        genome_values: Sequence[float] | None = None,
     ) -> RecurrentCoreOutput: ...
+
+    def forward_fixed_batch(
+        self,
+        observations: Sequence[Sequence[float]],
+        current_action_masks: Sequence[Sequence[bool]],
+        previous_feedback: Sequence[PreviousPublicFeedback],
+        hidden: Sequence[Sequence[float]],
+        *,
+        batch_capacity: int,
+        execution_batch_rows: int | None = None,
+        genome_values: Sequence[Sequence[float]] | None = None,
+    ) -> Sequence[RecurrentCoreOutput]: ...
+
+    def fixed_batch_runtime_metadata(self) -> Mapping[str, object]: ...
+
+
+def _recurrent_inference_context(torch_module: Any) -> Any:
+    """Return the versioned inference context used by the production adapter."""
+
+    return torch_module.inference_mode()
+
+
+def _materialized_float(value: object) -> float:
+    """Preserve the public Python-float boundary without redundant recasting."""
+
+    if type(value) is not float:
+        raise RecurrentRolloutError(
+            "recurrent runtime output materialization did not produce a Python float"
+        )
+    return value
+
+
+def _materialized_float_tuple(values: Sequence[object]) -> tuple[float, ...]:
+    """Preserve an exact tuple of Python floats at the rollout boundary."""
+
+    materialized = tuple(values)
+    if any(type(value) is not float for value in materialized):
+        raise RecurrentRolloutError(
+            "recurrent runtime output materialization did not produce Python floats"
+        )
+    return materialized  # type: ignore[return-value]
 
 
 class TorchRecurrentPolicyCore:
@@ -208,7 +436,8 @@ class TorchRecurrentPolicyCore:
         try:
             import torch
             from evolution_sim.mind.recurrent_actor_critic import (
-                LEARNED_ENCODER_INPUT_SIZE,
+                GENOME_CONDITIONING_ACTOR_FILM_V1,
+                GENOME_CONDITIONING_DISABLED,
                 PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
                 PREVIOUS_PUBLIC_FEEDBACK_SIZE,
                 PublicRecurrentActorCritic,
@@ -230,21 +459,91 @@ class TorchRecurrentPolicyCore:
             raise RecurrentRolloutError(
                 "torch and rollout previous-feedback schema versions disagree"
             )
-        if LEARNED_ENCODER_INPUT_SIZE != RECURRENT_LEARNED_INPUT_VECTOR_SIZE:
+        expected_learned_input_size = (
+            model.config.public_input_size
+            + len(RECURRENT_ROLLOUT_ACTIONS)
+            + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+        )
+        if model.config.learned_encoder_input_size != expected_learned_input_size:
             raise RecurrentRolloutError(
                 "torch and rollout learned input sizes disagree"
             )
         self._torch = torch
         self._model = model
         self._model.eval()
+        self.public_input_schema_version = model.config.public_input_schema_version
+        self.public_input_size = model.config.public_input_size
+        self.learned_input_size = model.config.learned_encoder_input_size
+        self.genome_conditioning_mode = model.config.genome_conditioning_mode
+        if self.genome_conditioning_mode not in {
+            GENOME_CONDITIONING_DISABLED,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        }:
+            raise RecurrentRolloutError(
+                "torch model genome conditioning mode is unsupported"
+            )
         self._layers = int(model.config.recurrent_layers)
         self._layer_hidden_size = int(model.config.hidden_size)
         self.hidden_size = self._layers * self._layer_hidden_size
+        self._last_tensor_bridge_branch: str | None = None
 
     def initial_hidden(self) -> tuple[float, ...]:
         state = self._model.initial_state(1)
-        return tuple(
-            float(value) for value in state.detach().cpu().reshape(-1).tolist()
+        return _materialized_float_tuple(
+            state.detach().cpu().reshape(-1).tolist()
+        )
+
+    def _tensor_from_nested_rows(
+        self,
+        values: Sequence[Sequence[object]],
+        *,
+        reference: Any,
+        dtype: Any,
+    ) -> Any:
+        """Construct public rollout rows through the exact CPU bridge when safe."""
+
+        torch = self._torch
+        numpy_dtype = None
+        numpy = None
+        if (
+            RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            == "exact_tuple_rows_cpu_float32_bool_native_c_else_torch_tensor_v1"
+            and
+            reference.device.type == "cpu"
+            and reference.dtype == torch.float32
+            and type(values) is tuple
+            and all(type(row) is tuple for row in values)
+        ):
+            try:
+                import numpy
+            except ModuleNotFoundError:
+                pass
+        if numpy is not None:
+            if dtype == torch.bool:
+                numpy_dtype = numpy.bool_
+            elif dtype == torch.float32:
+                numpy_dtype = numpy.float32
+        if numpy_dtype is not None:
+            try:
+                array = numpy.asarray(values, dtype=numpy_dtype)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if array.flags.c_contiguous and array.dtype.isnative:
+                    self._last_tensor_bridge_branch = (
+                        "numpy_from_numpy_cpu_float32_bool_native_c_v1"
+                    )
+                    return torch.from_numpy(array)
+        self._last_tensor_bridge_branch = (
+            "torch_tensor_device_dtype_layout_legacy_v0"
+            if RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            == "torch_tensor_device_dtype_layout_legacy_v0"
+            else "torch_tensor_device_dtype_layout_fallback_v1"
+        )
+        return torch.tensor(
+            tuple(tuple(row) for row in values),
+            device=reference.device,
+            dtype=dtype,
         )
 
     def forward_step(
@@ -253,6 +552,8 @@ class TorchRecurrentPolicyCore:
         current_action_mask: Sequence[bool],
         previous_feedback: PreviousPublicFeedback,
         hidden: Sequence[float],
+        *,
+        genome_values: Sequence[float] | None = None,
     ) -> RecurrentCoreOutput:
         torch = self._torch
         reference = next(self._model.parameters())
@@ -260,7 +561,7 @@ class TorchRecurrentPolicyCore:
             tuple(observation),
             device=reference.device,
             dtype=reference.dtype,
-        ).reshape(1, 1, ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE)
+        ).reshape(1, 1, self.public_input_size)
         action_masks = torch.tensor(
             tuple(current_action_mask),
             device=reference.device,
@@ -276,24 +577,305 @@ class TorchRecurrentPolicyCore:
             device=reference.device,
             dtype=reference.dtype,
         ).reshape(self._layers, 1, self._layer_hidden_size)
-        with torch.no_grad():
+        genome_tensor = (
+            None
+            if genome_values is None
+            else torch.tensor(
+                tuple(genome_values),
+                device=reference.device,
+                dtype=reference.dtype,
+            ).reshape(1, 1, RECURRENT_CONTROLLER_GENOME_SIZE)
+        )
+        with _recurrent_inference_context(torch):
             output = self._model.forward_sequence(
                 observations,
                 action_masks,
                 feedback,
+                genome_values=genome_tensor,
                 initial_state=state,
             )
         return RecurrentCoreOutput(
-            logits=tuple(
-                float(value)
-                for value in output.raw_logits[0, 0].detach().cpu().tolist()
+            logits=_materialized_float_tuple(
+                output.raw_logits[0, 0].detach().cpu().tolist()
             ),
-            value=float(output.values[0, 0].detach().cpu().item()),
-            next_hidden=tuple(
-                float(value)
-                for value in output.final_state.detach().cpu().reshape(-1).tolist()
+            value=_materialized_float(
+                output.values[0, 0].detach().cpu().item()
+            ),
+            next_hidden=_materialized_float_tuple(
+                output.final_state.detach().cpu().reshape(-1).tolist()
             ),
         )
+
+    def forward_fixed_batch(
+        self,
+        observations: Sequence[Sequence[float]],
+        current_action_masks: Sequence[Sequence[bool]],
+        previous_feedback: Sequence[PreviousPublicFeedback],
+        hidden: Sequence[Sequence[float]],
+        *,
+        batch_capacity: int,
+        execution_batch_rows: int | None = None,
+        genome_values: Sequence[Sequence[float]] | None = None,
+    ) -> tuple[RecurrentCoreOutput, ...]:
+        """Run one bounded-bucket forward without sampling or state commit."""
+
+        active_rows = len(observations)
+        selected_execution_rows = _fixed_batch_execution_rows(
+            active_rows=active_rows,
+            batch_capacity=batch_capacity,
+        )
+        if execution_batch_rows is None:
+            execution_batch_rows = selected_execution_rows
+        elif (
+            isinstance(execution_batch_rows, bool)
+            or not isinstance(execution_batch_rows, int)
+            or execution_batch_rows != selected_execution_rows
+        ):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch execution rows drifted from the frozen bucket "
+                "contract"
+            )
+        if not (
+            len(current_action_masks)
+            == len(previous_feedback)
+            == len(hidden)
+            == active_rows
+        ):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch input row counts disagree"
+            )
+        conditioned = (
+            self.genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        )
+        if conditioned != (genome_values is not None):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch genome rows disagree with core conditioning"
+            )
+        if genome_values is not None and len(genome_values) != active_rows:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch genome row count disagrees"
+            )
+
+        torch = self._torch
+        reference = next(self._model.parameters())
+        padded_observations = torch.zeros(
+            (1, execution_batch_rows, self.public_input_size),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        padded_action_masks = torch.zeros(
+            (1, execution_batch_rows, len(RECURRENT_ROLLOUT_ACTIONS)),
+            device=reference.device,
+            dtype=torch.bool,
+        )
+        padded_feedback = torch.zeros(
+            (1, execution_batch_rows, RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        padded_state = torch.zeros(
+            (self._layers, execution_batch_rows, self._layer_hidden_size),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        padded_action_masks[
+            0,
+            active_rows:,
+            RECURRENT_ROLLOUT_ACTIONS.index("stay"),
+        ] = True
+        padded_observations[0, :active_rows] = self._tensor_from_nested_rows(
+            observations,
+            reference=reference,
+            dtype=reference.dtype,
+        )
+        padded_action_masks[0, :active_rows] = self._tensor_from_nested_rows(
+            current_action_masks,
+            reference=reference,
+            dtype=torch.bool,
+        )
+        padded_feedback[0, :active_rows] = self._tensor_from_nested_rows(
+            tuple(feedback.vector() for feedback in previous_feedback),
+            reference=reference,
+            dtype=reference.dtype,
+        )
+        hidden_tensor = self._tensor_from_nested_rows(
+            hidden,
+            reference=reference,
+            dtype=reference.dtype,
+        ).reshape(active_rows, self._layers, self._layer_hidden_size)
+        padded_state[:, :active_rows] = hidden_tensor.permute(1, 0, 2)
+
+        padded_genomes = None
+        if genome_values is not None:
+            padded_genomes = torch.zeros(
+                (1, execution_batch_rows, RECURRENT_CONTROLLER_GENOME_SIZE),
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            padded_genomes[0, :active_rows] = self._tensor_from_nested_rows(
+                genome_values,
+                reference=reference,
+                dtype=reference.dtype,
+            )
+        with _recurrent_inference_context(torch):
+            output = self._model.forward_sequence(
+                padded_observations,
+                padded_action_masks,
+                padded_feedback,
+                genome_values=padded_genomes,
+                initial_state=padded_state,
+            )
+        raw_logits = output.raw_logits[0, :active_rows].detach().cpu().tolist()
+        values = output.values[0, :active_rows].detach().cpu().tolist()
+        final_state = (
+            output.final_state[:, :active_rows, :]
+            .permute(1, 0, 2)
+            .reshape(active_rows, -1)
+            .detach()
+            .cpu()
+            .tolist()
+        )
+        return tuple(
+            RecurrentCoreOutput(
+                logits=_materialized_float_tuple(raw_logits[row]),
+                value=_materialized_float(values[row]),
+                next_hidden=_materialized_float_tuple(final_state[row]),
+            )
+            for row in range(active_rows)
+        )
+
+    def fixed_batch_runtime_metadata(self) -> dict[str, object]:
+        """Observed numerical/runtime binding for same-contract reproduction."""
+
+        torch = self._torch
+        reference = next(self._model.parameters())
+        cuda_version = getattr(torch.version, "cuda", None)
+        cudnn_version = (
+            torch.backends.cudnn.version() if hasattr(torch.backends, "cudnn") else None
+        )
+        cuda_matmul = getattr(torch.backends, "cuda", None)
+        matmul_backend = (
+            getattr(cuda_matmul, "matmul", None) if cuda_matmul is not None else None
+        )
+        cpu_backend = getattr(torch.backends, "cpu", None)
+        cpu_capability = (
+            cpu_backend.get_cpu_capability()
+            if cpu_backend is not None
+            and callable(getattr(cpu_backend, "get_cpu_capability", None))
+            else None
+        )
+        parallel_backend = _torch_parallel_backend(torch)
+        build_config = str(torch.__config__.show())
+        cpu_architecture = platform.machine().strip()
+        if not cpu_architecture or not build_config:
+            raise RecurrentRolloutError(
+                "CPU architecture and Torch build identity are required for "
+                "fixed-batch provenance"
+            )
+        numpy_version = None
+        try:
+            import numpy
+        except ModuleNotFoundError:
+            pass
+        else:
+            numpy_version = str(numpy.__version__)
+        tensor_bridge_probe_branches: dict[str, str] = {}
+        for probe_name, probe_values, probe_dtype in (
+            ("float32", ((0.0,),), reference.dtype),
+            ("bool", ((False,),), torch.bool),
+        ):
+            self._tensor_from_nested_rows(
+                probe_values,
+                reference=reference,
+                dtype=probe_dtype,
+            )
+            if self._last_tensor_bridge_branch is None:
+                raise RecurrentRolloutError(
+                    "fixed-batch tensor bridge probe did not record its actual branch"
+                )
+            tensor_bridge_probe_branches[probe_name] = (
+                self._last_tensor_bridge_branch
+            )
+        if len(set(tensor_bridge_probe_branches.values())) != 1:
+            raise RecurrentRolloutError(
+                "fixed-batch tensor bridge probes selected different runtime branches"
+            )
+        tensor_bridge_actual_branch = tensor_bridge_probe_branches["float32"]
+        return {
+            "implementation": (
+                "PublicRecurrentActorCritic.forward_sequence_time1_"
+                "bounded_bucket_batch_v3"
+            ),
+            "tensor_bridge_dispatch_version": (
+                RECURRENT_TENSOR_BRIDGE_DISPATCH_VERSION
+            ),
+            "tensor_bridge_actual_branch": tensor_bridge_actual_branch,
+            "tensor_bridge_probe_branches": tensor_bridge_probe_branches,
+            "inference_context_version": RECURRENT_INFERENCE_CONTEXT_VERSION,
+            "output_materialization_version": (
+                RECURRENT_OUTPUT_MATERIALIZATION_VERSION
+            ),
+            "observation_projection_version": (
+                ECOLOGICAL_POLICY_OBSERVATION_PROJECTION_VERSION
+            ),
+            "numpy_version": numpy_version,
+            "native_byte_order": sys.byteorder,
+            "device_type": reference.device.type,
+            "device_index": reference.device.index,
+            "dtype": str(reference.dtype),
+            "torch_version": str(torch.__version__),
+            "torch_num_threads": int(torch.get_num_threads()),
+            "torch_num_interop_threads": int(torch.get_num_interop_threads()),
+            "cpu_architecture": cpu_architecture,
+            "cpu_capability": (None if cpu_capability is None else str(cpu_capability)),
+            "aten_parallel_backend": parallel_backend,
+            "torch_build_config_sha256": hashlib.sha256(
+                build_config.encode("utf-8")
+            ).hexdigest(),
+            "cuda_version": None if cuda_version is None else str(cuda_version),
+            "cudnn_version": cudnn_version,
+            "deterministic_algorithms_enabled": (
+                torch.are_deterministic_algorithms_enabled()
+            ),
+            "cudnn_deterministic": bool(
+                getattr(
+                    getattr(torch.backends, "cudnn", object()), "deterministic", False
+                )
+            ),
+            "cudnn_benchmark": bool(
+                getattr(getattr(torch.backends, "cudnn", object()), "benchmark", False)
+            ),
+            "cuda_matmul_allow_tf32": (
+                None
+                if matmul_backend is None
+                else bool(getattr(matmul_backend, "allow_tf32", False))
+            ),
+            "cudnn_allow_tf32": (
+                None
+                if not hasattr(torch.backends, "cudnn")
+                else bool(getattr(torch.backends.cudnn, "allow_tf32", False))
+            ),
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StagedRecurrentDecision:
+    tick: int
+    turn_rank: int
+    active_rows: int
+    execution_batch_rows: int
+    observation_snapshot: dict[str, object]
+    observation_identity_guard: bool
+    observation_integrity_sha256: str | None
+    policy_input: tuple[float, ...]
+    previous_feedback: PreviousPublicFeedback
+    action_mask: tuple[bool, ...]
+    hidden: tuple[float, ...]
+    output: RecurrentCoreOutput
+    genome_values: tuple[float, ...] | None
+    genome_sha256: str | None
+    genome_stream_seed: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +896,35 @@ class PendingDecision:
     value: float
     hidden: tuple[float, ...]
     next_hidden: tuple[float, ...]
+    genome_values: tuple[float, ...] | None = None
+    genome_sha256: str | None = None
+    genome_stream_seed: int | None = None
+    fixed_batch_runtime_sha256: str | None = None
+    fixed_batch_turn_rank: int | None = None
+    fixed_batch_active_rows: int | None = None
+    fixed_batch_execution_rows: int | None = None
+    fixed_batch_capacity: int | None = None
+
+    def __post_init__(self) -> None:
+        genome_values, genome_sha256, genome_stream_seed = (
+            _validated_rollout_genome_fields(
+                genome_values=self.genome_values,
+                genome_sha256=self.genome_sha256,
+                genome_stream_seed=self.genome_stream_seed,
+                field="pending decision",
+            )
+        )
+        object.__setattr__(self, "genome_values", genome_values)
+        object.__setattr__(self, "genome_sha256", genome_sha256)
+        object.__setattr__(self, "genome_stream_seed", genome_stream_seed)
+        _validate_fixed_batch_decision_fields(
+            runtime_sha256=self.fixed_batch_runtime_sha256,
+            turn_rank=self.fixed_batch_turn_rank,
+            active_rows=self.fixed_batch_active_rows,
+            execution_rows=self.fixed_batch_execution_rows,
+            capacity=self.fixed_batch_capacity,
+            field="pending decision",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +962,14 @@ class RecurrentRolloutStep:
     passive_terminal_tick: int | None = None
     environment_seed: int | None = None
     policy_sampling_seed: int | None = None
+    genome_values: tuple[float, ...] | None = None
+    genome_sha256: str | None = None
+    genome_stream_seed: int | None = None
+    fixed_batch_runtime_sha256: str | None = None
+    fixed_batch_turn_rank: int | None = None
+    fixed_batch_active_rows: int | None = None
+    fixed_batch_execution_rows: int | None = None
+    fixed_batch_capacity: int | None = None
 
     def __post_init__(self) -> None:
         world_seed = _strict_int(self.world_seed, field="world_seed")
@@ -375,6 +994,25 @@ class RecurrentRolloutStep:
         object.__setattr__(self, "world_seed", world_seed)
         object.__setattr__(self, "environment_seed", environment_seed)
         object.__setattr__(self, "policy_sampling_seed", policy_sampling_seed)
+        genome_values, genome_sha256, genome_stream_seed = (
+            _validated_rollout_genome_fields(
+                genome_values=self.genome_values,
+                genome_sha256=self.genome_sha256,
+                genome_stream_seed=self.genome_stream_seed,
+                field="rollout step",
+            )
+        )
+        object.__setattr__(self, "genome_values", genome_values)
+        object.__setattr__(self, "genome_sha256", genome_sha256)
+        object.__setattr__(self, "genome_stream_seed", genome_stream_seed)
+        _validate_fixed_batch_decision_fields(
+            runtime_sha256=self.fixed_batch_runtime_sha256,
+            turn_rank=self.fixed_batch_turn_rank,
+            active_rows=self.fixed_batch_active_rows,
+            execution_rows=self.fixed_batch_execution_rows,
+            capacity=self.fixed_batch_capacity,
+            field="rollout step",
+        )
         reward, reward_components = _validated_reward_values(
             self.reward,
             self.reward_components,
@@ -419,19 +1057,16 @@ class RecurrentRolloutBuffer:
         self._steps: list[RecurrentRolloutStep] = []
         self._indices_by_agent: dict[tuple[str, int], list[int]] = {}
         self._world_ids: set[str] = set()
-        self._world_seed_provenance: dict[str, tuple[int, int] | None] = {}
+        self._world_seed_provenance: dict[str, dict[str, object] | None] = {}
 
     @property
     def steps(self) -> tuple[RecurrentRolloutStep, ...]:
         return tuple(self._steps)
 
     @property
-    def world_seed_provenance(self) -> dict[str, dict[str, int]]:
+    def world_seed_provenance(self) -> dict[str, dict[str, object]]:
         return {
-            world_id: {
-                "environment_seed": provenance[0],
-                "policy_sampling_seed": provenance[1],
-            }
+            world_id: copy.deepcopy(provenance)
             for world_id, provenance in self._world_seed_provenance.items()
             if provenance is not None
         }
@@ -440,8 +1075,15 @@ class RecurrentRolloutBuffer:
         self,
         world_id: str,
         *,
+        genome_world_identity: str | None = None,
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
+        genome_conditioning_mode: str | None = None,
+        genome_population_mode: RecurrentGenomePopulationMode | str | None = None,
+        genome_stream_seed: int | None = None,
+        genome_population_binding_sha256: str | None = None,
+        genome_population_pre_founder_state_sha256: str | None = None,
+        fixed_batch_runtime: Mapping[str, object] | None = None,
     ) -> None:
         if not world_id:
             raise RecurrentRolloutError("world_id must not be empty")
@@ -451,34 +1093,224 @@ class RecurrentRolloutBuffer:
             raise RecurrentRolloutError(
                 "world seed provenance requires both environment and policy seeds"
             )
-        provenance: tuple[int, int] | None = None
+        genome_provenance = (
+            genome_conditioning_mode,
+            genome_population_mode,
+            genome_stream_seed,
+            genome_population_binding_sha256,
+            genome_population_pre_founder_state_sha256,
+        )
+        if any(value is not None for value in genome_provenance) and not all(
+            value is not None for value in genome_provenance
+        ):
+            raise RecurrentRolloutError(
+                "world genome provenance requires conditioning mode, population "
+                "mode, stream seed, binding SHA256, and pre-founder state SHA256"
+            )
+        provenance: dict[str, object] | None = None
         if environment_seed is not None and policy_sampling_seed is not None:
-            provenance = (
-                _strict_int(environment_seed, field="environment_seed"),
-                _policy_sampling_seed(
+            provenance = {
+                "environment_seed": _strict_int(
+                    environment_seed,
+                    field="environment_seed",
+                ),
+                "policy_sampling_seed": _policy_sampling_seed(
                     policy_sampling_seed,
                     field="policy_sampling_seed",
                 ),
+            }
+            if genome_conditioning_mode is not None:
+                resolved_genome_world_identity = (
+                    world_id if genome_world_identity is None else genome_world_identity
+                )
+                if (
+                    not isinstance(resolved_genome_world_identity, str)
+                    or not resolved_genome_world_identity
+                    or resolved_genome_world_identity
+                    != resolved_genome_world_identity.strip()
+                ):
+                    raise RecurrentRolloutError(
+                        "genome_world_identity must be non-empty and trimmed"
+                    )
+                parsed_conditioning_mode = _genome_conditioning_mode(
+                    genome_conditioning_mode
+                )
+                if (
+                    parsed_conditioning_mode
+                    != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                ):
+                    raise RecurrentRolloutError(
+                        "registered genome provenance requires actor_film_v1 "
+                        "conditioning"
+                    )
+                parsed_population_mode = _active_genome_population_mode(
+                    genome_population_mode
+                )
+                parsed_stream_seed = _genome_stream_seed(
+                    genome_stream_seed,
+                    field="genome_stream_seed",
+                )
+                parsed_binding_sha256 = _sha256(
+                    genome_population_binding_sha256,
+                    field="genome_population_binding_sha256",
+                )
+                try:
+                    expected_binding_sha256 = recurrent_genome_stream_binding_sha256(
+                        genome_stream_seed=parsed_stream_seed,
+                        world_identity=resolved_genome_world_identity,
+                    )
+                except RecurrentGenomePopulationError as exc:
+                    raise RecurrentRolloutError(
+                        f"world genome provenance binding is invalid: {exc}"
+                    ) from exc
+                if parsed_binding_sha256 != expected_binding_sha256:
+                    raise RecurrentRolloutError(
+                        "world genome provenance binding SHA256 does not match "
+                        "its stream seed and world identity"
+                    )
+                provenance.update(
+                    {
+                        **(
+                            {"genome_world_identity": (resolved_genome_world_identity)}
+                            if resolved_genome_world_identity != world_id
+                            else {}
+                        ),
+                        "genome_conditioning_mode": parsed_conditioning_mode,
+                        "genome_population_mode": parsed_population_mode.value,
+                        "genome_stream_seed": parsed_stream_seed,
+                        "genome_population_binding_sha256": parsed_binding_sha256,
+                        "genome_population_pre_founder_state_sha256": _sha256(
+                            genome_population_pre_founder_state_sha256,
+                            field="genome_population_pre_founder_state_sha256",
+                        ),
+                    }
+                )
+            if fixed_batch_runtime is not None:
+                provenance["fixed_batch_runtime"] = (
+                    _validated_fixed_batch_runtime_binding(fixed_batch_runtime)
+                )
+        elif any(value is not None for value in genome_provenance):
+            raise RecurrentRolloutError(
+                "world genome provenance requires world seed provenance"
+            )
+        elif fixed_batch_runtime is not None:
+            raise RecurrentRolloutError(
+                "fixed batch runtime provenance requires world seed provenance"
             )
         self._world_ids.add(world_id)
         self._world_seed_provenance[world_id] = provenance
+
+    def finalize_world_genome_provenance(
+        self,
+        world_id: str,
+        *,
+        final_state_sha256: str,
+        reset_state_sha256: str,
+    ) -> None:
+        provenance = self._world_seed_provenance.get(world_id)
+        if provenance is None:
+            raise RecurrentRolloutError(
+                f"world has no registered seed provenance: {world_id!r}"
+            )
+        if (
+            provenance.get("genome_conditioning_mode")
+            != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            raise RecurrentRolloutError(
+                "cannot finalize genome provenance for an unconditioned world"
+            )
+        if "genome_population_final_state_sha256" in provenance:
+            raise RecurrentRolloutError("world genome provenance was already finalized")
+        parsed_final_state_sha256 = _sha256(
+            final_state_sha256,
+            field="genome_population_final_state_sha256",
+        )
+        parsed_reset_state_sha256 = _sha256(
+            reset_state_sha256,
+            field="genome_population_reset_state_sha256",
+        )
+        if parsed_reset_state_sha256 != provenance.get(
+            "genome_population_pre_founder_state_sha256"
+        ):
+            raise RecurrentRolloutError(
+                "world genome reset state SHA256 must match its pre-founder empty state"
+            )
+        provenance.update(
+            {
+                "genome_population_final_state_sha256": (parsed_final_state_sha256),
+                "genome_population_reset_state_sha256": (parsed_reset_state_sha256),
+            }
+        )
 
     def append(self, step: RecurrentRolloutStep) -> None:
         if step.world_id not in self._world_ids:
             raise RecurrentRolloutError(
                 f"rollout world was not registered: {step.world_id!r}"
             )
-        observed_provenance = (
-            int(step.environment_seed),
-            int(step.policy_sampling_seed),
-        )
+        observed_provenance = {
+            "environment_seed": int(step.environment_seed),
+            "policy_sampling_seed": int(step.policy_sampling_seed),
+        }
         registered_provenance = self._world_seed_provenance[step.world_id]
         if registered_provenance is None:
             self._world_seed_provenance[step.world_id] = observed_provenance
-        elif observed_provenance != registered_provenance:
+            registered_provenance = observed_provenance
+        elif any(
+            observed_provenance[key] != registered_provenance.get(key)
+            for key in observed_provenance
+        ):
             raise RecurrentRolloutError(
                 "rollout step seed provenance does not match its registered world"
             )
+        registered_conditioning_mode = registered_provenance.get(
+            "genome_conditioning_mode"
+        )
+        fixed_batch_runtime = registered_provenance.get("fixed_batch_runtime")
+        if fixed_batch_runtime is None:
+            if step.fixed_batch_runtime_sha256 is not None:
+                raise RecurrentRolloutError(
+                    "fixed-batch rollout step requires registered runtime provenance"
+                )
+        else:
+            if not isinstance(fixed_batch_runtime, Mapping):
+                raise RecurrentRolloutError(
+                    "registered fixed batch runtime provenance is invalid"
+                )
+            if step.fixed_batch_runtime_sha256 != fixed_batch_runtime.get(
+                "exact_digest"
+            ) or step.fixed_batch_capacity != fixed_batch_runtime.get("batch_capacity"):
+                raise RecurrentRolloutError(
+                    "fixed-batch rollout step disagrees with registered runtime"
+                )
+        if step.genome_values is None:
+            if registered_conditioning_mode is not None:
+                raise RecurrentRolloutError(
+                    "unconditioned rollout step cannot enter a genome-conditioned world"
+                )
+        else:
+            if (
+                registered_conditioning_mode
+                != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+            ):
+                raise RecurrentRolloutError(
+                    "genome-conditioned rollout step requires matching registered "
+                    "world provenance"
+                )
+            if step.genome_stream_seed != registered_provenance.get(
+                "genome_stream_seed"
+            ):
+                raise RecurrentRolloutError(
+                    "rollout step genome stream seed does not match its registered "
+                    "world"
+                )
+            if (
+                registered_provenance.get("genome_population_mode")
+                == RecurrentGenomePopulationMode.ZERO_ALL.value
+                and step.genome_values != zero_recurrent_genome().values
+            ):
+                raise RecurrentRolloutError(
+                    "zero_all rollout world contains a nonzero controller genome"
+                )
         key = (step.world_id, step.agent_id)
         indices = self._indices_by_agent.setdefault(key, [])
         if indices:
@@ -551,25 +1383,76 @@ class RecurrentRolloutBuffer:
         agent_id: int,
         bootstrap_value: float,
     ) -> bool:
-        key = (world_id, agent_id)
-        indices = self._indices_by_agent.get(key)
-        if not indices:
-            return False
-        index = indices[-1]
-        step = self._steps[index]
-        if step.terminated:
-            return False
-        if step.truncated:
-            raise RecurrentRolloutError("agent rollout was already truncated")
-        self._steps[index] = replace(
-            step,
-            truncated=True,
-            bootstrap_value=_finite_float(
-                bootstrap_value,
-                field="bootstrap value",
-            ),
+        return self.mark_truncated_batch(
+            world_id=world_id,
+            bootstrap_values_by_agent={agent_id: bootstrap_value},
+        )[agent_id]
+
+    def mark_truncated_batch(
+        self,
+        *,
+        world_id: str,
+        bootstrap_values_by_agent: Mapping[int, object],
+    ) -> dict[int, bool]:
+        """Validate every bootstrap row before committing any truncation."""
+
+        planned, target_eligibility = self._plan_truncated_batch(
+            world_id=world_id,
+            bootstrap_values_by_agent=bootstrap_values_by_agent,
         )
-        return True
+        self._apply_truncated_batch(planned)
+        return target_eligibility
+
+    def _plan_truncated_batch(
+        self,
+        *,
+        world_id: str,
+        bootstrap_values_by_agent: Mapping[int, object],
+    ) -> tuple[
+        tuple[tuple[int, RecurrentRolloutStep], ...],
+        dict[int, bool],
+    ]:
+        planned: list[tuple[int, RecurrentRolloutStep]] = []
+        target_eligibility: dict[int, bool] = {}
+        for raw_agent_id, raw_bootstrap_value in bootstrap_values_by_agent.items():
+            agent_id = _strict_int(
+                raw_agent_id,
+                field="bootstrap agent_id",
+            )
+            key = (world_id, agent_id)
+            indices = self._indices_by_agent.get(key)
+            if not indices:
+                target_eligibility[agent_id] = False
+                continue
+            index = indices[-1]
+            step = self._steps[index]
+            if step.terminated:
+                target_eligibility[agent_id] = False
+                continue
+            if step.truncated:
+                raise RecurrentRolloutError("agent rollout was already truncated")
+            planned.append(
+                (
+                    index,
+                    replace(
+                        step,
+                        truncated=True,
+                        bootstrap_value=_finite_float(
+                            raw_bootstrap_value,
+                            field="bootstrap value",
+                        ),
+                    ),
+                )
+            )
+            target_eligibility[agent_id] = True
+        return tuple(planned), target_eligibility
+
+    def _apply_truncated_batch(
+        self,
+        planned: Sequence[tuple[int, RecurrentRolloutStep]],
+    ) -> None:
+        for index, replacement in planned:
+            self._steps[index] = replacement
 
     def validate_world_closed(self, world_id: str) -> None:
         open_agents = [
@@ -587,8 +1470,8 @@ class RecurrentRolloutBuffer:
         ]
         if open_agents:
             raise RecurrentRolloutError(
-                "world rollout has unclosed agent sequences; run one bootstrap "
-                "tick beyond rollout_ticks with record_trajectory=True: "
+                "world rollout has unclosed agent sequences; finalize the "
+                "action-free policy-visible tick-start bootstrap: "
                 f"{sorted(open_agents)}"
             )
 
@@ -671,11 +1554,11 @@ class RecurrentOnPolicyCollector:
     action, old log-prob/value, public input, reward, and resolved outcome are
     joined only there.
 
-    For an unbiased finite-horizon truncation, configure the world for exactly
-    `rollout_ticks + 1` ticks. The final tick is used only to evaluate V(s_T)
-    from the next policy-visible observation. Its actions and rewards are not
-    inserted into the rollout. `finish_world` fails closed if that bootstrap
-    tick was omitted.
+    For an unbiased finite-horizon truncation, run exactly `rollout_ticks`
+    scored ticks, prepare the next tick's policy-visible state with
+    `SimulationWorld.prepare_policy_visible_tick_start`, then call
+    `finalize_action_free_bootstrap`. No bootstrap action is sampled, committed,
+    or resolved.
     """
 
     policy_id = RECURRENT_ROLLOUT_POLICY_ID
@@ -687,6 +1570,7 @@ class RecurrentOnPolicyCollector:
         *,
         buffer: RecurrentRolloutBuffer | None = None,
         reset_recurrent_state_each_decision: bool = False,
+        fixed_batch_contract: RecurrentFixedBatchRuntimeContract | None = None,
     ) -> None:
         if isinstance(core.hidden_size, bool) or int(core.hidden_size) <= 0:
             raise RecurrentRolloutError("core.hidden_size must be positive")
@@ -695,32 +1579,116 @@ class RecurrentOnPolicyCollector:
                 "reset_recurrent_state_each_decision must be an exact boolean"
             )
         self._core = core
+        self._genome_conditioning_mode = _genome_conditioning_mode(
+            getattr(
+                core,
+                "genome_conditioning_mode",
+                RECURRENT_GENOME_CONDITIONING_DISABLED,
+            )
+        )
+        self._public_input_schema_version = getattr(
+            core,
+            "public_input_schema_version",
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        )
+        self._public_input_size = getattr(
+            core,
+            "public_input_size",
+            ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        )
+        self._learned_input_size = getattr(
+            core,
+            "learned_input_size",
+            (
+                self._public_input_size
+                + len(RECURRENT_ROLLOUT_ACTIONS)
+                + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+            ),
+        )
+        if self._public_input_schema_version not in {
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        }:
+            raise RecurrentRolloutError("core public input schema is unsupported")
+        if (
+            isinstance(self._public_input_size, bool)
+            or not isinstance(self._public_input_size, int)
+            or self._public_input_size <= 0
+        ):
+            raise RecurrentRolloutError("core public input size must be positive")
+        expected_learned_input_size = (
+            self._public_input_size
+            + len(RECURRENT_ROLLOUT_ACTIONS)
+            + RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE
+        )
+        if self._learned_input_size != expected_learned_input_size:
+            raise RecurrentRolloutError(
+                "core learned input size does not match its public input contract"
+            )
         self.buffer = buffer if buffer is not None else RecurrentRolloutBuffer()
         self._reset_recurrent_state_each_decision = reset_recurrent_state_each_decision
+        if fixed_batch_contract is not None and not isinstance(
+            fixed_batch_contract,
+            RecurrentFixedBatchRuntimeContract,
+        ):
+            raise RecurrentRolloutError(
+                "fixed_batch_contract must be a RecurrentFixedBatchRuntimeContract"
+            )
+        self._fixed_batch_contract = fixed_batch_contract
+        self._fixed_batch_runtime = (
+            None
+            if fixed_batch_contract is None
+            else _fixed_batch_runtime_binding(
+                fixed_batch_contract,
+                core=core,
+            )
+        )
         self._active_world_id: str | None = None
+        self._genome_world_identity: str | None = None
         self._environment_seed = 0
         self._policy_sampling_seed = 0
         self._rollout_ticks = 0
         self._bootstrap_phase = False
         self._rng = random.Random()
+        self._zero_previous_feedback = PreviousPublicFeedback.zero()
         self._decision_index = 0
         self._hidden_by_agent: dict[int, tuple[float, ...]] = {}
         self._feedback_by_agent: dict[int, PreviousPublicFeedback] = {}
         self._pending_by_agent: dict[int, PendingDecision] = {}
+        self._genome_population_manager: RecurrentGenomePopulationManager | None = None
+        self._staged_tick: int | None = None
+        self._next_fixed_batch_tick = 0
+        self._staged_by_agent: dict[int, StagedRecurrentDecision] = {}
+        self._bootstrap_value_rows: dict[int, dict[str, object]] = {}
+
+    @property
+    def last_bootstrap_evidence(self) -> dict[str, object]:
+        """Return canonical evidence for the active world's finite boundary."""
+
+        self._require_active_world()
+        return copy.deepcopy(self._build_bootstrap_evidence())
+
+    @property
+    def genome_conditioning_mode(self) -> str:
+        return self._genome_conditioning_mode
 
     def start_world(
         self,
         *,
         world_id: str,
+        genome_world_identity: str | None = None,
         rollout_ticks: int,
         environment_seed: int | None = None,
         policy_sampling_seed: int | None = None,
         seed: int | None = None,
+        genome_stream_seed: int | None = None,
+        genome_population_mode: RecurrentGenomePopulationMode | str | None = None,
     ) -> None:
         if self._active_world_id is not None:
             raise RecurrentRolloutError(
                 "finish the active world before starting another"
             )
+        self._validate_core_conditioning_mode_binding()
         if environment_seed is None:
             environment_seed = seed
         elif seed is not None and seed != environment_seed:
@@ -742,12 +1710,77 @@ class RecurrentOnPolicyCollector:
         )
         if isinstance(rollout_ticks, bool) or int(rollout_ticks) <= 0:
             raise RecurrentRolloutError("rollout_ticks must be positive")
+        genome_population_manager: RecurrentGenomePopulationManager | None = None
+        resolved_genome_world_identity = (
+            world_id if genome_world_identity is None else genome_world_identity
+        )
+        if (
+            not isinstance(resolved_genome_world_identity, str)
+            or not resolved_genome_world_identity
+            or resolved_genome_world_identity != resolved_genome_world_identity.strip()
+        ):
+            raise RecurrentRolloutError(
+                "genome_world_identity must be non-empty and trimmed"
+            )
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            if genome_stream_seed is not None:
+                raise RecurrentRolloutError(
+                    "disabled recurrent core cannot accept a genome stream seed"
+                )
+            if (
+                genome_population_mode is not None
+                and genome_population_mode != RecurrentGenomePopulationMode.DISABLED
+                and genome_population_mode
+                != RecurrentGenomePopulationMode.DISABLED.value
+            ):
+                raise RecurrentRolloutError(
+                    "disabled recurrent core cannot use an active genome population"
+                )
+        else:
+            parsed_genome_stream_seed = _genome_stream_seed(
+                genome_stream_seed,
+                field="genome_stream_seed",
+            )
+            parsed_population_mode = _active_genome_population_mode(
+                genome_population_mode
+            )
+            try:
+                genome_population_manager = RecurrentGenomePopulationManager(
+                    genome_stream_seed=parsed_genome_stream_seed,
+                    world_identity=resolved_genome_world_identity,
+                    mode=parsed_population_mode,
+                )
+            except RecurrentGenomePopulationError as exc:
+                raise RecurrentRolloutError(
+                    f"recurrent genome population setup failed: {exc}"
+                ) from exc
+        genome_provenance: dict[str, object] = {}
+        if genome_population_manager is not None:
+            genome_provenance = {
+                "genome_conditioning_mode": self._genome_conditioning_mode,
+                "genome_population_mode": genome_population_manager.mode,
+                "genome_stream_seed": genome_population_manager.genome_stream_seed,
+                "genome_population_binding_sha256": (
+                    genome_population_manager.binding_sha256
+                ),
+                "genome_population_pre_founder_state_sha256": (
+                    genome_population_manager.state_sha256
+                ),
+            }
         self.buffer.register_world(
             world_id,
+            genome_world_identity=(
+                resolved_genome_world_identity
+                if resolved_genome_world_identity != world_id
+                else None
+            ),
             environment_seed=environment_seed,
             policy_sampling_seed=policy_sampling_seed,
+            fixed_batch_runtime=self._fixed_batch_runtime,
+            **genome_provenance,
         )
         self._active_world_id = world_id
+        self._genome_world_identity = resolved_genome_world_identity
         self._environment_seed = int(environment_seed)
         self._policy_sampling_seed = policy_sampling_seed
         self._rollout_ticks = int(rollout_ticks)
@@ -757,21 +1790,560 @@ class RecurrentOnPolicyCollector:
         self._hidden_by_agent.clear()
         self._feedback_by_agent.clear()
         self._pending_by_agent.clear()
+        self._staged_tick = None
+        self._next_fixed_batch_tick = 0
+        self._staged_by_agent.clear()
+        self._bootstrap_value_rows.clear()
+        self._genome_population_manager = genome_population_manager
+
+    def contextual_founder_metadata(
+        self,
+        *,
+        agent_id: int,
+        trophic_role: object | None = None,
+        meat_mode: object | None = None,
+    ) -> dict[str, object]:
+        del trophic_role, meat_mode
+        return self.founder_metadata(agent_id=agent_id)
+
+    def founder_metadata(self, *, agent_id: int) -> dict[str, object]:
+        self._require_active_world()
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.founder_metadata(agent_id=agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent founder genome registration failed: {exc}"
+            ) from exc
+
+    def child_metadata(
+        self,
+        *,
+        child_agent_id: int,
+        primary_parent_id: int,
+        secondary_parent_id: int | None,
+    ) -> dict[str, object]:
+        self._require_active_world()
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(child_agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.child_metadata(
+                child_agent_id=child_agent_id,
+                primary_parent_id=primary_parent_id,
+                secondary_parent_id=secondary_parent_id,
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent child genome registration failed: {exc}"
+            ) from exc
 
     def finish_world(self) -> None:
         world_id = self._require_active_world()
+        if self._staged_tick is not None or self._staged_by_agent:
+            raise RecurrentRolloutError(
+                "world finished with an unclosed fixed recurrent batch tick"
+            )
         if self._pending_by_agent:
             raise RecurrentRolloutError(
                 "world finished with decisions that have no finalized transition"
             )
         self.buffer.validate_world_closed(world_id)
+        manager = self._genome_population_manager
+        if manager is not None:
+            final_state_sha256 = manager.state_sha256
+            self.buffer.finalize_world_genome_provenance(
+                world_id,
+                final_state_sha256=final_state_sha256,
+                reset_state_sha256=manager.empty_state_sha256,
+            )
+            manager.reset()
+            if manager.state_sha256 != manager.empty_state_sha256:
+                raise RecurrentRolloutError(
+                    "recurrent genome population reset state digest mismatch"
+                )
         self._hidden_by_agent.clear()
         self._feedback_by_agent.clear()
         self._pending_by_agent.clear()
+        self._staged_tick = None
+        self._staged_by_agent.clear()
+        self._genome_population_manager = None
         self._active_world_id = None
+        self._genome_world_identity = None
         self._environment_seed = 0
         self._policy_sampling_seed = 0
         self._bootstrap_phase = False
+
+    def finalize_action_free_bootstrap(
+        self,
+        *,
+        tick: int,
+        ordered_agent_ids: Sequence[int],
+        observations_by_agent: Mapping[int, Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Evaluate V(s_T) for every living agent without sampling an action.
+
+        Living agents with no scored decision (for example, reproduction on the
+        final scored tick) remain bound in the evidence but cannot enter PPO
+        target arrays.
+        """
+
+        world_id = self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        tick = _strict_int(tick, field="action-free bootstrap tick")
+        if tick != self._rollout_ticks:
+            raise RecurrentRolloutError(
+                "action-free bootstrap tick must equal rollout_ticks"
+            )
+        if self._pending_by_agent:
+            raise RecurrentRolloutError(
+                "action-free bootstrap cannot run over pending decisions"
+            )
+        ordered_ids = tuple(
+            _strict_int(agent_id, field="action-free bootstrap agent_id")
+            for agent_id in ordered_agent_ids
+        )
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise RecurrentRolloutError(
+                "action-free bootstrap agent order must be unique"
+            )
+        if set(observations_by_agent) != set(ordered_ids):
+            raise RecurrentRolloutError(
+                "action-free bootstrap observations must exactly cover living agents"
+            )
+        if not self._bootstrap_phase:
+            if ordered_ids:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap requires all scored ticks to be finalized"
+                )
+            self.buffer.validate_world_closed(world_id)
+        if ordered_ids:
+            expected_order = deterministic_agent_turn_order(
+                ordered_ids,
+                seed=self._environment_seed,
+                tick=tick,
+            )
+            if ordered_ids != expected_order:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap rows are not in deterministic turn order"
+                )
+        elif self._staged_tick is not None or self._staged_by_agent:
+            raise RecurrentRolloutError(
+                "empty action-free bootstrap contains staged recurrent rows"
+            )
+
+        state_before = self._action_free_policy_state()
+        value_rows: dict[int, dict[str, object]] = {}
+        prepared_value_rows: dict[
+            int,
+            tuple[tuple[float, ...], RecurrentCoreOutput, str | None],
+        ] = {}
+        try:
+            if (
+                ordered_ids
+                and self._fixed_batch_contract is not None
+                and self._staged_tick is None
+                and not self._staged_by_agent
+            ):
+                self.stage_tick_start_batch(
+                    tick=tick,
+                    ordered_agent_ids=ordered_ids,
+                    observations_by_agent=observations_by_agent,
+                )
+            for agent_id in ordered_ids:
+                observation = observations_by_agent[agent_id]
+                if self._fixed_batch_contract is None:
+                    (
+                        policy_input,
+                        mask,
+                        hidden,
+                        previous_feedback,
+                        genome_values,
+                        genome_sha256,
+                        genome_stream_seed,
+                    ) = self._decision_inputs(
+                        observation,
+                        _mapping(
+                            observation.get("action_mask"),
+                            field="action_mask",
+                        ),
+                        expected_agent_id=agent_id,
+                    )
+                    if (
+                        self._genome_conditioning_mode
+                        == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                    ):
+                        raw_output = self._core.forward_step(
+                            policy_input,
+                            mask,
+                            previous_feedback,
+                            hidden,
+                            genome_values=genome_values,
+                        )
+                    else:
+                        raw_output = self._core.forward_step(
+                            policy_input,
+                            mask,
+                            previous_feedback,
+                            hidden,
+                        )
+                    output = self._validated_core_output(raw_output)
+                else:
+                    if self._staged_tick != tick:
+                        raise RecurrentRolloutError(
+                            "action-free bootstrap fixed batch tick drifted"
+                        )
+                    staged = self._consume_staged_decision(
+                        observation=observation,
+                        action_mask=_mapping(
+                            observation.get("action_mask"),
+                            field="action_mask",
+                        ),
+                        expected_agent_id=agent_id,
+                        missing_error=(
+                            f"agent {agent_id} has no staged bootstrap value"
+                        ),
+                        observation_drift_error=(
+                            "action-free bootstrap staged observation drifted"
+                        ),
+                        state_drift_error=(
+                            "action-free bootstrap staged inputs drifted"
+                        ),
+                    )
+                    policy_input = staged.policy_input
+                    mask = staged.action_mask
+                    hidden = staged.hidden
+                    previous_feedback = staged.previous_feedback
+                    genome_values = staged.genome_values
+                    genome_sha256 = staged.genome_sha256
+                    output = staged.output
+                prepared_value_rows[agent_id] = (
+                    policy_input,
+                    output,
+                    genome_sha256,
+                )
+            planned_truncations, target_eligibility = (
+                self.buffer._plan_truncated_batch(
+                    world_id=world_id,
+                    bootstrap_values_by_agent={
+                        agent_id: output.value
+                        for agent_id, (
+                            _policy_input,
+                            output,
+                            _genome_sha256,
+                        ) in prepared_value_rows.items()
+                    },
+                )
+            )
+            for agent_id, (
+                policy_input,
+                output,
+                genome_sha256,
+            ) in prepared_value_rows.items():
+                value_rows[agent_id] = _bootstrap_value_evidence_row(
+                    agent_id=agent_id,
+                    policy_input=policy_input,
+                    value=output.value,
+                    target_eligible=target_eligibility[agent_id],
+                    genome_sha256=genome_sha256,
+                )
+            if self._staged_by_agent:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap left staged recurrent rows"
+                )
+            state_after = self._action_free_policy_state()
+            if state_after != state_before:
+                raise RecurrentRolloutError(
+                    "action-free bootstrap mutated policy, RNG, or genome state"
+                )
+            evidence = copy.deepcopy(
+                self._build_bootstrap_evidence(value_rows)
+            )
+            self.buffer._apply_truncated_batch(planned_truncations)
+            self._staged_tick = None
+            self._next_fixed_batch_tick = tick + 1
+            self._bootstrap_value_rows = value_rows
+            return evidence
+        except Exception:
+            self._staged_tick = None
+            self._staged_by_agent.clear()
+            raise
+
+    def stage_tick_start_batch(
+        self,
+        *,
+        tick: int,
+        ordered_agent_ids: Sequence[int],
+        observations_by_agent: Mapping[int, Mapping[str, object]],
+    ) -> None:
+        """Defensively stage rows supplied by a generic external caller."""
+
+        self._stage_tick_start_batch(
+            tick=tick,
+            ordered_agent_ids=ordered_agent_ids,
+            observations_by_agent=observations_by_agent,
+            runtime_owned_tick_start=False,
+            runtime_owned_observation_integrity_sha256_by_agent=None,
+        )
+
+    def _stage_runtime_owned_tick_start_batch(
+        self,
+        runtime_owned_tick_start: RuntimeOwnedPolicyTickStart,
+    ) -> None:
+        """Stage the exact owned snapshot/order created by runtime.ticks."""
+
+        self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        if self._fixed_batch_contract is None:
+            discard_runtime_owned_policy_tick_start(runtime_owned_tick_start)
+            return
+        try:
+            validated = validate_runtime_owned_policy_tick_start(
+                runtime_owned_tick_start,
+                environment_seed=self._environment_seed,
+                tick=self._next_fixed_batch_tick,
+            )
+        except (AttributeError, ValueError) as exc:
+            raise RecurrentRolloutError(
+                "runtime-owned fixed batch tick-start witness is invalid"
+            ) from exc
+        self._stage_tick_start_batch(
+            tick=validated.tick,
+            ordered_agent_ids=validated.ordered_agent_ids,
+            observations_by_agent=validated.observation_snapshots,
+            runtime_owned_tick_start=True,
+            runtime_owned_observation_integrity_sha256_by_agent=(
+                validated._observation_integrity_sha256_by_agent
+            ),
+        )
+
+    def _stage_tick_start_batch(
+        self,
+        *,
+        tick: int,
+        ordered_agent_ids: Sequence[int],
+        observations_by_agent: Mapping[int, Mapping[str, object]],
+        runtime_owned_tick_start: bool,
+        runtime_owned_observation_integrity_sha256_by_agent: (
+            Mapping[int, str] | None
+        ),
+    ) -> None:
+        """Stage pure recurrent outputs in the simulator's exact turn order."""
+
+        self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        contract = self._fixed_batch_contract
+        if contract is None:
+            return
+        if self._staged_tick is not None or self._staged_by_agent:
+            raise RecurrentRolloutError(
+                "previous fixed recurrent batch tick was not reconciled"
+            )
+        tick = _strict_int(tick, field="fixed batch tick")
+        if not 0 <= tick <= self._rollout_ticks:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch tick is outside rollout/bootstrap horizon"
+            )
+        if tick != self._next_fixed_batch_tick:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch tick is not the next policy-visible tick"
+            )
+        ordered_ids = tuple(
+            _strict_int(agent_id, field="fixed batch agent_id")
+            for agent_id in ordered_agent_ids
+        )
+        if not ordered_ids or len(set(ordered_ids)) != len(ordered_ids):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch turn order must be non-empty and unique"
+            )
+        if not runtime_owned_tick_start:
+            expected_order = deterministic_agent_turn_order(
+                ordered_ids,
+                seed=self._environment_seed,
+                tick=tick,
+            )
+            if ordered_ids != expected_order:
+                raise RecurrentRolloutError(
+                    "fixed recurrent batch rows are not in deterministic hash turn "
+                    "order"
+                )
+        if len(ordered_ids) > contract.batch_capacity:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch active rows exceed configured capacity"
+            )
+        execution_batch_rows = _fixed_batch_execution_rows(
+            active_rows=len(ordered_ids),
+            batch_capacity=contract.batch_capacity,
+        )
+        if set(observations_by_agent) != set(ordered_ids):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch observations do not exactly cover turn order"
+            )
+        if runtime_owned_tick_start:
+            if (
+                runtime_owned_observation_integrity_sha256_by_agent is None
+                or set(runtime_owned_observation_integrity_sha256_by_agent)
+                != set(ordered_ids)
+            ):
+                raise RecurrentRolloutError(
+                    "runtime-owned observation integrity coverage drifted"
+                )
+        elif runtime_owned_observation_integrity_sha256_by_agent is not None:
+            raise RecurrentRolloutError(
+                "generic fixed-batch staging cannot supply runtime-owned integrity"
+            )
+        if self._pending_by_agent:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch cannot stage over unfinalized decisions"
+            )
+
+        policy_inputs: list[tuple[float, ...]] = []
+        observation_snapshots: list[dict[str, object]] = []
+        masks: list[tuple[bool, ...]] = []
+        feedback_rows: list[PreviousPublicFeedback] = []
+        hidden_rows: list[tuple[float, ...]] = []
+        genome_rows: list[tuple[float, ...]] = []
+        genome_bindings: list[tuple[str | None, int | None]] = []
+        for agent_id in ordered_ids:
+            candidate_observation = observations_by_agent[agent_id]
+            if runtime_owned_tick_start:
+                if type(candidate_observation) is not dict:
+                    raise RecurrentRolloutError(
+                        "runtime-owned fixed batch observations must be exact dicts"
+                    )
+                # runtime.ticks creates this dict solely for the policy-visible
+                # tick-start and passes the identical object to decide(). No
+                # simulator phase mutates the snapshot between those calls.
+                observation = candidate_observation
+            else:
+                # Generic callers retain the full nested drift guard.
+                observation = copy.deepcopy(dict(candidate_observation))
+            (
+                policy_input,
+                mask,
+                hidden,
+                previous_feedback,
+                genome_values,
+                genome_sha256,
+                genome_stream_seed,
+            ) = self._decision_inputs(
+                observation,
+                _mapping(observation.get("action_mask"), field="action_mask"),
+                expected_agent_id=agent_id,
+            )
+            observation_snapshots.append(observation)
+            policy_inputs.append(policy_input)
+            masks.append(mask)
+            feedback_rows.append(previous_feedback)
+            hidden_rows.append(hidden)
+            if genome_values is not None:
+                genome_rows.append(genome_values)
+            genome_bindings.append((genome_sha256, genome_stream_seed))
+
+        forward_batch = getattr(self._core, "forward_fixed_batch", None)
+        if not callable(forward_batch):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch core has no forward_fixed_batch implementation"
+            )
+        raw_outputs = forward_batch(
+            tuple(policy_inputs),
+            tuple(masks),
+            tuple(feedback_rows),
+            tuple(hidden_rows),
+            batch_capacity=contract.batch_capacity,
+            execution_batch_rows=execution_batch_rows,
+            genome_values=(
+                tuple(genome_rows)
+                if self._genome_conditioning_mode
+                == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+                else None
+            ),
+        )
+        if not isinstance(raw_outputs, Sequence) or isinstance(
+            raw_outputs,
+            (str, bytes),
+        ):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch core output must be an ordered sequence"
+            )
+        if len(raw_outputs) != len(ordered_ids):
+            raise RecurrentRolloutError(
+                "fixed recurrent batch core output row count drifted"
+            )
+        staged: dict[int, StagedRecurrentDecision] = {}
+        for turn_rank, (agent_id, raw_output) in enumerate(
+            zip(ordered_ids, raw_outputs, strict=True)
+        ):
+            if not isinstance(raw_output, RecurrentCoreOutput):
+                raise RecurrentRolloutError(
+                    "fixed recurrent batch core emitted an invalid row"
+                )
+            genome_sha256, genome_stream_seed = genome_bindings[turn_rank]
+            staged[agent_id] = StagedRecurrentDecision(
+                tick=tick,
+                turn_rank=turn_rank,
+                active_rows=len(ordered_ids),
+                execution_batch_rows=execution_batch_rows,
+                observation_snapshot=observation_snapshots[turn_rank],
+                observation_identity_guard=runtime_owned_tick_start,
+                observation_integrity_sha256=(
+                    runtime_owned_observation_integrity_sha256_by_agent[agent_id]
+                    if runtime_owned_observation_integrity_sha256_by_agent is not None
+                    else None
+                ),
+                policy_input=policy_inputs[turn_rank],
+                previous_feedback=feedback_rows[turn_rank],
+                action_mask=masks[turn_rank],
+                hidden=hidden_rows[turn_rank],
+                output=self._validated_core_output(raw_output),
+                genome_values=(genome_rows[turn_rank] if genome_rows else None),
+                genome_sha256=genome_sha256,
+                genome_stream_seed=genome_stream_seed,
+            )
+        self._staged_tick = tick
+        self._staged_by_agent = staged
+
+    def reconcile_live_agent_ids(
+        self,
+        *,
+        live_agent_ids: Sequence[int],
+    ) -> None:
+        self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
+        self._reconcile_staged_tick(live_agent_ids=live_agent_ids)
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return
+        manager = self._require_genome_population_manager()
+        try:
+            planned_dead_agent_ids = manager.reconciliation_dead_agent_ids(
+                live_agent_ids
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"recurrent genome live-agent reconciliation failed: {exc}"
+            ) from exc
+        pending_dead_agent_ids = tuple(
+            agent_id
+            for agent_id in planned_dead_agent_ids
+            if agent_id in self._pending_by_agent
+        )
+        if pending_dead_agent_ids:
+            raise RecurrentRolloutError(
+                "recurrent genome reconciliation found dead agents with "
+                f"unfinalized decisions: {list(pending_dead_agent_ids)}"
+            )
+        discarded_agent_ids = manager.reconcile_live_agent_ids(live_agent_ids)
+        if discarded_agent_ids != planned_dead_agent_ids:
+            raise RecurrentRolloutError(
+                "recurrent genome reconciliation plan changed before apply"
+            )
+        for agent_id in discarded_agent_ids:
+            self._hidden_by_agent.pop(agent_id, None)
+            self._feedback_by_agent.pop(agent_id, None)
 
     def decide(
         self,
@@ -779,36 +2351,71 @@ class RecurrentOnPolicyCollector:
         action_mask: dict[str, bool],
     ) -> ActionDecision:
         world_id = self._require_active_world()
+        self._validate_core_conditioning_mode_binding()
         agent_id = _agent_id_from_observation(observation)
         if agent_id in self._pending_by_agent:
             raise RecurrentRolloutError(
                 f"agent {agent_id} has an unfinalized previous decision"
             )
-        policy_input = ecological_policy_input_values(
-            encode_observation_input(observation)
-        )
-        if len(policy_input) != ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE:
-            raise RecurrentRolloutError("ecological policy input size drifted")
-        mask = _action_mask_tuple(action_mask)
-        hidden = (
-            None
-            if self._reset_recurrent_state_each_decision
-            else self._hidden_by_agent.get(agent_id)
-        )
-        if hidden is None:
-            hidden = self._initial_hidden()
-        previous_feedback = self._feedback_by_agent.get(
-            agent_id,
-            PreviousPublicFeedback.zero(),
-        )
-        output = self._validated_core_output(
-            self._core.forward_step(
+        staged = None
+        if self._fixed_batch_contract is not None:
+            if self._staged_tick is None:
+                raise RecurrentRolloutError(
+                    "fixed recurrent batch decision has no staged tick-start output"
+                )
+            staged = self._consume_staged_decision(
+                observation=observation,
+                action_mask=action_mask,
+                expected_agent_id=agent_id,
+                missing_error=(f"agent {agent_id} has no staged fixed-batch output"),
+                observation_drift_error=(
+                    "fixed recurrent batch staged observation drifted before sampling"
+                ),
+                state_drift_error=(
+                    "fixed recurrent batch staged inputs drifted before sampling"
+                ),
+            )
+            policy_input = staged.policy_input
+            mask = staged.action_mask
+            hidden = staged.hidden
+            previous_feedback = staged.previous_feedback
+            genome_values = staged.genome_values
+            genome_sha256 = staged.genome_sha256
+            genome_stream_seed = staged.genome_stream_seed
+            output = staged.output
+        else:
+            (
                 policy_input,
                 mask,
-                previous_feedback,
                 hidden,
+                previous_feedback,
+                genome_values,
+                genome_sha256,
+                genome_stream_seed,
+            ) = self._decision_inputs(
+                observation,
+                action_mask,
+                expected_agent_id=agent_id,
             )
-        )
+            if (
+                self._genome_conditioning_mode
+                == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+            ):
+                raw_output = self._core.forward_step(
+                    policy_input,
+                    mask,
+                    previous_feedback,
+                    hidden,
+                    genome_values=genome_values,
+                )
+            else:
+                raw_output = self._core.forward_step(
+                    policy_input,
+                    mask,
+                    previous_feedback,
+                    hidden,
+                )
+            output = self._validated_core_output(raw_output)
         action_index, logprob, entropy = _sample_masked_action(
             output.logits,
             mask,
@@ -835,40 +2442,98 @@ class RecurrentOnPolicyCollector:
             value=output.value,
             hidden=hidden,
             next_hidden=output.next_hidden,
+            genome_values=genome_values,
+            genome_sha256=genome_sha256,
+            genome_stream_seed=genome_stream_seed,
+            fixed_batch_runtime_sha256=(
+                None
+                if self._fixed_batch_runtime is None
+                else str(self._fixed_batch_runtime["exact_digest"])
+            ),
+            fixed_batch_turn_rank=(None if staged is None else staged.turn_rank),
+            fixed_batch_active_rows=(None if staged is None else staged.active_rows),
+            fixed_batch_execution_rows=(
+                None if staged is None else staged.execution_batch_rows
+            ),
+            fixed_batch_capacity=(
+                None
+                if self._fixed_batch_contract is None
+                else self._fixed_batch_contract.batch_capacity
+            ),
         )
         self._pending_by_agent[agent_id] = pending
         if not self._reset_recurrent_state_each_decision:
             self._hidden_by_agent[agent_id] = output.next_hidden
+        diagnostics: dict[str, object] = {
+            "schema_version": (
+                _rollout_diagnostic_schema(
+                    genome_conditioned=genome_values is not None,
+                    fixed_batch=staged is not None,
+                )
+            ),
+            "world_id": world_id,
+            "environment_seed": self._environment_seed,
+            "policy_sampling_seed": self._policy_sampling_seed,
+            "policy_sampling_seed_namespace": (
+                RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE
+            ),
+            "decision_index": decision_index,
+            "agent_id": agent_id,
+            "phase": tick_phase,
+            "policy_input_schema_version": self._public_input_schema_version,
+            "policy_input_size": self._public_input_size,
+            "learned_input_size": self._learned_input_size,
+            "previous_feedback_schema_version": (
+                RECURRENT_PUBLIC_FEEDBACK_SCHEMA_VERSION
+            ),
+            "previous_feedback_available": previous_feedback.available,
+            "recurrent_state_reset_each_decision": (
+                self._reset_recurrent_state_each_decision
+            ),
+            "action_index": action_index,
+            "logprob": round(logprob, 12),
+            "value": round(output.value, 12),
+        }
+        if genome_values is not None:
+            manager = self._require_genome_population_manager()
+            diagnostics.update(
+                {
+                    "genome_conditioning_mode": self._genome_conditioning_mode,
+                    "genome_population_mode": manager.mode.value,
+                    "genome_population_binding_sha256": manager.binding_sha256,
+                    "genome_sha256": genome_sha256,
+                    "genome_stream_seed": genome_stream_seed,
+                }
+            )
+        if staged is not None:
+            if self._fixed_batch_runtime is None or self._fixed_batch_contract is None:
+                raise AssertionError("fixed batch runtime binding disappeared")
+            diagnostics["fixed_batch"] = {
+                "runtime_schema_version": (
+                    RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION
+                ),
+                "runtime_exact_digest": self._fixed_batch_runtime["exact_digest"],
+                "batch_capacity": self._fixed_batch_contract.batch_capacity,
+                "active_rows": staged.active_rows,
+                "execution_batch_rows": staged.execution_batch_rows,
+                "padding_rows": (
+                    staged.execution_batch_rows - staged.active_rows
+                ),
+                "unused_capacity_rows": (
+                    self._fixed_batch_contract.batch_capacity
+                    - staged.execution_batch_rows
+                ),
+                "turn_rank": staged.turn_rank,
+                "row_order_policy": RECURRENT_FIXED_BATCH_ROW_ORDER_POLICY,
+                "sequential_sampling": True,
+                "sequential_resolution": True,
+            }
         return ActionDecision(
             requested_action=requested_action,
             source=RECURRENT_ROLLOUT_ACTION_SOURCE,
             policy_id=self.policy_id,
             policy_version=self.policy_version,
-            diagnostics={
-                "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
-                "world_id": world_id,
-                "environment_seed": self._environment_seed,
-                "policy_sampling_seed": self._policy_sampling_seed,
-                "policy_sampling_seed_namespace": (
-                    RECURRENT_POLICY_SAMPLING_SEED_NAMESPACE
-                ),
-                "decision_index": decision_index,
-                "agent_id": agent_id,
-                "phase": tick_phase,
-                "policy_input_schema_version": (ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION),
-                "policy_input_size": ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
-                "learned_input_size": RECURRENT_LEARNED_INPUT_VECTOR_SIZE,
-                "previous_feedback_schema_version": (
-                    RECURRENT_PUBLIC_FEEDBACK_SCHEMA_VERSION
-                ),
-                "previous_feedback_available": previous_feedback.available,
-                "recurrent_state_reset_each_decision": (
-                    self._reset_recurrent_state_each_decision
-                ),
-                "action_index": action_index,
-                "logprob": round(logprob, 12),
-                "value": round(output.value, 12),
-            },
+            diagnostics=diagnostics,
         )
 
     def observe_transition(
@@ -893,21 +2558,53 @@ class RecurrentOnPolicyCollector:
 
         self._validate_alignment(record, pending=pending, tick=tick)
         if pending.tick_phase == "bootstrap":
-            self.buffer.mark_truncated(
+            target_eligible = self.buffer.mark_truncated(
                 world_id=world_id,
                 agent_id=agent_id,
                 bootstrap_value=pending.value,
             )
+            self._bootstrap_value_rows[agent_id] = _bootstrap_value_evidence_row(
+                agent_id=agent_id,
+                policy_input=pending.observation,
+                value=pending.value,
+                target_eligible=target_eligible,
+                genome_sha256=pending.genome_sha256,
+            )
+            if _record_terminated(record):
+                self._discard_terminal_genome(agent_id)
             self._hidden_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
-            return {
-                "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
+            update_trace: dict[str, object] = {
+                "schema_version": _rollout_diagnostic_schema(
+                    genome_conditioned=pending.genome_values is not None,
+                    fixed_batch=pending.fixed_batch_runtime_sha256 is not None,
+                ),
                 "decision_index": pending.decision_index,
                 "phase": "bootstrap",
                 "collected": False,
                 "environment_seed": pending.environment_seed,
                 "policy_sampling_seed": pending.policy_sampling_seed,
             }
+            if pending.genome_values is not None:
+                update_trace.update(
+                    {
+                        "genome_conditioning_mode": (self._genome_conditioning_mode),
+                        "genome_sha256": pending.genome_sha256,
+                        "genome_stream_seed": pending.genome_stream_seed,
+                    }
+                )
+            if pending.fixed_batch_runtime_sha256 is not None:
+                update_trace.update(
+                    {
+                        "fixed_batch_runtime_sha256": (
+                            pending.fixed_batch_runtime_sha256
+                        ),
+                        "fixed_batch_execution_rows": (
+                            pending.fixed_batch_execution_rows
+                        ),
+                    }
+                )
+            return update_trace
 
         if tick >= self._rollout_ticks:
             raise RecurrentRolloutError(
@@ -956,19 +2653,31 @@ class RecurrentOnPolicyCollector:
             terminated=terminated,
             environment_seed=pending.environment_seed,
             policy_sampling_seed=pending.policy_sampling_seed,
+            genome_values=pending.genome_values,
+            genome_sha256=pending.genome_sha256,
+            genome_stream_seed=pending.genome_stream_seed,
+            fixed_batch_runtime_sha256=pending.fixed_batch_runtime_sha256,
+            fixed_batch_turn_rank=pending.fixed_batch_turn_rank,
+            fixed_batch_active_rows=pending.fixed_batch_active_rows,
+            fixed_batch_execution_rows=pending.fixed_batch_execution_rows,
+            fixed_batch_capacity=pending.fixed_batch_capacity,
         )
         self.buffer.append(step)
         if terminated:
+            self._discard_terminal_genome(agent_id)
             self._hidden_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
-        else:
+        elif not self._reset_recurrent_state_each_decision:
             self._feedback_by_agent[agent_id] = PreviousPublicFeedback.from_record(
                 record
             )
         if tick == self._rollout_ticks - 1:
             self._bootstrap_phase = True
-        return {
-            "schema_version": RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
+        update_trace = {
+            "schema_version": _rollout_diagnostic_schema(
+                genome_conditioned=pending.genome_values is not None,
+                fixed_batch=pending.fixed_batch_runtime_sha256 is not None,
+            ),
             "decision_index": pending.decision_index,
             "phase": "rollout",
             "collected": True,
@@ -976,6 +2685,26 @@ class RecurrentOnPolicyCollector:
             "environment_seed": pending.environment_seed,
             "policy_sampling_seed": pending.policy_sampling_seed,
         }
+        if pending.genome_values is not None:
+            update_trace.update(
+                {
+                    "genome_conditioning_mode": self._genome_conditioning_mode,
+                    "genome_sha256": pending.genome_sha256,
+                    "genome_stream_seed": pending.genome_stream_seed,
+                }
+            )
+        if pending.fixed_batch_runtime_sha256 is not None:
+            update_trace.update(
+                {
+                    "fixed_batch_runtime_sha256": (
+                        pending.fixed_batch_runtime_sha256
+                    ),
+                    "fixed_batch_execution_rows": (
+                        pending.fixed_batch_execution_rows
+                    ),
+                }
+            )
+        return update_trace
 
     def _observe_passive_record(
         self,
@@ -996,6 +2725,7 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError(
                 "passive terminal arrived beyond the one-tick bootstrap boundary"
             )
+        self._require_live_genome_if_conditioned(agent_id)
         reward, reward_components = _reward_payload(record)
         self.buffer.mark_passive_terminal(
             world_id=world_id,
@@ -1004,6 +2734,7 @@ class RecurrentOnPolicyCollector:
             reward=reward,
             reward_components=reward_components,
         )
+        self._discard_terminal_genome(agent_id)
         self._hidden_by_agent.pop(agent_id, None)
         self._feedback_by_agent.pop(agent_id, None)
 
@@ -1018,10 +2749,12 @@ class RecurrentOnPolicyCollector:
             record.get("policy_decision_diagnostics"),
             field="policy_decision_diagnostics",
         )
-        if (
-            diagnostics.get("schema_version")
-            != RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
-        ):
+        self._validate_pending_genome(pending)
+        expected_diagnostic_schema = _rollout_diagnostic_schema(
+            genome_conditioned=pending.genome_values is not None,
+            fixed_batch=pending.fixed_batch_runtime_sha256 is not None,
+        )
+        if diagnostics.get("schema_version") != expected_diagnostic_schema:
             raise RecurrentRolloutError(
                 "transition decision diagnostic schema mismatch"
             )
@@ -1046,6 +2779,54 @@ class RecurrentOnPolicyCollector:
             raise RecurrentRolloutError("transition decision_index does not match")
         if diagnostics.get("phase") != pending.tick_phase:
             raise RecurrentRolloutError("transition phase does not match decision")
+        if pending.fixed_batch_runtime_sha256 is not None:
+            fixed_batch = _mapping(
+                diagnostics.get("fixed_batch"),
+                field="fixed_batch",
+            )
+            expected_fixed_batch = {
+                "runtime_schema_version": (
+                    RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION
+                ),
+                "runtime_exact_digest": pending.fixed_batch_runtime_sha256,
+                "batch_capacity": pending.fixed_batch_capacity,
+                "active_rows": pending.fixed_batch_active_rows,
+                "execution_batch_rows": pending.fixed_batch_execution_rows,
+                "padding_rows": (
+                    int(pending.fixed_batch_execution_rows)
+                    - int(pending.fixed_batch_active_rows)
+                ),
+                "unused_capacity_rows": (
+                    int(pending.fixed_batch_capacity)
+                    - int(pending.fixed_batch_execution_rows)
+                ),
+                "turn_rank": pending.fixed_batch_turn_rank,
+                "row_order_policy": RECURRENT_FIXED_BATCH_ROW_ORDER_POLICY,
+                "sequential_sampling": True,
+                "sequential_resolution": True,
+            }
+            if dict(fixed_batch) != expected_fixed_batch:
+                raise RecurrentRolloutError(
+                    "transition fixed-batch diagnostics do not match decision"
+                )
+        elif "fixed_batch" in diagnostics:
+            raise RecurrentRolloutError(
+                "scalar transition unexpectedly contains fixed-batch diagnostics"
+            )
+        if pending.genome_values is not None:
+            manager = self._require_genome_population_manager()
+            expected_genome_diagnostics = {
+                "genome_conditioning_mode": self._genome_conditioning_mode,
+                "genome_population_mode": manager.mode.value,
+                "genome_population_binding_sha256": manager.binding_sha256,
+                "genome_sha256": pending.genome_sha256,
+                "genome_stream_seed": pending.genome_stream_seed,
+            }
+            for key, expected_value in expected_genome_diagnostics.items():
+                if diagnostics.get(key) != expected_value:
+                    raise RecurrentRolloutError(
+                        f"transition {key} does not match decision"
+                    )
         if record.get("policy_id") != self.policy_id:
             raise RecurrentRolloutError("transition policy_id does not match collector")
         if record.get("policy_version") != self.policy_version:
@@ -1071,6 +2852,260 @@ class RecurrentOnPolicyCollector:
                 "bootstrap decision finalized at unexpected tick: "
                 f"expected={expected_bootstrap_tick} actual={tick}"
             )
+
+    def _decision_inputs(
+        self,
+        observation: Mapping[str, object],
+        action_mask: Mapping[str, object],
+        *,
+        expected_agent_id: int,
+    ) -> tuple[
+        tuple[float, ...],
+        tuple[bool, ...],
+        tuple[float, ...],
+        PreviousPublicFeedback,
+        tuple[float, ...] | None,
+        str | None,
+        int | None,
+    ]:
+        observed_agent_id = _agent_id_from_observation(observation)
+        if observed_agent_id != expected_agent_id:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch observation agent identity drifted"
+            )
+        policy_input = (
+            ecological_policy_values_from_observation(dict(observation))
+            if self._fixed_batch_contract is not None
+            else ecological_policy_input_values(
+                encode_observation_input(dict(observation))
+            )
+        )
+        observed_schema_version = (
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            if observation.get("schema_version")
+            == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+            else ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+        )
+        if observed_schema_version != self._public_input_schema_version:
+            raise RecurrentRolloutError(
+                "ecological policy input schema does not match the recurrent core"
+            )
+        if len(policy_input) != self._public_input_size:
+            raise RecurrentRolloutError(
+                "ecological policy input size does not match the recurrent core: "
+                f"{len(policy_input)} != {self._public_input_size}"
+            )
+        mask = _action_mask_tuple(action_mask)
+        (
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) = self._decision_state_inputs(expected_agent_id)
+        return (
+            tuple(policy_input),
+            mask,
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        )
+
+    def _decision_state_inputs(
+        self,
+        expected_agent_id: int,
+    ) -> tuple[
+        tuple[float, ...],
+        PreviousPublicFeedback,
+        tuple[float, ...] | None,
+        str | None,
+        int | None,
+    ]:
+        hidden = (
+            None
+            if self._reset_recurrent_state_each_decision
+            else self._hidden_by_agent.get(expected_agent_id)
+        )
+        if hidden is None:
+            hidden = self._initial_hidden()
+        previous_feedback = (
+            self._zero_previous_feedback
+            if self._reset_recurrent_state_each_decision
+            else self._feedback_by_agent.get(
+                expected_agent_id,
+                self._zero_previous_feedback,
+            )
+        )
+        genome_values: tuple[float, ...] | None = None
+        genome_sha256: str | None = None
+        genome_stream_seed: int | None = None
+        if (
+            self._genome_conditioning_mode
+            == RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            manager = self._require_genome_population_manager()
+            try:
+                binding = manager.genome_binding_for_agent(expected_agent_id)
+            except RecurrentGenomePopulationError as exc:
+                raise RecurrentRolloutError(
+                    f"recurrent genome lookup failed before decision: {exc}"
+                ) from exc
+            genome_values = binding.genome.values
+            genome_sha256 = binding.genome_sha256
+            genome_stream_seed = manager.genome_stream_seed
+        return (
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        )
+
+    def _consume_staged_decision(
+        self,
+        *,
+        observation: Mapping[str, object],
+        action_mask: Mapping[str, object],
+        expected_agent_id: int,
+        missing_error: str,
+        observation_drift_error: str,
+        state_drift_error: str,
+    ) -> StagedRecurrentDecision:
+        staged = self._staged_by_agent.get(expected_agent_id)
+        if staged is None:
+            raise RecurrentRolloutError(missing_error)
+        if staged.observation_identity_guard:
+            try:
+                observed_integrity_sha256 = (
+                    _runtime_owned_observation_integrity_sha256(
+                        staged.observation_snapshot
+                    )
+                )
+            except ValueError:
+                observed_integrity_sha256 = None
+            if (
+                observation is not staged.observation_snapshot
+                or staged.observation_integrity_sha256 is None
+                or observed_integrity_sha256
+                != staged.observation_integrity_sha256
+            ):
+                raise RecurrentRolloutError(observation_drift_error)
+        else:
+            if (
+                staged.observation_integrity_sha256 is not None
+                or dict(observation) != staged.observation_snapshot
+            ):
+                raise RecurrentRolloutError(observation_drift_error)
+        mask = _action_mask_tuple(action_mask)
+        (
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) = self._decision_state_inputs(expected_agent_id)
+        if (
+            mask,
+            hidden,
+            previous_feedback,
+            genome_values,
+            genome_sha256,
+            genome_stream_seed,
+        ) != (
+            staged.action_mask,
+            staged.hidden,
+            staged.previous_feedback,
+            staged.genome_values,
+            staged.genome_sha256,
+            staged.genome_stream_seed,
+        ):
+            raise RecurrentRolloutError(state_drift_error)
+        consumed = self._staged_by_agent.pop(expected_agent_id)
+        if consumed is not staged:
+            raise AssertionError("staged recurrent decision changed before consume")
+        return staged
+
+    def _reconcile_staged_tick(
+        self,
+        *,
+        live_agent_ids: Sequence[int],
+    ) -> None:
+        if self._fixed_batch_contract is None:
+            if self._staged_tick is not None or self._staged_by_agent:
+                raise RecurrentRolloutError(
+                    "scalar recurrent collector contains fixed-batch state"
+                )
+            return
+        if self._staged_tick is None:
+            raise RecurrentRolloutError(
+                "fixed recurrent batch tick ended without a staged forward"
+            )
+        live_ids = {
+            _strict_int(agent_id, field="live agent_id") for agent_id in live_agent_ids
+        }
+        live_unconsumed = sorted(live_ids.intersection(self._staged_by_agent))
+        if live_unconsumed:
+            raise RecurrentRolloutError(
+                "live agents reached fixed-batch reconciliation without sampling: "
+                f"{live_unconsumed}"
+            )
+        self._staged_by_agent.clear()
+        self._staged_tick = None
+        self._next_fixed_batch_tick += 1
+
+    def _build_bootstrap_evidence(
+        self,
+        bootstrap_value_rows: Mapping[int, Mapping[str, object]] | None = None,
+    ) -> dict[str, object]:
+        source_rows = (
+            self._bootstrap_value_rows
+            if bootstrap_value_rows is None
+            else bootstrap_value_rows
+        )
+        values = [
+            copy.deepcopy(source_rows[agent_id])
+            for agent_id in sorted(source_rows)
+        ]
+        zero_decision_alive_agent_ids = [
+            int(row["agent_id"]) for row in values if row["target_eligible"] is False
+        ]
+        payload: dict[str, object] = {
+            "schema_version": RECURRENT_ACTION_FREE_BOOTSTRAP_SCHEMA_VERSION,
+            "world_id": self._require_active_world(),
+            "tick": self._rollout_ticks,
+            "boundary": (
+                "exact_policy_visible_tick_start_before_action_v1"
+                if self._bootstrap_phase
+                else "terminal_before_horizon_no_bootstrap_v1"
+            ),
+            "action_sampled": False,
+            "action_committed": False,
+            "action_resolved": False,
+            "alive_agent_count": len(values),
+            "target_eligible_agent_count": (
+                len(values) - len(zero_decision_alive_agent_ids)
+            ),
+            "zero_decision_alive_agent_count": len(zero_decision_alive_agent_ids),
+            "zero_decision_alive_agent_ids": zero_decision_alive_agent_ids,
+            "values": values,
+        }
+        payload["exact_digest"] = _stable_payload_sha256(payload)
+        return payload
+
+    def _action_free_policy_state(self) -> dict[str, object]:
+        manager = self._genome_population_manager
+        return {
+            "decision_index": self._decision_index,
+            "sampling_rng_state": copy.deepcopy(self._rng.getstate()),
+            "hidden_by_agent": copy.deepcopy(self._hidden_by_agent),
+            "feedback_by_agent": copy.deepcopy(self._feedback_by_agent),
+            "pending_by_agent": copy.deepcopy(self._pending_by_agent),
+            "genome_population_state_sha256": (
+                None if manager is None else manager.state_sha256
+            ),
+        }
 
     def _initial_hidden(self) -> tuple[float, ...]:
         hidden = tuple(
@@ -1109,10 +3144,460 @@ class RecurrentOnPolicyCollector:
             next_hidden=next_hidden,
         )
 
+    def _require_genome_population_manager(
+        self,
+    ) -> RecurrentGenomePopulationManager:
+        self._validate_core_conditioning_mode_binding()
+        if (
+            self._genome_conditioning_mode
+            != RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            raise RecurrentRolloutError(
+                "genome population is unavailable for a disabled recurrent core"
+            )
+        manager = self._genome_population_manager
+        if manager is None:
+            raise RecurrentRolloutError(
+                "actor_film_v1 collection has no active genome population"
+            )
+        if manager.mode not in {
+            RecurrentGenomePopulationMode.HERITABLE,
+            RecurrentGenomePopulationMode.ZERO_ALL,
+        }:
+            raise RecurrentRolloutError(
+                "actor_film_v1 collection has an incompatible population mode"
+            )
+        if (
+            self._genome_world_identity is None
+            or manager.world_identity != self._genome_world_identity
+        ):
+            raise RecurrentRolloutError(
+                "recurrent genome population world binding does not match collector"
+            )
+        return manager
+
+    def _validate_core_conditioning_mode_binding(self) -> None:
+        observed_mode = _genome_conditioning_mode(
+            getattr(
+                self._core,
+                "genome_conditioning_mode",
+                RECURRENT_GENOME_CONDITIONING_DISABLED,
+            )
+        )
+        if observed_mode != self._genome_conditioning_mode:
+            raise RecurrentRolloutError(
+                "recurrent core genome conditioning mode changed after collector "
+                "construction"
+            )
+
+    def _require_zero_newborn_runtime_state(self, agent_id: int) -> None:
+        if agent_id in self._hidden_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has recurrent hidden state"
+            )
+        if agent_id in self._feedback_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has previous public feedback"
+            )
+        if agent_id in self._pending_by_agent:
+            raise RecurrentRolloutError(
+                f"newborn agent {agent_id} already has a pending decision"
+            )
+
+    def _validate_pending_genome(self, pending: PendingDecision) -> None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            if pending.genome_values is not None:
+                raise RecurrentRolloutError(
+                    "disabled recurrent core received genome-conditioned decision"
+                )
+            return
+        if pending.genome_values is None:
+            raise RecurrentRolloutError(
+                "actor_film_v1 decision is missing its controller genome"
+            )
+        manager = self._require_genome_population_manager()
+        if pending.genome_stream_seed != manager.genome_stream_seed:
+            raise RecurrentRolloutError(
+                "pending controller genome stream seed does not match active world"
+            )
+        try:
+            binding = manager.genome_binding_for_agent(pending.agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"pending controller genome ownership failed: {exc}"
+            ) from exc
+        if (
+            pending.genome_values != binding.genome.values
+            or pending.genome_sha256 != binding.genome_sha256
+        ):
+            raise RecurrentRolloutError(
+                "pending controller genome does not match active population state"
+            )
+
+    def _discard_terminal_genome(self, agent_id: int) -> None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return
+        manager = self._require_live_genome_if_conditioned(agent_id)
+        if manager is None:
+            raise RecurrentRolloutError(
+                "conditioned terminal cleanup has no genome population"
+            )
+        try:
+            discarded = manager.discard_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        if not discarded:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup missed agent {agent_id}"
+            )
+
+    def _require_live_genome_if_conditioned(
+        self,
+        agent_id: int,
+    ) -> RecurrentGenomePopulationManager | None:
+        if self._genome_conditioning_mode == RECURRENT_GENOME_CONDITIONING_DISABLED:
+            return None
+        manager = self._require_genome_population_manager()
+        try:
+            manager.genome_for_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentRolloutError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        return manager
+
     def _require_active_world(self) -> str:
         if self._active_world_id is None:
             raise RecurrentRolloutError("start_world must be called before collection")
         return self._active_world_id
+
+
+def _fixed_batch_runtime_binding(
+    contract: RecurrentFixedBatchRuntimeContract,
+    *,
+    core: RecurrentPolicyCore,
+) -> dict[str, object]:
+    forward_batch = getattr(core, "forward_fixed_batch", None)
+    runtime_metadata = getattr(core, "fixed_batch_runtime_metadata", None)
+    if not callable(forward_batch) or not callable(runtime_metadata):
+        raise RecurrentRolloutError(
+            "fixed recurrent batch core must implement batched forward and runtime "
+            "metadata"
+        )
+    observed_runtime = runtime_metadata()
+    if not isinstance(observed_runtime, Mapping) or not observed_runtime:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime metadata must be a non-empty mapping"
+        )
+    try:
+        canonical_runtime = json.loads(
+            json.dumps(
+                dict(observed_runtime),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime metadata must be canonical JSON"
+        ) from exc
+    if not isinstance(canonical_runtime, dict) or any(
+        not isinstance(key, str) or not key for key in canonical_runtime
+    ):
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime metadata keys must be non-empty strings"
+        )
+    payload: dict[str, object] = {
+        "schema_version": RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION,
+        "batch_capacity": contract.batch_capacity,
+        "execution_batch_buckets": list(
+            RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+        ),
+        "contract": contract.as_contract(),
+        "observed_runtime": canonical_runtime,
+    }
+    payload["exact_digest"] = _stable_payload_sha256(payload)
+    return payload
+
+
+def _validated_fixed_batch_runtime_binding(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    if set(value) != {
+        "schema_version",
+        "batch_capacity",
+        "execution_batch_buckets",
+        "contract",
+        "observed_runtime",
+        "exact_digest",
+    }:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime fields do not match the exact contract"
+        )
+    if value.get("schema_version") != RECURRENT_FIXED_BATCH_RUNTIME_SCHEMA_VERSION:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime schema version drifted"
+        )
+    capacity = value.get("batch_capacity")
+    if value.get("execution_batch_buckets") != list(
+        RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+    ):
+        raise RecurrentRolloutError(
+            "fixed recurrent batch execution buckets drifted"
+        )
+    contract = RecurrentFixedBatchRuntimeContract(
+        batch_capacity=_strict_int(capacity, field="fixed batch capacity")
+    )
+    if value.get("contract") != contract.as_contract():
+        raise RecurrentRolloutError("fixed recurrent batch embedded contract drifted")
+    observed_runtime = value.get("observed_runtime")
+    if not isinstance(observed_runtime, Mapping) or not observed_runtime:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch observed runtime must be a non-empty mapping"
+        )
+    payload = {
+        "schema_version": value["schema_version"],
+        "batch_capacity": capacity,
+        "execution_batch_buckets": list(
+            RECURRENT_FIXED_BATCH_EXECUTION_BUCKETS
+        ),
+        "contract": copy.deepcopy(dict(value["contract"])),  # type: ignore[arg-type]
+        "observed_runtime": copy.deepcopy(dict(observed_runtime)),
+    }
+    expected_digest = _stable_payload_sha256(payload)
+    if value.get("exact_digest") != expected_digest:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch runtime exact digest mismatched"
+        )
+    payload["exact_digest"] = expected_digest
+    return payload
+
+
+def _validate_fixed_batch_decision_fields(
+    *,
+    runtime_sha256: object,
+    turn_rank: object,
+    active_rows: object,
+    execution_rows: object,
+    capacity: object,
+    field: str,
+) -> None:
+    values = (runtime_sha256, turn_rank, active_rows, execution_rows, capacity)
+    if all(value is None for value in values):
+        return
+    if any(value is None for value in values):
+        raise RecurrentRolloutError(
+            f"{field} fixed-batch fields must be all present or all absent"
+        )
+    _sha256(runtime_sha256, field=f"{field} fixed_batch_runtime_sha256")
+    parsed_turn_rank = _strict_int(
+        turn_rank,
+        field=f"{field} fixed_batch_turn_rank",
+    )
+    parsed_active_rows = _strict_int(
+        active_rows,
+        field=f"{field} fixed_batch_active_rows",
+    )
+    parsed_execution_rows = _strict_int(
+        execution_rows,
+        field=f"{field} fixed_batch_execution_rows",
+    )
+    parsed_capacity = _strict_int(
+        capacity,
+        field=f"{field} fixed_batch_capacity",
+    )
+    if (
+        parsed_capacity <= 0
+        or not 0 < parsed_active_rows <= parsed_capacity
+        or not 0 <= parsed_turn_rank < parsed_active_rows
+        or parsed_execution_rows
+        != _fixed_batch_execution_rows(
+            active_rows=parsed_active_rows,
+            batch_capacity=parsed_capacity,
+        )
+    ):
+        raise RecurrentRolloutError(f"{field} fixed-batch row bounds are invalid")
+
+
+def _rollout_diagnostic_schema(
+    *,
+    genome_conditioned: bool,
+    fixed_batch: bool,
+) -> str:
+    if fixed_batch:
+        return (
+            RECURRENT_GENOME_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+            if genome_conditioned
+            else RECURRENT_FIXED_BATCH_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+        )
+    return (
+        RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+        if genome_conditioned
+        else RECURRENT_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+    )
+
+
+def _torch_parallel_backend(torch_module: Any) -> str:
+    parallel_info = str(torch_module.__config__.parallel_info())
+    prefix = "ATen parallel backend:"
+    for raw_line in parallel_info.splitlines():
+        line = raw_line.strip()
+        if line.startswith(prefix):
+            backend = line.removeprefix(prefix).strip()
+            if backend:
+                return backend
+    raise RecurrentRolloutError(
+        "Torch parallel backend is unavailable for fixed-batch provenance"
+    )
+
+
+def _stable_payload_sha256(value: Mapping[str, object]) -> str:
+    try:
+        encoded = json.dumps(
+            dict(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise RecurrentRolloutError(
+            "fixed recurrent batch payload is not canonical JSON"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _bootstrap_value_evidence_row(
+    *,
+    agent_id: int,
+    policy_input: Sequence[float],
+    value: float,
+    target_eligible: bool,
+    genome_sha256: str | None,
+) -> dict[str, object]:
+    if type(target_eligible) is not bool:
+        raise RecurrentRolloutError(
+            "bootstrap target eligibility must be an exact boolean"
+        )
+    canonical_input = tuple(
+        _finite_float(component, field="bootstrap policy input")
+        for component in policy_input
+    )
+    row: dict[str, object] = {
+        "agent_id": _strict_int(agent_id, field="bootstrap agent_id"),
+        "policy_input_sha256": hashlib.sha256(
+            json.dumps(
+                canonical_input,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "value": round(
+            _finite_float(value, field="bootstrap value"),
+            12,
+        ),
+        "target_eligible": target_eligible,
+        "genome_sha256": (
+            None
+            if genome_sha256 is None
+            else _sha256(genome_sha256, field="bootstrap genome_sha256")
+        ),
+    }
+    row["exact_digest"] = _stable_payload_sha256(row)
+    return row
+
+
+def _validated_rollout_genome_fields(
+    *,
+    genome_values: tuple[float, ...] | None,
+    genome_sha256: str | None,
+    genome_stream_seed: int | None,
+    field: str,
+) -> tuple[tuple[float, ...] | None, str | None, int | None]:
+    presence = (
+        genome_values is not None,
+        genome_sha256 is not None,
+        genome_stream_seed is not None,
+    )
+    if not any(presence):
+        return None, None, None
+    if not all(presence):
+        raise RecurrentRolloutError(
+            f"{field} controller genome values, SHA256, and stream seed "
+            "must be present together"
+        )
+    try:
+        genome = RecurrentControllerGenome(values=genome_values)
+    except RecurrentGenomeError as exc:
+        raise RecurrentRolloutError(
+            f"{field} controller genome is invalid: {exc}"
+        ) from exc
+    parsed_sha256 = _sha256(genome_sha256, field=f"{field} genome_sha256")
+    if parsed_sha256 != genome.sha256:
+        raise RecurrentRolloutError(
+            f"{field} controller genome SHA256 does not match its values"
+        )
+    parsed_stream_seed = _genome_stream_seed(
+        genome_stream_seed,
+        field=f"{field} genome_stream_seed",
+    )
+    return genome.values, parsed_sha256, parsed_stream_seed
+
+
+def _genome_conditioning_mode(value: object) -> str:
+    if not isinstance(value, str) or value not in {
+        RECURRENT_GENOME_CONDITIONING_DISABLED,
+        RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
+    }:
+        raise RecurrentRolloutError(
+            "core genome conditioning mode must be exactly disabled or actor_film_v1"
+        )
+    return str(value)
+
+
+def _active_genome_population_mode(
+    value: object,
+) -> RecurrentGenomePopulationMode:
+    try:
+        mode = (
+            value
+            if isinstance(value, RecurrentGenomePopulationMode)
+            else RecurrentGenomePopulationMode(value)
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecurrentRolloutError(
+            "actor_film_v1 requires genome population mode heritable or zero_all"
+        ) from exc
+    if mode not in {
+        RecurrentGenomePopulationMode.HERITABLE,
+        RecurrentGenomePopulationMode.ZERO_ALL,
+    }:
+        raise RecurrentRolloutError(
+            "actor_film_v1 requires genome population mode heritable or zero_all"
+        )
+    return mode
+
+
+def _genome_stream_seed(value: object, *, field: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= MAX_RECURRENT_GENOME_STREAM_SEED
+    ):
+        raise RecurrentRolloutError(f"{field} must be an unsigned 64-bit integer")
+    return value
+
+
+def _sha256(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RecurrentRolloutError(f"{field} must be a lowercase SHA256")
+    return value
 
 
 def _sample_masked_action(

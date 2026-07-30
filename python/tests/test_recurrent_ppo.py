@@ -14,11 +14,15 @@ except ModuleNotFoundError:
 if torch is not None:
     from evolution_sim.mind.recurrent_actor_critic import (
         ACTION_COUNT,
+        CRITIC_GENOME_CONDITIONING_FILM_V1,
+        GENOME_CONDITIONING_ACTOR_FILM_V1,
+        GENOME_CONDITIONING_DISABLED,
         PREVIOUS_PUBLIC_FEEDBACK_SIZE,
-        PUBLIC_INPUT_SIZE,
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     )
+    from evolution_sim.mind.recurrent_genome import founder_recurrent_genome
     from evolution_sim.mind.recurrent_ppo import (
         PPOTrainingSequence,
         RECURRENT_PPO_CONTRACT_VERSION,
@@ -29,6 +33,7 @@ if torch is not None:
         _EvaluatedRows,
         _WorldLossWeighting,
         _chunk_references,
+        _genome_tensor_sha256,
         _loss_terms,
         _post_step_forward_kl_audit,
         _world_loss_weighting,
@@ -60,6 +65,15 @@ class RecurrentPPOTests(unittest.TestCase):
             contract["likelihood_contract"]["action_masks"],
             "stored_observation_time_masks_only",
         )
+        self.assertEqual(
+            contract["losses"]["critic_genome_conditioning"],
+            "bound_by_model_config_none_or_film_v1",
+        )
+        self.assertEqual(
+            contract["losses"]["value_shared_trunk_gradient"],
+            "bound_by_model_config_shared_or_stop_gradient_v1",
+        )
+        self.assertFalse(contract["losses"]["inherited_genome_trainable"])
         self.assertTrue(config.normalize_advantages)
         self.assertFalse(config.world_balanced_loss)
         self.assertFalse(contract["world_balancing"]["enabled"])
@@ -744,6 +758,268 @@ class RecurrentPPOTests(unittest.TestCase):
             )
         )
 
+    def test_genome_conditioned_ppo_updates_with_exact_life_provenance(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=16,
+                hidden_size=16,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
+            ),
+            initialization_seed=1201,
+        )
+        sequences = _behavior_sequences(model, lengths=(5, 7))
+        original_genomes = tuple(
+            sequence.genome_values.clone() for sequence in sequences
+        )
+
+        diagnostics = RecurrentPPOTrainer(
+            model,
+            RecurrentPPOConfig(
+                learning_rate=2.0e-3,
+                update_epochs=2,
+                sequence_minibatch_size=4,
+                tbptt_steps=3,
+                burn_in_steps=2,
+                learner_seed=1202,
+            ),
+        ).update(sequences)
+
+        self.assertEqual(diagnostics.transition_count, 12)
+        self.assertGreater(diagnostics.parameter_delta_l2, 0.0)
+        self.assertEqual(
+            diagnostics.critic_genome_conditioning,
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        )
+        self.assertEqual(
+            diagnostics.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+        )
+        self.assertTrue(
+            all(
+                sequence.genome_sha256 is not None
+                and sequence.genome_tensor_sha256 is not None
+                and sequence.genome_stream_seed is not None
+                for sequence in sequences
+            )
+        )
+        self.assertTrue(
+            all(
+                torch.equal(sequence.genome_values, original)
+                for sequence, original in zip(
+                    sequences,
+                    original_genomes,
+                    strict=True,
+                )
+            )
+        )
+
+    def test_value_only_ppo_stop_gradient_updates_only_trainable_critic_path(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=16,
+                hidden_size=16,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+                critic_genome_conditioning=CRITIC_GENOME_CONDITIONING_FILM_V1,
+                value_shared_trunk_gradient=(VALUE_SHARED_TRUNK_GRADIENT_STOP_V1),
+            ),
+            initialization_seed=1211,
+        )
+        behavior = _behavior_sequences(model, lengths=(5, 7))
+        sequences = tuple(
+            replace(
+                sequence,
+                advantages=torch.zeros_like(sequence.advantages),
+                return_targets=sequence.old_values + 1.0,
+            )
+            for sequence in behavior
+        )
+        genomes_before = tuple(sequence.genome_values.clone() for sequence in sequences)
+        state_before = {
+            name: tensor.detach().clone() for name, tensor in model.state_dict().items()
+        }
+
+        diagnostics = RecurrentPPOTrainer(
+            model,
+            RecurrentPPOConfig(
+                learning_rate=1.0e-2,
+                value_loss_coefficient=1.0,
+                entropy_coefficient=0.0,
+                update_epochs=1,
+                sequence_minibatch_size=16,
+                tbptt_steps=16,
+                burn_in_steps=0,
+                max_gradient_norm=10.0,
+                normalize_advantages=False,
+                learner_seed=1212,
+            ),
+        ).update(sequences)
+
+        state_after = model.state_dict()
+        for name in (
+            "input_norm.weight",
+            "input_norm.bias",
+            "encoder.0.weight",
+            "encoder.0.bias",
+            "recurrent.weight_ih_l0",
+            "recurrent.weight_hh_l0",
+            "recurrent.bias_ih_l0",
+            "recurrent.bias_hh_l0",
+            "actor.weight",
+            "actor.bias",
+            "_genome_film_scale_coefficients",
+            "_genome_film_bias_coefficients",
+        ):
+            self.assertTrue(torch.equal(state_before[name], state_after[name]), name)
+        for name in (
+            "value.weight",
+            "value.bias",
+            "critic_genome_film_scale_coefficients",
+            "critic_genome_film_bias_coefficients",
+        ):
+            self.assertFalse(torch.equal(state_before[name], state_after[name]), name)
+        self.assertTrue(
+            all(
+                torch.equal(sequence.genome_values, original)
+                for sequence, original in zip(
+                    sequences,
+                    genomes_before,
+                    strict=True,
+                )
+            )
+        )
+        self.assertEqual(
+            diagnostics.value_shared_trunk_gradient,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+        )
+
+    def test_genome_sequence_tampering_and_disabled_extras_fail_closed(self) -> None:
+        enabled_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=1301,
+        )
+        sequence = _behavior_sequences(enabled_model, lengths=(5,))[0]
+        assert sequence.genome_values is not None
+        trainer = RecurrentPPOTrainer(
+            enabled_model,
+            RecurrentPPOConfig(update_epochs=1),
+        )
+        model_before = {
+            key: value.detach().clone()
+            for key, value in enabled_model.state_dict().items()
+        }
+
+        changed_values = sequence.genome_values.clone()
+        changed_values[2, 0] += 0.01
+        forged_values = sequence.genome_values.clone()
+        forged_values[:, 0] += 0.01
+        assert sequence.genome_sha256 is not None
+        assert sequence.genome_stream_seed is not None
+        forged_tensor_sha256 = _genome_tensor_sha256(
+            forged_values,
+            source_sha256=sequence.genome_sha256,
+            stream_seed=sequence.genome_stream_seed,
+        )
+        cases = (
+            (
+                replace(
+                    sequence,
+                    genome_source_values=tuple(
+                        (round(value + 0.01, 8) if index == 0 else value)
+                        for index, value in enumerate(
+                            sequence.genome_source_values or ()
+                        )
+                    ),
+                ),
+                "do not match genome_sha256",
+            ),
+            (
+                replace(sequence, genome_values=changed_values),
+                "cannot change inherited genome",
+            ),
+            (
+                replace(
+                    sequence,
+                    genome_values=forged_values,
+                    genome_tensor_sha256=forged_tensor_sha256,
+                ),
+                "do not match exact inherited genome_source_values",
+            ),
+            (
+                replace(sequence, genome_sha256="0" * 64),
+                "do not match genome_sha256",
+            ),
+            (
+                replace(sequence, genome_tensor_sha256="0" * 64),
+                "genome tensor SHA256 mismatch",
+            ),
+            (
+                replace(sequence, genome_stream_seed=None),
+                "unsigned 64-bit",
+            ),
+            (
+                replace(sequence, genome_values=None),
+                "require genome_values",
+            ),
+        )
+        for invalid, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(RecurrentPPOError, expected):
+                    trainer.update((invalid,))
+                self.assertEqual(trainer.update_index, 0)
+                self.assertTrue(
+                    all(
+                        torch.equal(enabled_model.state_dict()[key], value)
+                        for key, value in model_before.items()
+                    )
+                )
+
+        disabled_model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=12, hidden_size=12),
+            initialization_seed=1302,
+        )
+        disabled_sequence = _behavior_sequences(disabled_model, lengths=(4,))[0]
+        with self.assertRaisesRegex(RecurrentPPOError, "forbid PPO genome"):
+            RecurrentPPOTrainer(
+                disabled_model,
+                RecurrentPPOConfig(update_epochs=1),
+            ).update(
+                (
+                    replace(
+                        disabled_sequence,
+                        genome_sha256="0" * 64,
+                    ),
+                )
+            )
+
+    def test_counterfactual_auxiliary_fails_closed_for_genome_models(self) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=12,
+                hidden_size=12,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=1401,
+        )
+        trainer = RecurrentPPOTrainer(model, RecurrentPPOConfig(update_epochs=1))
+
+        with self.assertRaisesRegex(
+            RecurrentPPOError,
+            "do not carry inherited genome provenance",
+        ):
+            trainer.counterfactual_auxiliary_update(
+                (),
+                artifact_digest="a" * 64,
+                config=None,  # type: ignore[arg-type]
+            )
+
 
 def _scalar_feed_forward_rows(
     model: PublicRecurrentActorCritic,
@@ -773,6 +1049,11 @@ def _scalar_feed_forward_rows(
                 sequence.action_masks[step : step + 1].unsqueeze(1),
                 sequence.previous_feedback[step : step + 1].unsqueeze(1),
                 sequence.actions[step : step + 1].unsqueeze(1),
+                genome_values=(
+                    None
+                    if sequence.genome_values is None
+                    else sequence.genome_values[step : step + 1].unsqueeze(1)
+                ),
                 initial_state=model.initial_state(1),
                 episode_starts=torch.zeros(
                     (1, 1),
@@ -832,7 +1113,7 @@ def _behavior_sequences(
     for sequence_index, length in enumerate(lengths):
         observations = torch.zeros(
             length,
-            PUBLIC_INPUT_SIZE,
+            model.config.public_input_size,
             dtype=reference.dtype,
             device=reference.device,
         )
@@ -872,6 +1153,27 @@ def _behavior_sequences(
             device=reference.device,
         )
         episode_starts[0] = True
+        if model.config.genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            genome_source_values = None
+            genome_values = None
+            genome_sha256 = None
+            genome_tensor_sha256 = None
+            genome_stream_seed = None
+        else:
+            source_genome = founder_recurrent_genome(seed=10_000 + sequence_index)
+            genome_source_values = source_genome.values
+            genome_values = torch.tensor(
+                [source_genome.values for _ in range(length)],
+                dtype=reference.dtype,
+                device=reference.device,
+            )
+            genome_sha256 = source_genome.sha256
+            genome_stream_seed = 20_000 + sequence_index
+            genome_tensor_sha256 = _genome_tensor_sha256(
+                genome_values,
+                source_sha256=genome_sha256,
+                stream_seed=genome_stream_seed,
+            )
 
         state = model.initial_state(1)
         recurrent_states: list[torch.Tensor] = []
@@ -884,6 +1186,11 @@ def _behavior_sequences(
                     observations[step : step + 1].unsqueeze(1),
                     action_masks[step : step + 1].unsqueeze(1),
                     previous_feedback[step : step + 1].unsqueeze(1),
+                    genome_values=(
+                        None
+                        if genome_values is None
+                        else genome_values[step : step + 1].unsqueeze(1)
+                    ),
                     initial_state=state,
                     episode_starts=episode_starts[step : step + 1].unsqueeze(1),
                 )
@@ -919,6 +1226,11 @@ def _behavior_sequences(
                     device=reference.device,
                 ),
                 episode_starts=episode_starts,
+                genome_source_values=genome_source_values,
+                genome_values=genome_values,
+                genome_sha256=genome_sha256,
+                genome_tensor_sha256=genome_tensor_sha256,
+                genome_stream_seed=genome_stream_seed,
             )
         )
     return tuple(sequences)
@@ -937,6 +1249,11 @@ def _mean_action_log_prob(
                 sequence.action_masks.unsqueeze(1),
                 sequence.previous_feedback.unsqueeze(1),
                 sequence.actions.unsqueeze(1),
+                genome_values=(
+                    None
+                    if sequence.genome_values is None
+                    else sequence.genome_values.unsqueeze(1)
+                ),
                 initial_state=model.initial_state(1),
                 episode_starts=sequence.episode_starts.unsqueeze(1),
             )

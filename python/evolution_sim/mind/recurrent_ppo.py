@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
 import random
 from collections.abc import Mapping, Sequence
@@ -13,10 +14,22 @@ from torch import Tensor
 
 from evolution_sim.mind.recurrent_actor_critic import (
     ACTION_COUNT,
+    CRITIC_GENOME_CONDITIONING_FILM_V1,
+    CRITIC_GENOME_CONDITIONING_NONE,
+    GENOME_CONDITIONING_DISABLED,
     PublicRecurrentActorCritic,
+    VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+    VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
     validate_action_mask_tensor,
     validate_previous_feedback_tensor,
     validate_public_input_tensor,
+)
+from evolution_sim.mind.recurrent_genome import (
+    RECURRENT_CONTROLLER_GENOME_MAX,
+    RECURRENT_CONTROLLER_GENOME_MIN,
+    RECURRENT_CONTROLLER_GENOME_SIZE,
+    RecurrentControllerGenome,
+    RecurrentGenomeError,
 )
 from evolution_sim.mind.recurrent_rollout import (
     RecurrentAdvantageRow,
@@ -33,7 +46,7 @@ if TYPE_CHECKING:
     )
 
 
-RECURRENT_PPO_CONTRACT_VERSION = "mind_public_recurrent_ppo_v1"
+RECURRENT_PPO_CONTRACT_VERSION = "mind_public_recurrent_ppo_v3"
 _POST_STEP_KL_ABSOLUTE_TOLERANCE = 1.0e-7
 _POST_STEP_KL_RELATIVE_TOLERANCE = 1.0e-5
 _POST_STEP_KL_AUDIT_SCOPE = (
@@ -134,6 +147,11 @@ class PPOTrainingSequence:
     advantages: Tensor
     return_targets: Tensor
     episode_starts: Tensor
+    genome_source_values: tuple[float, ...] | None = None
+    genome_values: Tensor | None = None
+    genome_sha256: str | None = None
+    genome_tensor_sha256: str | None = None
+    genome_stream_seed: int | None = None
 
     @property
     def length(self) -> int:
@@ -158,6 +176,8 @@ class PPOUpdateDiagnostics:
     early_stopped_for_kl: bool
     feed_forward_history_ablation: bool
     world_balanced_loss: bool
+    critic_genome_conditioning: str
+    value_shared_trunk_gradient: str
     world_count: int
     min_world_transition_count: int
     max_world_transition_count: int
@@ -287,10 +307,28 @@ def recurrent_ppo_contract(
             "old_log_probs": "frozen_behavior_policy_values",
             "old_values": "frozen_behavior_policy_values",
             "resolution_masks_used_for_likelihood": False,
+            "genome_conditioning": (
+                "required_exact_per_life_tensor_and_source_digest_when_model_enabled"
+            ),
+            "genome_tensor_digest": (
+                "sha256_canonical_dtype_shape_values_source_digest_and_stream_seed"
+            ),
+            "genome_source_digest": (
+                "recomputed_from_exact_quantized_inherited_source_values"
+            ),
+            "within_life_genome": "constant_across_every_agent_sequence",
         },
         "losses": {
             "policy": "clipped_surrogate",
             "value": "max_unclipped_and_clipped_squared_error",
+            "critic_genome_conditioning": ("bound_by_model_config_none_or_film_v1"),
+            "value_shared_trunk_gradient": (
+                "bound_by_model_config_shared_or_stop_gradient_v1"
+            ),
+            "stop_gradient_semantics": (
+                "detach_shared_recurrent_features_before_trainable_critic_path"
+            ),
+            "inherited_genome_trainable": False,
             "entropy_coefficient": resolved.entropy_coefficient,
             "value_loss_coefficient": resolved.value_loss_coefficient,
             "advantage_normalization": resolved.normalize_advantages,
@@ -335,6 +373,8 @@ def recurrent_ppo_contract(
             "transactional_restore_on_failure": True,
             "illegal_behavior_action": True,
             "empty_action_mask": True,
+            "missing_extra_tampered_or_changing_genome": True,
+            "genome_conditioned_counterfactual_auxiliary_without_genome_rows": True,
         },
         "runtime_integrated": False,
         "hardcoded_action_selection": False,
@@ -429,6 +469,17 @@ def ppo_sequences_from_rollout_buffer(
             device=reference.device,
         )
         episode_starts[0] = True
+        (
+            genome_source_values,
+            genome_values,
+            genome_sha256,
+            genome_tensor_sha256,
+            genome_stream_seed,
+        ) = _training_genome_from_rollout_rows(
+            rows,
+            model=model,
+            reference=reference,
+        )
         sequences.append(
             PPOTrainingSequence(
                 world_id=world_id,
@@ -462,6 +513,11 @@ def ppo_sequences_from_rollout_buffer(
                     device=reference.device,
                 ),
                 episode_starts=episode_starts,
+                genome_source_values=genome_source_values,
+                genome_values=genome_values,
+                genome_sha256=genome_sha256,
+                genome_tensor_sha256=genome_tensor_sha256,
+                genome_stream_seed=genome_stream_seed,
             )
         )
 
@@ -576,6 +632,7 @@ class RecurrentPPOTrainer:
         bundle instead of silently tuning and retrying the same evidence.
         """
 
+        self._require_counterfactual_genome_contract()
         from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
             RecurrentCounterfactualAuxiliaryError,
             _transactional_recurrent_counterfactual_auxiliary_step,
@@ -630,6 +687,7 @@ class RecurrentPPOTrainer:
     ) -> RecurrentCounterfactualAuxiliaryStepDiagnostics:
         """Attempt one non-retryable multi-tape auxiliary shared-Adam step."""
 
+        self._require_counterfactual_genome_contract()
         from evolution_sim.mind.recurrent_counterfactual_auxiliary import (
             RecurrentCounterfactualAuxiliaryError,
             _transactional_recurrent_counterfactual_aggregate_auxiliary_step,
@@ -676,6 +734,13 @@ class RecurrentPPOTrainer:
             auxiliary_update_count=self._counterfactual_auxiliary_update_count,
             update_counters_restored=counters_restored,
         )
+
+    def _require_counterfactual_genome_contract(self) -> None:
+        if self.model.config.genome_conditioning_mode != GENOME_CONDITIONING_DISABLED:
+            raise RecurrentPPOError(
+                "counterfactual auxiliary rows do not carry inherited genome "
+                "provenance; genome-conditioned auxiliary updates are forbidden"
+            )
 
     def update(
         self,
@@ -910,6 +975,8 @@ class RecurrentPPOTrainer:
             early_stopped_for_kl=early_stopped,
             feed_forward_history_ablation=(self.config.feed_forward_history_ablation),
             world_balanced_loss=self.config.world_balanced_loss,
+            critic_genome_conditioning=(self.model.config.critic_genome_conditioning),
+            value_shared_trunk_gradient=(self.model.config.value_shared_trunk_gradient),
             world_count=len(world_weighting.transition_counts),
             min_world_transition_count=min(world_weighting.transition_counts.values()),
             max_world_transition_count=max(world_weighting.transition_counts.values()),
@@ -1014,6 +1081,11 @@ class RecurrentPPOTrainer:
                     sequence.action_masks[selected].unsqueeze(0),
                     sequence.previous_feedback[selected].unsqueeze(0),
                     sequence.actions[selected].unsqueeze(0),
+                    genome_values=(
+                        None
+                        if sequence.genome_values is None
+                        else sequence.genome_values[selected].unsqueeze(0)
+                    ),
                     initial_state=self.model.initial_state(transition_count),
                     episode_starts=torch.zeros(
                         (1, transition_count),
@@ -1042,6 +1114,11 @@ class RecurrentPPOTrainer:
                     sequence.action_masks[selected].unsqueeze(1),
                     sequence.previous_feedback[selected].unsqueeze(1),
                     sequence.actions[selected].unsqueeze(1),
+                    genome_values=(
+                        None
+                        if sequence.genome_values is None
+                        else sequence.genome_values[selected].unsqueeze(1)
+                    ),
                     initial_state=initial_state,
                     episode_starts=episode_starts.unsqueeze(1),
                 )
@@ -1099,6 +1176,11 @@ class RecurrentPPOTrainer:
                 sequence.observations[prefix].unsqueeze(1),
                 sequence.action_masks[prefix].unsqueeze(1),
                 sequence.previous_feedback[prefix].unsqueeze(1),
+                genome_values=(
+                    None
+                    if sequence.genome_values is None
+                    else sequence.genome_values[prefix].unsqueeze(1)
+                ),
                 initial_state=prefix_state,
                 episode_starts=sequence.episode_starts[prefix].unsqueeze(1),
             )
@@ -1151,6 +1233,17 @@ def _freeze_and_validate_sequence(
         or sequence.episode_starts.dtype != torch.bool
     ):
         raise RecurrentPPOError("episode_starts must use torch.bool")
+    (
+        genome_source_values,
+        frozen_genome_values,
+        genome_sha256,
+        genome_tensor_sha256,
+        genome_stream_seed,
+    ) = _freeze_and_validate_sequence_genome(
+        sequence,
+        model=model,
+        reference=reference,
+    )
 
     frozen = PPOTrainingSequence(
         world_id=sequence.world_id,
@@ -1207,11 +1300,20 @@ def _freeze_and_validate_sequence(
             device=reference.device,
         )
         .clone(),
+        genome_source_values=genome_source_values,
+        genome_values=frozen_genome_values,
+        genome_sha256=genome_sha256,
+        genome_tensor_sha256=genome_tensor_sha256,
+        genome_stream_seed=genome_stream_seed,
     )
     length = frozen.length
     if length <= 0:
         raise RecurrentPPOError("training sequences cannot be empty")
-    validate_public_input_tensor(frozen.observations, ranks=(2,))
+    validate_public_input_tensor(
+        frozen.observations,
+        ranks=(2,),
+        expected_size=model.config.public_input_size,
+    )
     validate_action_mask_tensor(frozen.action_masks, leading_shape=(length,))
     validate_previous_feedback_tensor(
         frozen.previous_feedback,
@@ -1278,6 +1380,255 @@ def _freeze_and_validate_sequence(
             "behavior actions must be legal under their stored observation-time masks"
         )
     return frozen
+
+
+def _training_genome_from_rollout_rows(
+    rows: Sequence[RecurrentAdvantageRow],
+    *,
+    model: PublicRecurrentActorCritic,
+    reference: Tensor,
+) -> tuple[
+    tuple[float, ...] | None,
+    Tensor | None,
+    str | None,
+    str | None,
+    int | None,
+]:
+    enabled = model.config.genome_conditioning_mode != GENOME_CONDITIONING_DISABLED
+    observed = tuple(
+        (
+            getattr(row.step, "genome_values", None),
+            getattr(row.step, "genome_sha256", None),
+            getattr(row.step, "genome_stream_seed", None),
+        )
+        for row in rows
+    )
+    if not enabled:
+        if any(item != (None, None, None) for item in observed):
+            raise RecurrentPPOError(
+                "disabled recurrent models forbid rollout genome provenance"
+            )
+        return None, None, None, None, None
+    if not observed:
+        raise RecurrentPPOError("genome-conditioned rollout sequences cannot be empty")
+
+    first_values, first_sha256, first_stream_seed = observed[0]
+    if not isinstance(first_values, tuple):
+        raise RecurrentPPOError(
+            "genome-conditioned rollout rows require immutable genome_values"
+        )
+    source_genome = _validated_source_genome(
+        first_values,
+        expected_sha256=first_sha256,
+    )
+    source_sha256 = source_genome.sha256
+    stream_seed = _unsigned_64_bit_int(
+        first_stream_seed,
+        field="genome_stream_seed",
+    )
+    for index, (values, sha256, candidate_stream_seed) in enumerate(observed):
+        if values != first_values:
+            raise RecurrentPPOError(
+                "one agent rollout sequence cannot change inherited genome values"
+            )
+        if sha256 != source_sha256:
+            raise RecurrentPPOError(f"rollout genome SHA256 drifted at row {index}")
+        if candidate_stream_seed != stream_seed:
+            raise RecurrentPPOError(
+                f"rollout genome stream seed drifted at row {index}"
+            )
+
+    tensor = torch.tensor(
+        [first_values for _ in rows],
+        dtype=reference.dtype,
+        device=reference.device,
+    )
+    tensor_sha256 = _genome_tensor_sha256(
+        tensor,
+        source_sha256=source_sha256,
+        stream_seed=stream_seed,
+    )
+    return first_values, tensor, source_sha256, tensor_sha256, stream_seed
+
+
+def _freeze_and_validate_sequence_genome(
+    sequence: PPOTrainingSequence,
+    *,
+    model: PublicRecurrentActorCritic,
+    reference: Tensor,
+) -> tuple[
+    tuple[float, ...] | None,
+    Tensor | None,
+    str | None,
+    str | None,
+    int | None,
+]:
+    enabled = model.config.genome_conditioning_mode != GENOME_CONDITIONING_DISABLED
+    fields = (
+        sequence.genome_source_values,
+        sequence.genome_values,
+        sequence.genome_sha256,
+        sequence.genome_tensor_sha256,
+        sequence.genome_stream_seed,
+    )
+    if not enabled:
+        if any(value is not None for value in fields):
+            raise RecurrentPPOError(
+                "disabled recurrent models forbid PPO genome inputs or provenance"
+            )
+        return None, None, None, None, None
+    if not isinstance(sequence.genome_source_values, tuple):
+        raise RecurrentPPOError(
+            "genome-conditioned PPO sequences require immutable genome_source_values"
+        )
+    if sequence.genome_values is None:
+        raise RecurrentPPOError(
+            "genome-conditioned PPO sequences require genome_values"
+        )
+    if (
+        not isinstance(sequence.genome_values, Tensor)
+        or not sequence.genome_values.is_floating_point()
+    ):
+        raise RecurrentPPOError("genome_values must be a floating torch.Tensor")
+    if sequence.genome_values.device != reference.device:
+        raise RecurrentPPOError("genome_values must already share the model device")
+    if sequence.genome_values.dtype != reference.dtype:
+        raise RecurrentPPOError("genome_values must already share the model dtype")
+    expected_shape = (sequence.length, RECURRENT_CONTROLLER_GENOME_SIZE)
+    if tuple(sequence.genome_values.shape) != expected_shape:
+        raise RecurrentPPOError(
+            f"genome_values must have shape {expected_shape}; "
+            f"got {tuple(sequence.genome_values.shape)}"
+        )
+    if not bool(torch.isfinite(sequence.genome_values).all().item()):
+        raise RecurrentPPOError("genome_values must be finite")
+    if not bool(
+        (
+            (sequence.genome_values >= RECURRENT_CONTROLLER_GENOME_MIN)
+            & (sequence.genome_values <= RECURRENT_CONTROLLER_GENOME_MAX)
+        )
+        .all()
+        .item()
+    ):
+        raise RecurrentPPOError("genome_values are outside the inherited bounds")
+    if sequence.length > 1 and not torch.equal(
+        sequence.genome_values,
+        sequence.genome_values[0].expand_as(sequence.genome_values),
+    ):
+        raise RecurrentPPOError(
+            "one agent PPO sequence cannot change inherited genome values"
+        )
+    source_genome = _validated_source_genome(
+        sequence.genome_source_values,
+        expected_sha256=sequence.genome_sha256,
+    )
+    source_sha256 = source_genome.sha256
+    expected_tensor = torch.tensor(
+        [source_genome.values for _ in range(sequence.length)],
+        dtype=reference.dtype,
+        device=reference.device,
+    )
+    if not torch.equal(sequence.genome_values, expected_tensor):
+        raise RecurrentPPOError(
+            "genome_values do not match exact inherited genome_source_values"
+        )
+    stream_seed = _unsigned_64_bit_int(
+        sequence.genome_stream_seed,
+        field="genome_stream_seed",
+    )
+    observed_tensor_sha256 = _lowercase_sha256(
+        sequence.genome_tensor_sha256,
+        field="genome_tensor_sha256",
+    )
+    computed_tensor_sha256 = _genome_tensor_sha256(
+        sequence.genome_values,
+        source_sha256=source_sha256,
+        stream_seed=stream_seed,
+    )
+    if observed_tensor_sha256 != computed_tensor_sha256:
+        raise RecurrentPPOError("genome tensor SHA256 mismatch")
+    return (
+        source_genome.values,
+        sequence.genome_values.detach().clone(),
+        source_sha256,
+        computed_tensor_sha256,
+        stream_seed,
+    )
+
+
+def _validated_source_genome(
+    values: tuple[float, ...],
+    *,
+    expected_sha256: object,
+) -> RecurrentControllerGenome:
+    try:
+        genome = RecurrentControllerGenome(values=values)
+    except RecurrentGenomeError as exc:
+        raise RecurrentPPOError(f"rollout genome values are invalid: {exc}") from exc
+    observed_sha256 = _lowercase_sha256(
+        expected_sha256,
+        field="rollout genome_sha256",
+    )
+    if observed_sha256 != genome.sha256:
+        raise RecurrentPPOError("rollout genome values do not match genome_sha256")
+    return genome
+
+
+def _genome_tensor_sha256(
+    value: Tensor,
+    *,
+    source_sha256: str,
+    stream_seed: int,
+) -> str:
+    if not isinstance(value, Tensor):
+        raise RecurrentPPOError("genome tensor digest requires a torch.Tensor")
+    payload = {
+        "dtype": str(value.dtype),
+        "source_genome_sha256": _lowercase_sha256(
+            source_sha256,
+            field="source_sha256",
+        ),
+        "genome_stream_seed": _unsigned_64_bit_int(
+            stream_seed,
+            field="stream_seed",
+        ),
+        "shape": list(value.shape),
+        "values": value.detach().cpu().tolist(),
+    }
+    try:
+        encoded = json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise RecurrentPPOError(
+            "genome tensor cannot be represented canonically"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _lowercase_sha256(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RecurrentPPOError(f"{field} must be a lowercase SHA256")
+    return value
+
+
+def _unsigned_64_bit_int(value: object, *, field: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > 2**64 - 1
+    ):
+        raise RecurrentPPOError(f"{field} must be an unsigned 64-bit integer")
+    return value
 
 
 def _world_loss_weighting(
@@ -1771,6 +2122,16 @@ def _nested_state_equal(left: object, right: object) -> bool:
 
 
 def _assert_finite_diagnostics(diagnostics: PPOUpdateDiagnostics) -> None:
+    if diagnostics.critic_genome_conditioning not in {
+        CRITIC_GENOME_CONDITIONING_NONE,
+        CRITIC_GENOME_CONDITIONING_FILM_V1,
+    }:
+        raise RecurrentPPOError("diagnostic critic_genome_conditioning is malformed")
+    if diagnostics.value_shared_trunk_gradient not in {
+        VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+        VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+    }:
+        raise RecurrentPPOError("diagnostic value_shared_trunk_gradient is malformed")
     for field_name in (
         "advantage_mean",
         "advantage_std",

@@ -30,11 +30,21 @@ export const REQUIRED_AGENT_FIELDS = [
   "species_id"
 ];
 
+export const SUMMARY_SCHEMA_VERSION = "foundation_summary_v1";
+
+export const TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION = "foundation_summary_v2";
+
 export const TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1";
+
+export const TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v3";
 
 export const OBSERVATION_SCHEMA_VERSION = "mind_observation_v3";
 
+export const TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION = "mind_observation_v5";
+
 export const OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v2";
+
+export const TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION = "mind_observation_encoder_v4";
 
 export const OBSERVATION_INPUT_DECODED_DTYPE = "float32";
 
@@ -49,17 +59,361 @@ export const OBSERVATION_INPUT_VALUE_RANGE = [
   1.0
 ];
 
+export const PATCH_CELL_COUNT = 25;
+
+export const OBSERVATION_SELF_FIELDS = [
+  "energy_ratio",
+  "hydration_ratio",
+  "health_ratio",
+  "injury_load",
+  "age_norm",
+  "reproduction_ready",
+  "matched_diet_ratio",
+  "trophic_role",
+  "meat_mode",
+  "season",
+  "water_access_reason",
+  "hydrology_support_code",
+  "refuge_score",
+  "hazard_type",
+  "hazard_level",
+  "tile_vegetation",
+  "tile_recovery_debt",
+  "reproductive_stage",
+  "reproductive_expression",
+  "sexual_reproduction_unlocked",
+  "reproductive_signal",
+  "communication_signal",
+  "mind_inheritance_available"
+];
+
+export const OBSERVATION_PATCH_FIELDS = [
+  "dx",
+  "dy",
+  "in_bounds",
+  "terrain",
+  "occupant",
+  "same_lineage",
+  "water_access_reason",
+  "food",
+  "vegetation",
+  "recovery_debt",
+  "fresh_kill_energy",
+  "carcass_energy",
+  "hazard_type",
+  "hazard_level",
+  "ecology_state",
+  "prey_biomass",
+  "carrion_signal",
+  "predator_risk",
+  "reproductive_signal",
+  "communication_signal"
+];
+
+export const OBSERVATION_SELF_INPUT_FIELDS = [
+  "energy_ratio",
+  "hydration_ratio",
+  "health_ratio",
+  "injury_load",
+  "age_norm",
+  "reproduction_ready",
+  "matched_diet_ratio",
+  "trophic_role_code",
+  "meat_mode_code",
+  "season_code",
+  "water_access_reason_code",
+  "hydrology_support_is_land",
+  "hydrology_support_adjacent_to_water",
+  "hydrology_support_wetland",
+  "hydrology_support_flooded",
+  "refuge_score",
+  "hazard_type_code",
+  "hazard_level",
+  "tile_vegetation",
+  "tile_recovery_debt",
+  "reproductive_stage_code",
+  "reproductive_expression_code",
+  "sexual_reproduction_unlocked",
+  "reproductive_signal",
+  "communication_signal",
+  "mind_inheritance_available"
+];
+
+export const OBSERVATION_PATCH_INPUT_FIELDS = [
+  "dx",
+  "dy",
+  "in_bounds",
+  "terrain_code",
+  "occupant_code",
+  "same_lineage",
+  "water_access_reason_code",
+  "food",
+  "vegetation",
+  "recovery_debt",
+  "fresh_kill_energy",
+  "carcass_energy",
+  "hazard_type_code",
+  "hazard_level",
+  "ecology_state_code",
+  "prey_biomass",
+  "carrion_signal",
+  "predator_risk",
+  "reproductive_signal",
+  "communication_signal"
+];
+
 export const POLICY_INTERFACE_VERSION = "mind_policy_interface_v1";
 
 export const ACTION_CONTRACT_VERSION = "mind_action_contract_v1";
 
+export const ACTION_CONTRACT_FIELDS = [
+  "schema_version",
+  "policy_id_encoding",
+  "debug_key_encoding",
+  "active_action_keys",
+  "reserved_action_keys",
+  "mate_action_key",
+  "communication",
+  "actions"
+];
+
+export const ACTION_COMMUNICATION_FIELDS = [
+  "token_count",
+  "profiles_per_token",
+  "action_keys",
+  "emission_enabled",
+  "meaning"
+];
+
+export const ACTION_SPEC_FIELDS = [
+  "action_id",
+  "key",
+  "resolver",
+  "category",
+  "active",
+  "reserved",
+  "requires_biology_gate",
+  "policy_visible",
+  "debug_label"
+];
+
+export const ACTION_NON_COMMUNICATION_SPECS = [
+  {
+    "action_id": 0,
+    "key": "stay",
+    "resolver": "current_world_resolver",
+    "category": "core",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "stay"
+  },
+  {
+    "action_id": 1,
+    "key": "eat",
+    "resolver": "current_world_resolver",
+    "category": "core",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "eat"
+  },
+  {
+    "action_id": 2,
+    "key": "drink",
+    "resolver": "current_world_resolver",
+    "category": "core",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "drink"
+  },
+  {
+    "action_id": 3,
+    "key": "move_north",
+    "resolver": "current_world_resolver",
+    "category": "movement",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "move_north"
+  },
+  {
+    "action_id": 4,
+    "key": "move_south",
+    "resolver": "current_world_resolver",
+    "category": "movement",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "move_south"
+  },
+  {
+    "action_id": 5,
+    "key": "move_east",
+    "resolver": "current_world_resolver",
+    "category": "movement",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "move_east"
+  },
+  {
+    "action_id": 6,
+    "key": "move_west",
+    "resolver": "current_world_resolver",
+    "category": "movement",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "move_west"
+  },
+  {
+    "action_id": 7,
+    "key": "attack_north",
+    "resolver": "current_world_resolver",
+    "category": "attack",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "attack_north"
+  },
+  {
+    "action_id": 8,
+    "key": "attack_south",
+    "resolver": "current_world_resolver",
+    "category": "attack",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "attack_south"
+  },
+  {
+    "action_id": 9,
+    "key": "attack_east",
+    "resolver": "current_world_resolver",
+    "category": "attack",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "attack_east"
+  },
+  {
+    "action_id": 10,
+    "key": "attack_west",
+    "resolver": "current_world_resolver",
+    "category": "attack",
+    "active": true,
+    "reserved": false,
+    "requires_biology_gate": false,
+    "policy_visible": true,
+    "debug_label": "attack_west"
+  },
+  {
+    "action_id": 11,
+    "key": "mate",
+    "resolver": "reserved_mate_attempt",
+    "category": "reproduction",
+    "active": false,
+    "reserved": true,
+    "requires_biology_gate": true,
+    "policy_visible": true,
+    "debug_label": "mate"
+  }
+];
+
+export const ACTION_COMMUNICATION_SPEC_FIXED_FIELDS = {
+  "resolver": "reserved_signal_emission",
+  "category": "communication",
+  "reserved": true,
+  "requires_biology_gate": true,
+  "policy_visible": true
+};
+
+export const ACTION_POLICY_ID_ENCODING = "zero_based_action_id";
+
+export const ACTION_DEBUG_KEY_ENCODING = "stable_string_key";
+
+export const ACTION_MATE_ACTION_KEY = "mate";
+
+export const ACTION_COMMUNICATION_MEANING = "simulator_opaque";
+
 export const SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v2";
+
+export const TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v4";
+
+export const TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION = "foundation_signal_field_reporting_v2";
+
+export const COMMUNICATION_AGGREGATE_PROJECTION = "parallel_legacy_projection_source_clamped_before_spatial_diffusion";
 
 export const REPRODUCTIVE_GROUP_CONTRACT_VERSION = "reproductive_group_contract_v1";
 
 export const GENOME_RECOMBINATION_CONTRACT_VERSION = "genome_recombination_contract_v1";
 
 export const REWARD_SCHEMA_VERSION = "mind_reward_v1";
+
+export const REWARD_CONTRACT = {
+  "schema_version": "mind_reward_v1",
+  "component_bounds": {
+    "survival_continuation": [
+      -1.0,
+      0.02
+    ],
+    "energy_stability": [
+      -1.0,
+      1.0
+    ],
+    "hydration_stability": [
+      -1.0,
+      1.0
+    ],
+    "health_preservation": [
+      -1.0,
+      1.0
+    ],
+    "resource_acquisition": [
+      0.0,
+      1.0
+    ],
+    "reproduction_readiness": [
+      0.0,
+      0.05
+    ],
+    "reproduction_success": [
+      0.0,
+      1.0
+    ],
+    "invalid_action_penalty": [
+      -0.05,
+      0.0
+    ],
+    "movement_cost": [
+      -0.005,
+      0.0
+    ]
+  },
+  "total_bounds": [
+    -4.055,
+    5.07
+  ],
+  "resource_acquisition_units": "clamped_action_energy_gain"
+};
+
+export const REWARD_RECORD_FIELDS = [
+  "schema_version",
+  "components",
+  "total"
+];
 
 export const ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2";
 

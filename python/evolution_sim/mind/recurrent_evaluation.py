@@ -31,22 +31,38 @@ from evolution_sim.mind.recurrent_evaluation_contract import (
     RecurrentEvaluationError,
 )
 from evolution_sim.mind.recurrent_artifact import (
+    FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
+    FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+    RECURRENT_ARTIFACT_SCHEMA_VERSION,
+    RECURRENT_REPLAY_PROBE_CONTRACT_VERSION,
     LoadedFrozenRecurrentPolicyArtifact,
     LoadedRecurrentArtifact,
+    RecurrentArtifactError,
     load_frozen_recurrent_policy_artifact,
     load_recurrent_artifact,
 )
-from evolution_sim.mind.recurrent_actor_critic import PublicRecurrentActorCritic
+from evolution_sim.mind.recurrent_actor_critic import (
+    GENOME_CONDITIONING_ACTOR_FILM_V1,
+    GENOME_CONDITIONING_DISABLED,
+    PublicRecurrentActorCritic,
+)
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationMode,
+    recurrent_genome_stream_binding_sha256,
+)
 from evolution_sim.mind.recurrent_policy import (
     PUBLIC_RECURRENT_ARGMAX_SELECTION,
     PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION,
     PUBLIC_RECURRENT_POLICY_ID,
     PUBLIC_RECURRENT_POLICY_VERSION,
     PUBLIC_RECURRENT_SAMPLED_SELECTION,
+    RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION,
     RECURRENT_COUNTERFACTUAL_ACTION_SOURCE,
     DeterministicPublicRecurrentPolicy,
+    RecurrentPolicyAdapterError,
     frozen_cpu_model_copy,
 )
+from evolution_sim.mind.provenance import stable_payload_digest
 from evolution_sim.mind.recurrent_seed_registry import (
     CANONICAL_SEED_REGISTRY_SHA256,
     RECURRENT_SEED_REGISTRY,
@@ -65,6 +81,18 @@ RECURRENT_EVALUATION_RUNTIME_SCHEMA_VERSION = (
     "mind_public_recurrent_evaluation_runtime_reproducibility_v1"
 )
 RECURRENT_EVALUATION_TICKS = 120
+LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION = "mind_public_recurrent_evaluation_v4"
+VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE = "verified_frozen_policy_artifact_v4"
+_VERIFIED_RECURRENT_ARTIFACT_MODE = "verified_artifact_path"
+_VERIFIED_RECURRENT_ARTIFACT_PIN = (
+    "canonical_seed_registry_and_external_expected_source_commit"
+)
+_VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN = (
+    "frozen_policy_artifact_v4_registry_source_commit_source_manifest_and_cpu_probe_v3"
+)
+_SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY = (
+    "canonical_json_source_pinned_artifact_evidence_without_evidence_sha256_v1"
+)
 MASKED_RANDOM_POLICY_ID = "mind_v3_masked_random_control"
 MASKED_RANDOM_POLICY_VERSION = "mind_v3_masked_random_control_v1"
 MASKED_RANDOM_ACTION_SOURCE = "masked_random_control"
@@ -73,6 +101,12 @@ _MASKED_RANDOM_SEED_NAMESPACE = (
 )
 _PUBLIC_RECURRENT_SAMPLING_SEED_NAMESPACE = (
     "evolution-sim|mind-v3-public-recurrent-evaluation|artifact-sampling-v1"
+)
+RECURRENT_EVALUATION_GENOME_POPULATION_SCHEMA_VERSION = (
+    "mind_public_recurrent_evaluation_genome_population_v1"
+)
+_RECURRENT_EVALUATION_GENOME_WORLD_IDENTITY_NAMESPACE = (
+    "evolution-sim|mind-v3-public-recurrent-evaluation|genome-world-v1"
 )
 UNPINNED_NONCANDIDATE_DIGEST_PREFIX = "unpinned-noncandidate-development-canary:"
 RECURRENT_EVALUATION_DEVELOPMENT_SEED_ROLE = "development"
@@ -153,6 +187,7 @@ _RUN_DIGEST_FIELDS = {
     "replay_digest",
     "outcome_evidence_sha256",
 }
+_RUN_GENOME_POPULATION_PROVENANCE_FIELD = "genome_population_provenance"
 _LEARNED_DISTRIBUTION_SUMMARY_FIELDS = {
     "decision_count",
     "metric_observation_counts",
@@ -183,6 +218,8 @@ class _EvaluationEnvironmentTask:
     feed_forward_history_ablation: bool
     candidate_action_selection: str
     sampling_seeds: tuple[int | None, ...]
+    genome_population_mode: str = RecurrentGenomePopulationMode.DISABLED.value
+    genome_stream_seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +380,10 @@ def evaluate_recurrent_artifact(
     candidate_sampling_seed_count: int = 1,
     candidate_sampling_stream_id: str | None = None,
     evaluation_workers: int = 1,
+    genome_population_mode: RecurrentGenomePopulationMode | str = (
+        RecurrentGenomePopulationMode.DISABLED
+    ),
+    genome_stream_seed: int | None = None,
 ) -> dict[str, object]:
     """Evaluate one verified frozen artifact on broad and controlled holdouts.
 
@@ -378,6 +419,13 @@ def evaluate_recurrent_artifact(
             "artifact source commit does not match the external expected pin"
         )
     selection = _validated_candidate_action_selection(candidate_action_selection)
+    resolved_genome_population_mode, resolved_genome_stream_seed = (
+        _validated_evaluation_genome_population_configuration(
+            loaded.model,
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
+        )
+    )
     training_seed_evidence = _artifact_training_seed_evidence(
         provenance,
         seed_plan=seed_plan,
@@ -387,20 +435,24 @@ def evaluate_recurrent_artifact(
     return _evaluate_frozen_model(
         candidate_model=loaded.model,
         policy_digest_label=artifact_digest,
+        trusted_artifact_path=Path(artifact_path),
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
-        artifact_evidence={
-            "path": str(Path(artifact_path)),
-            "artifact_sha256": artifact_digest,
-            "model_contract_version": _artifact_model_contract(loaded),
-            "seed_registry_digest": seed_registry_digest,
-            "source_commit": artifact_source_commit,
-            "expected_source_commit": resolved_expected_source_commit,
-            "source_commit_match": True,
-            "training_seed_evidence": training_seed_evidence,
-        },
+        artifact_evidence=_bound_source_pinned_artifact_evidence(
+            {
+                "path": str(Path(artifact_path)),
+                "artifact_sha256": artifact_digest,
+                "schema_version": loaded.artifact.get("schema_version"),
+                "model_contract_version": _artifact_model_contract(loaded),
+                "seed_registry_digest": seed_registry_digest,
+                "source_commit": artifact_source_commit,
+                "expected_source_commit": resolved_expected_source_commit,
+                "source_commit_match": True,
+                "training_seed_evidence": training_seed_evidence,
+            }
+        ),
         candidate_provenance={
-            "mode": "verified_artifact_path",
+            "mode": _VERIFIED_RECURRENT_ARTIFACT_MODE,
             "source_pinned": True,
             "synthetic_digest_label": False,
             "noncandidate_development_canary": False,
@@ -425,8 +477,11 @@ def evaluate_recurrent_artifact(
                 selection == PUBLIC_RECURRENT_SAMPLED_SELECTION
             ),
             "feed_forward_history_ablation": feed_forward_history_ablation,
-            "pin_verification": (
-                "canonical_seed_registry_and_external_expected_source_commit"
+            "pin_verification": _VERIFIED_RECURRENT_ARTIFACT_PIN,
+            **_conditioned_candidate_provenance(
+                model=loaded.model,
+                genome_population_mode=resolved_genome_population_mode,
+                genome_stream_seed=resolved_genome_stream_seed,
             ),
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
@@ -434,6 +489,8 @@ def evaluate_recurrent_artifact(
         candidate_sampling_seed_count=candidate_sampling_seed_count,
         candidate_sampling_stream_id=candidate_sampling_stream_id,
         evaluation_workers=resolved_workers,
+        genome_population_mode=resolved_genome_population_mode,
+        genome_stream_seed=resolved_genome_stream_seed,
     )
 
 
@@ -449,8 +506,12 @@ def evaluate_frozen_recurrent_policy_artifact(
     candidate_sampling_seed_count: int = 1,
     candidate_sampling_stream_id: str | None = None,
     evaluation_workers: int = 1,
+    genome_population_mode: RecurrentGenomePopulationMode | str = (
+        RecurrentGenomePopulationMode.DISABLED
+    ),
+    genome_stream_seed: int | None = None,
 ) -> dict[str, object]:
-    """Evaluate a v2 frozen policy after strict source and registry pin checks."""
+    """Evaluate a v4 frozen policy after strict source and registry pin checks."""
 
     resolved_workers = _validated_evaluation_workers(evaluation_workers)
     if not isinstance(seed_plan, RecurrentEvaluationSeedPlan):
@@ -475,6 +536,10 @@ def evaluate_frozen_recurrent_policy_artifact(
     integrity = _required_mapping(
         loaded.artifact.get("integrity"),
         field="artifact.integrity",
+    )
+    verification = _required_mapping(
+        loaded.artifact.get("verification"),
+        field="artifact.verification",
     )
     artifact_registry_digest = provenance.get("seed_registry_digest")
     if (
@@ -520,6 +585,13 @@ def evaluate_frozen_recurrent_policy_artifact(
             "frozen artifact source manifest does not match the expected pin"
         )
     selection = _validated_candidate_action_selection(candidate_action_selection)
+    resolved_genome_population_mode, resolved_genome_stream_seed = (
+        _validated_evaluation_genome_population_configuration(
+            loaded.model,
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
+        )
+    )
     training_seed_evidence = _artifact_training_seed_evidence(
         provenance,
         seed_plan=seed_plan,
@@ -528,24 +600,34 @@ def evaluate_frozen_recurrent_policy_artifact(
     return _evaluate_frozen_model(
         candidate_model=loaded.model,
         policy_digest_label=artifact_digest,
+        trusted_artifact_path=Path(artifact_path),
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
-        artifact_evidence={
-            "path": str(Path(artifact_path)),
-            "artifact_sha256": artifact_digest,
-            "artifact_kind": loaded.artifact.get("artifact_kind"),
-            "model_contract_version": _artifact_model_contract(loaded),
-            "seed_registry_digest": artifact_registry_digest,
-            "source_commit": artifact_source_commit,
-            "expected_source_commit": resolved_source_commit,
-            "source_commit_match": True,
-            "source_manifest_sha256": artifact_source_manifest,
-            "expected_source_manifest_sha256": resolved_source_manifest,
-            "source_manifest_match": True,
-            "training_seed_evidence": training_seed_evidence,
-        },
+        artifact_evidence=_bound_source_pinned_artifact_evidence(
+            {
+                "path": str(Path(artifact_path)),
+                "artifact_sha256": artifact_digest,
+                "schema_version": loaded.artifact.get("schema_version"),
+                "artifact_kind": loaded.artifact.get("artifact_kind"),
+                "model_contract_version": _artifact_model_contract(loaded),
+                "seed_registry_digest": artifact_registry_digest,
+                "source_commit": artifact_source_commit,
+                "expected_source_commit": resolved_source_commit,
+                "source_commit_match": True,
+                "source_manifest_sha256": artifact_source_manifest,
+                "expected_source_manifest_sha256": resolved_source_manifest,
+                "source_manifest_match": True,
+                "replay_probe_contract_version": verification.get(
+                    "replay_probe_contract_version"
+                ),
+                "replay_probe_verified_on_device": verification.get(
+                    "verified_on_device"
+                ),
+                "training_seed_evidence": training_seed_evidence,
+            }
+        ),
         candidate_provenance={
-            "mode": "verified_frozen_policy_artifact_v2",
+            "mode": VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE,
             "source_pinned": True,
             "synthetic_digest_label": False,
             "noncandidate_development_canary": False,
@@ -570,8 +652,11 @@ def evaluate_frozen_recurrent_policy_artifact(
                 selection == PUBLIC_RECURRENT_SAMPLED_SELECTION
             ),
             "feed_forward_history_ablation": feed_forward_history_ablation,
-            "pin_verification": (
-                "frozen_v2_registry_source_commit_source_manifest_and_cpu_probe"
+            "pin_verification": _VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN,
+            **_conditioned_candidate_provenance(
+                model=loaded.model,
+                genome_population_mode=resolved_genome_population_mode,
+                genome_stream_seed=resolved_genome_stream_seed,
             ),
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
@@ -579,6 +664,8 @@ def evaluate_frozen_recurrent_policy_artifact(
         candidate_sampling_seed_count=candidate_sampling_seed_count,
         candidate_sampling_stream_id=candidate_sampling_stream_id,
         evaluation_workers=resolved_workers,
+        genome_population_mode=resolved_genome_population_mode,
+        genome_stream_seed=resolved_genome_stream_seed,
     )
 
 
@@ -593,6 +680,10 @@ def evaluate_recurrent_model(
     candidate_sampling_seed_count: int = 1,
     candidate_sampling_stream_id: str | None = None,
     evaluation_workers: int = 1,
+    genome_population_mode: RecurrentGenomePopulationMode | str = (
+        RecurrentGenomePopulationMode.DISABLED
+    ),
+    genome_stream_seed: int | None = None,
 ) -> dict[str, object]:
     """Evaluate an in-memory development model without claiming source pinning.
 
@@ -611,11 +702,19 @@ def evaluate_recurrent_model(
     if type(feed_forward_history_ablation) is not bool:
         raise TypeError("feed_forward_history_ablation must be an exact boolean")
     selection = _validated_candidate_action_selection(candidate_action_selection)
+    resolved_genome_population_mode, resolved_genome_stream_seed = (
+        _validated_evaluation_genome_population_configuration(
+            model,
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
+        )
+    )
     selected_fixtures = _validated_fixture_names(fixture_names)
     digest_label = _validated_unpinned_digest_label(synthetic_noncandidate_digest_label)
     return _evaluate_frozen_model(
         candidate_model=model,
         policy_digest_label=digest_label,
+        trusted_artifact_path=None,
         seed_plan=seed_plan,
         selected_fixtures=selected_fixtures,
         artifact_evidence=None,
@@ -645,12 +744,19 @@ def evaluate_recurrent_model(
             ),
             "feed_forward_history_ablation": feed_forward_history_ablation,
             "runtime_integration_authorized": False,
+            **_conditioned_candidate_provenance(
+                model=model,
+                genome_population_mode=resolved_genome_population_mode,
+                genome_stream_seed=resolved_genome_stream_seed,
+            ),
         },
         feed_forward_history_ablation=feed_forward_history_ablation,
         candidate_action_selection=selection,
         candidate_sampling_seed_count=candidate_sampling_seed_count,
         candidate_sampling_stream_id=candidate_sampling_stream_id,
         evaluation_workers=resolved_workers,
+        genome_population_mode=resolved_genome_population_mode,
+        genome_stream_seed=resolved_genome_stream_seed,
     )
 
 
@@ -658,6 +764,7 @@ def _evaluate_frozen_model(
     *,
     candidate_model: PublicRecurrentActorCritic,
     policy_digest_label: str,
+    trusted_artifact_path: Path | None,
     seed_plan: RecurrentEvaluationSeedPlan,
     selected_fixtures: Sequence[str],
     artifact_evidence: Mapping[str, object] | None,
@@ -667,12 +774,15 @@ def _evaluate_frozen_model(
     candidate_sampling_seed_count: int,
     candidate_sampling_stream_id: str | None,
     evaluation_workers: int = 1,
+    genome_population_mode: str = RecurrentGenomePopulationMode.DISABLED.value,
+    genome_stream_seed: int | None = None,
 ) -> dict[str, object]:
     resolved_workers = _validated_evaluation_workers(evaluation_workers)
     with _single_torch_thread_scope():
         return _evaluate_frozen_model_impl(
             candidate_model=candidate_model,
             policy_digest_label=policy_digest_label,
+            trusted_artifact_path=trusted_artifact_path,
             seed_plan=seed_plan,
             selected_fixtures=selected_fixtures,
             artifact_evidence=artifact_evidence,
@@ -682,6 +792,8 @@ def _evaluate_frozen_model(
             candidate_sampling_seed_count=candidate_sampling_seed_count,
             candidate_sampling_stream_id=candidate_sampling_stream_id,
             evaluation_workers=resolved_workers,
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
         )
 
 
@@ -689,6 +801,7 @@ def _evaluate_frozen_model_impl(
     *,
     candidate_model: PublicRecurrentActorCritic,
     policy_digest_label: str,
+    trusted_artifact_path: Path | None,
     seed_plan: RecurrentEvaluationSeedPlan,
     selected_fixtures: Sequence[str],
     artifact_evidence: Mapping[str, object] | None,
@@ -698,6 +811,8 @@ def _evaluate_frozen_model_impl(
     candidate_sampling_seed_count: int,
     candidate_sampling_stream_id: str | None,
     evaluation_workers: int,
+    genome_population_mode: str,
+    genome_stream_seed: int | None,
 ) -> dict[str, object]:
     frozen_model = frozen_cpu_model_copy(candidate_model)
     resolved_sampling_stream_id = (
@@ -727,6 +842,8 @@ def _evaluate_frozen_model_impl(
             feed_forward_history_ablation=feed_forward_history_ablation,
             candidate_action_selection=candidate_action_selection,
             sampling_seeds=tuple(sampling_seeds),
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
         )
         for fixture_name, seeds in context_specs
         for seed in seeds
@@ -759,6 +876,8 @@ def _evaluate_frozen_model_impl(
         feed_forward_history_ablation=feed_forward_history_ablation,
         candidate_action_selection=candidate_action_selection,
         sampling_seeds=sampling_seeds,
+        genome_population_mode=genome_population_mode,
+        genome_stream_seed=genome_stream_seed,
         environment_results=(
             parallel_results_by_context[None] if evaluation_workers > 1 else None
         ),
@@ -775,6 +894,8 @@ def _evaluate_frozen_model_impl(
                 feed_forward_history_ablation=feed_forward_history_ablation,
                 candidate_action_selection=candidate_action_selection,
                 sampling_seeds=sampling_seeds,
+                genome_population_mode=genome_population_mode,
+                genome_stream_seed=genome_stream_seed,
                 environment_results=(
                     parallel_results_by_context[fixture_name]
                     if evaluation_workers > 1
@@ -866,6 +987,12 @@ def _evaluate_frozen_model_impl(
                 "current_public_action_mask",
                 "same_agent_previous_public_outcome",
                 "same_agent_recurrent_state",
+                *(
+                    ["inherited_controller_genome"]
+                    if genome_population_mode
+                    != RecurrentGenomePopulationMode.DISABLED.value
+                    else []
+                ),
             ],
             "candidate_forbidden_inputs": [
                 "world_seed",
@@ -914,7 +1041,7 @@ def _evaluate_frozen_model_impl(
             "checks": replay_checks,
         },
     }
-    _validate_report(report)
+    _validate_report(report, trusted_artifact_path=trusted_artifact_path)
     return report
 
 
@@ -928,6 +1055,8 @@ def _evaluate_context(
     feed_forward_history_ablation: bool,
     candidate_action_selection: str,
     sampling_seeds: Sequence[int | None],
+    genome_population_mode: str = RecurrentGenomePopulationMode.DISABLED.value,
+    genome_stream_seed: int | None = None,
     environment_results: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     runs_by_policy: dict[str, list[dict[str, object]]] = {
@@ -945,6 +1074,8 @@ def _evaluate_context(
             feed_forward_history_ablation=feed_forward_history_ablation,
             candidate_action_selection=candidate_action_selection,
             sampling_seeds=tuple(sampling_seeds),
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
         )
         for seed in seeds
     )
@@ -1074,6 +1205,8 @@ def _evaluate_environment_task(
                 sampling_seed=sampling_seed,
             ),
             policy_sampling_seed=sampling_seed,
+            genome_population_mode=task.genome_population_mode,
+            genome_stream_seed=task.genome_stream_seed,
         )
         repeated = _run_policy_world(
             seed=task.seed,
@@ -1086,6 +1219,8 @@ def _evaluate_environment_task(
                 sampling_seed=sampling_seed,
             ),
             policy_sampling_seed=sampling_seed,
+            genome_population_mode=task.genome_population_mode,
+            genome_stream_seed=task.genome_stream_seed,
         )
         if candidate != repeated:
             raise RecurrentEvaluationError(
@@ -1100,9 +1235,7 @@ def _evaluate_environment_task(
                 "seed": task.seed,
                 "policy_sampling_seed": sampling_seed,
                 "digest": candidate["replay_digest"],
-                "outcome_evidence_sha256": candidate[
-                    "outcome_evidence_sha256"
-                ],
+                "outcome_evidence_sha256": candidate["outcome_evidence_sha256"],
                 "passed": True,
             }
         )
@@ -1292,7 +1425,19 @@ def _run_policy_world(
     fixture_name: str | None,
     policy: object,
     policy_sampling_seed: int | None = None,
+    genome_population_mode: str = RecurrentGenomePopulationMode.DISABLED.value,
+    genome_stream_seed: int | None = None,
 ) -> dict[str, object]:
+    genome_world_identity = _evaluation_genome_world_identity(
+        seed=seed,
+        fixture_name=fixture_name,
+    )
+    conditioned = _bind_evaluation_policy_genome_population(
+        policy,
+        world_identity=genome_world_identity,
+        genome_population_mode=genome_population_mode,
+        genome_stream_seed=genome_stream_seed,
+    )
     world = (
         SimulationWorld(
             WorldConfig(seed=seed, max_ticks=RECURRENT_EVALUATION_TICKS),
@@ -1306,6 +1451,33 @@ def _run_policy_world(
         )
     )
     result = world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+    genome_population_provenance: dict[str, object] | None = None
+    if conditioned:
+        if not isinstance(policy, DeterministicPublicRecurrentPolicy):
+            raise AssertionError("conditioned evaluation policy type changed")
+        policy.reconcile_live_agent_ids(
+            live_agent_ids=tuple(
+                sorted(agent.agent_id for agent in world.alive_agents())
+            )
+        )
+        policy.reset_world()
+        genome_population_provenance = policy.last_world_genome_provenance
+        if genome_population_provenance is None:
+            raise RecurrentEvaluationError(
+                "conditioned evaluation did not finalize genome population provenance"
+            )
+        _validate_evaluation_genome_world_provenance(
+            genome_population_provenance,
+            expected_world_identity=genome_world_identity,
+            expected_genome_population_mode=genome_population_mode,
+            expected_genome_stream_seed=genome_stream_seed,
+            expected_action_selection=(
+                PUBLIC_RECURRENT_ARGMAX_SELECTION
+                if policy_sampling_seed is None
+                else PUBLIC_RECURRENT_SAMPLED_SELECTION
+            ),
+            expected_policy_sampling_seed=policy_sampling_seed,
+        )
     records = world.trajectory_records
     decision_diagnostics_records = world.policy_decision_diagnostics_records
     if len(decision_diagnostics_records) != len(records):
@@ -1437,6 +1609,8 @@ def _run_policy_world(
             learned_distribution_rows
         ),
     }
+    if genome_population_provenance is not None:
+        run[_RUN_GENOME_POPULATION_PROVENANCE_FIELD] = genome_population_provenance
     full_behavior_payload = {
         "run": run,
         "summary": summary,
@@ -2072,15 +2246,14 @@ def _run_outcome_evidence_sha256(run: Mapping[str, object]) -> str:
         field="run.replay_digest",
     )
     outcome_fields = _RUN_FIELDS - _RUN_DIGEST_FIELDS
+    if _RUN_GENOME_POPULATION_PROVENANCE_FIELD in run:
+        outcome_fields = outcome_fields | {_RUN_GENOME_POPULATION_PROVENANCE_FIELD}
     missing = sorted(field for field in outcome_fields if field not in run)
     if missing:
         raise RecurrentEvaluationError(
             f"run outcome evidence fields are missing: {missing!r}"
         )
-    projection = {
-        field: run[field]
-        for field in sorted(outcome_fields)
-    }
+    projection = {field: run[field] for field in sorted(outcome_fields)}
     return _canonical_sha256(
         {
             "schema_version": _RUN_OUTCOME_EVIDENCE_SCHEMA_VERSION,
@@ -2098,9 +2271,7 @@ def _validated_named_counts(
 ) -> dict[str, int]:
     raw_names = tuple(value)
     if any(
-        not isinstance(raw_name, str)
-        or not raw_name
-        or raw_name != raw_name.strip()
+        not isinstance(raw_name, str) or not raw_name or raw_name != raw_name.strip()
         for raw_name in raw_names
     ):
         raise RecurrentEvaluationError(
@@ -2204,8 +2375,7 @@ def _validate_learned_distribution_summary(
     )
     if decision_count == 0:
         if any(
-            mean_action_probabilities.get(action) is not None
-            for action in ACTION_NAMES
+            mean_action_probabilities.get(action) is not None for action in ACTION_NAMES
         ):
             raise RecurrentEvaluationError(
                 "zero-decision learned distribution must have null action means"
@@ -2214,10 +2384,7 @@ def _validate_learned_distribution_summary(
     action_means = tuple(
         _finite_number(
             mean_action_probabilities.get(action),
-            field=(
-                "learned_masked_distribution.mean_action_probabilities."
-                f"{action}"
-            ),
+            field=(f"learned_masked_distribution.mean_action_probabilities.{action}"),
         )
         for action in ACTION_NAMES
     )
@@ -2236,7 +2403,10 @@ def _validate_learned_distribution_summary(
 
 
 def _validate_run(run: Mapping[str, object]) -> None:
-    _require_exact_fields(run, _RUN_FIELDS, field="run")
+    expected_fields = _RUN_FIELDS
+    if _RUN_GENOME_POPULATION_PROVENANCE_FIELD in run:
+        expected_fields = expected_fields | {_RUN_GENOME_POPULATION_PROVENANCE_FIELD}
+    _require_exact_fields(run, expected_fields, field="run")
     behavior_digest = _validated_sha256(
         run.get("behavior_digest"),
         field="run.behavior_digest",
@@ -2273,7 +2443,9 @@ def _validate_run(run: Mapping[str, object]) -> None:
         run.get("requested_action_counts"),
         field="requested_action_counts",
     )
-    if any(not isinstance(action, str) or action not in ACTION_NAMES for action in counts):
+    if any(
+        not isinstance(action, str) or action not in ACTION_NAMES for action in counts
+    ):
         raise RecurrentEvaluationError("run contains an action outside the contract")
     if tuple(counts) != tuple(sorted(counts)):
         raise RecurrentEvaluationError(
@@ -2341,16 +2513,11 @@ def _validate_run(run: Mapping[str, object]) -> None:
         action_source_counts,
         field="action_source_counts",
     )
-    if (
-        sum(parsed_action_source_counts.values()) != trajectory_record_count
-    ):
+    if sum(parsed_action_source_counts.values()) != trajectory_record_count:
         raise RecurrentEvaluationError(
             "action-source distribution does not cover trajectory"
         )
-    if (
-        parsed_action_source_counts.get("passive", 0)
-        != passive_trajectory_record_count
-    ):
+    if parsed_action_source_counts.get("passive", 0) != passive_trajectory_record_count:
         raise RecurrentEvaluationError(
             "passive action-source count differs from passive trajectory count"
         )
@@ -2425,10 +2592,7 @@ def _validate_run(run: Mapping[str, object]) -> None:
             observed_eat_without_gain_share,
             field="eat_without_positive_resource_gain_share",
         )
-    if (
-        observed_eat_without_gain_share
-        != expected_eat_without_gain_share
-    ):
+    if observed_eat_without_gain_share != expected_eat_without_gain_share:
         raise RecurrentEvaluationError(
             "run eat-without-resource-gain share differs from its counts"
         )
@@ -2445,21 +2609,301 @@ def _validate_run(run: Mapping[str, object]) -> None:
         raise RecurrentEvaluationError(
             "learned-distribution count differs from recurrent policy records"
         )
-    if _run_outcome_evidence_sha256(
-        {
-            **dict(run),
-            "behavior_digest": behavior_digest,
-            "replay_digest": replay_digest,
-        }
-    ) != outcome_evidence_sha256:
+    genome_population_provenance = run.get(_RUN_GENOME_POPULATION_PROVENANCE_FIELD)
+    if genome_population_provenance is not None:
+        _validate_evaluation_genome_world_provenance(
+            _required_mapping(
+                genome_population_provenance,
+                field=f"run.{_RUN_GENOME_POPULATION_PROVENANCE_FIELD}",
+            ),
+            expected_world_identity=_evaluation_genome_world_identity(
+                seed=int(run["seed"]),
+                fixture_name=_fixture_name_from_context(str(run["context"])),
+            ),
+            expected_genome_population_mode=None,
+            expected_genome_stream_seed=None,
+            expected_action_selection=(
+                PUBLIC_RECURRENT_ARGMAX_SELECTION
+                if run.get("policy_sampling_seed") is None
+                else PUBLIC_RECURRENT_SAMPLED_SELECTION
+            ),
+            expected_policy_sampling_seed=run.get("policy_sampling_seed"),
+            require_expected_binding=False,
+        )
+        if recurrent_records != policy_decision_record_count:
+            raise RecurrentEvaluationError(
+                "conditioned genome provenance is only valid for a complete "
+                "public recurrent run"
+            )
+    if (
+        _run_outcome_evidence_sha256(
+            {
+                **dict(run),
+                "behavior_digest": behavior_digest,
+                "replay_digest": replay_digest,
+            }
+        )
+        != outcome_evidence_sha256
+    ):
         raise RecurrentEvaluationError(
             "run outcome fields are detached from behavior/replay evidence"
         )
 
 
-def _validate_report(report: Mapping[str, object]) -> None:
+def _source_pinned_artifact_evidence_sha256(
+    artifact: Mapping[str, object],
+) -> str:
+    """Bind report claims to one externally verifiable artifact digest.
+
+    This digest makes the report's artifact schema, source pins, training-seed
+    evidence, and replay-probe claims internally inseparable from the reported
+    artifact SHA256. It does not authenticate artifact bytes that are absent
+    from the standalone report; callers still need the artifact bytes or an
+    external trusted digest pin for that stronger guarantee.
+    """
+
+    bound = dict(artifact)
+    bound.pop("artifact_evidence_sha256", None)
+    return _canonical_sha256(
+        {
+            "digest_policy": _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY,
+            "source_pinned_artifact_evidence": bound,
+        }
+    )
+
+
+def _bound_source_pinned_artifact_evidence(
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    if (
+        "artifact_evidence_digest_policy" in artifact
+        or "artifact_evidence_sha256" in artifact
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence is already bound"
+        )
+    bound = dict(artifact)
+    bound["artifact_evidence_digest_policy"] = (
+        _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY
+    )
+    bound["artifact_evidence_sha256"] = _source_pinned_artifact_evidence_sha256(bound)
+    return bound
+
+
+def _validate_source_pinned_artifact_identity(
+    artifact: Mapping[str, object],
+    provenance: Mapping[str, object],
+    *,
+    seed_plan: RecurrentEvaluationSeedPlan,
+    trusted_artifact_path: str | Path | None,
+) -> str:
+    common_fields = {
+        "path",
+        "artifact_sha256",
+        "schema_version",
+        "model_contract_version",
+        "seed_registry_digest",
+        "source_commit",
+        "expected_source_commit",
+        "source_commit_match",
+        "training_seed_evidence",
+        "artifact_evidence_digest_policy",
+        "artifact_evidence_sha256",
+    }
+    mode = provenance.get("mode")
+    if mode == _VERIFIED_RECURRENT_ARTIFACT_MODE:
+        expected_fields = common_fields
+        expected_pin = _VERIFIED_RECURRENT_ARTIFACT_PIN
+    elif mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        expected_fields = common_fields | {
+            "schema_version",
+            "artifact_kind",
+            "source_manifest_sha256",
+            "expected_source_manifest_sha256",
+            "source_manifest_match",
+            "replay_probe_contract_version",
+            "replay_probe_verified_on_device",
+        }
+        expected_pin = _VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_PIN
+    else:
+        raise RecurrentEvaluationError(
+            "source-pinned candidate mode is missing, stale, or unsupported"
+        )
+
+    _require_exact_fields(
+        artifact,
+        expected_fields,
+        field="artifact",
+    )
+    if provenance.get("pin_verification") != expected_pin:
+        raise RecurrentEvaluationError(
+            "source-pinned candidate pin verification is missing or stale"
+        )
+    if artifact.get("artifact_evidence_digest_policy") != (
+        _SOURCE_PINNED_ARTIFACT_EVIDENCE_DIGEST_POLICY
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence digest policy is missing or stale"
+        )
+    evidence_sha256 = _validated_sha256(
+        artifact.get("artifact_evidence_sha256"),
+        field="artifact.artifact_evidence_sha256",
+    )
+    if evidence_sha256 != _source_pinned_artifact_evidence_sha256(artifact):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact evidence SHA256 mismatch"
+        )
+    path = artifact.get("path")
+    if not isinstance(path, str) or not path:
+        raise RecurrentEvaluationError("artifact path must be a non-empty string")
+    if trusted_artifact_path is None:
+        raise RecurrentEvaluationError(
+            "source-pinned validation requires an explicit trusted artifact path"
+        )
+    _validated_sha256(
+        artifact.get("artifact_sha256"),
+        field="artifact.artifact_sha256",
+    )
+    model_contract_version = artifact.get("model_contract_version")
+    if not isinstance(model_contract_version, str) or not model_contract_version:
+        raise RecurrentEvaluationError(
+            "artifact model contract version must be a non-empty string"
+        )
+    _validated_sha256(
+        artifact.get("seed_registry_digest"),
+        field="artifact.seed_registry_digest",
+    )
+    source_commit = _validated_expected_source_commit(artifact.get("source_commit"))
+    expected_source_commit = _validated_expected_source_commit(
+        artifact.get("expected_source_commit")
+    )
+    if (
+        source_commit != expected_source_commit
+        or artifact.get("source_commit_match") is not True
+    ):
+        raise RecurrentEvaluationError(
+            "artifact source commit evidence differs from its expected pin"
+        )
+
+    source_manifest: str | None = None
+    if mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        if (
+            artifact.get("schema_version")
+            != FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION
+            or artifact.get("artifact_kind") != FROZEN_RECURRENT_POLICY_ARTIFACT_KIND
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact identity or schema is missing or stale"
+            )
+        source_manifest = _validated_sha256(
+            artifact.get("source_manifest_sha256"),
+            field="artifact.source_manifest_sha256",
+        )
+        expected_source_manifest = _validated_sha256(
+            artifact.get("expected_source_manifest_sha256"),
+            field="artifact.expected_source_manifest_sha256",
+        )
+        if (
+            source_manifest != expected_source_manifest
+            or artifact.get("source_manifest_match") is not True
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact source manifest evidence differs from its expected pin"
+            )
+        if (
+            artifact.get("replay_probe_contract_version")
+            != RECURRENT_REPLAY_PROBE_CONTRACT_VERSION
+            or artifact.get("replay_probe_verified_on_device") != "cpu"
+        ):
+            raise RecurrentEvaluationError(
+                "frozen artifact CPU replay-probe evidence is missing or stale"
+            )
+    elif artifact.get("schema_version") != RECURRENT_ARTIFACT_SCHEMA_VERSION:
+        raise RecurrentEvaluationError("recurrent artifact schema is missing or stale")
+
+    try:
+        loaded: LoadedRecurrentArtifact | LoadedFrozenRecurrentPolicyArtifact
+        if mode == VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+            loaded = load_frozen_recurrent_policy_artifact(trusted_artifact_path)
+        else:
+            loaded = load_recurrent_artifact(trusted_artifact_path)
+    except RecurrentArtifactError as error:
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes are missing, invalid, or stale"
+        ) from error
+    if _artifact_digest(loaded) != artifact.get("artifact_sha256"):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes differ from the reported artifact SHA256"
+        )
+    loaded_provenance = _required_mapping(
+        loaded.artifact.get("provenance"),
+        field="loaded artifact.provenance",
+    )
+    if (
+        loaded.artifact.get("schema_version") != artifact.get("schema_version")
+        or _artifact_model_contract(loaded) != artifact.get("model_contract_version")
+        or loaded_provenance.get("seed_registry_digest")
+        != artifact.get("seed_registry_digest")
+        or loaded_provenance.get("source_commit") != source_commit
+    ):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact bytes differ from report identity evidence"
+        )
+    loaded_training_evidence = _artifact_training_seed_evidence(
+        loaded_provenance,
+        seed_plan=seed_plan,
+    )
+    if loaded_training_evidence != artifact.get("training_seed_evidence"):
+        raise RecurrentEvaluationError(
+            "source-pinned artifact training-seed evidence is not bound to its bytes"
+        )
+
+    genome_conditioning_mode = loaded.model.config.genome_conditioning_mode
+    if genome_conditioning_mode not in {
+        GENOME_CONDITIONING_DISABLED,
+        GENOME_CONDITIONING_ACTOR_FILM_V1,
+    }:
+        raise RecurrentEvaluationError(
+            "source-pinned artifact genome conditioning mode is unsupported"
+        )
+    if mode != VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE:
+        return genome_conditioning_mode
+    assert source_manifest is not None
+    loaded_verification = _required_mapping(
+        loaded.artifact.get("verification"),
+        field="loaded frozen artifact.verification",
+    )
+    loaded_frozen_provenance = _required_mapping(
+        loaded.artifact.get("provenance"),
+        field="loaded frozen artifact.provenance",
+    )
+    if (
+        loaded.artifact.get("artifact_kind") != artifact.get("artifact_kind")
+        or loaded_frozen_provenance.get("source_manifest_sha256") != source_manifest
+        or loaded_verification.get("replay_probe_contract_version")
+        != artifact.get("replay_probe_contract_version")
+        or loaded_verification.get("verified_on_device")
+        != artifact.get("replay_probe_verified_on_device")
+    ):
+        raise RecurrentEvaluationError(
+            "frozen artifact bytes differ from report replay-probe evidence"
+        )
+    return genome_conditioning_mode
+
+
+def _validate_report(
+    report: Mapping[str, object],
+    *,
+    trusted_artifact_path: str | Path | None = None,
+) -> None:
     _reject_ambiguous_v3_terminal_fields(report, field="report")
-    if report.get("schema_version") != RECURRENT_EVALUATION_SCHEMA_VERSION:
+    report_schema = report.get("schema_version")
+    if report_schema == LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION:
+        raise RecurrentEvaluationError(
+            "evaluation report schema v4 is stale; v5 source-pinned artifact "
+            "evidence is required"
+        )
+    if report_schema != RECURRENT_EVALUATION_SCHEMA_VERSION:
         raise RecurrentEvaluationError("evaluation report schema drifted")
     execution = _required_mapping(
         report.get("execution_provenance"),
@@ -2540,6 +2984,14 @@ def _validate_report(report: Mapping[str, object]) -> None:
     source_pinned = provenance.get("source_pinned")
     if type(source_pinned) is not bool:
         raise RecurrentEvaluationError("candidate source_pinned must be boolean")
+    conditioned_genome_configuration: dict[str, object] | None = None
+    if "genome_evaluation" in provenance:
+        conditioned_genome_configuration = _validate_conditioned_candidate_provenance(
+            _required_mapping(
+                provenance.get("genome_evaluation"),
+                field="candidate_provenance.genome_evaluation",
+            )
+        )
     common_provenance_keys = {
         "mode",
         "source_pinned",
@@ -2558,6 +3010,11 @@ def _validate_report(report: Mapping[str, object]) -> None:
         "candidate_action_selection_promotion_eligible",
         "sampled_candidate_diagnostic",
         "feed_forward_history_ablation",
+        *(
+            ("genome_evaluation",)
+            if conditioned_genome_configuration is not None
+            else ()
+        ),
     }
     expected_provenance_keys = common_provenance_keys | (
         {"pin_verification"}
@@ -2573,6 +3030,26 @@ def _validate_report(report: Mapping[str, object]) -> None:
         if not isinstance(report.get("artifact"), Mapping):
             raise RecurrentEvaluationError("source-pinned evaluation lacks artifact")
         artifact = _required_mapping(report.get("artifact"), field="artifact")
+        artifact_genome_conditioning_mode = _validate_source_pinned_artifact_identity(
+            artifact,
+            provenance,
+            seed_plan=seed_plan,
+            trusted_artifact_path=trusted_artifact_path,
+        )
+        if (
+            artifact_genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1
+            and conditioned_genome_configuration is None
+        ):
+            raise RecurrentEvaluationError(
+                "actor_film_v1 artifact evaluation is missing genome binding provenance"
+            )
+        if (
+            artifact_genome_conditioning_mode == GENOME_CONDITIONING_DISABLED
+            and conditioned_genome_configuration is not None
+        ):
+            raise RecurrentEvaluationError(
+                "disabled artifact evaluation cannot claim genome binding provenance"
+            )
         artifact_training_evidence = _required_mapping(
             artifact.get("training_seed_evidence"),
             field="artifact.training_seed_evidence",
@@ -2681,12 +3158,28 @@ def _validate_report(report: Mapping[str, object]) -> None:
         raise RecurrentEvaluationError(
             "candidate recurrent-state contract differs from provenance"
         )
+    expected_policy_inputs = [
+        "current_public_ecological_observation",
+        "current_public_action_mask",
+        "same_agent_previous_public_outcome",
+        "same_agent_recurrent_state",
+        *(
+            ["inherited_controller_genome"]
+            if conditioned_genome_configuration is not None
+            else []
+        ),
+    ]
+    if evaluation_contract.get("candidate_policy_inputs") != expected_policy_inputs:
+        raise RecurrentEvaluationError(
+            "candidate genome input contract differs from provenance"
+        )
 
     candidate_run_count = _validate_context_report(
         _required_mapping(report.get("broad"), field="broad"),
         field="broad",
         expected_context="broad_default",
         expected_sampling_seeds=expected_sampling_seeds,
+        expected_genome_configuration=conditioned_genome_configuration,
     )
     broad_context = _required_mapping(report.get("broad"), field="broad")
     if tuple(broad_context.get("seeds", ())) != seed_plan.broad_seeds:
@@ -2718,6 +3211,7 @@ def _validate_report(report: Mapping[str, object]) -> None:
             field=f"fixture:{fixture_name}",
             expected_context=f"fixture:{fixture_name}",
             expected_sampling_seeds=expected_sampling_seeds,
+            expected_genome_configuration=conditioned_genome_configuration,
         )
         expected_replay_checks.extend(
             _expected_replay_checks_from_context(
@@ -2779,10 +3273,21 @@ def _validate_report(report: Mapping[str, object]) -> None:
         )
 
 
-def validate_recurrent_evaluation_report(report: Mapping[str, object]) -> None:
-    """Public fail-closed validator for persisted or nested v4 evaluations."""
+def validate_recurrent_evaluation_report(
+    report: Mapping[str, object],
+    *,
+    trusted_artifact_path: str | Path | None = None,
+) -> None:
+    """Validate v5 structure and trusted source-pinned artifact bytes.
 
-    _validate_report(report)
+    A source-pinned report never chooses the filesystem object that validation
+    opens. Its embedded path remains descriptive evidence, while the caller
+    must supply the independently trusted local artifact path. The strict
+    loader revalidates that object's digest and, for a frozen policy, executes
+    its exact CPU replay probe.
+    """
+
+    _validate_report(report, trusted_artifact_path=trusted_artifact_path)
 
 
 def _training_seed_set_for_plan(
@@ -3244,12 +3749,25 @@ def _validate_evaluation_contract(
         or contract.get("strict_zero_heuristic_candidate_actions") is not True
     ):
         raise RecurrentEvaluationError("evaluation canonical contract drifted")
-    if contract.get("candidate_policy_inputs") != [
-        "current_public_ecological_observation",
-        "current_public_action_mask",
-        "same_agent_previous_public_outcome",
-        "same_agent_recurrent_state",
-    ]:
+    candidate_policy_inputs_value = contract.get("candidate_policy_inputs")
+    if not isinstance(candidate_policy_inputs_value, list):
+        raise RecurrentEvaluationError("evaluation candidate input contract drifted")
+    candidate_policy_inputs = tuple(candidate_policy_inputs_value)
+    if candidate_policy_inputs not in {
+        (
+            "current_public_ecological_observation",
+            "current_public_action_mask",
+            "same_agent_previous_public_outcome",
+            "same_agent_recurrent_state",
+        ),
+        (
+            "current_public_ecological_observation",
+            "current_public_action_mask",
+            "same_agent_previous_public_outcome",
+            "same_agent_recurrent_state",
+            "inherited_controller_genome",
+        ),
+    }:
         raise RecurrentEvaluationError("evaluation candidate input contract drifted")
     if contract.get("candidate_forbidden_inputs") != [
         "world_seed",
@@ -3353,6 +3871,7 @@ def _validate_context_report(
     field: str,
     expected_context: str,
     expected_sampling_seeds: Sequence[int | None],
+    expected_genome_configuration: Mapping[str, object] | None = None,
 ) -> int:
     seeds = _validated_seed_sequence(context.get("seeds"), field=f"{field}.seeds")
     policies = _required_mapping(context.get("policies"), field=f"{field}.policies")
@@ -3434,6 +3953,47 @@ def _validate_context_report(
             raise RecurrentEvaluationError(
                 f"{field} {control_key} identity grid differs from seed plan"
             )
+        if any(
+            _RUN_GENOME_POPULATION_PROVENANCE_FIELD in run
+            for run in runs_by_policy[control_key]
+        ):
+            raise RecurrentEvaluationError(
+                f"{field} {control_key} cannot claim candidate genome provenance"
+            )
+    for run in candidate_runs:
+        genome_provenance = run.get(_RUN_GENOME_POPULATION_PROVENANCE_FIELD)
+        if expected_genome_configuration is None:
+            if genome_provenance is not None:
+                raise RecurrentEvaluationError(
+                    f"{field} disabled candidate unexpectedly claims genome provenance"
+                )
+            continue
+        if genome_provenance is None:
+            raise RecurrentEvaluationError(
+                f"{field} conditioned candidate lacks genome provenance"
+            )
+        _validate_evaluation_genome_world_provenance(
+            _required_mapping(
+                genome_provenance,
+                field=f"{field} candidate genome provenance",
+            ),
+            expected_world_identity=_evaluation_genome_world_identity(
+                seed=int(run["seed"]),
+                fixture_name=_fixture_name_from_context(expected_context),
+            ),
+            expected_genome_population_mode=str(
+                expected_genome_configuration["genome_population_mode"]
+            ),
+            expected_genome_stream_seed=int(
+                expected_genome_configuration["genome_stream_seed"]
+            ),
+            expected_action_selection=(
+                PUBLIC_RECURRENT_ARGMAX_SELECTION
+                if run.get("policy_sampling_seed") is None
+                else PUBLIC_RECURRENT_SAMPLED_SELECTION
+            ),
+            expected_policy_sampling_seed=run.get("policy_sampling_seed"),
+        )
     reported_sampling_seeds = tuple(
         _validated_sampling_seed(seed, field=f"{field}.candidate_sampling_seeds")
         for seed in _required_sequence(
@@ -3649,6 +4209,312 @@ def _validated_evaluation_workers(value: object) -> int:
             "evaluation_workers must be an integer in [1, 64]"
         )
     return value
+
+
+def _validated_evaluation_genome_population_configuration(
+    model: PublicRecurrentActorCritic,
+    *,
+    genome_population_mode: RecurrentGenomePopulationMode | str,
+    genome_stream_seed: int | None,
+) -> tuple[str, int | None]:
+    """Bind evaluator population treatment to the exact frozen architecture."""
+
+    if not isinstance(model, PublicRecurrentActorCritic):
+        raise TypeError("model must be a PublicRecurrentActorCritic")
+    try:
+        mode = (
+            genome_population_mode
+            if isinstance(genome_population_mode, RecurrentGenomePopulationMode)
+            else RecurrentGenomePopulationMode(genome_population_mode)
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecurrentEvaluationError(
+            "genome_population_mode must be disabled, heritable, or zero_all"
+        ) from exc
+    conditioning_mode = model.config.genome_conditioning_mode
+    if conditioning_mode == GENOME_CONDITIONING_DISABLED:
+        if (
+            mode is not RecurrentGenomePopulationMode.DISABLED
+            or genome_stream_seed is not None
+        ):
+            raise RecurrentEvaluationError(
+                "disabled recurrent architecture forbids evaluation genome binding"
+            )
+        return mode.value, None
+    if conditioning_mode != GENOME_CONDITIONING_ACTOR_FILM_V1:
+        raise RecurrentEvaluationError(
+            "evaluation model genome conditioning mode is unsupported"
+        )
+    if mode not in {
+        RecurrentGenomePopulationMode.HERITABLE,
+        RecurrentGenomePopulationMode.ZERO_ALL,
+    }:
+        raise RecurrentEvaluationError(
+            "actor_film_v1 evaluation requires an explicit heritable or zero_all "
+            "genome population binding"
+        )
+    return mode.value, _validated_genome_stream_seed(genome_stream_seed)
+
+
+def _validated_genome_stream_seed(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > 2**64 - 1
+    ):
+        raise RecurrentEvaluationError(
+            "genome_stream_seed must be an unsigned 64-bit integer"
+        )
+    return value
+
+
+def _conditioned_candidate_provenance(
+    *,
+    model: PublicRecurrentActorCritic,
+    genome_population_mode: str,
+    genome_stream_seed: int | None,
+) -> dict[str, object]:
+    if genome_population_mode == RecurrentGenomePopulationMode.DISABLED.value:
+        return {}
+    if (
+        model.config.genome_conditioning_mode != GENOME_CONDITIONING_ACTOR_FILM_V1
+        or genome_stream_seed is None
+    ):
+        raise RecurrentEvaluationError(
+            "conditioned candidate provenance lacks an exact model/population binding"
+        )
+    payload: dict[str, object] = {
+        "schema_version": RECURRENT_EVALUATION_GENOME_POPULATION_SCHEMA_VERSION,
+        "genome_conditioning_mode": model.config.genome_conditioning_mode,
+        "genome_population_mode": genome_population_mode,
+        "genome_stream_seed": genome_stream_seed,
+        "world_identity_namespace": (
+            _RECURRENT_EVALUATION_GENOME_WORLD_IDENTITY_NAMESPACE
+        ),
+        "world_identity_policy": (
+            "context_label_and_environment_seed_only_shared_across_policy_tapes"
+        ),
+        "population_binding_policy": ("recurrent_genome_stream_binding_sha256_v1"),
+    }
+    payload["configuration_sha256"] = stable_payload_digest(payload)
+    return {"genome_evaluation": payload}
+
+
+def _validate_conditioned_candidate_provenance(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    expected_fields = {
+        "schema_version",
+        "genome_conditioning_mode",
+        "genome_population_mode",
+        "genome_stream_seed",
+        "world_identity_namespace",
+        "world_identity_policy",
+        "population_binding_policy",
+        "configuration_sha256",
+    }
+    _require_exact_fields(value, expected_fields, field="genome_evaluation")
+    if (
+        value.get("schema_version")
+        != RECURRENT_EVALUATION_GENOME_POPULATION_SCHEMA_VERSION
+        or value.get("genome_conditioning_mode") != GENOME_CONDITIONING_ACTOR_FILM_V1
+        or value.get("genome_population_mode")
+        not in {
+            RecurrentGenomePopulationMode.HERITABLE.value,
+            RecurrentGenomePopulationMode.ZERO_ALL.value,
+        }
+        or value.get("world_identity_namespace")
+        != _RECURRENT_EVALUATION_GENOME_WORLD_IDENTITY_NAMESPACE
+        or value.get("world_identity_policy")
+        != "context_label_and_environment_seed_only_shared_across_policy_tapes"
+        or value.get("population_binding_policy")
+        != "recurrent_genome_stream_binding_sha256_v1"
+    ):
+        raise RecurrentEvaluationError(
+            "conditioned candidate genome evaluation provenance drifted"
+        )
+    _validated_genome_stream_seed(value.get("genome_stream_seed"))
+    configuration_sha256 = _validated_sha256(
+        value.get("configuration_sha256"),
+        field="genome_evaluation.configuration_sha256",
+    )
+    unsigned = dict(value)
+    unsigned.pop("configuration_sha256")
+    if configuration_sha256 != stable_payload_digest(unsigned):
+        raise RecurrentEvaluationError(
+            "conditioned candidate genome evaluation provenance SHA256 mismatch"
+        )
+    return dict(value)
+
+
+def _evaluation_genome_world_identity(
+    *,
+    seed: int,
+    fixture_name: str | None,
+) -> str:
+    parsed_seed = _validated_seed(seed, field="genome evaluation environment seed")
+    context = _context_label(fixture_name)
+    return (
+        f"{_RECURRENT_EVALUATION_GENOME_WORLD_IDENTITY_NAMESPACE}|"
+        f"context={context}|environment_seed={parsed_seed}"
+    )
+
+
+def _fixture_name_from_context(context: str) -> str | None:
+    if context == "broad_default":
+        return None
+    prefix = "fixture:"
+    if context.startswith(prefix) and len(context) > len(prefix):
+        return context[len(prefix) :]
+    raise RecurrentEvaluationError(
+        "conditioned run context cannot derive its genome world identity"
+    )
+
+
+def _bind_evaluation_policy_genome_population(
+    policy: object,
+    *,
+    world_identity: str,
+    genome_population_mode: str,
+    genome_stream_seed: int | None,
+) -> bool:
+    if not isinstance(policy, DeterministicPublicRecurrentPolicy):
+        if (
+            genome_population_mode != RecurrentGenomePopulationMode.DISABLED.value
+            or genome_stream_seed is not None
+        ):
+            raise RecurrentEvaluationError(
+                "only the public recurrent candidate accepts evaluation genome "
+                "population binding"
+            )
+        return False
+    resolved_mode, resolved_seed = (
+        _validated_evaluation_genome_population_configuration(
+            policy.model,
+            genome_population_mode=genome_population_mode,
+            genome_stream_seed=genome_stream_seed,
+        )
+    )
+    if resolved_mode == RecurrentGenomePopulationMode.DISABLED.value:
+        return False
+    assert resolved_seed is not None
+    try:
+        policy.start_world(
+            world_identity=world_identity,
+            genome_stream_seed=resolved_seed,
+            genome_population_mode=resolved_mode,
+        )
+    except RecurrentPolicyAdapterError as exc:
+        raise RecurrentEvaluationError(
+            f"conditioned evaluation world binding failed: {exc}"
+        ) from exc
+    return True
+
+
+def _validate_evaluation_genome_world_provenance(
+    value: Mapping[str, object],
+    *,
+    expected_world_identity: str,
+    expected_genome_population_mode: str | None,
+    expected_genome_stream_seed: int | None,
+    expected_action_selection: str,
+    expected_policy_sampling_seed: object,
+    require_expected_binding: bool = True,
+) -> None:
+    expected_fields = {
+        "schema_version",
+        "genome_conditioning_mode",
+        "genome_population_mode",
+        "action_selection",
+        "policy_sampling_seed",
+        "world_identity",
+        "genome_stream_seed",
+        "genome_population_binding_sha256",
+        "genome_population_pre_founder_state_sha256",
+        "genome_population_final_state_sha256",
+        "genome_population_reset_state_sha256",
+        "provenance_sha256",
+    }
+    _require_exact_fields(
+        value,
+        expected_fields,
+        field="evaluation genome population provenance",
+    )
+    if (
+        value.get("schema_version") != RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION
+        or value.get("genome_conditioning_mode") != GENOME_CONDITIONING_ACTOR_FILM_V1
+        or value.get("genome_population_mode")
+        not in {
+            RecurrentGenomePopulationMode.HERITABLE.value,
+            RecurrentGenomePopulationMode.ZERO_ALL.value,
+        }
+        or value.get("action_selection") != expected_action_selection
+        or value.get("world_identity") != expected_world_identity
+    ):
+        raise RecurrentEvaluationError(
+            "evaluation genome population provenance identity drifted"
+        )
+    observed_sampling_seed = _validated_optional_sampling_seed(
+        value.get("policy_sampling_seed"),
+        field="evaluation genome population policy sampling seed",
+    )
+    expected_sampling_seed = _validated_optional_sampling_seed(
+        expected_policy_sampling_seed,
+        field="expected evaluation genome population policy sampling seed",
+    )
+    if observed_sampling_seed != expected_sampling_seed:
+        raise RecurrentEvaluationError(
+            "evaluation genome population policy sampling seed drifted"
+        )
+    observed_stream_seed = _validated_genome_stream_seed(
+        value.get("genome_stream_seed")
+    )
+    observed_mode = str(value["genome_population_mode"])
+    if require_expected_binding and (
+        observed_mode != expected_genome_population_mode
+        or observed_stream_seed != expected_genome_stream_seed
+    ):
+        raise RecurrentEvaluationError(
+            "evaluation genome population binding differs from its task"
+        )
+    binding_sha256 = _validated_sha256(
+        value.get("genome_population_binding_sha256"),
+        field="evaluation genome population binding SHA256",
+    )
+    if binding_sha256 != recurrent_genome_stream_binding_sha256(
+        genome_stream_seed=observed_stream_seed,
+        world_identity=expected_world_identity,
+    ):
+        raise RecurrentEvaluationError(
+            "evaluation genome population binding SHA256 mismatch"
+        )
+    pre_founder_sha256 = _validated_sha256(
+        value.get("genome_population_pre_founder_state_sha256"),
+        field="evaluation genome population pre-founder state SHA256",
+    )
+    _validated_sha256(
+        value.get("genome_population_final_state_sha256"),
+        field="evaluation genome population final state SHA256",
+    )
+    reset_sha256 = _validated_sha256(
+        value.get("genome_population_reset_state_sha256"),
+        field="evaluation genome population reset state SHA256",
+    )
+    if pre_founder_sha256 != reset_sha256:
+        raise RecurrentEvaluationError(
+            "evaluation genome population did not reset to its pre-founder state"
+        )
+    provenance_sha256 = _validated_sha256(
+        value.get("provenance_sha256"),
+        field="evaluation genome population provenance SHA256",
+    )
+    unsigned = dict(value)
+    unsigned.pop("provenance_sha256")
+    if provenance_sha256 != stable_payload_digest(unsigned):
+        raise RecurrentEvaluationError(
+            "evaluation genome population provenance SHA256 mismatch"
+        )
 
 
 def _artifact_digest(
@@ -3869,6 +4735,7 @@ def _canonical_sha256(value: object) -> str:
 
 
 __all__ = [
+    "LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION",
     "MASKED_RANDOM_ACTION_SOURCE",
     "MASKED_RANDOM_POLICY_ID",
     "MASKED_RANDOM_POLICY_VERSION",
@@ -3879,6 +4746,7 @@ __all__ = [
     "RECURRENT_EVALUATION_SCHEMA_VERSION",
     "RECURRENT_EVALUATION_TICKS",
     "UNPINNED_NONCANDIDATE_DIGEST_PREFIX",
+    "VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE",
     "MaskedRandomPolicy",
     "RecurrentEvaluationError",
     "RecurrentEvaluationSeedPlan",

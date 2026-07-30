@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 import tempfile
 from pathlib import Path
@@ -15,16 +16,23 @@ if torch is not None:
     from evolution_sim.env.runtime.action_contract import ACTION_NAMES
     from evolution_sim.env.runtime.trajectory import REWARD_COMPONENT_BOUNDS
     from evolution_sim.mind.recurrent_actor_critic import (
+        GENOME_CONDITIONING_ACTOR_FILM_V1,
         PublicRecurrentActorCritic,
         RecurrentActorCriticConfig,
     )
     from evolution_sim.mind.recurrent_artifact import (
+        FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
+        FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
         FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
+        RECURRENT_ARTIFACT_SCHEMA_VERSION,
+        RECURRENT_REPLAY_PROBE_CONTRACT_VERSION,
         save_frozen_recurrent_policy_artifact,
         save_recurrent_artifact,
     )
     from evolution_sim.mind.recurrent_evaluation import (
         RECURRENT_EVALUATION_CANDIDATE_SEED_ROLE,
+        RECURRENT_EVALUATION_GENOME_POPULATION_SCHEMA_VERSION,
+        LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION,
         RECURRENT_EVALUATION_LOCKBOX_SEED_ROLE,
         RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE,
         RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE,
@@ -33,6 +41,7 @@ if torch is not None:
         RECURRENT_EVALUATION_SCHEMA_VERSION,
         RECURRENT_EVALUATION_TICKS,
         UNPINNED_NONCANDIDATE_DIGEST_PREFIX,
+        VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE,
         MaskedRandomPolicy,
         RecurrentEvaluationError,
         RecurrentEvaluationSeedPlan,
@@ -45,8 +54,11 @@ if torch is not None:
         _run_parallel_environment_tasks,
         _run_outcome_evidence_sha256,
         _run_policy_world,
+        _validated_evaluation_genome_population_configuration,
+        _source_pinned_artifact_evidence_sha256,
         _validate_report,
         _validate_run,
+        _validate_source_pinned_artifact_identity,
         evaluate_frozen_recurrent_policy_artifact,
         evaluate_recurrent_artifact,
         evaluate_recurrent_model,
@@ -54,6 +66,8 @@ if torch is not None:
     from evolution_sim.mind.recurrent_policy import (
         PUBLIC_RECURRENT_ARGMAX_SELECTION,
         PUBLIC_RECURRENT_SAMPLED_SELECTION,
+        RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION,
+        DeterministicPublicRecurrentPolicy,
     )
     from evolution_sim.mind.recurrent_seed_registry import (
         CANONICAL_SEED_REGISTRY_SHA256,
@@ -228,9 +242,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
     def test_scale_v2_selection_plan_is_canonical_and_registry_separated(
         self,
     ) -> None:
-        selection = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
-            "scale_v2_selection"
-        ][:8]
+        selection = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"][:8]
         excluded = (
             *SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"],
             *SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_curriculum"],
@@ -239,9 +251,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             broad_seeds=selection,
             fixture_seeds=selection,
             excluded_training_seeds=excluded,
-            environment_seed_role=(
-                RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
-            ),
+            environment_seed_role=(RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE),
         )
 
         self.assertEqual(plan.canonical_registry_role, "scale_v2_selection")
@@ -250,12 +260,8 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         self.assertTrue(set(selection).isdisjoint(excluded))
         with self.assertRaisesRegex(RecurrentEvaluationError, "canonical"):
             RecurrentEvaluationSeedPlan(
-                broad_seeds=SCALE_DEVELOPMENT_SEED_REGISTRY[
-                    "scale_selection"
-                ][:8],
-                fixture_seeds=SCALE_DEVELOPMENT_SEED_REGISTRY[
-                    "scale_selection"
-                ][:8],
+                broad_seeds=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][:8],
+                fixture_seeds=SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][:8],
                 excluded_training_seeds=excluded,
                 environment_seed_role=(
                     RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
@@ -339,9 +345,44 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                     fixture_names=("carrion_only",),
                 )
             self.assertEqual(report, {"verified": True})
-            evidence = evaluator.call_args.kwargs["artifact_evidence"][
-                "training_seed_evidence"
-            ]
+            artifact_evidence = evaluator.call_args.kwargs["artifact_evidence"]
+            self.assertEqual(
+                artifact_evidence["schema_version"],
+                FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                artifact_evidence["artifact_kind"],
+                FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
+            )
+            self.assertEqual(
+                artifact_evidence["replay_probe_contract_version"],
+                RECURRENT_REPLAY_PROBE_CONTRACT_VERSION,
+            )
+            self.assertEqual(
+                artifact_evidence["replay_probe_verified_on_device"],
+                "cpu",
+            )
+            self.assertEqual(
+                artifact_evidence["artifact_evidence_sha256"],
+                _source_pinned_artifact_evidence_sha256(artifact_evidence),
+            )
+            candidate_provenance = evaluator.call_args.kwargs["candidate_provenance"]
+            self.assertEqual(
+                candidate_provenance["mode"],
+                VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE,
+            )
+            self.assertEqual(
+                candidate_provenance["pin_verification"],
+                "frozen_policy_artifact_v4_registry_source_commit_"
+                "source_manifest_and_cpu_probe_v3",
+            )
+            _validate_source_pinned_artifact_identity(
+                artifact_evidence,
+                candidate_provenance,
+                seed_plan=plan,
+                trusted_artifact_path=artifact_path,
+            )
+            evidence = artifact_evidence["training_seed_evidence"]
             self.assertEqual(
                 evidence["required_environment_seed_roles"],
                 ["scale_train", "scale_curriculum"],
@@ -366,9 +407,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 fixture_seeds=(scale_v2_selection_seed,),
                 excluded_training_seeds=(
                     SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"][0],
-                    SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
-                        "scale_v2_curriculum"
-                    ][0],
+                    SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_curriculum"][0],
                 ),
                 environment_seed_role=(
                     RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
@@ -383,9 +422,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                     seed_plan=scale_v2_plan,
                     expected_source_commit=source_commit,
                     expected_source_manifest_sha256=source_manifest,
-                    expected_seed_registry_digest=(
-                        SCALE_DEVELOPMENT_CANONICAL_SHA256
-                    ),
+                    expected_seed_registry_digest=(SCALE_DEVELOPMENT_CANONICAL_SHA256),
                     fixture_names=("carrion_only",),
                 )
 
@@ -395,34 +432,22 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         source_commit = "1" * 40
         source_manifest = "2" * 64
         train_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_train"][0]
-        curriculum_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
-            "scale_v2_curriculum"
-        ][0]
-        selection_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
-            "scale_v2_selection"
-        ][0]
+        curriculum_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_curriculum"][0]
+        selection_seed = SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_selection"][0]
         plan = RecurrentEvaluationSeedPlan(
             broad_seeds=(selection_seed,),
             fixture_seeds=(selection_seed,),
             excluded_training_seeds=(train_seed, curriculum_seed),
-            environment_seed_role=(
-                RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE
-            ),
+            environment_seed_role=(RECURRENT_EVALUATION_SCALE_V2_SELECTION_SEED_ROLE),
         )
         v1_plan = RecurrentEvaluationSeedPlan(
-            broad_seeds=(
-                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][0],
-            ),
-            fixture_seeds=(
-                SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][0],
-            ),
+            broad_seeds=(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][0],),
+            fixture_seeds=(SCALE_DEVELOPMENT_SEED_REGISTRY["scale_selection"][0],),
             excluded_training_seeds=(
                 SCALE_DEVELOPMENT_SEED_REGISTRY["scale_train"][0],
                 SCALE_DEVELOPMENT_SEED_REGISTRY["scale_curriculum"][0],
             ),
-            environment_seed_role=(
-                RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE
-            ),
+            environment_seed_role=(RECURRENT_EVALUATION_SCALE_SELECTION_SEED_ROLE),
         )
         model = PublicRecurrentActorCritic(
             RecurrentActorCriticConfig(encoder_size=16, hidden_size=16),
@@ -432,9 +457,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             "schema_version": FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
             "manifest_sha256": "3" * 64,
             "replay_engine_contract_sha256": "4" * 64,
-            "environment_seed_registry_sha256": (
-                SCALE_DEVELOPMENT_V2_CANONICAL_SHA256
-            ),
+            "environment_seed_registry_sha256": (SCALE_DEVELOPMENT_V2_CANONICAL_SHA256),
             "environment_seed_roles": ["scale_v2_selection"],
             "scenario_names": ["broad", "carrion_only"],
             "tick_horizons": [120],
@@ -467,9 +490,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 },
                 run_metadata={"development_only": True},
                 full_world_replay_manifest=replay_manifest,
-                learner_seed=SCALE_DEVELOPMENT_V2_SEED_REGISTRY[
-                    "scale_v2_learner"
-                ][0],
+                learner_seed=SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"][0],
                 learner_device="cpu",
             )
             with patch(
@@ -523,9 +544,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                     seed_plan=plan,
                     expected_source_commit=source_commit,
                     expected_source_manifest_sha256=source_manifest,
-                    expected_seed_registry_digest=(
-                        SCALE_DEVELOPMENT_CANONICAL_SHA256
-                    ),
+                    expected_seed_registry_digest=(SCALE_DEVELOPMENT_CANONICAL_SHA256),
                     fixture_names=("carrion_only",),
                 )
 
@@ -903,7 +922,11 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             fixture_name: str | None,
             policy: object,
             policy_sampling_seed: int | None = None,
+            genome_population_mode: str = "disabled",
+            genome_stream_seed: int | None = None,
         ) -> dict[str, object]:
+            self.assertEqual(genome_population_mode, "disabled")
+            self.assertIsNone(genome_stream_seed)
             calls.append((seed, policy, policy_sampling_seed))
             is_candidate = isinstance(policy, tuple) and policy[0] == "candidate"
             empty_distribution = {
@@ -989,9 +1012,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
                 "eat_without_positive_resource_gain_share": None,
                 "learned_masked_distribution": empty_distribution,
             }
-            run["behavior_digest"] = _canonical_sha256(
-                {"fake_behavior": run}
-            )
+            run["behavior_digest"] = _canonical_sha256({"fake_behavior": run})
             run["replay_digest"] = _canonical_sha256({"fake_replay": run})
             run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(run)
             return run
@@ -1032,8 +1053,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         self.assertEqual(len(replay_checks), 4)
         self.assertTrue(
             all(
-                check["outcome_evidence_sha256"]
-                == run["outcome_evidence_sha256"]
+                check["outcome_evidence_sha256"] == run["outcome_evidence_sha256"]
                 for check, run in zip(
                     replay_checks,
                     policies["public_recurrent"]["runs"],
@@ -1294,32 +1314,48 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             excluded_training_seeds=(train_seed,),
             environment_seed_role=RECURRENT_EVALUATION_SELECTION_SEED_ROLE,
         )
-        with tempfile.TemporaryDirectory() as directory:
-            artifact_path = Path(directory) / "legacy.json"
-            save_recurrent_artifact(
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        artifact_path = Path(temporary.name) / "legacy.json"
+        save_recurrent_artifact(
+            artifact_path,
+            model,
+            training_config={"algorithm": "test"},
+            seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
+            source_commit="a" * 40,
+            data_metadata={"training_seeds": [train_seed]},
+            run_metadata={"purpose": "seed_integrity_test"},
+            learner_seed=20260723,
+            learner_device="cpu",
+        )
+        with patch(
+            "evolution_sim.mind.recurrent_evaluation._evaluate_frozen_model",
+            return_value={"result": "legacy"},
+        ) as evaluate:
+            evaluate_recurrent_artifact(
                 artifact_path,
-                model,
-                training_config={"algorithm": "test"},
-                seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
-                source_commit="a" * 40,
-                data_metadata={"training_seeds": [train_seed]},
-                run_metadata={"purpose": "seed_integrity_test"},
-                learner_seed=20260723,
-                learner_device="cpu",
+                seed_plan=selection_plan,
+                expected_source_commit="a" * 40,
             )
-            with patch(
-                "evolution_sim.mind.recurrent_evaluation._evaluate_frozen_model",
-                return_value={"result": "legacy"},
-            ) as evaluate:
-                evaluate_recurrent_artifact(
-                    artifact_path,
-                    seed_plan=selection_plan,
-                    expected_source_commit="a" * 40,
-                )
-
         provenance = evaluate.call_args.kwargs["candidate_provenance"]
+        artifact_evidence = evaluate.call_args.kwargs["artifact_evidence"]
+        _validate_source_pinned_artifact_identity(
+            artifact_evidence,
+            provenance,
+            seed_plan=selection_plan,
+            trusted_artifact_path=artifact_path,
+        )
+
         self.assertFalse(provenance["promotion_evidence_eligible_from_provenance"])
         self.assertFalse(provenance["external_validation_authorization_available"])
+        self.assertEqual(
+            artifact_evidence["schema_version"],
+            RECURRENT_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            artifact_evidence["artifact_evidence_sha256"],
+            _source_pinned_artifact_evidence_sha256(artifact_evidence),
+        )
         evidence = provenance["artifact_training_seed_evidence"]
         self.assertFalse(evidence["role_bound_provenance_complete"])
         self.assertIn(
@@ -1327,7 +1363,51 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             evidence["failure_reasons"],
         )
 
-    def test_verified_artifact_runs_real_broad_and_carrion_120_tick_controls(
+        converted_evidence = copy.deepcopy(artifact_evidence)
+        converted_evidence.update(
+            {
+                "schema_version": FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+                "artifact_kind": FROZEN_RECURRENT_POLICY_ARTIFACT_KIND,
+                "source_manifest_sha256": "b" * 64,
+                "expected_source_manifest_sha256": "b" * 64,
+                "source_manifest_match": True,
+                "replay_probe_contract_version": (
+                    RECURRENT_REPLAY_PROBE_CONTRACT_VERSION
+                ),
+                "replay_probe_verified_on_device": "cpu",
+            }
+        )
+        converted_provenance = copy.deepcopy(provenance)
+        converted_provenance["mode"] = VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE
+        converted_provenance["pin_verification"] = (
+            "frozen_policy_artifact_v4_registry_source_commit_"
+            "source_manifest_and_cpu_probe_v3"
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "artifact evidence SHA256 mismatch",
+        ):
+            _validate_source_pinned_artifact_identity(
+                converted_evidence,
+                converted_provenance,
+                seed_plan=selection_plan,
+                trusted_artifact_path=artifact_path,
+            )
+        converted_evidence["artifact_evidence_sha256"] = (
+            _source_pinned_artifact_evidence_sha256(converted_evidence)
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "artifact bytes are missing, invalid, or stale",
+        ):
+            _validate_source_pinned_artifact_identity(
+                converted_evidence,
+                converted_provenance,
+                seed_plan=selection_plan,
+                trusted_artifact_path=artifact_path,
+            )
+
+    def test_verified_frozen_artifact_runs_real_broad_and_carrion_120_tick_controls(
         self,
     ) -> None:
         assert torch is not None
@@ -1344,28 +1424,60 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             fixture_seeds=(103,),
             excluded_training_seeds=(107, 109, 113),
         )
-        with tempfile.TemporaryDirectory() as directory:
-            artifact_path = Path(directory) / "candidate.json"
-            artifact = save_recurrent_artifact(
-                artifact_path,
-                model,
-                training_config={"algorithm": "test_untrained_canary"},
-                seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
-                source_commit="a" * 40,
-                data_metadata={"training_seeds": [107, 109, 113]},
-                run_metadata={"purpose": "evaluation_contract_test"},
-                learner_seed=20260721,
-                learner_device="cpu",
-            )
-            report = evaluate_recurrent_artifact(
-                artifact_path,
-                seed_plan=plan,
-                expected_source_commit="a" * 40,
-                fixture_names=("carrion_only",),
-            )
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        artifact_path = Path(temporary.name) / "frozen-candidate.json"
+        replay_manifest = {
+            "schema_version": FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
+            "manifest_sha256": "b" * 64,
+            "replay_engine_contract_sha256": "c" * 64,
+            "environment_seed_registry_sha256": CANONICAL_SEED_REGISTRY_SHA256,
+            "environment_seed_roles": ["development"],
+            "scenario_names": ["broad", "carrion_only"],
+            "tick_horizons": [120],
+            "world_count": 2,
+            "replay_verified_world_count": 2,
+            "policy_sampling_stream_count": 1,
+            "all_replays_exact": True,
+            "verification_runner": "unit-test",
+            "verification_runner_sha256": "d" * 64,
+        }
+        artifact = save_frozen_recurrent_policy_artifact(
+            artifact_path,
+            model,
+            training_config={
+                "algorithm": "test_untrained_canary",
+                "feed_forward_history_ablation": False,
+            },
+            experiment_config={"arm": "frozen-contract-test"},
+            seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
+            source_commit="a" * 40,
+            source_manifest_sha256="e" * 64,
+            data_metadata={"training_seeds": [107, 109, 113]},
+            run_metadata={"purpose": "evaluation_contract_test"},
+            full_world_replay_manifest=replay_manifest,
+            learner_seed=20260721,
+            learner_device="cpu",
+        )
+        report = evaluate_frozen_recurrent_policy_artifact(
+            artifact_path,
+            seed_plan=plan,
+            expected_source_commit="a" * 40,
+            expected_source_manifest_sha256="e" * 64,
+            expected_seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
+            fixture_names=("carrion_only",),
+        )
 
         self.assertEqual(
             report["artifact"]["artifact_sha256"], artifact["artifact_sha256"]
+        )
+        self.assertEqual(
+            report["artifact"]["schema_version"],
+            FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            report["artifact"]["artifact_evidence_sha256"],
+            _source_pinned_artifact_evidence_sha256(report["artifact"]),
         )
         self.assertEqual(report["schema_version"], RECURRENT_EVALUATION_SCHEMA_VERSION)
         self.assertEqual(
@@ -1482,6 +1594,90 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         self.assertEqual(runtime["resolved_device"], "cpu")
         self.assertTrue(runtime["platform"]["platform_string"])
 
+        def validate_source_pinned(candidate: Mapping[str, object]) -> None:
+            _validate_report(candidate, trusted_artifact_path=artifact_path)
+
+        frozen_v4_report = copy.deepcopy(report)
+        validate_source_pinned(frozen_v4_report)
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "explicit trusted artifact path",
+        ):
+            _validate_report(frozen_v4_report)
+
+        stale_v4_evaluation = copy.deepcopy(frozen_v4_report)
+        stale_v4_evaluation["schema_version"] = (
+            LEGACY_RECURRENT_EVALUATION_SCHEMA_VERSION
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "schema v4 is stale",
+        ):
+            validate_source_pinned(stale_v4_evaluation)
+
+        untrusted_embedded_path = copy.deepcopy(frozen_v4_report)
+        untrusted_embedded_path["artifact"]["path"] = str(
+            Path(temporary.name) / "missing-frozen-candidate.json"
+        )
+        untrusted_embedded_path["artifact"]["artifact_evidence_sha256"] = (
+            _source_pinned_artifact_evidence_sha256(untrusted_embedded_path["artifact"])
+        )
+        validate_source_pinned(untrusted_embedded_path)
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "artifact bytes are missing, invalid, or stale",
+        ):
+            _validate_report(
+                frozen_v4_report,
+                trusted_artifact_path=(
+                    Path(temporary.name) / "missing-frozen-candidate.json"
+                ),
+            )
+
+        unbound_frozen_identity = copy.deepcopy(frozen_v4_report)
+        unbound_frozen_identity["artifact"]["replay_probe_verified_on_device"] = "cuda"
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "artifact evidence SHA256 mismatch",
+        ):
+            validate_source_pinned(unbound_frozen_identity)
+
+        stale_frozen_mode = copy.deepcopy(frozen_v4_report)
+        stale_frozen_mode["candidate_provenance"]["mode"] = (
+            VERIFIED_FROZEN_RECURRENT_POLICY_ARTIFACT_MODE.replace("_v4", "_v3")
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "mode is missing, stale, or unsupported",
+        ):
+            validate_source_pinned(stale_frozen_mode)
+
+        stale_frozen_schema = copy.deepcopy(frozen_v4_report)
+        stale_frozen_schema["artifact"]["schema_version"] = (
+            FROZEN_RECURRENT_POLICY_ARTIFACT_SCHEMA_VERSION.replace("_v5", "_v4")
+        )
+        stale_frozen_schema["artifact"]["artifact_evidence_sha256"] = (
+            _source_pinned_artifact_evidence_sha256(stale_frozen_schema["artifact"])
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "identity or schema is missing or stale",
+        ):
+            validate_source_pinned(stale_frozen_schema)
+
+        stale_cpu_probe = copy.deepcopy(frozen_v4_report)
+        stale_cpu_probe["artifact"]["replay_probe_contract_version"] = (
+            RECURRENT_REPLAY_PROBE_CONTRACT_VERSION.replace("_v3", "_v2")
+        )
+        stale_cpu_probe["artifact"]["artifact_evidence_sha256"] = (
+            _source_pinned_artifact_evidence_sha256(stale_cpu_probe["artifact"])
+        )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "CPU replay-probe evidence is missing or stale",
+        ):
+            validate_source_pinned(stale_cpu_probe)
+
         stale_v3_report = copy.deepcopy(report)
         stale_v3_report["carrion_fixture_terminal_survivor_count"] = (
             candidate_nonextinct_runs
@@ -1490,7 +1686,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "ambiguous v3 terminal fields",
         ):
-            _validate_report(stale_v3_report)
+            validate_source_pinned(stale_v3_report)
 
         forged_eligibility = copy.deepcopy(report)
         forged_eligibility["candidate_provenance"][
@@ -1500,7 +1696,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "promotion eligibility differs",
         ):
-            _validate_report(forged_eligibility)
+            validate_source_pinned(forged_eligibility)
 
         contract_ticks = copy.deepcopy(report)
         contract_ticks["evaluation_contract"]["ticks"] = 999
@@ -1508,7 +1704,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "canonical contract drifted",
         ):
-            _validate_report(contract_ticks)
+            validate_source_pinned(contract_ticks)
 
         factory_seed_leak = copy.deepcopy(report)
         factory_seed_leak["evaluation_contract"][
@@ -1518,7 +1714,7 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "canonical contract drifted",
         ):
-            _validate_report(factory_seed_leak)
+            validate_source_pinned(factory_seed_leak)
 
         erased_paired_deltas = copy.deepcopy(report)
         erased_paired_deltas["broad"]["paired_deltas"] = {}
@@ -1526,21 +1722,21 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "paired deltas differ",
         ):
-            _validate_report(erased_paired_deltas)
+            validate_source_pinned(erased_paired_deltas)
 
         forged_candidate_grid = copy.deepcopy(report)
         forged_grid_run = forged_candidate_grid["broad"]["policies"][
             "public_recurrent"
         ]["runs"][0]
         forged_grid_run["policy_sampling_seed"] = 7
-        forged_grid_run["outcome_evidence_sha256"] = (
-            _run_outcome_evidence_sha256(forged_grid_run)
+        forged_grid_run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(
+            forged_grid_run
         )
         with self.assertRaisesRegex(
             RecurrentEvaluationError,
             "candidate identity grid differs",
         ):
-            _validate_report(forged_candidate_grid)
+            validate_source_pinned(forged_candidate_grid)
 
         forged_replay_digest = copy.deepcopy(report)
         forged_replay_digest["replay_verification"]["checks"][0]["digest"] = "0" * 64
@@ -1548,21 +1744,21 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
             RecurrentEvaluationError,
             "replay identities or digests differ",
         ):
-            _validate_report(forged_replay_digest)
+            validate_source_pinned(forged_replay_digest)
 
         coherently_rehashed_outcome = copy.deepcopy(report)
         rehashed_run = coherently_rehashed_outcome["broad"]["policies"][
             "public_recurrent"
         ]["runs"][0]
         rehashed_run["deaths"] += 1
-        rehashed_run["outcome_evidence_sha256"] = (
-            _run_outcome_evidence_sha256(rehashed_run)
+        rehashed_run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(
+            rehashed_run
         )
         with self.assertRaisesRegex(
             RecurrentEvaluationError,
             "replay identities or digests differ",
         ):
-            _validate_report(coherently_rehashed_outcome)
+            validate_source_pinned(coherently_rehashed_outcome)
 
     def test_passive_terminal_stay_is_not_counted_as_a_policy_action(self) -> None:
         reward_components = {component: 0.0 for component in REWARD_COMPONENT_BOUNDS}
@@ -1630,6 +1826,293 @@ class RecurrentEvaluationContractTests(unittest.TestCase):
         self.assertEqual(aggregate["terminal_alive_agent_total"], 3)
         self.assertEqual(aggregate["terminal_alive_mean"], 1.5)
         self.assertNotIn("terminal_survivor_run_count", aggregate)
+
+    def test_conditioned_evaluation_binding_fails_before_world_execution(
+        self,
+    ) -> None:
+        conditioned = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=4,
+                hidden_size=4,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=20260727,
+        )
+        disabled = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=4, hidden_size=4),
+            initialization_seed=20260727,
+        )
+        plan = RecurrentEvaluationSeedPlan(
+            broad_seeds=(151,),
+            fixture_seeds=(157,),
+            excluded_training_seeds=(163,),
+        )
+        label = UNPINNED_NONCANDIDATE_DIGEST_PREFIX + ("1" * 64)
+
+        with patch(
+            "evolution_sim.mind.recurrent_evaluation._evaluate_frozen_model"
+        ) as evaluator:
+            with self.assertRaisesRegex(
+                RecurrentEvaluationError,
+                "requires an explicit heritable or zero_all",
+            ):
+                evaluate_recurrent_model(
+                    conditioned,
+                    synthetic_noncandidate_digest_label=label,
+                    seed_plan=plan,
+                    fixture_names=("carrion_only",),
+                )
+            evaluator.assert_not_called()
+
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "unsigned 64-bit",
+        ):
+            _validated_evaluation_genome_population_configuration(
+                conditioned,
+                genome_population_mode="heritable",
+                genome_stream_seed=None,
+            )
+        with self.assertRaisesRegex(
+            RecurrentEvaluationError,
+            "forbids evaluation genome binding",
+        ):
+            _validated_evaluation_genome_population_configuration(
+                disabled,
+                genome_population_mode="zero_all",
+                genome_stream_seed=17,
+            )
+
+        with patch(
+            "evolution_sim.mind.recurrent_evaluation._evaluate_frozen_model",
+            return_value={"bound": True},
+        ) as evaluator:
+            report = evaluate_recurrent_model(
+                conditioned,
+                synthetic_noncandidate_digest_label=label,
+                seed_plan=plan,
+                fixture_names=("carrion_only",),
+                genome_population_mode="heritable",
+                genome_stream_seed=2**64 - 1,
+            )
+        self.assertEqual(report, {"bound": True})
+        call = evaluator.call_args.kwargs
+        self.assertEqual(call["genome_population_mode"], "heritable")
+        self.assertEqual(call["genome_stream_seed"], 2**64 - 1)
+        genome_evaluation = call["candidate_provenance"]["genome_evaluation"]
+        self.assertEqual(
+            genome_evaluation["schema_version"],
+            RECURRENT_EVALUATION_GENOME_POPULATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            genome_evaluation["genome_conditioning_mode"],
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        )
+
+    def test_disabled_evaluation_default_and_explicit_binding_are_exactly_equal(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(encoder_size=4, hidden_size=4),
+            initialization_seed=919,
+        )
+
+        def run(*, explicit: bool) -> dict[str, object]:
+            policy = DeterministicPublicRecurrentPolicy(
+                model,
+                artifact_digest="disabled-evaluation-compatibility",
+            )
+            kwargs: dict[str, object] = {}
+            if explicit:
+                kwargs = {
+                    "genome_population_mode": "disabled",
+                    "genome_stream_seed": None,
+                }
+            with patch(
+                "evolution_sim.mind.recurrent_evaluation.RECURRENT_EVALUATION_TICKS",
+                2,
+            ):
+                return _run_policy_world(
+                    seed=151,
+                    fixture_name=None,
+                    policy=policy,
+                    **kwargs,
+                )
+
+        implicit = run(explicit=False)
+        explicit = run(explicit=True)
+        self.assertEqual(implicit, explicit)
+        self.assertNotIn("genome_population_provenance", implicit)
+        self.assertEqual(
+            set(implicit),
+            {
+                "context",
+                "seed",
+                "policy_sampling_seed",
+                "horizon_ticks",
+                "ticks_executed",
+                "terminal_alive",
+                "births",
+                "deaths",
+                "reward_total",
+                "reward_component_totals",
+                "trajectory_record_count",
+                "policy_decision_record_count",
+                "passive_trajectory_record_count",
+                "requested_action_counts",
+                "dominant_requested_action",
+                "dominant_requested_action_count",
+                "dominant_requested_action_share",
+                "unsupported_requested_action_count",
+                "heuristic_action_source_count",
+                "action_source_counts",
+                "policy_id_counts",
+                "eat_requested_count",
+                "eat_without_positive_resource_gain_count",
+                "eat_without_positive_resource_gain_share",
+                "learned_masked_distribution",
+                "behavior_digest",
+                "replay_digest",
+                "outcome_evidence_sha256",
+            },
+        )
+
+    def test_actor_film_frozen_artifact_replays_heritable_and_zero_all_exactly(
+        self,
+    ) -> None:
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=4,
+                hidden_size=4,
+                genome_conditioning_mode=GENOME_CONDITIONING_ACTOR_FILM_V1,
+            ),
+            initialization_seed=20260728,
+        )
+        plan = RecurrentEvaluationSeedPlan(
+            broad_seeds=(151,),
+            fixture_seeds=(157,),
+            excluded_training_seeds=(163, 167),
+        )
+        replay_manifest = {
+            "schema_version": FULL_WORLD_REPLAY_MANIFEST_SCHEMA_VERSION,
+            "manifest_sha256": "2" * 64,
+            "replay_engine_contract_sha256": "3" * 64,
+            "environment_seed_registry_sha256": CANONICAL_SEED_REGISTRY_SHA256,
+            "environment_seed_roles": ["development"],
+            "scenario_names": ["broad", "carrion_only"],
+            "tick_horizons": [120],
+            "world_count": 2,
+            "replay_verified_world_count": 2,
+            "policy_sampling_stream_count": 1,
+            "all_replays_exact": True,
+            "verification_runner": "conditioned-unit-test",
+            "verification_runner_sha256": "4" * 64,
+        }
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        artifact_path = Path(temporary.name) / "conditioned-policy.json"
+        artifact = save_frozen_recurrent_policy_artifact(
+            artifact_path,
+            model,
+            training_config={
+                "algorithm": "conditioned_evaluation_test",
+                "feed_forward_history_ablation": False,
+            },
+            experiment_config={"arm": "conditioned-contract-test"},
+            seed_registry_digest=CANONICAL_SEED_REGISTRY_SHA256,
+            source_commit="5" * 40,
+            source_manifest_sha256="6" * 64,
+            data_metadata={"training_seeds": [163, 167]},
+            run_metadata={"development_only": True},
+            full_world_replay_manifest=replay_manifest,
+            learner_seed=20260728,
+            learner_device="cpu",
+        )
+
+        def evaluate(mode: str) -> dict[str, object]:
+            with patch(
+                "evolution_sim.mind.recurrent_evaluation.RECURRENT_EVALUATION_TICKS",
+                2,
+            ):
+                return evaluate_frozen_recurrent_policy_artifact(
+                    artifact_path,
+                    seed_plan=plan,
+                    expected_source_commit="5" * 40,
+                    expected_source_manifest_sha256="6" * 64,
+                    expected_seed_registry_digest=(CANONICAL_SEED_REGISTRY_SHA256),
+                    fixture_names=("carrion_only",),
+                    genome_population_mode=mode,
+                    genome_stream_seed=1776,
+                )
+
+        heritable = evaluate("heritable")
+        repeated_heritable = evaluate("heritable")
+        zero_all = evaluate("zero_all")
+        repeated_zero_all = evaluate("zero_all")
+
+        self.assertEqual(heritable, repeated_heritable)
+        self.assertEqual(zero_all, repeated_zero_all)
+        self.assertEqual(
+            heritable["artifact"]["artifact_sha256"],
+            artifact["artifact_sha256"],
+        )
+        self.assertEqual(heritable["replay_verification"]["checked_run_count"], 2)
+        self.assertTrue(heritable["replay_verification"]["all_passed"])
+        self.assertIn(
+            "inherited_controller_genome",
+            heritable["evaluation_contract"]["candidate_policy_inputs"],
+        )
+        heritable_runs = [
+            heritable["broad"]["policies"]["public_recurrent"]["runs"][0],
+            heritable["fixtures"][0]["policies"]["public_recurrent"]["runs"][0],
+        ]
+        zero_runs = [
+            zero_all["broad"]["policies"]["public_recurrent"]["runs"][0],
+            zero_all["fixtures"][0]["policies"]["public_recurrent"]["runs"][0],
+        ]
+        for mode, runs in (("heritable", heritable_runs), ("zero_all", zero_runs)):
+            for run in runs:
+                provenance = run["genome_population_provenance"]
+                self.assertEqual(
+                    provenance["schema_version"],
+                    RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION,
+                )
+                self.assertEqual(provenance["genome_population_mode"], mode)
+                self.assertEqual(provenance["genome_stream_seed"], 1776)
+                self.assertEqual(
+                    provenance["genome_population_pre_founder_state_sha256"],
+                    provenance["genome_population_reset_state_sha256"],
+                )
+        self.assertNotEqual(
+            heritable_runs[0]["replay_digest"],
+            zero_runs[0]["replay_digest"],
+        )
+        self.assertNotEqual(
+            heritable_runs[0]["outcome_evidence_sha256"],
+            zero_runs[0]["outcome_evidence_sha256"],
+        )
+
+        tampered = copy.deepcopy(heritable)
+        tampered_run = tampered["broad"]["policies"]["public_recurrent"]["runs"][0]
+        tampered_provenance = tampered_run["genome_population_provenance"]
+        tampered_provenance["genome_population_mode"] = "zero_all"
+        unsigned = dict(tampered_provenance)
+        unsigned.pop("provenance_sha256")
+        tampered_provenance["provenance_sha256"] = _canonical_sha256(unsigned)
+        tampered_run["outcome_evidence_sha256"] = _run_outcome_evidence_sha256(
+            tampered_run
+        )
+        with (
+            patch(
+                "evolution_sim.mind.recurrent_evaluation.RECURRENT_EVALUATION_TICKS",
+                2,
+            ),
+            self.assertRaisesRegex(
+                RecurrentEvaluationError,
+                "binding differs from its task",
+            ),
+        ):
+            _validate_report(tampered, trusted_artifact_path=artifact_path)
 
     def test_spawn_parallel_evaluation_is_exactly_sequential_equivalent(
         self,

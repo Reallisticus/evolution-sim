@@ -1490,9 +1490,7 @@ def analyze_recurrent_scale_campaign(
     """Reconcile all 24 cells and apply only the preregistered development gates."""
 
     validate_recurrent_scale_campaign_preregistration(preregistration)
-    expected_seeds = tuple(
-        SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"]
-    )
+    expected_seeds = tuple(SCALE_DEVELOPMENT_V2_SEED_REGISTRY["scale_v2_learner"])
     expected_cells = {
         (seed, arm) for seed in expected_seeds for arm in RECURRENT_SCALE_ARMS
     }
@@ -1801,7 +1799,10 @@ def validate_recurrent_scale_campaign_analysis(
 
     if not isinstance(analysis, Mapping):
         raise RecurrentScaleCampaignError("scale analysis must be a mapping")
-    if analysis.get("schema_version") != RECURRENT_SCALE_CAMPAIGN_ANALYSIS_SCHEMA_VERSION:
+    if (
+        analysis.get("schema_version")
+        != RECURRENT_SCALE_CAMPAIGN_ANALYSIS_SCHEMA_VERSION
+    ):
         raise RecurrentScaleCampaignError("scale analysis schema drifted")
     payload = copy.deepcopy(dict(analysis))
     supplied_digest = _sha256(
@@ -2171,9 +2172,7 @@ def _verify_resume_update_prefix(
             collection_payload.get("raw_evidence"),
             field=f"updates[{index}].counterfactual_collection.raw_evidence",
         )
-        raw_path = (
-            run_directory / "evidence" / f"update-{index:04d}-collection.json"
-        )
+        raw_path = run_directory / "evidence" / f"update-{index:04d}-collection.json"
         _verify_file_reference(raw_reference, expected_path=raw_path)
         raw_collection = load_strict_json(raw_path)
         raw_unsigned = dict(raw_collection)
@@ -2804,10 +2803,7 @@ def _verify_completed_report_evidence(
         checkpoint.rng_state,
         field="checkpoint.rng_state",
     )
-    if (
-        checkpoint_rng_state.get("scale_v2_runtime_provenance_digest")
-        != runtime_digest
-    ):
+    if checkpoint_rng_state.get("scale_v2_runtime_provenance_digest") != runtime_digest:
         raise RecurrentScaleCampaignError(
             "completed checkpoint runtime provenance digest mismatched"
         )
@@ -3118,8 +3114,15 @@ def _verify_completed_evaluation_evidence(
         )
         in_memory_evaluation = load_strict_json(in_memory_path)
         artifact_evaluation = load_strict_json(artifact_evaluation_path)
-        validate_recurrent_evaluation_report(in_memory_evaluation)
-        validate_recurrent_evaluation_report(artifact_evaluation)
+        trusted_artifact_path = run_directory / "frozen-policy.json"
+        validate_recurrent_evaluation_report(
+            in_memory_evaluation,
+            trusted_artifact_path=trusted_artifact_path,
+        )
+        validate_recurrent_evaluation_report(
+            artifact_evaluation,
+            trusted_artifact_path=trusted_artifact_path,
+        )
         artifact_claim = _mapping(
             artifact_evaluation.get("artifact"),
             field=f"artifact evaluation {mode}.artifact",
@@ -3197,9 +3200,7 @@ def _verify_fresh_artifact_cpu_evidence(
         )
     seed_plan = recurrent_scale_selection_seed_plan()
     if evaluations.get("selection_seed_plan_sha256") != seed_plan.digest:
-        raise RecurrentScaleCampaignError(
-            "fresh CPU artifact replay seed plan drifted"
-        )
+        raise RecurrentScaleCampaignError("fresh CPU artifact replay seed plan drifted")
     source = _mapping(report.get("source"), field="source")
     runtime_payload = _mapping(
         _mapping(
@@ -3221,11 +3222,12 @@ def _verify_fresh_artifact_cpu_evidence(
     fresh_evaluations: dict[str, Mapping[str, object]] = {}
     persisted_evaluations: dict[str, Mapping[str, object]] = {}
     for mode in _ACTION_SELECTION_MODES:
-        persisted_path = (
-            run_directory / "evaluations" / f"artifact-cpu-{mode}.json"
-        )
+        persisted_path = run_directory / "evaluations" / f"artifact-cpu-{mode}.json"
         persisted = load_strict_json(persisted_path)
-        validate_recurrent_evaluation_report(persisted)
+        validate_recurrent_evaluation_report(
+            persisted,
+            trusted_artifact_path=artifact_path,
+        )
         fresh = evaluate_frozen_recurrent_policy_artifact(
             artifact_path,
             seed_plan=seed_plan,
@@ -3248,7 +3250,10 @@ def _verify_fresh_artifact_cpu_evidence(
             candidate_sampling_stream_id=expected_sampling_stream_id,
             evaluation_workers=evaluation_workers,
         )
-        validate_recurrent_evaluation_report(fresh)
+        validate_recurrent_evaluation_report(
+            fresh,
+            trusted_artifact_path=artifact_path,
+        )
         reported_summary = _mapping(
             _mapping(
                 modes.get(mode),
@@ -3258,9 +3263,7 @@ def _verify_fresh_artifact_cpu_evidence(
         )
         fresh_summary = recurrent_candidate_outcome_summary(fresh)
         persisted_summary = recurrent_candidate_outcome_summary(persisted)
-        if not (
-            fresh_summary == persisted_summary == dict(reported_summary)
-        ):
+        if not (fresh_summary == persisted_summary == dict(reported_summary)):
             raise RecurrentScaleCampaignError(
                 "fresh CPU artifact reevaluation differs from persisted artifact "
                 f"outcomes for {mode}"

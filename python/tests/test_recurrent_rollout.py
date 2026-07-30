@@ -9,16 +9,33 @@ try:
 except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
-from evolution_sim.config.schema import WorldConfig
+from evolution_sim.config import (
+    CombatConfig,
+    DietMatchingConfig,
+    ReproductionConfig,
+    SignalConfig,
+    WorldConfig,
+)
 from evolution_sim.env.runtime.action_contract import ACTION_NAMES
-from evolution_sim.env.runtime.state import RunMode
+import evolution_sim.env.runtime.reproduction as runtime_reproduction
+from evolution_sim.env.runtime.state import (
+    RunMode,
+    empty_mind_inheritance_metadata,
+)
 from evolution_sim.env.runtime.trajectory import (
     REWARD_COMPONENT_BOUNDS,
     REWARD_SCHEMA_VERSION,
 )
 from evolution_sim.env.world import SimulationWorld
 from evolution_sim.mind.policy_inputs import ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
+from evolution_sim.mind.recurrent_genome import zero_recurrent_genome
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationManager,
+)
 from evolution_sim.mind.recurrent_rollout import (
+    MAX_RECURRENT_GENOME_STREAM_SEED,
+    RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1,
+    RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION,
     RECURRENT_ROLLOUT_ACTION_SOURCE,
     RECURRENT_PUBLIC_FEEDBACK_VECTOR_SIZE,
     PreviousPublicFeedback,
@@ -32,8 +49,11 @@ from evolution_sim.mind.recurrent_rollout import (
 )
 
 if torch is not None:
+    import evolution_sim.mind.open_ecology_selection as open_ecology_selection
+
     from evolution_sim.mind.recurrent_actor_critic import (
         PublicRecurrentActorCritic,
+        RecurrentActorCriticConfig,
     )
 
 
@@ -66,6 +86,37 @@ class _RecordingCore:
             ),
             value=sum(observation[:3]) * 0.1 + sum(hidden) * 0.01,
             next_hidden=tuple(value + 1.0 for value in hidden),
+        )
+
+
+class _GenomeRecordingCore(_RecordingCore):
+    genome_conditioning_mode = RECURRENT_GENOME_CONDITIONING_ACTOR_FILM_V1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.genome_inputs: list[tuple[float, ...]] = []
+        self.hidden_inputs: list[tuple[float, ...]] = []
+        self.feedback_inputs: list[PreviousPublicFeedback] = []
+
+    def forward_step(
+        self,
+        observation: tuple[float, ...],
+        current_action_mask: tuple[bool, ...],
+        previous_feedback: PreviousPublicFeedback,
+        hidden: tuple[float, ...],
+        *,
+        genome_values: tuple[float, ...] | None = None,
+    ) -> RecurrentCoreOutput:
+        if genome_values is None:
+            raise AssertionError("conditioned core requires genome_values")
+        self.genome_inputs.append(tuple(genome_values))
+        self.hidden_inputs.append(tuple(hidden))
+        self.feedback_inputs.append(previous_feedback)
+        return super().forward_step(
+            observation,
+            current_action_mask,
+            previous_feedback,
+            hidden,
         )
 
 
@@ -155,6 +206,150 @@ class RecurrentRolloutTests(unittest.TestCase):
                     previous.reward,
                 )
 
+    def test_action_free_bootstrap_matches_legacy_extra_tick_without_sampling(
+        self,
+    ) -> None:
+        legacy = RecurrentOnPolicyCollector(_RecordingCore())
+        legacy.start_world(
+            world_id="legacy-extra-tick",
+            environment_seed=7,
+            policy_sampling_seed=17,
+            rollout_ticks=2,
+        )
+        SimulationWorld(
+            WorldConfig(seed=7, max_ticks=3),
+            policy=legacy,
+        ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        legacy_evidence = legacy.last_bootstrap_evidence
+        legacy.finish_world()
+
+        action_free = RecurrentOnPolicyCollector(_RecordingCore())
+        action_free.start_world(
+            world_id="action-free-boundary",
+            environment_seed=7,
+            policy_sampling_seed=17,
+            rollout_ticks=2,
+        )
+        world = SimulationWorld(
+            WorldConfig(seed=7, max_ticks=2),
+            policy=action_free,
+        )
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        decision_count_before = action_free._decision_index
+        policy_rng_before = copy.deepcopy(action_free._rng.getstate())
+        environment_rng_before = copy.deepcopy(world.rng.getstate())
+        runtime_cost_before = copy.deepcopy(world.runtime_cost_counters)
+        completed_tick_before = world.tick
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=2)
+        action_free_evidence = action_free.finalize_action_free_bootstrap(
+            tick=2,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+
+        self.assertEqual(
+            [
+                (row["agent_id"], row["policy_input_sha256"], row["value"])
+                for row in action_free_evidence["values"]
+            ],
+            [
+                (row["agent_id"], row["policy_input_sha256"], row["value"])
+                for row in legacy_evidence["values"]
+            ],
+        )
+        self.assertEqual(action_free._decision_index, decision_count_before)
+        self.assertEqual(action_free._rng.getstate(), policy_rng_before)
+        self.assertEqual(world.rng.getstate(), environment_rng_before)
+        self.assertEqual(world.runtime_cost_counters, runtime_cost_before)
+        self.assertEqual(world.tick, completed_tick_before)
+        self.assertEqual(
+            len(world.policy_update_trace_records),
+            len(action_free.buffer.steps),
+        )
+        self.assertTrue(
+            all(
+                record["phase"] == "rollout"
+                for record in world.policy_update_trace_records
+            )
+        )
+        action_free.finish_world()
+
+    def test_action_free_bootstrap_keeps_final_tick_newborn_as_evidence_only(
+        self,
+    ) -> None:
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id="final-tick-newborn",
+            environment_seed=59,
+            policy_sampling_seed=67,
+            rollout_ticks=1,
+            genome_stream_seed=61,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=59, max_ticks=1),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        founder.age = 10
+        founder.energy = founder.genome.max_energy * 1.25
+        founder.hydration = founder.genome.max_hydration
+        founder.health = founder.max_health
+        founder.last_reproduction_tick = -10_000
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        children = [
+            agent
+            for agent in world.alive_agents()
+            if agent.parent_id == founder.agent_id
+        ]
+        self.assertEqual(len(children), 1)
+        child = children[0]
+        decision_count_before = collector._decision_index
+        population_state_before = (
+            collector._require_genome_population_manager().state_sha256
+        )
+        environment_rng_before = copy.deepcopy(world.rng.getstate())
+        runtime_cost_before = copy.deepcopy(world.runtime_cost_counters)
+        completed_tick_before = world.tick
+        prepared = world.prepare_policy_visible_tick_start_on_clone(tick=1)
+        evidence = collector.finalize_action_free_bootstrap(
+            tick=1,
+            ordered_agent_ids=prepared.ordered_agent_ids,
+            observations_by_agent=prepared.observation_snapshots,
+        )
+
+        self.assertEqual(evidence["alive_agent_count"], 2)
+        self.assertEqual(evidence["target_eligible_agent_count"], 1)
+        self.assertEqual(evidence["zero_decision_alive_agent_count"], 1)
+        self.assertEqual(evidence["zero_decision_alive_agent_ids"], [child.agent_id])
+        self.assertEqual(
+            {row["agent_id"] for row in evidence["values"]},
+            {founder.agent_id, child.agent_id},
+        )
+        self.assertEqual(
+            {
+                row["agent_id"]
+                for row in evidence["values"]
+                if row["target_eligible"] is True
+            },
+            {founder.agent_id},
+        )
+        self.assertEqual(collector._decision_index, decision_count_before)
+        self.assertEqual(world.rng.getstate(), environment_rng_before)
+        self.assertEqual(world.runtime_cost_counters, runtime_cost_before)
+        self.assertEqual(world.tick, completed_tick_before)
+        self.assertEqual(
+            collector._require_genome_population_manager().state_sha256,
+            population_state_before,
+        )
+        self.assertEqual(
+            {step.agent_id for step in collector.buffer.steps},
+            {founder.agent_id},
+        )
+        self.assertTrue(collector.buffer.steps[-1].truncated)
+        collector.finish_world()
+
     def test_seeded_sampling_and_hidden_state_reset_across_worlds(self) -> None:
         core = _RecordingCore()
         collector = RecurrentOnPolicyCollector(core)
@@ -236,7 +431,9 @@ class RecurrentRolloutTests(unittest.TestCase):
         self.assertEqual(second[0].policy_sampling_seed, 2)
         self.assertNotEqual(first[0].requested_action, second[0].requested_action)
 
-    def test_feed_forward_ablation_resets_hidden_for_every_decision(self) -> None:
+    def test_feed_forward_ablation_resets_hidden_and_feedback_for_every_decision(
+        self,
+    ) -> None:
         collector = RecurrentOnPolicyCollector(
             _RecordingCore(),
             reset_recurrent_state_each_decision=True,
@@ -253,12 +450,12 @@ class RecurrentRolloutTests(unittest.TestCase):
             all(step.hidden == (0.0, 0.0, 0.0) for step in collector.buffer.steps)
         )
         self.assertTrue(
-            any(
-                step.previous_feedback.available
+            all(
+                step.previous_feedback == PreviousPublicFeedback.zero()
                 for step in collector.buffer.steps
-                if step.tick > 0
             )
         )
+        self.assertFalse(collector._feedback_by_agent)
 
     def test_finish_fails_closed_without_the_public_bootstrap_tick(self) -> None:
         collector = RecurrentOnPolicyCollector(_RecordingCore())
@@ -270,7 +467,7 @@ class RecurrentRolloutTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RecurrentRolloutError,
-            "run one bootstrap tick beyond rollout_ticks",
+            "action-free policy-visible tick-start bootstrap",
         ):
             collector.finish_world()
 
@@ -315,6 +512,54 @@ class RecurrentRolloutTests(unittest.TestCase):
                 reward=-1.0,
                 reward_components=_reward_components(-1.0),
             )
+
+    @unittest.skipIf(
+        torch is None,
+        "optional Mind ML dependency torch is not installed",
+    )
+    def test_selection_passive_death_target_matches_training_boundary_math(
+        self,
+    ) -> None:
+        gamma = 0.9
+        buffer = RecurrentRolloutBuffer()
+        buffer.register_world("selection-passive-equivalence")
+        buffer.append(
+            _step(
+                world_id="selection-passive-equivalence",
+                reward=0.2,
+                value=0.1,
+            )
+        )
+        buffer.mark_passive_terminal(
+            world_id="selection-passive-equivalence",
+            agent_id=4,
+            tick=1,
+            reward=-1.0,
+            reward_components=_reward_components(-1.0),
+        )
+        training = buffer.compute_gae(gamma=gamma, gae_lambda=1.0)[0]
+
+        normalized, value_rmse, advantage_variance = (
+            open_ecology_selection._selection_metrics(
+                rewards_by_agent={4: [0.2]},
+                values_by_agent={4: [0.1]},
+                terminal_bootstrap_values_by_agent={},
+                passive_terminal_rewards_by_agent={4: -1.0},
+                discount=gamma,
+            )
+        )
+
+        self.assertAlmostEqual(
+            value_rmse,
+            abs(training.return_target - 0.1),
+            places=12,
+        )
+        self.assertEqual(advantage_variance, 0.0)
+        self.assertAlmostEqual(
+            normalized,
+            (-0.8 / open_ecology_selection._REWARD_NORMALIZATION_SCALE),
+            places=12,
+        )
 
     def test_passive_death_on_bootstrap_tick_is_terminal_not_truncated(self) -> None:
         collector = RecurrentOnPolicyCollector(_RecordingCore())
@@ -456,6 +701,524 @@ class RecurrentRolloutTests(unittest.TestCase):
         self.assertGreaterEqual(feedback.vector()[-1], -1.0)
         self.assertLessEqual(feedback.vector()[-1], 1.0)
 
+    def test_disabled_collection_preserves_exact_legacy_surface(self) -> None:
+        collector = RecurrentOnPolicyCollector(_RecordingCore())
+        collector.start_world(
+            world_id="disabled-compatibility",
+            environment_seed=31,
+            policy_sampling_seed=41,
+            rollout_ticks=1,
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=31, max_ticks=2),
+            policy=collector,
+        )
+        self.assertEqual(
+            world.alive_agents()[0].mind_inheritance_metadata,
+            empty_mind_inheritance_metadata(),
+        )
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        collector.finish_world()
+
+        self.assertEqual(collector.genome_conditioning_mode, "disabled")
+        self.assertTrue(collector.buffer.steps)
+        self.assertTrue(
+            all(
+                step.genome_values is None
+                and step.genome_sha256 is None
+                and step.genome_stream_seed is None
+                for step in collector.buffer.steps
+            )
+        )
+        self.assertEqual(
+            collector.buffer.world_seed_provenance["disabled-compatibility"],
+            {
+                "environment_seed": 31,
+                "policy_sampling_seed": 41,
+            },
+        )
+
+    def test_conditioned_world_start_contract_rejects_missing_or_mismatched_modes(
+        self,
+    ) -> None:
+        invalid_cases = (
+            ({}, "unsigned 64-bit"),
+            ({"genome_stream_seed": 1}, "heritable or zero_all"),
+            (
+                {
+                    "genome_stream_seed": 1,
+                    "genome_population_mode": "disabled",
+                },
+                "heritable or zero_all",
+            ),
+            (
+                {
+                    "genome_stream_seed": True,
+                    "genome_population_mode": "heritable",
+                },
+                "unsigned 64-bit",
+            ),
+            (
+                {
+                    "genome_stream_seed": MAX_RECURRENT_GENOME_STREAM_SEED + 1,
+                    "genome_population_mode": "heritable",
+                },
+                "unsigned 64-bit",
+            ),
+        )
+        for index, (genome_kwargs, message) in enumerate(invalid_cases):
+            with self.subTest(genome_kwargs=genome_kwargs):
+                collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+                with self.assertRaisesRegex(RecurrentRolloutError, message):
+                    collector.start_world(
+                        world_id=f"invalid-genome-world-{index}",
+                        environment_seed=1,
+                        policy_sampling_seed=2,
+                        rollout_ticks=1,
+                        **genome_kwargs,
+                    )
+
+        disabled = RecurrentOnPolicyCollector(_RecordingCore())
+        with self.assertRaisesRegex(RecurrentRolloutError, "disabled recurrent core"):
+            disabled.start_world(
+                world_id="disabled-mode-mismatch",
+                environment_seed=1,
+                policy_sampling_seed=2,
+                rollout_ticks=1,
+                genome_stream_seed=3,
+                genome_population_mode="heritable",
+            )
+        mutable_core = _GenomeRecordingCore()
+        rebound = RecurrentOnPolicyCollector(mutable_core)
+        mutable_core.genome_conditioning_mode = "disabled"
+        with self.assertRaisesRegex(RecurrentRolloutError, "changed after"):
+            rebound.start_world(
+                world_id="changed-core-conditioning-mode",
+                environment_seed=1,
+                policy_sampling_seed=2,
+                rollout_ticks=1,
+                genome_stream_seed=3,
+                genome_population_mode="heritable",
+            )
+
+    def test_real_world_founder_and_child_genomes_condition_collection(self) -> None:
+        core = _GenomeRecordingCore()
+        collector = RecurrentOnPolicyCollector(core)
+        collector.start_world(
+            world_id="conditioned-founder-child",
+            environment_seed=7,
+            policy_sampling_seed=17,
+            rollout_ticks=1,
+            genome_stream_seed=1776,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=7, max_ticks=2),
+            policy=collector,
+        )
+        parent = world.alive_agents()[0]
+        parent.age = 10
+        parent.energy = parent.genome.max_energy * 1.25
+        parent.hydration = parent.genome.max_hydration
+        parent.health = parent.max_health
+        parent.last_reproduction_tick = -10_000
+
+        births = runtime_reproduction.run_reproduction_phase(
+            world,
+            context=world._reproduction_context(),
+        )
+        child = next(
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == parent.agent_id
+        )
+        self.assertEqual(births, 1)
+        self.assertEqual(
+            child.mind_inheritance_metadata["inheritance_kind"],
+            "asexual",
+        )
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        collector.finish_world()
+
+        steps = collector.buffer.steps
+        self.assertTrue(steps)
+        first_by_agent: dict[int, RecurrentRolloutStep] = {}
+        for step in steps:
+            first_by_agent.setdefault(step.agent_id, step)
+            self.assertIsNotNone(step.genome_values)
+            self.assertIsNotNone(step.genome_sha256)
+            self.assertEqual(step.genome_stream_seed, 1776)
+            self.assertEqual(
+                core.genome_inputs[step.decision_index],
+                step.genome_values,
+            )
+        self.assertIn(parent.agent_id, first_by_agent)
+        self.assertIn(child.agent_id, first_by_agent)
+        for agent in (parent, child):
+            first = first_by_agent[agent.agent_id]
+            self.assertEqual(first.hidden, (0.0, 0.0, 0.0))
+            self.assertEqual(
+                first.previous_feedback,
+                PreviousPublicFeedback.zero(),
+            )
+            self.assertEqual(
+                first.genome_sha256,
+                agent.mind_inheritance_metadata["genome_sha256"],
+            )
+
+        self.assertTrue(world.policy_update_trace_records)
+        self.assertTrue(
+            all(
+                record["schema_version"]
+                == RECURRENT_GENOME_ROLLOUT_DIAGNOSTIC_SCHEMA_VERSION
+                for record in world.policy_update_trace_records
+            )
+        )
+        provenance = collector.buffer.world_seed_provenance["conditioned-founder-child"]
+        self.assertEqual(provenance["genome_conditioning_mode"], "actor_film_v1")
+        self.assertEqual(provenance["genome_population_mode"], "heritable")
+        self.assertEqual(provenance["genome_stream_seed"], 1776)
+        self.assertEqual(
+            provenance["genome_population_binding_sha256"],
+            parent.mind_inheritance_metadata["population_binding_sha256"],
+        )
+        self.assertIn("genome_population_final_state_sha256", provenance)
+        self.assertNotEqual(
+            provenance["genome_population_final_state_sha256"],
+            provenance["genome_population_pre_founder_state_sha256"],
+        )
+        self.assertEqual(
+            provenance["genome_population_reset_state_sha256"],
+            provenance["genome_population_pre_founder_state_sha256"],
+        )
+
+    def test_distinct_evidence_worlds_can_share_one_paired_genome_world_identity(
+        self,
+    ) -> None:
+        paired_identity = "phase-a-paired-learner-0-update-0-world-0"
+        founders: list[dict[str, object]] = []
+        provenances: list[dict[str, object]] = []
+        for world_id in ("phase-a-a0-task", "phase-a-a3-task"):
+            collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+            collector.start_world(
+                world_id=world_id,
+                genome_world_identity=paired_identity,
+                environment_seed=7,
+                policy_sampling_seed=17,
+                rollout_ticks=1,
+                genome_stream_seed=1776,
+                genome_population_mode="heritable",
+            )
+            founders.append(collector.contextual_founder_metadata(agent_id=1))
+            provenances.append(collector.buffer.world_seed_provenance[world_id])
+            collector.finish_world()
+
+        self.assertEqual(
+            founders[0]["population_binding_sha256"],
+            founders[1]["population_binding_sha256"],
+        )
+        self.assertEqual(founders[0]["genome_sha256"], founders[1]["genome_sha256"])
+        self.assertEqual(
+            {row["genome_world_identity"] for row in provenances},
+            {paired_identity},
+        )
+
+    def test_conditioned_collection_fails_closed_on_missing_duplicate_and_tamper(
+        self,
+    ) -> None:
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id="strict-genome-ownership",
+            environment_seed=5,
+            policy_sampling_seed=7,
+            rollout_ticks=1,
+            genome_stream_seed=11,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=5, max_ticks=1),
+            policy=collector,
+        )
+        parent = world.alive_agents()[0]
+
+        with self.assertRaisesRegex(RecurrentRolloutError, "already has"):
+            collector.founder_metadata(agent_id=parent.agent_id)
+        with self.assertRaisesRegex(RecurrentRolloutError, "no registered"):
+            collector.child_metadata(
+                child_agent_id=parent.agent_id + 1,
+                primary_parent_id=999_999,
+                secondary_parent_id=None,
+            )
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "live agents have no registered",
+        ):
+            collector.reconcile_live_agent_ids(
+                live_agent_ids=(parent.agent_id, 999_999)
+            )
+        child_metadata = collector.child_metadata(
+            child_agent_id=parent.agent_id + 1,
+            primary_parent_id=parent.agent_id,
+            secondary_parent_id=None,
+        )
+        self.assertEqual(child_metadata["inheritance_kind"], "asexual")
+        collector.reconcile_live_agent_ids(
+            live_agent_ids=(parent.agent_id, parent.agent_id + 1)
+        )
+        collector.finish_world()
+
+        zero = zero_recurrent_genome()
+        with self.assertRaisesRegex(RecurrentRolloutError, "SHA256 does not match"):
+            _step(
+                world_id="tampered-step",
+                reward=0.0,
+                value=0.0,
+                genome_values=zero.values,
+                genome_sha256="0" * 64,
+                genome_stream_seed=1,
+            )
+
+    def test_same_tick_birth_death_is_removed_by_live_agent_reconciliation(
+        self,
+    ) -> None:
+        world_id = "same-tick-child-death"
+        genome_stream_seed = 61
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id=world_id,
+            environment_seed=59,
+            policy_sampling_seed=67,
+            rollout_ticks=1,
+            genome_stream_seed=genome_stream_seed,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(
+                seed=59,
+                max_ticks=2,
+                child_energy_fraction=0.0,
+            ),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        founder.age = 10
+        founder.energy = founder.genome.max_energy * 1.25
+        founder.hydration = founder.genome.max_hydration
+        founder.health = founder.max_health
+        founder.last_reproduction_tick = -10_000
+
+        world.run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        dead_children = [
+            agent
+            for agent in world.agents.values()
+            if agent.parent_id == founder.agent_id
+        ]
+        self.assertEqual(len(dead_children), 1)
+        child = dead_children[0]
+        self.assertFalse(child.alive)
+        self.assertEqual(child.birth_tick, 0)
+        self.assertEqual(child.death_tick, 0)
+        self.assertEqual(child.last_damage_source, "none")
+        collector.finish_world()
+
+        reference = RecurrentGenomePopulationManager(
+            genome_stream_seed=genome_stream_seed,
+            world_identity=world_id,
+            mode="heritable",
+        )
+        reference.founder_metadata(agent_id=founder.agent_id)
+        provenance = collector.buffer.world_seed_provenance[world_id]
+        self.assertEqual(
+            provenance["genome_population_final_state_sha256"],
+            reference.state_sha256,
+        )
+        self.assertTrue(child.mind_inheritance_metadata["inherited_state"])
+        self.assertNotIn(
+            child.agent_id,
+            {step.agent_id for step in collector.buffer.steps},
+        )
+
+    def test_pending_dead_reconciliation_rejects_before_population_mutation(
+        self,
+    ) -> None:
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id="pending-dead-reconciliation",
+            environment_seed=43,
+            policy_sampling_seed=47,
+            rollout_ticks=1,
+            genome_stream_seed=53,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=43, max_ticks=1),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        decision = collector.decide(
+            world._observe_agent(founder),
+            world._action_mask(founder),
+        )
+        self.assertIsNotNone(decision.diagnostics["genome_sha256"])
+
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "dead agents with unfinalized decisions",
+        ):
+            collector.reconcile_live_agent_ids(live_agent_ids=())
+        child_metadata = collector.child_metadata(
+            child_agent_id=founder.agent_id + 1,
+            primary_parent_id=founder.agent_id,
+            secondary_parent_id=None,
+        )
+        self.assertEqual(child_metadata["inheritance_kind"], "asexual")
+
+    def test_finish_provenance_rejection_preserves_live_genome_state(self) -> None:
+        world_id = "atomic-finish-provenance"
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id=world_id,
+            environment_seed=71,
+            policy_sampling_seed=73,
+            rollout_ticks=1,
+            genome_stream_seed=79,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=71, max_ticks=1),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        provenance = collector.buffer.world_seed_provenance[world_id]
+        collector.buffer.finalize_world_genome_provenance(
+            world_id,
+            final_state_sha256="0" * 64,
+            reset_state_sha256=str(
+                provenance["genome_population_pre_founder_state_sha256"]
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            RecurrentRolloutError,
+            "already finalized",
+        ):
+            collector.finish_world()
+
+        decision = collector.decide(
+            world._observe_agent(founder),
+            world._action_mask(founder),
+        )
+        self.assertEqual(
+            decision.diagnostics["genome_sha256"],
+            founder.mind_inheritance_metadata["genome_sha256"],
+        )
+
+    def test_passive_terminal_discards_genome_and_finish_records_reset(self) -> None:
+        collector = RecurrentOnPolicyCollector(_GenomeRecordingCore())
+        collector.start_world(
+            world_id="passive-genome-cleanup",
+            environment_seed=13,
+            policy_sampling_seed=23,
+            rollout_ticks=1,
+            genome_stream_seed=29,
+            genome_population_mode="heritable",
+        )
+        world = SimulationWorld(
+            _small_recurrent_world_config(seed=13, max_ticks=1),
+            policy=collector,
+        )
+        founder = world.alive_agents()[0]
+        collector.observe_transition(
+            {
+                "tick": 0,
+                "agent_id": founder.agent_id,
+                "action_source": "passive",
+                "after": {"alive": False},
+                "outcome": {"died": True},
+                "reward": _reward_payload(-1.0),
+            }
+        )
+        with self.assertRaisesRegex(RecurrentRolloutError, "no registered"):
+            collector.child_metadata(
+                child_agent_id=founder.agent_id + 1,
+                primary_parent_id=founder.agent_id,
+                secondary_parent_id=None,
+            )
+        collector.finish_world()
+
+        provenance = collector.buffer.world_seed_provenance["passive-genome-cleanup"]
+        self.assertEqual(
+            provenance["genome_population_final_state_sha256"],
+            provenance["genome_population_pre_founder_state_sha256"],
+        )
+        self.assertEqual(
+            provenance["genome_population_reset_state_sha256"],
+            provenance["genome_population_pre_founder_state_sha256"],
+        )
+
+    @unittest.skipIf(
+        torch is None, "optional Mind ML dependency torch is not installed"
+    )
+    def test_torch_actor_film_adapter_collects_and_recomputes_zero_control(
+        self,
+    ) -> None:
+        assert torch is not None
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig(
+                encoder_size=8,
+                hidden_size=8,
+                genome_conditioning_mode="actor_film_v1",
+            ),
+            initialization_seed=73,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        collector = RecurrentOnPolicyCollector(core)
+        collector.start_world(
+            world_id="torch-genome-zero-control",
+            environment_seed=23,
+            policy_sampling_seed=31,
+            rollout_ticks=1,
+            genome_stream_seed=37,
+            genome_population_mode="zero_all",
+        )
+        SimulationWorld(
+            _small_recurrent_world_config(seed=23, max_ticks=2),
+            policy=collector,
+        ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        collector.finish_world()
+        step = collector.buffer.steps[0]
+
+        self.assertEqual(core.genome_conditioning_mode, "actor_film_v1")
+        self.assertEqual(step.genome_values, zero_recurrent_genome().values)
+        self.assertEqual(step.genome_sha256, zero_recurrent_genome().sha256)
+        self.assertEqual(step.genome_stream_seed, 37)
+        observations = torch.tensor(step.observation).reshape(1, 1, -1)
+        masks = torch.tensor(step.action_mask).reshape(1, 1, -1)
+        feedback = torch.tensor(step.previous_feedback.vector()).reshape(1, 1, -1)
+        state = torch.tensor(step.hidden).reshape(
+            model.config.recurrent_layers,
+            1,
+            model.config.hidden_size,
+        )
+        genome_values = torch.tensor(step.genome_values).reshape(1, 1, -1)
+        with torch.no_grad():
+            output = model.forward_sequence(
+                observations,
+                masks,
+                feedback,
+                genome_values=genome_values,
+                initial_state=state,
+            )
+            distribution = torch.distributions.Categorical(
+                logits=output.masked_logits[0, 0]
+            )
+            expected_logprob = distribution.log_prob(torch.tensor(step.action_index))
+
+        self.assertAlmostEqual(step.value, float(output.values[0, 0]), places=6)
+        self.assertAlmostEqual(step.logprob, float(expected_logprob), places=6)
+
     @unittest.skipIf(
         torch is None, "optional Mind ML dependency torch is not installed"
     )
@@ -494,6 +1257,46 @@ class RecurrentRolloutTests(unittest.TestCase):
         self.assertAlmostEqual(step.value, float(output.values[0, 0]), places=6)
         self.assertAlmostEqual(step.logprob, float(expected_logprob), places=6)
 
+    @unittest.skipIf(
+        torch is None, "optional Mind ML dependency torch is not installed"
+    )
+    def test_torch_model_adapter_collects_token_aware_world_without_shape_loss(
+        self,
+    ) -> None:
+        assert torch is not None
+        signals = SignalConfig(communication_signal_emission_enabled=True)
+        model = PublicRecurrentActorCritic(
+            RecurrentActorCriticConfig.for_signal_config(
+                signals,
+                encoder_size=8,
+                hidden_size=8,
+            ),
+            initialization_seed=73,
+        )
+        core = TorchRecurrentPolicyCore(model)
+        collector = RecurrentOnPolicyCollector(core)
+        collector.start_world(
+            world_id="torch-token-adapter",
+            seed=23,
+            rollout_ticks=1,
+        )
+
+        SimulationWorld(
+            WorldConfig(seed=23, max_ticks=2, signals=signals),
+            policy=collector,
+        ).run(mode=RunMode.SUMMARY_ONLY, record_trajectory=True)
+        collector.finish_world()
+
+        self.assertEqual(
+            core.public_input_schema_version, "mind_ecological_policy_input_v3"
+        )
+        self.assertEqual(core.public_input_size, 645)
+        self.assertEqual(core.learned_input_size, 708)
+        self.assertTrue(collector.buffer.steps)
+        self.assertTrue(
+            all(len(step.observation) == 645 for step in collector.buffer.steps)
+        )
+
 
 def _step(
     *,
@@ -504,6 +1307,9 @@ def _step(
     value: float,
     environment_seed: int = 7,
     policy_sampling_seed: int | None = None,
+    genome_values: tuple[float, ...] | None = None,
+    genome_sha256: str | None = None,
+    genome_stream_seed: int | None = None,
 ) -> RecurrentRolloutStep:
     action_mask = tuple(True for _ in ACTION_NAMES)
     return RecurrentRolloutStep(
@@ -532,6 +1338,50 @@ def _step(
         outcome={"died": False},
         environment_seed=environment_seed,
         policy_sampling_seed=policy_sampling_seed,
+        genome_values=genome_values,
+        genome_sha256=genome_sha256,
+        genome_stream_seed=genome_stream_seed,
+    )
+
+
+def _small_recurrent_world_config(
+    *,
+    seed: int,
+    max_ticks: int,
+    child_energy_fraction: float = 0.3,
+) -> WorldConfig:
+    return WorldConfig(
+        seed=seed,
+        max_ticks=max_ticks,
+        width=5,
+        height=5,
+        initial_agents=1,
+        max_agents=20,
+        water_tile_ratio=0.0,
+        forest_tile_ratio=0.0,
+        wetland_tile_ratio=0.0,
+        rocky_tile_ratio=0.0,
+        base_energy_drain=0.0,
+        base_hydration_drain=0.0,
+        reproduction=ReproductionConfig(
+            min_age=1,
+            cooldown_ticks=1_000,
+            min_hydration_fraction=0.0,
+            energy_cost=0.0,
+            child_energy_fraction=child_energy_fraction,
+        ),
+        diet_matching=DietMatchingConfig(
+            specialist_threshold=0.0,
+            omnivore_threshold=0.0,
+        ),
+        combat=CombatConfig(
+            min_attack_health_ratio=1.0,
+            min_attack_energy_ratio=1.0,
+            min_attack_hydration_ratio=1.0,
+            base_attack_damage=0.0,
+            attack_energy_cost=0.0,
+            attack_hydration_cost=0.0,
+        ),
     )
 
 

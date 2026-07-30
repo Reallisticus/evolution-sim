@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-RECURRENT_EVALUATION_SCHEMA_VERSION = "mind_public_recurrent_evaluation_v4"
+RECURRENT_EVALUATION_SCHEMA_VERSION = "mind_public_recurrent_evaluation_v5"
 
 
 class RecurrentEvaluationError(ValueError):

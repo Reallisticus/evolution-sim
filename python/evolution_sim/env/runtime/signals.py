@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, MutableMapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field as dataclass_field
 from functools import lru_cache
 from typing import Any
 
 from evolution_sim.config.schema import SignalConfig
 
 SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v2"
+TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION = "foundation_signal_contract_v4"
+TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION = (
+    "foundation_signal_field_reporting_v2"
+)
+COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION = (
+    "foundation_communication_receiver_projection_v1"
+)
+COMMUNICATION_RECEIVER_OBSERVATION_POLICY = (
+    "exclude_receiver_own_communication_emissions_across_local_patch_v1"
+)
+COMMUNICATION_GLOBAL_REPORTING_POLICY = "include_all_emitters_v1"
 REPRODUCTIVE_SIGNAL_FIELD = "reproductive_signal"
 COMMUNICATION_SIGNAL_FIELD = "communication_signal"
+COMMUNICATION_AGGREGATE_PROJECTION = (
+    "parallel_legacy_projection_source_clamped_before_spatial_diffusion"
+)
 SIGNAL_FIELD_NAMES = (REPRODUCTIVE_SIGNAL_FIELD, COMMUNICATION_SIGNAL_FIELD)
 SIGNAL_EPSILON = 1e-9
 REPRODUCTIVE_READINESS_PROFILE_ID = "reproductive_readiness"
@@ -81,12 +95,105 @@ class SignalEmission:
 
 
 @dataclass(frozen=True, slots=True)
+class CommunicationReceiverProjection:
+    width: int
+    max_intensity: float
+    source_intensities: dict[str, dict[tuple[int, int], float]]
+    receiver_source_intensities: dict[
+        int,
+        dict[str, dict[tuple[int, int], float]],
+    ]
+    raw_global_value_cache: dict[tuple[str, int, int], float] = dataclass_field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    receiver_value_cache: dict[tuple[int, str, int, int], float] = dataclass_field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    def value(
+        self,
+        field_name: str,
+        *,
+        global_field: list[list[float]],
+        x: int,
+        y: int,
+        receiver_agent_id: int,
+    ) -> float:
+        global_value = global_field[y][x]
+        if global_value <= SIGNAL_EPSILON:
+            return 0.0
+        receiver_cache_key = (receiver_agent_id, field_name, x, y)
+        cached_receiver_value = self.receiver_value_cache.get(receiver_cache_key)
+        if cached_receiver_value is not None:
+            return cached_receiver_value
+        receiver_fields = self.receiver_source_intensities.get(receiver_agent_id)
+        if receiver_fields is None:
+            return global_value
+        receiver_sources = receiver_fields.get(field_name)
+        all_sources = self.source_intensities.get(field_name)
+        if not receiver_sources or not all_sources:
+            return global_value
+
+        receiver_adjustment = 0.0
+        for (radius, source_index), receiver_intensity in sorted(
+            receiver_sources.items()
+        ):
+            source_x = source_index % self.width
+            source_y = source_index // self.width
+            distance = abs(x - source_x) + abs(y - source_y)
+            if distance > radius:
+                continue
+            total_intensity = all_sources[(radius, source_index)]
+            without_receiver = max(0.0, total_intensity - receiver_intensity)
+            receiver_adjustment += (
+                min(self.max_intensity, total_intensity)
+                - min(self.max_intensity, without_receiver)
+            ) / (distance + 1.0)
+
+        if receiver_adjustment <= SIGNAL_EPSILON:
+            return global_value
+        if global_value < self.max_intensity - SIGNAL_EPSILON:
+            raw_global_value = global_value
+        else:
+            raw_cache_key = (field_name, x, y)
+            cached_raw_global_value = self.raw_global_value_cache.get(raw_cache_key)
+            if cached_raw_global_value is None:
+                raw_global_value = 0.0
+                for (radius, source_index), intensity in sorted(all_sources.items()):
+                    source_x = source_index % self.width
+                    source_y = source_index // self.width
+                    distance = abs(x - source_x) + abs(y - source_y)
+                    if distance <= radius:
+                        raw_global_value += min(
+                            self.max_intensity,
+                            intensity,
+                        ) / (distance + 1.0)
+                self.raw_global_value_cache[raw_cache_key] = raw_global_value
+            else:
+                raw_global_value = cached_raw_global_value
+        receiver_value = min(
+            self.max_intensity,
+            max(0.0, raw_global_value - receiver_adjustment),
+        )
+        self.receiver_value_cache[receiver_cache_key] = receiver_value
+        return receiver_value
+
+
+@dataclass(frozen=True, slots=True)
 class SignalFieldState:
     reproductive_signal: list[list[float]]
     communication_signal: list[list[float]]
+    communication_token_signals: tuple[list[list[float]], ...] = ()
+    communication_receiver_projection: CommunicationReceiverProjection | None = (
+        dataclass_field(default=None, repr=False, compare=False)
+    )
 
     def to_serializable(self) -> dict[str, list[list[float]]]:
-        return {
+        fields = {
             REPRODUCTIVE_SIGNAL_FIELD: [
                 [round(value, 4) for value in row]
                 for row in self.reproductive_signal
@@ -96,13 +203,53 @@ class SignalFieldState:
                 for row in self.communication_signal
             ],
         }
+        for token_id, field in enumerate(self.communication_token_signals):
+            fields[communication_token_field_name(token_id)] = [
+                [round(value, 4) for value in row] for row in field
+            ]
+        return fields
+
+    def field_names(self) -> tuple[str, ...]:
+        return (
+            *SIGNAL_FIELD_NAMES,
+            *(
+                communication_token_field_name(token_id)
+                for token_id in range(len(self.communication_token_signals))
+            ),
+        )
 
     def field(self, name: str) -> list[list[float]]:
         if name == REPRODUCTIVE_SIGNAL_FIELD:
             return self.reproductive_signal
         if name == COMMUNICATION_SIGNAL_FIELD:
             return self.communication_signal
+        token_id = parse_communication_token_field_name(name)
+        if (
+            token_id is not None
+            and token_id < len(self.communication_token_signals)
+        ):
+            return self.communication_token_signals[token_id]
         raise KeyError(name)
+
+    def field_value_for_receiver(
+        self,
+        name: str,
+        *,
+        x: int,
+        y: int,
+        receiver_agent_id: int,
+    ) -> float:
+        field = self.field(name)
+        projection = self.communication_receiver_projection
+        if name == REPRODUCTIVE_SIGNAL_FIELD or projection is None:
+            return field[y][x]
+        return projection.value(
+            name,
+            global_field=field,
+            x=x,
+            y=y,
+            receiver_agent_id=receiver_agent_id,
+        )
 
 
 DiffusionTargetCache = MutableMapping[
@@ -204,7 +351,7 @@ def communication_signal_profile(
     )
     return SignalProfile(
         profile_id=f"{COMMUNICATION_PROFILE_PREFIX}_{token_id}_profile_{profile_index}",
-        field_name=COMMUNICATION_SIGNAL_FIELD,
+        field_name=communication_token_field_name(token_id),
         source_kind="reserved_opaque_communication",
         token_id=token_id,
         profile_index=profile_index,
@@ -259,6 +406,44 @@ def reserved_communication_signal_profiles(
     return profiles
 
 
+def communication_token_field_name(token_id: int) -> str:
+    if isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0:
+        raise ValueError("communication token_id must be a nonnegative integer")
+    return f"{COMMUNICATION_SIGNAL_FIELD}_token_{token_id}"
+
+
+def parse_communication_token_field_name(name: str) -> int | None:
+    prefix = f"{COMMUNICATION_SIGNAL_FIELD}_token_"
+    if not name.startswith(prefix):
+        return None
+    suffix = name[len(prefix) :]
+    if not suffix.isdigit():
+        return None
+    token_id = int(suffix)
+    if name != communication_token_field_name(token_id):
+        return None
+    return token_id
+
+
+def communication_token_field_names(config: Any | None = None) -> tuple[str, ...]:
+    if config is None or not communication_signal_emission_enabled(config):
+        return ()
+    return tuple(
+        communication_token_field_name(token_id)
+        for token_id in range(int(config.communication_token_count))
+    )
+
+
+def signal_contract_version(config: Any | None = None) -> str:
+    if config is not None and communication_signal_emission_enabled(config):
+        return TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION
+    return SIGNAL_CONTRACT_VERSION
+
+
+def signal_field_names(config: Any | None = None) -> tuple[str, ...]:
+    return (*SIGNAL_FIELD_NAMES, *communication_token_field_names(config))
+
+
 def empty_signal_totals() -> dict[str, float]:
     return {
         "reproductive_emissions": 0.0,
@@ -278,11 +463,12 @@ def finalize_signal_totals(totals: dict[str, float]) -> dict[str, object]:
 def signal_contract(config: Any | None = None) -> dict[str, object]:
     if config is None:
         config = SignalConfig()
-    return {
-        "schema_version": SIGNAL_CONTRACT_VERSION,
+    token_field_names = communication_token_field_names(config)
+    contract: dict[str, object] = {
+        "schema_version": signal_contract_version(config),
         "substrate": "continuous_field_discrete_emission_profiles",
         "policy_semantics": "opaque",
-        "fields": [REPRODUCTIVE_SIGNAL_FIELD, COMMUNICATION_SIGNAL_FIELD],
+        "fields": list(signal_field_names(config)),
         "profile_metadata_policy_visible": False,
         "emission_debug_metadata_fields": [
             "field_name",
@@ -338,6 +524,27 @@ def signal_contract(config: Any | None = None) -> dict[str, object]:
         "reproductive_readiness_emission_enabled_by_default": True,
         "communication_emission_enabled_by_default": False,
     }
+    if token_field_names:
+        contract["communication_token_observation"] = {
+            "schema_version": TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION,
+            "policy_visible": True,
+            "spatial": True,
+            "field_order": list(token_field_names),
+            "token_order": list(range(len(token_field_names))),
+            "aggregate_field": COMMUNICATION_SIGNAL_FIELD,
+            "aggregate_field_retained_for_compatibility": True,
+            "aggregation": COMMUNICATION_AGGREGATE_PROJECTION,
+            "receiver_projection_schema_version": (
+                COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION
+            ),
+            "receiver_observation_policy": (
+                COMMUNICATION_RECEIVER_OBSERVATION_POLICY
+            ),
+            "global_reporting_policy": COMMUNICATION_GLOBAL_REPORTING_POLICY,
+            "simulator_assigned_meanings": False,
+            "profile_provenance_policy_visible": False,
+        }
+    return contract
 
 
 def _contract_reproductive_profile(config: Any) -> SignalProfile:
@@ -554,7 +761,7 @@ def emit_communication_signal_action(
         agent.energy = max(0.0, agent.energy - cost)
 
     emission = SignalEmission(
-        field_name=COMMUNICATION_SIGNAL_FIELD,
+        field_name=profile.field_name,
         profile_id=profile.profile_id,
         source_kind="policy_requested_opaque_communication",
         source_agent_id=agent.agent_id,
@@ -621,6 +828,20 @@ def build_signal_state(*, context: SignalRuntimeContext) -> SignalFieldState:
     config = context.config
     if not config.enabled:
         return empty_signal_state(context.width, context.height)
+    communication_token_signals: tuple[list[list[float]], ...] = ()
+    if communication_signal_emission_enabled(config):
+        communication_token_signals = tuple(
+            _diffuse_signal_emissions(
+                (
+                    emission
+                    for emission in context.communication_signal_emissions
+                    if emission.token_id == token_id
+                ),
+                max_intensity=config.max_intensity,
+                context=context,
+            )
+            for token_id in range(int(config.communication_token_count))
+        )
     return SignalFieldState(
         reproductive_signal=_diffuse_signal_emissions(
             context.reproductive_signal_emissions,
@@ -631,6 +852,16 @@ def build_signal_state(*, context: SignalRuntimeContext) -> SignalFieldState:
             context.communication_signal_emissions,
             max_intensity=config.max_intensity,
             context=context,
+        ),
+        communication_token_signals=communication_token_signals,
+        communication_receiver_projection=(
+            _build_communication_receiver_projection(
+                context.communication_signal_emissions,
+                max_intensity=config.max_intensity,
+                context=context,
+            )
+            if communication_token_signals
+            else None
         ),
     )
 
@@ -647,7 +878,7 @@ def signal_field_stats(
     grid: list[list[Any]],
 ) -> dict[str, dict[str, float]]:
     stats: dict[str, dict[str, float]] = {}
-    for name in SIGNAL_FIELD_NAMES:
+    for name in state.field_names():
         field = state.field(name)
         values = [
             field[y][x]
@@ -670,17 +901,29 @@ def signal_emission_debug_snapshot(
 ) -> dict[str, object]:
     reproductive_emissions = list(context.reproductive_signal_emissions)
     communication_emissions = list(context.communication_signal_emissions)
+    token_field_names = communication_token_field_names(context.config)
+    active_counts = {
+        REPRODUCTIVE_SIGNAL_FIELD: len(reproductive_emissions),
+        COMMUNICATION_SIGNAL_FIELD: len(communication_emissions),
+    }
+    active_counts.update(
+        {
+            field_name: sum(
+                1
+                for emission in communication_emissions
+                if emission.token_id == token_id
+            )
+            for token_id, field_name in enumerate(token_field_names)
+        }
+    )
     snapshot: dict[str, object] = {
-        "schema_version": SIGNAL_CONTRACT_VERSION,
+        "schema_version": signal_contract_version(context.config),
         "policy_visible": False,
         "events": list(context.tick_signal_emission_events),
-        "active_counts": {
-            REPRODUCTIVE_SIGNAL_FIELD: len(reproductive_emissions),
-            COMMUNICATION_SIGNAL_FIELD: len(communication_emissions),
-        },
+        "active_counts": active_counts,
     }
     if include_active_emissions:
-        snapshot["active_emissions"] = {
+        active_emissions = {
             REPRODUCTIVE_SIGNAL_FIELD: [
                 emission.to_debug_dict() for emission in reproductive_emissions
             ],
@@ -688,6 +931,17 @@ def signal_emission_debug_snapshot(
                 emission.to_debug_dict() for emission in communication_emissions
             ],
         }
+        active_emissions.update(
+            {
+                field_name: [
+                    emission.to_debug_dict()
+                    for emission in communication_emissions
+                    if emission.token_id == token_id
+                ]
+                for token_id, field_name in enumerate(token_field_names)
+            }
+        )
+        snapshot["active_emissions"] = active_emissions
     return snapshot
 
 
@@ -788,7 +1042,7 @@ def _accumulate_signal_totals(
 
 
 def _diffuse_signal_emissions(
-    emissions: list[SignalEmission],
+    emissions: Iterable[SignalEmission],
     *,
     max_intensity: float,
     context: SignalRuntimeContext,
@@ -816,6 +1070,62 @@ def _diffuse_signal_emissions(
         sources_by_radius,
         max_intensity=max_intensity,
         context=context,
+    )
+
+
+def _build_communication_receiver_projection(
+    emissions: Iterable[SignalEmission],
+    *,
+    max_intensity: float,
+    context: SignalRuntimeContext,
+) -> CommunicationReceiverProjection:
+    source_intensities: dict[str, dict[tuple[int, int], float]] = {
+        COMMUNICATION_SIGNAL_FIELD: {},
+        **{
+            field_name: {}
+            for field_name in communication_token_field_names(context.config)
+        },
+    }
+    receiver_source_intensities: dict[
+        int,
+        dict[str, dict[tuple[int, int], float]],
+    ] = {}
+    for emission in emissions:
+        if emission.intensity <= SIGNAL_EPSILON or emission.remaining_ticks <= 0:
+            continue
+        if not _in_bounds(context, emission.x, emission.y):
+            continue
+        if context.grid[emission.y][emission.x].terrain == "water":
+            continue
+        field_names = [COMMUNICATION_SIGNAL_FIELD]
+        if emission.token_id is not None:
+            token_field_name = communication_token_field_name(emission.token_id)
+            if token_field_name in source_intensities:
+                field_names.append(token_field_name)
+        source_key = (
+            max(0, emission.radius),
+            emission.y * context.width + emission.x,
+        )
+        for field_name in field_names:
+            field_sources = source_intensities[field_name]
+            field_sources[source_key] = (
+                field_sources.get(source_key, 0.0) + emission.intensity
+            )
+            if emission.source_agent_id is None:
+                continue
+            receiver_fields = receiver_source_intensities.setdefault(
+                emission.source_agent_id,
+                {},
+            )
+            receiver_sources = receiver_fields.setdefault(field_name, {})
+            receiver_sources[source_key] = (
+                receiver_sources.get(source_key, 0.0) + emission.intensity
+            )
+    return CommunicationReceiverProjection(
+        width=context.width,
+        max_intensity=max(0.0, max_intensity),
+        source_intensities=source_intensities,
+        receiver_source_intensities=receiver_source_intensities,
     )
 
 

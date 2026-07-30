@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import pickle
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import evolution_sim.env.runtime.actions as runtime_actions
@@ -14,6 +15,144 @@ import evolution_sim.env.runtime.signals as runtime_signals
 from evolution_sim.env.events import EventType
 
 TURN_ORDER_POLICY = "seed_tick_agent_hash_permutation_v1"
+_RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY = object()
+_RUNTIME_OWNED_POLICY_TICK_START_REGISTRY: dict[
+    int,
+    tuple[
+        RuntimeOwnedPolicyTickStart,
+        tuple[tuple[int, int], ...],
+        tuple[tuple[int, str], ...],
+    ],
+] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeOwnedPolicyTickStart:
+    """Internal witness for the snapshot/order minted by prepare_tick_start."""
+
+    environment_seed: int
+    tick: int
+    ordered_agent_ids: tuple[int, ...]
+    observation_snapshots: dict[int, dict[str, object]]
+    _observation_integrity_sha256_by_agent: dict[int, str] = field(
+        repr=False,
+        compare=False,
+    )
+    _authority: object = field(repr=False, compare=False)
+
+
+def _runtime_owned_observation_integrity_sha256(
+    observation: dict[str, object],
+) -> str:
+    try:
+        payload = pickle.dumps(observation, protocol=5)
+    except (
+        pickle.PickleError,
+        AttributeError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(
+            "runtime-owned observation integrity serialization failed"
+        ) from exc
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_owned_policy_tick_start(
+    *,
+    environment_seed: int,
+    tick: int,
+    ordered_agent_ids: tuple[int, ...],
+    observation_snapshots: dict[int, dict[str, object]],
+) -> RuntimeOwnedPolicyTickStart:
+    observation_integrity_sha256_by_agent = {
+        agent_id: _runtime_owned_observation_integrity_sha256(
+            observation_snapshots[agent_id]
+        )
+        for agent_id in ordered_agent_ids
+    }
+    witness = RuntimeOwnedPolicyTickStart(
+        environment_seed=environment_seed,
+        tick=tick,
+        ordered_agent_ids=ordered_agent_ids,
+        observation_snapshots=observation_snapshots,
+        _observation_integrity_sha256_by_agent=(
+            observation_integrity_sha256_by_agent
+        ),
+        _authority=_RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY,
+    )
+    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY[id(witness)] = (
+        witness,
+        tuple(
+            (agent_id, id(observation_snapshots[agent_id]))
+            for agent_id in ordered_agent_ids
+        ),
+        tuple(
+            (agent_id, observation_integrity_sha256_by_agent[agent_id])
+            for agent_id in ordered_agent_ids
+        ),
+    )
+    return witness
+
+
+def validate_runtime_owned_policy_tick_start(
+    value: object,
+    *,
+    environment_seed: int,
+    tick: int,
+) -> RuntimeOwnedPolicyTickStart:
+    registered = _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY.pop(id(value), None)
+    if (
+        type(value) is not RuntimeOwnedPolicyTickStart
+        or registered is None
+        or registered[0] is not value
+        or value._authority is not _RUNTIME_OWNED_POLICY_TICK_START_AUTHORITY
+        or value.environment_seed != environment_seed
+        or value.tick != tick
+        or set(value.observation_snapshots) != set(value.ordered_agent_ids)
+        or set(value._observation_integrity_sha256_by_agent)
+        != set(value.ordered_agent_ids)
+        or registered[1]
+        != tuple(
+            (agent_id, id(value.observation_snapshots[agent_id]))
+            for agent_id in value.ordered_agent_ids
+        )
+        or registered[2]
+        != tuple(
+            (agent_id, value._observation_integrity_sha256_by_agent[agent_id])
+            for agent_id in value.ordered_agent_ids
+        )
+        or registered[2]
+        != tuple(
+            (
+                agent_id,
+                _runtime_owned_observation_integrity_sha256(
+                    value.observation_snapshots[agent_id]
+                ),
+            )
+            for agent_id in value.ordered_agent_ids
+        )
+        or any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in value._observation_integrity_sha256_by_agent.values()
+        )
+        or any(
+            type(observation) is not dict
+            for observation in value.observation_snapshots.values()
+        )
+    ):
+        raise ValueError("runtime-owned policy tick-start witness is invalid")
+    return value
+
+
+def discard_runtime_owned_policy_tick_start(
+    value: RuntimeOwnedPolicyTickStart,
+) -> None:
+    _RUNTIME_OWNED_POLICY_TICK_START_REGISTRY.pop(id(value), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,11 +163,14 @@ class TickPhaseContext:
     season_state: Callable[[], dict[str, object]]
     emit: Callable[[EventType, int | None, dict[str, object] | None], None]
     regrow_resources: Callable[[], None]
-    population_trophic_counts: Callable[[list[Any]], tuple[dict[str, int], dict[str, int]]]
+    population_trophic_counts: Callable[
+        [list[Any]], tuple[dict[str, int], dict[str, int]]
+    ]
     observe_agent: Callable[[Any], dict[str, object]]
     animal_resource_reachability_by_meat_mode: Callable[..., dict[str, dict[str, int]]]
     animal_resource_presence_this_tick: Callable[[], dict[str, bool]]
     decay_recent_diet: Callable[[Any], None]
+    stage_policy_tick_start: Callable[[RuntimeOwnedPolicyTickStart], None]
     choose_action: Callable[[Any, dict[str, object] | None], str]
     action_mask: Callable[[Any], dict[str, bool]]
     action_resolution_context: Callable[[Any], runtime_actions.ActionResolutionContext]
@@ -36,6 +178,7 @@ class TickPhaseContext:
     reproduction_context: Callable[[], runtime_reproduction.ReproductionContext]
     kill_agent: Callable[..., None]
     finalize_trajectory_decisions: Callable[[list[dict[str, object]]], None]
+    reconcile_policy_live_agent_ids: Callable[[tuple[int, ...]], None]
     record_animal_resource_opportunity_tick: Callable[
         [dict[str, int], dict[str, dict[str, int]], dict[str, bool]],
         None,
@@ -44,14 +187,29 @@ class TickPhaseContext:
     policy_metadata: Callable[[], dict[str, object]]
 
 
-def run_tick(
+@dataclass(frozen=True, slots=True)
+class PreparedTickStart:
+    """Exact policy-visible state after tick-start ecology and before actions."""
+
+    climate_state: dict[str, object]
+    ordered_agent_ids: tuple[int, ...]
+    observation_snapshots: dict[int, dict[str, object]]
+    observation_action_masks: dict[int, dict[str, bool]]
+    trajectory_contexts: dict[int, dict[str, object]]
+    opportunity_meat_mode_counts: dict[str, int]
+    opportunity_resource_presence: dict[str, bool]
+    opportunity_reachability_by_meat_mode: dict[str, dict[str, int]]
+
+
+def prepare_tick_start(
     world: Any,
     *,
     meat_mode_codes: dict[str, int],
     tick_context: TickPhaseContext,
-) -> tuple[int, int]:
-    births_this_tick = 0
-    deaths_before_tick = world.deaths
+    stage_policy: bool = True,
+) -> PreparedTickStart:
+    """Run the existing tick-start prefix exactly once, stopping before actions."""
+
     reset_tick_state(world, meat_mode_codes=meat_mode_codes)
     tick_context.invalidate_biotic_state()
     tick_context.decay_signal_emissions()
@@ -98,6 +256,51 @@ def run_tick(
         tick=world.tick,
     )
     world.tick_action_order = list(action_order)
+    if action_order and stage_policy:
+        runtime_owned_tick_start = _runtime_owned_policy_tick_start(
+            environment_seed=world.config.seed,
+            tick=world.tick,
+            ordered_agent_ids=action_order,
+            observation_snapshots=observation_snapshots,
+        )
+        try:
+            tick_context.stage_policy_tick_start(runtime_owned_tick_start)
+        finally:
+            discard_runtime_owned_policy_tick_start(runtime_owned_tick_start)
+    return PreparedTickStart(
+        climate_state=climate_state,
+        ordered_agent_ids=action_order,
+        observation_snapshots=observation_snapshots,
+        observation_action_masks=observation_action_masks,
+        trajectory_contexts=trajectory_contexts,
+        opportunity_meat_mode_counts=opportunity_meat_mode_counts,
+        opportunity_resource_presence=opportunity_resource_presence,
+        opportunity_reachability_by_meat_mode=(opportunity_reachability_by_meat_mode),
+    )
+
+
+def run_tick(
+    world: Any,
+    *,
+    meat_mode_codes: dict[str, int],
+    tick_context: TickPhaseContext,
+) -> tuple[int, int]:
+    births_this_tick = 0
+    deaths_before_tick = world.deaths
+    prepared = prepare_tick_start(
+        world,
+        meat_mode_codes=meat_mode_codes,
+        tick_context=tick_context,
+    )
+    climate_state = prepared.climate_state
+    action_order = prepared.ordered_agent_ids
+    observation_snapshots = prepared.observation_snapshots
+    trajectory_contexts = prepared.trajectory_contexts
+    opportunity_meat_mode_counts = prepared.opportunity_meat_mode_counts
+    opportunity_resource_presence = prepared.opportunity_resource_presence
+    opportunity_reachability_by_meat_mode = (
+        prepared.opportunity_reachability_by_meat_mode
+    )
     pending_trajectory_records: list[dict[str, object]] = []
     acted_trajectory_agent_ids: set[int] = set()
     lifecycle_context = tick_context.lifecycle_context
@@ -190,6 +393,9 @@ def run_tick(
             pending_trajectory_records,
         )
         tick_context.finalize_trajectory_decisions(pending_trajectory_records)
+    tick_context.reconcile_policy_live_agent_ids(
+        tuple(sorted(agent.agent_id for agent in world.alive_agents()))
+    )
 
     deaths_this_tick = world.deaths - deaths_before_tick
     alive_count = len(world.alive_agents())

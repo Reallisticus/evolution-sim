@@ -3,22 +3,41 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
+import hashlib
 import math
 from types import MappingProxyType
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from evolution_sim.env.runtime.action_contract import (
     ACTION_MASK_CONTRACT_VERSION,
     ACTION_NAMES,
+    action_names,
+)
+from evolution_sim.env.runtime.observations import (
+    PATCH_CELL_COUNT,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
 )
 from evolution_sim.env.runtime.trajectory import REWARD_TOTAL_BOUNDS
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    ecological_policy_input_schema_version,
+    ecological_policy_input_vector_size,
     ecological_policy_input_values,
     ecological_policy_values_from_decoded,
+)
+from evolution_sim.mind.recurrent_genome import (
+    RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
+    RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT,
+    RECURRENT_CONTROLLER_GENOME_MAX,
+    RECURRENT_CONTROLLER_GENOME_MIN,
+    RECURRENT_CONTROLLER_GENOME_SIZE,
+    recurrent_genome_development_coefficients,
+    recurrent_genome_development_contract,
 )
 
 
@@ -33,7 +52,20 @@ _REWARD_NORMALIZATION_SCALE = max(abs(bound) for bound in REWARD_TOTAL_BOUNDS)
 ACTION_INDEX: Mapping[str, int] = MappingProxyType(
     {action: index for index, action in enumerate(ACTION_NAMES)}
 )
-RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v1"
+RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION = "mind_public_recurrent_masked_actor_critic_v5"
+RECURRENT_NUMERIC_KERNEL_VERSION = (
+    "batch_size_tolerance_stable_per_row_bmm_forward_native_gemm_backward_v1"
+)
+_BACKEND_STABLE_LINEAR_TILE_ROWS = 4
+GENOME_CONDITIONING_DISABLED = "disabled"
+GENOME_CONDITIONING_ACTOR_FILM_V1 = "actor_film_v1"
+CRITIC_GENOME_CONDITIONING_NONE = "none"
+CRITIC_GENOME_CONDITIONING_FILM_V1 = "film_v1"
+VALUE_SHARED_TRUNK_GRADIENT_SHARED = "shared"
+VALUE_SHARED_TRUNK_GRADIENT_STOP_V1 = "stop_gradient_v1"
+CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM = (
+    "mind_recurrent_critic_genome_film_initialization_v1"
+)
 
 
 class RecurrentPolicyContractError(ValueError):
@@ -56,17 +88,112 @@ class RecurrentContextError(RecurrentPolicyContractError):
     """Raised when aligned previous public feedback violates its contract."""
 
 
+class GenomeConditioningError(RecurrentPolicyContractError):
+    """Raised when inherited genome conditioning violates its exact contract."""
+
+
 @dataclass(frozen=True, slots=True)
 class RecurrentActorCriticConfig:
     encoder_size: int = 128
     hidden_size: int = 128
     recurrent_layers: int = 1
+    public_input_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    public_input_size: int = PUBLIC_INPUT_SIZE
+    genome_conditioning_mode: str = GENOME_CONDITIONING_DISABLED
+    critic_genome_conditioning: str = CRITIC_GENOME_CONDITIONING_NONE
+    value_shared_trunk_gradient: str = VALUE_SHARED_TRUNK_GRADIENT_SHARED
 
     def __post_init__(self) -> None:
         for field_name in ("encoder_size", "hidden_size", "recurrent_layers"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{field_name} must be a positive integer")
+        if self.public_input_schema_version not in {
+            ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        }:
+            raise ValueError("public_input_schema_version is unsupported")
+        if (
+            isinstance(self.public_input_size, bool)
+            or not isinstance(self.public_input_size, int)
+            or self.public_input_size <= 0
+        ):
+            raise ValueError("public_input_size must be a positive integer")
+        if (
+            self.public_input_schema_version == ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            and self.public_input_size != PUBLIC_INPUT_SIZE
+        ):
+            raise ValueError(
+                "base public input schema requires the 541-value projection"
+            )
+        token_channel_width = 1 + PATCH_CELL_COUNT
+        token_width = self.public_input_size - PUBLIC_INPUT_SIZE
+        if (
+            self.public_input_schema_version
+            == TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+            and (token_width <= 0 or token_width % token_channel_width != 0)
+        ):
+            raise ValueError(
+                "tokenized public input size must contain complete self-plus-patch "
+                "token channels"
+            )
+        if self.genome_conditioning_mode not in {
+            GENOME_CONDITIONING_DISABLED,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        }:
+            raise ValueError("genome_conditioning_mode is unsupported")
+        if self.critic_genome_conditioning not in {
+            CRITIC_GENOME_CONDITIONING_NONE,
+            CRITIC_GENOME_CONDITIONING_FILM_V1,
+        }:
+            raise ValueError("critic_genome_conditioning is unsupported")
+        if (
+            self.critic_genome_conditioning == CRITIC_GENOME_CONDITIONING_FILM_V1
+            and self.genome_conditioning_mode != GENOME_CONDITIONING_ACTOR_FILM_V1
+        ):
+            raise ValueError(
+                "critic film_v1 requires actor_film_v1 genome conditioning"
+            )
+        if self.value_shared_trunk_gradient not in {
+            VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+            VALUE_SHARED_TRUNK_GRADIENT_STOP_V1,
+        }:
+            raise ValueError("value_shared_trunk_gradient is unsupported")
+
+    @classmethod
+    def for_signal_config(
+        cls,
+        signal_config: object,
+        *,
+        encoder_size: int = 128,
+        hidden_size: int = 128,
+        recurrent_layers: int = 1,
+        genome_conditioning_mode: str = GENOME_CONDITIONING_DISABLED,
+        critic_genome_conditioning: str = CRITIC_GENOME_CONDITIONING_NONE,
+        value_shared_trunk_gradient: str = VALUE_SHARED_TRUNK_GRADIENT_SHARED,
+    ) -> RecurrentActorCriticConfig:
+        configured_actions = tuple(action_names(signal_config))
+        if configured_actions != tuple(ACTION_NAMES):
+            raise ValueError(
+                "recurrent actor-critic requires the stable default 20-action "
+                "ordering; configured signal action capacity differs"
+            )
+        return cls(
+            encoder_size=encoder_size,
+            hidden_size=hidden_size,
+            recurrent_layers=recurrent_layers,
+            public_input_schema_version=ecological_policy_input_schema_version(
+                signal_config
+            ),
+            public_input_size=ecological_policy_input_vector_size(signal_config),
+            genome_conditioning_mode=genome_conditioning_mode,
+            critic_genome_conditioning=critic_genome_conditioning,
+            value_shared_trunk_gradient=value_shared_trunk_gradient,
+        )
+
+    @property
+    def learned_encoder_input_size(self) -> int:
+        return self.public_input_size + ACTION_COUNT + PREVIOUS_PUBLIC_FEEDBACK_SIZE
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,13 +253,10 @@ class PreviousPublicFeedbackInput:
                 not self.resolution_action_valid
                 and self.resolved_action_id != ACTION_INDEX["stay"]
             ):
-                raise RecurrentContextError(
-                    "invalid feedback must fail closed to stay"
-                )
+                raise RecurrentContextError("invalid feedback must fail closed to stay")
             resolved_action = ACTION_NAMES[self.resolved_action_id]
             expected_moved = (
-                self.resolution_action_valid
-                and resolved_action.startswith("move_")
+                self.resolution_action_valid and resolved_action.startswith("move_")
             )
             if self.moved != expected_moved:
                 raise RecurrentContextError(
@@ -201,10 +325,13 @@ def recurrent_actor_critic_contract(
     config: RecurrentActorCriticConfig | None = None,
 ) -> dict[str, object]:
     resolved = config or RecurrentActorCriticConfig()
+    genome_conditioning_enabled = (
+        resolved.genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1
+    )
     return {
         "schema_version": RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION,
-        "public_input_schema_version": ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
-        "public_input_size": PUBLIC_INPUT_SIZE,
+        "public_input_schema_version": resolved.public_input_schema_version,
+        "public_input_size": resolved.public_input_size,
         "previous_public_feedback_schema_version": (
             PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION
         ),
@@ -215,9 +342,9 @@ def recurrent_actor_critic_contract(
         "action_id_encoding": "zero_based_stable_action_contract_order",
         "architecture": {
             "parameter_sharing": "one_policy_for_all_agents",
-            "learned_encoder_input_size": LEARNED_ENCODER_INPUT_SIZE,
+            "learned_encoder_input_size": resolved.learned_encoder_input_size,
             "learned_encoder_inputs": [
-                "current_ecological_observation_541",
+                f"current_ecological_observation_{resolved.public_input_size}",
                 "current_action_mask_20",
                 "previous_requested_action_one_hot_20",
                 "previous_resolved_action_one_hot_20",
@@ -226,10 +353,68 @@ def recurrent_actor_critic_contract(
                 "previous_public_reward_total_normalized_1",
             ],
             "input_normalization": "explicit_layer_norm",
-            "encoder": "linear_tanh",
-            "memory": "gru",
-            "actor": "linear_20_logits",
-            "critic": "linear_scalar_value",
+            "numeric_kernel": RECURRENT_NUMERIC_KERNEL_VERSION,
+            "encoder": "backend_stable_linear_tanh",
+            "memory": "backend_stable_gru",
+            "actor": "backend_stable_linear_20_logits",
+            "critic": "backend_stable_linear_scalar_value",
+            "genome_conditioning": {
+                "mode": resolved.genome_conditioning_mode,
+                "required_input": (
+                    f"exact_tensor_final_dimension_{RECURRENT_CONTROLLER_GENOME_SIZE}"
+                    if genome_conditioning_enabled
+                    else "forbidden"
+                ),
+                "development": (
+                    recurrent_genome_development_contract(
+                        hidden_dimension=resolved.hidden_size
+                    )
+                    if genome_conditioning_enabled
+                    else None
+                ),
+                "placement": "post_gru_featurewise_affine",
+                "actor_features": (
+                    "film_conditioned_recurrent_output"
+                    if genome_conditioning_enabled
+                    else "raw_recurrent_output"
+                ),
+                "critic_genome_conditioning": (resolved.critic_genome_conditioning),
+                "critic_features": (
+                    "film_conditioned_recurrent_output"
+                    if resolved.critic_genome_conditioning
+                    == CRITIC_GENOME_CONDITIONING_FILM_V1
+                    else "raw_recurrent_output"
+                ),
+                "critic_development": (
+                    {
+                        "projection": "trainable_dense_projection_v1",
+                        "initialization_substream": (
+                            CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM
+                        ),
+                        "transform": "bounded_softsign_featurewise_affine_v1",
+                        "scale_bounds": [
+                            1.0 - RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT,
+                            1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT,
+                        ],
+                        "bias_bounds": [
+                            -RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
+                            RECURRENT_CONTROLLER_FILM_BIAS_LIMIT,
+                        ],
+                        "genome_input_autograd": "detached_non_parameter_input",
+                    }
+                    if resolved.critic_genome_conditioning
+                    == CRITIC_GENOME_CONDITIONING_FILM_V1
+                    else None
+                ),
+                "value_shared_trunk_gradient": (resolved.value_shared_trunk_gradient),
+                "value_shared_trunk_gradient_semantics": (
+                    "detach_shared_recurrent_features_before_trainable_critic_path"
+                    if resolved.value_shared_trunk_gradient
+                    == VALUE_SHARED_TRUNK_GRADIENT_STOP_V1
+                    else "value_loss_updates_shared_encoder_and_gru"
+                ),
+                "inherited_genome_trainable": False,
+            },
             **asdict(resolved),
         },
         "selection": {
@@ -255,25 +440,58 @@ def recurrent_actor_critic_contract(
 def public_policy_tensor_from_observation_input(
     observation_input: dict[str, object],
     *,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = PUBLIC_INPUT_SIZE,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
-    """Project a versioned raw observation payload onto the safe 541 features."""
+    """Project one exact versioned observation payload without shape coercion."""
 
     values = ecological_policy_input_values(observation_input)
-    return _public_values_tensor(values, device=device, dtype=dtype)
+    observed_schema_version = (
+        TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+        if observation_input.get("schema_version")
+        == TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+        else ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    )
+    if observed_schema_version != expected_schema_version:
+        raise PublicInputError(
+            "public observation schema does not match the recurrent model: "
+            f"{observed_schema_version} != {expected_schema_version}"
+        )
+    return _public_values_tensor(
+        values,
+        expected_size=expected_size,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def public_policy_tensor_from_decoded(
     decoded_observation: Sequence[float],
     *,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = PUBLIC_INPUT_SIZE,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
-    """Project a decoded raw observation vector onto the safe 541 features."""
+    """Project a decoded raw observation vector onto one exact model shape."""
 
-    values = ecological_policy_values_from_decoded(decoded_observation)
-    return _public_values_tensor(values, device=device, dtype=dtype)
+    RecurrentActorCriticConfig(
+        public_input_schema_version=expected_schema_version,
+        public_input_size=expected_size,
+    )
+    source_vector_size = expected_size + 1
+    values = ecological_policy_values_from_decoded(
+        decoded_observation,
+        source_vector_size=source_vector_size,
+    )
+    return _public_values_tensor(
+        values,
+        expected_size=expected_size,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def strict_action_mask_tensor(
@@ -329,6 +547,7 @@ def validate_public_input_tensor(
     observations: Tensor,
     *,
     ranks: tuple[int, ...] = (1, 2, 3),
+    expected_size: int = PUBLIC_INPUT_SIZE,
 ) -> None:
     if not isinstance(observations, Tensor):
         raise PublicInputError("public observations must be a torch.Tensor")
@@ -336,10 +555,10 @@ def validate_public_input_tensor(
         raise PublicInputError(
             f"public observations must have rank in {ranks}; got {observations.ndim}"
         )
-    if observations.shape[-1] != PUBLIC_INPUT_SIZE:
+    if observations.shape[-1] != expected_size:
         raise PublicInputError(
             "public observations have unexpected final dimension: "
-            f"{observations.shape[-1]}; expected {PUBLIC_INPUT_SIZE}"
+            f"{observations.shape[-1]}; expected {expected_size}"
         )
     if any(size <= 0 for size in observations.shape):
         raise PublicInputError("public observations cannot contain an empty dimension")
@@ -438,13 +657,9 @@ def validate_previous_feedback_tensor(
     resolution_is_valid = resolution_valid == 1.0
     same_action = (requested == resolved).all(dim=-1)
     if not bool((~present | ~resolution_is_valid | same_action).all().item()):
-        raise RecurrentContextError(
-            "valid feedback must resolve the requested action"
-        )
+        raise RecurrentContextError("valid feedback must resolve the requested action")
     resolved_stay = resolved[..., ACTION_INDEX["stay"]] == 1.0
-    if not bool(
-        (~present | resolution_is_valid | resolved_stay).all().item()
-    ):
+    if not bool((~present | resolution_is_valid | resolved_stay).all().item()):
         raise RecurrentContextError("invalid feedback must fail closed to stay")
     resolved_move = torch.zeros_like(resolution_is_valid)
     for action_index, action in enumerate(ACTION_NAMES):
@@ -531,6 +746,232 @@ class BackendStableLayerNorm(nn.Module):
         return centered * inverse_standard_deviation * self.weight + self.bias
 
 
+def _per_row_bmm_linear_forward(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Frozen v1 forward reference for numerical regression tests."""
+
+    leading_shape = tuple(inputs.shape[:-1])
+    flattened = inputs.reshape(-1, inputs.shape[-1])
+    row_count = int(flattened.shape[0])
+    projected = torch.bmm(
+        weight.unsqueeze(0).expand(row_count, -1, -1),
+        flattened.unsqueeze(-1),
+    ).squeeze(-1)
+    if bias is not None:
+        projected = projected + bias
+    return projected.reshape(*leading_shape, weight.shape[0])
+
+
+def _fixed_row_tile_4_linear_forward(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Project all logical rows through an invariant four-row dense kernel."""
+
+    leading_shape = tuple(inputs.shape[:-1])
+    flattened = inputs.reshape(-1, inputs.shape[-1])
+    projected_tiles: list[Tensor] = []
+    for start in range(0, flattened.shape[0], _BACKEND_STABLE_LINEAR_TILE_ROWS):
+        active = flattened[start : start + _BACKEND_STABLE_LINEAR_TILE_ROWS]
+        if active.shape[0] < _BACKEND_STABLE_LINEAR_TILE_ROWS:
+            padded = active.new_zeros(
+                (_BACKEND_STABLE_LINEAR_TILE_ROWS, active.shape[1])
+            )
+            padded[: active.shape[0]] = active
+        else:
+            padded = active
+        projected_tiles.append(F.linear(padded, weight, bias)[: active.shape[0]])
+    if projected_tiles:
+        projected = torch.cat(projected_tiles, dim=0)
+    else:
+        projected = flattened.new_empty((0, weight.shape[0]))
+    return projected.reshape(*leading_shape, weight.shape[0])
+
+
+_backend_stable_linear_forward = _per_row_bmm_linear_forward
+
+
+class _BackendStableLinearFunction(torch.autograd.Function):
+    """Per-row BMM forward with a compact dense-linear backward."""
+
+    @staticmethod
+    def forward(
+        ctx: object,
+        inputs: Tensor,
+        weight: Tensor,
+        bias: Tensor | None,
+    ) -> Tensor:
+        projected = _backend_stable_linear_forward(inputs, weight, bias)
+        ctx.save_for_backward(inputs, weight)  # type: ignore[attr-defined]
+        return projected
+
+    @staticmethod
+    def backward(
+        ctx: object,
+        grad_output: Tensor,
+    ) -> tuple[Tensor | None, Tensor | None, Tensor | None]:
+        inputs, weight = ctx.saved_tensors  # type: ignore[attr-defined]
+        flattened = inputs.reshape(-1, inputs.shape[-1])
+        grad_flattened = grad_output.reshape(-1, grad_output.shape[-1])
+        needs_input_grad = ctx.needs_input_grad  # type: ignore[attr-defined]
+
+        grad_inputs = (
+            torch.matmul(grad_flattened, weight).reshape_as(inputs)
+            if needs_input_grad[0]
+            else None
+        )
+        grad_weight = (
+            torch.matmul(grad_flattened.transpose(0, 1), flattened)
+            if needs_input_grad[1]
+            else None
+        )
+        grad_bias = (
+            grad_flattened.sum(dim=0) if needs_input_grad[2] else None
+        )
+        return grad_inputs, grad_weight, grad_bias
+
+
+def _backend_stable_linear(
+    inputs: Tensor,
+    weight: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
+    """Project every logical row with the same per-row BMM forward kernel.
+
+    BLAS libraries may select different GEMV and GEMM reduction trees for a
+    single row and a multi-row matrix. Those sub-ULP differences can compound
+    through a free-running recurrent state. Treating each logical row as one
+    member of a batched matrix-vector product keeps the reduction topology
+    stable across the number of concurrently active agents within the sealed
+    D04 tolerance. Exact bit equality across devices or backend kernels is not
+    assumed. The custom backward uses dense matrix products without changing
+    this forward path.
+    """
+
+    if inputs.ndim < 1 or weight.ndim != 2:
+        raise PublicInputError("stable linear inputs and weight must be ranked")
+    if inputs.shape[-1] != weight.shape[1]:
+        raise PublicInputError(
+            "stable linear input width does not match the weight matrix"
+        )
+    if bias is not None and (
+        bias.ndim != 1 or bias.shape[0] != weight.shape[0]
+    ):
+        raise PublicInputError("stable linear bias width is malformed")
+    return _BackendStableLinearFunction.apply(inputs, weight, bias)
+
+
+class BackendStableLinear(nn.Linear):
+    """State-dict-compatible linear layer with batch-size-stable rows."""
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        return _backend_stable_linear(inputs, self.weight, self.bias)
+
+
+class BackendStableGRU(nn.GRU):
+    """GRU with batch-size-stable per-row gate projections.
+
+    The parameter names and state-dict layout remain those of ``nn.GRU``.
+    Phase A uses a unidirectional, non-dropout GRU; unsupported variants fail
+    closed instead of silently taking a numerically different backend path.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int = 1,
+        *,
+        bias: bool = True,
+        batch_first: bool = False,
+        dropout: float = 0.0,
+        bidirectional: bool = False,
+    ) -> None:
+        if batch_first or float(dropout) != 0.0 or bidirectional:
+            raise ValueError(
+                "backend-stable GRU requires time-major, non-dropout, "
+                "unidirectional execution"
+            )
+        super().__init__(
+            input_size,
+            hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=False,
+            dropout=0.0,
+            bidirectional=False,
+        )
+
+    def forward(
+        self,
+        inputs: Tensor,
+        hx: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        if not isinstance(inputs, Tensor) or inputs.ndim != 3:
+            raise RecurrentStateError(
+                "backend-stable GRU input must be [time, batch, feature]"
+            )
+        time_steps, batch_size, input_size = inputs.shape
+        if input_size != self.input_size or time_steps <= 0 or batch_size <= 0:
+            raise RecurrentStateError("backend-stable GRU input shape is malformed")
+        if hx is None:
+            hx = inputs.new_zeros(self.num_layers, batch_size, self.hidden_size)
+        if (
+            not isinstance(hx, Tensor)
+            or tuple(hx.shape)
+            != (self.num_layers, batch_size, self.hidden_size)
+        ):
+            raise RecurrentStateError("backend-stable GRU hidden shape is malformed")
+        if hx.device != inputs.device or hx.dtype != inputs.dtype:
+            raise RecurrentStateError(
+                "backend-stable GRU input and hidden placement disagree"
+            )
+
+        layer_states = [hx[layer] for layer in range(self.num_layers)]
+        outputs: list[Tensor] = []
+        for tick in range(time_steps):
+            layer_input = inputs[tick]
+            next_states: list[Tensor] = []
+            for layer in range(self.num_layers):
+                hidden = layer_states[layer]
+                input_gates = _backend_stable_linear(
+                    layer_input,
+                    getattr(self, f"weight_ih_l{layer}"),
+                    (
+                        getattr(self, f"bias_ih_l{layer}")
+                        if self.bias
+                        else None
+                    ),
+                )
+                hidden_gates = _backend_stable_linear(
+                    hidden,
+                    getattr(self, f"weight_hh_l{layer}"),
+                    (
+                        getattr(self, f"bias_hh_l{layer}")
+                        if self.bias
+                        else None
+                    ),
+                )
+                input_reset, input_update, input_new = input_gates.chunk(3, dim=-1)
+                hidden_reset, hidden_update, hidden_new = hidden_gates.chunk(
+                    3,
+                    dim=-1,
+                )
+                reset = torch.sigmoid(input_reset + hidden_reset)
+                update = torch.sigmoid(input_update + hidden_update)
+                new = torch.tanh(input_new + reset * hidden_new)
+                next_hidden = new + update * (hidden - new)
+                next_states.append(next_hidden)
+                layer_input = next_hidden
+            layer_states = next_states
+            outputs.append(layer_input)
+        return torch.stack(outputs, dim=0), torch.stack(layer_states, dim=0)
+
+
 class PublicRecurrentActorCritic(nn.Module):
     """Parameter-shared masked recurrent actor-critic for public Mind inputs."""
 
@@ -553,19 +994,58 @@ class PublicRecurrentActorCritic(nn.Module):
         with rng_context:
             if seed is not None:
                 torch.manual_seed(seed)
-            self.input_norm = BackendStableLayerNorm(LEARNED_ENCODER_INPUT_SIZE)
+            self.input_norm = BackendStableLayerNorm(
+                self.config.learned_encoder_input_size
+            )
             self.encoder = nn.Sequential(
-                nn.Linear(LEARNED_ENCODER_INPUT_SIZE, self.config.encoder_size),
+                BackendStableLinear(
+                    self.config.learned_encoder_input_size,
+                    self.config.encoder_size,
+                ),
                 nn.Tanh(),
             )
-            self.recurrent = nn.GRU(
+            self.recurrent = BackendStableGRU(
                 self.config.encoder_size,
                 self.config.hidden_size,
                 num_layers=self.config.recurrent_layers,
             )
-            self.actor = nn.Linear(self.config.hidden_size, ACTION_COUNT)
-            self.value = nn.Linear(self.config.hidden_size, 1)
+            self.actor = BackendStableLinear(self.config.hidden_size, ACTION_COUNT)
+            self.value = BackendStableLinear(self.config.hidden_size, 1)
+            if (
+                self.config.genome_conditioning_mode
+                == GENOME_CONDITIONING_ACTOR_FILM_V1
+            ):
+                coefficients = recurrent_genome_development_coefficients(
+                    hidden_dimension=self.config.hidden_size
+                )
+                self.register_buffer(
+                    "_genome_film_scale_coefficients",
+                    torch.tensor(coefficients.scale, dtype=torch.float32),
+                )
+                self.register_buffer(
+                    "_genome_film_bias_coefficients",
+                    torch.tensor(coefficients.bias, dtype=torch.float32),
+                )
             self._initialize_parameters()
+            if (
+                self.config.critic_genome_conditioning
+                == CRITIC_GENOME_CONDITIONING_FILM_V1
+            ):
+                self.critic_genome_film_scale_coefficients = nn.Parameter(
+                    torch.empty(
+                        self.config.hidden_size,
+                        RECURRENT_CONTROLLER_GENOME_SIZE,
+                    )
+                )
+                self.critic_genome_film_bias_coefficients = nn.Parameter(
+                    torch.empty(
+                        self.config.hidden_size,
+                        RECURRENT_CONTROLLER_GENOME_SIZE,
+                    )
+                )
+                self._initialize_critic_genome_film_parameters(
+                    base_seed=(torch.initial_seed() if seed is None else seed)
+                )
 
     def initial_state(
         self,
@@ -609,6 +1089,7 @@ class PublicRecurrentActorCritic(nn.Module):
         action_masks: Tensor,
         previous_feedback: Tensor,
         *,
+        genome_values: Tensor | None = None,
         initial_state: Tensor | None = None,
         episode_starts: Tensor | None = None,
     ) -> ActorCriticSequenceOutput:
@@ -619,9 +1100,18 @@ class PublicRecurrentActorCritic(nn.Module):
         evaluated episodes while retaining gradients within each segment.
         """
 
-        validate_public_input_tensor(observations, ranks=(3,))
+        validate_public_input_tensor(
+            observations,
+            ranks=(3,),
+            expected_size=self.config.public_input_size,
+        )
         self._validate_model_input_placement(observations)
         time_steps, batch_size, _ = observations.shape
+        validated_genome_values = self._validated_genome_values(
+            genome_values,
+            leading_shape=(time_steps, batch_size),
+            reference=observations,
+        )
         validate_action_mask_tensor(
             action_masks,
             leading_shape=(time_steps, batch_size),
@@ -666,7 +1156,7 @@ class PublicRecurrentActorCritic(nn.Module):
             ),
             dim=-1,
         )
-        if learned_inputs.shape[-1] != LEARNED_ENCODER_INPUT_SIZE:
+        if learned_inputs.shape[-1] != self.config.learned_encoder_input_size:
             raise AssertionError("learned encoder input size drifted")
         encoded = self.encoder(self.input_norm(learned_inputs))
         outputs: list[Tensor] = []
@@ -676,9 +1166,51 @@ class PublicRecurrentActorCritic(nn.Module):
             recurrent_output, state = self.recurrent(encoded[step : step + 1], state)
             outputs.append(recurrent_output)
         recurrent_outputs = torch.cat(outputs, dim=0)
-        raw_logits = self.actor(recurrent_outputs)
+        film_scale: Tensor | None = None
+        film_bias: Tensor | None = None
+        if validated_genome_values is not None:
+            film_scale, film_bias = self._develop_genome_film(
+                validated_genome_values.detach()
+            )
+        if self.config.genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            raw_logits = self.actor(recurrent_outputs)
+        else:
+            assert film_scale is not None and film_bias is not None
+            raw_logits = self.actor(recurrent_outputs * film_scale + film_bias)
         masked_logits = raw_logits.masked_fill(~action_masks, -torch.inf)
-        values = self.value(recurrent_outputs).squeeze(-1)
+        if (
+            self.config.critic_genome_conditioning == CRITIC_GENOME_CONDITIONING_NONE
+            and self.config.value_shared_trunk_gradient
+            == VALUE_SHARED_TRUNK_GRADIENT_SHARED
+        ):
+            values = self.value(recurrent_outputs).squeeze(-1)
+        else:
+            value_features = recurrent_outputs
+            if (
+                self.config.value_shared_trunk_gradient
+                == VALUE_SHARED_TRUNK_GRADIENT_STOP_V1
+            ):
+                value_features = value_features.detach()
+            if (
+                self.config.critic_genome_conditioning
+                == CRITIC_GENOME_CONDITIONING_FILM_V1
+            ):
+                if (
+                    self.config.genome_conditioning_mode
+                    != GENOME_CONDITIONING_ACTOR_FILM_V1
+                ):
+                    raise AssertionError(
+                        "critic genome conditioning escaped config validation"
+                    )
+                if validated_genome_values is None:
+                    raise AssertionError(
+                        "critic genome conditioning escaped genome validation"
+                    )
+                critic_film_scale, critic_film_bias = self._develop_critic_genome_film(
+                    validated_genome_values.detach()
+                )
+                value_features = value_features * critic_film_scale + critic_film_bias
+            values = self.value(value_features).squeeze(-1)
         return ActorCriticSequenceOutput(
             raw_logits=raw_logits,
             masked_logits=masked_logits,
@@ -693,6 +1225,7 @@ class PublicRecurrentActorCritic(nn.Module):
         previous_feedback: Tensor,
         actions: Tensor,
         *,
+        genome_values: Tensor | None = None,
         initial_state: Tensor | None = None,
         episode_starts: Tensor | None = None,
     ) -> SequenceEvaluation:
@@ -702,6 +1235,7 @@ class PublicRecurrentActorCritic(nn.Module):
             observations,
             action_masks,
             previous_feedback,
+            genome_values=genome_values,
             initial_state=initial_state,
             episode_starts=episode_starts,
         )
@@ -727,6 +1261,7 @@ class PublicRecurrentActorCritic(nn.Module):
         action_masks: Tensor,
         previous_feedback: Tensor,
         *,
+        genome_values: Tensor | None = None,
         recurrent_state: Tensor | None = None,
         episode_starts: Tensor | None = None,
         deterministic: bool,
@@ -734,7 +1269,11 @@ class PublicRecurrentActorCritic(nn.Module):
     ) -> ActionSelection:
         """Select a legal action for one decision step per batch member."""
 
-        validate_public_input_tensor(observations, ranks=(1, 2))
+        validate_public_input_tensor(
+            observations,
+            ranks=(1, 2),
+            expected_size=self.config.public_input_size,
+        )
         if not isinstance(action_masks, Tensor):
             raise ActionMaskError("action masks must be a torch.Tensor")
         if type(deterministic) is not bool:
@@ -753,6 +1292,11 @@ class PublicRecurrentActorCritic(nn.Module):
             else previous_feedback
         )
         batch_size = batched_observations.shape[0]
+        batched_genome_values = self._validated_act_genome_values(
+            genome_values,
+            observations=observations,
+            batch_size=batch_size,
+        )
         validate_action_mask_tensor(batched_masks, leading_shape=(batch_size,))
         if batched_masks.device != batched_observations.device:
             raise ActionMaskError("action masks and observations must share a device")
@@ -774,6 +1318,11 @@ class PublicRecurrentActorCritic(nn.Module):
             batched_observations.unsqueeze(0),
             batched_masks.unsqueeze(0),
             batched_feedback.unsqueeze(0),
+            genome_values=(
+                None
+                if batched_genome_values is None
+                else batched_genome_values.unsqueeze(0)
+            ),
             initial_state=recurrent_state,
             episode_starts=None if starts is None else starts.unsqueeze(0),
         )
@@ -838,6 +1387,145 @@ class PublicRecurrentActorCritic(nn.Module):
             )
         if not bool(torch.isfinite(state).all().item()):
             raise RecurrentStateError("recurrent state must be finite")
+
+    def _validated_genome_values(
+        self,
+        genome_values: Tensor | None,
+        *,
+        leading_shape: tuple[int, ...],
+        reference: Tensor,
+    ) -> Tensor | None:
+        if self.config.genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            if genome_values is not None:
+                raise GenomeConditioningError(
+                    "genome values are forbidden when conditioning is disabled"
+                )
+            return None
+        if genome_values is None:
+            raise GenomeConditioningError(
+                "actor_film_v1 requires explicit genome values for every row"
+            )
+        if not isinstance(genome_values, Tensor):
+            raise GenomeConditioningError("genome values must be a torch.Tensor")
+        expected_shape = (*leading_shape, RECURRENT_CONTROLLER_GENOME_SIZE)
+        if tuple(genome_values.shape) != expected_shape:
+            raise GenomeConditioningError(
+                f"genome values shape must be {expected_shape}; "
+                f"got {tuple(genome_values.shape)}"
+            )
+        if genome_values.device != reference.device:
+            raise GenomeConditioningError(
+                "genome values and public observations must share a device"
+            )
+        if genome_values.dtype != reference.dtype:
+            raise GenomeConditioningError(
+                "genome values and public observations must share a dtype"
+            )
+        if not genome_values.is_floating_point():
+            raise GenomeConditioningError("genome values must be floating point")
+        if not bool(torch.isfinite(genome_values).all().item()):
+            raise GenomeConditioningError("genome values must be finite")
+        if not bool(
+            (
+                (genome_values >= RECURRENT_CONTROLLER_GENOME_MIN)
+                & (genome_values <= RECURRENT_CONTROLLER_GENOME_MAX)
+            )
+            .all()
+            .item()
+        ):
+            raise GenomeConditioningError(
+                "genome values must remain inside the inherited genome bounds"
+            )
+        return genome_values
+
+    def _validated_act_genome_values(
+        self,
+        genome_values: Tensor | None,
+        *,
+        observations: Tensor,
+        batch_size: int,
+    ) -> Tensor | None:
+        if self.config.genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            if genome_values is not None:
+                raise GenomeConditioningError(
+                    "genome values are forbidden when conditioning is disabled"
+                )
+            return None
+        if genome_values is None:
+            raise GenomeConditioningError(
+                "actor_film_v1 requires explicit genome values for every row"
+            )
+        if not isinstance(genome_values, Tensor):
+            raise GenomeConditioningError("genome values must be a torch.Tensor")
+        expected_shape = (
+            (RECURRENT_CONTROLLER_GENOME_SIZE,)
+            if observations.ndim == 1
+            else (batch_size, RECURRENT_CONTROLLER_GENOME_SIZE)
+        )
+        if tuple(genome_values.shape) != expected_shape:
+            raise GenomeConditioningError(
+                f"act genome values shape must be {expected_shape}; "
+                f"got {tuple(genome_values.shape)}"
+            )
+        return genome_values.unsqueeze(0) if observations.ndim == 1 else genome_values
+
+    def _develop_genome_film(
+        self,
+        genome_values: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        scale_coefficients = self._genome_film_scale_coefficients
+        bias_coefficients = self._genome_film_bias_coefficients
+        normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
+        scale_projection = (
+            _backend_stable_linear(
+                genome_values,
+                scale_coefficients,
+            )
+            / normalization
+        )
+        bias_projection = (
+            _backend_stable_linear(
+                genome_values,
+                bias_coefficients,
+            )
+            / normalization
+        )
+        scale_softsign = scale_projection / (1.0 + scale_projection.abs())
+        bias_softsign = bias_projection / (1.0 + bias_projection.abs())
+        return (
+            1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT * scale_softsign,
+            RECURRENT_CONTROLLER_FILM_BIAS_LIMIT * bias_softsign,
+        )
+
+    def _develop_critic_genome_film(
+        self,
+        genome_values: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if self.config.critic_genome_conditioning != CRITIC_GENOME_CONDITIONING_FILM_V1:
+            raise GenomeConditioningError(
+                "critic genome FiLM development requires film_v1 conditioning"
+            )
+        normalization = math.sqrt(RECURRENT_CONTROLLER_GENOME_SIZE)
+        scale_projection = (
+            _backend_stable_linear(
+                genome_values,
+                self.critic_genome_film_scale_coefficients,
+            )
+            / normalization
+        )
+        bias_projection = (
+            _backend_stable_linear(
+                genome_values,
+                self.critic_genome_film_bias_coefficients,
+            )
+            / normalization
+        )
+        scale_softsign = scale_projection / (1.0 + scale_projection.abs())
+        bias_softsign = bias_projection / (1.0 + bias_projection.abs())
+        return (
+            1.0 + RECURRENT_CONTROLLER_FILM_SCALE_DELTA_LIMIT * scale_softsign,
+            RECURRENT_CONTROLLER_FILM_BIAS_LIMIT * bias_softsign,
+        )
 
     def _validated_or_initial_state(
         self,
@@ -948,6 +1636,27 @@ class PublicRecurrentActorCritic(nn.Module):
         nn.init.orthogonal_(self.value.weight, gain=1.0)
         nn.init.zeros_(self.value.bias)
 
+    def _initialize_critic_genome_film_parameters(self, *, base_seed: int) -> None:
+        domain_payload = (
+            f"{CRITIC_GENOME_FILM_INITIALIZATION_SUBSTREAM}:{base_seed}"
+        ).encode("ascii")
+        substream_seed = int.from_bytes(
+            hashlib.sha256(domain_payload).digest()[:8],
+            "big",
+        ) % (2**63)
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(substream_seed)
+            nn.init.normal_(
+                self.critic_genome_film_scale_coefficients,
+                mean=0.0,
+                std=1.0,
+            )
+            nn.init.normal_(
+                self.critic_genome_film_bias_coefficients,
+                mean=0.0,
+                std=1.0,
+            )
+
 
 class PerAgentRecurrentStateStore:
     """Host-side state routing; agent identity is never exposed to the model."""
@@ -1023,13 +1732,18 @@ class PerAgentRecurrentStateStore:
 def _public_values_tensor(
     values: Sequence[float],
     *,
+    expected_size: int,
     device: torch.device | str | None,
     dtype: torch.dtype,
 ) -> Tensor:
     if not torch.empty((), dtype=dtype).is_floating_point():
         raise PublicInputError("public policy tensor dtype must be floating point")
     tensor = torch.tensor(values, dtype=dtype, device=device)
-    validate_public_input_tensor(tensor, ranks=(1,))
+    validate_public_input_tensor(
+        tensor,
+        ranks=(1,),
+        expected_size=expected_size,
+    )
     return tensor
 
 
@@ -1052,15 +1766,23 @@ __all__ = [
     "ACTION_COUNT",
     "ACTION_INDEX",
     "ACTION_NAMES",
+    "CRITIC_GENOME_CONDITIONING_FILM_V1",
+    "CRITIC_GENOME_CONDITIONING_NONE",
+    "GENOME_CONDITIONING_ACTOR_FILM_V1",
+    "GENOME_CONDITIONING_DISABLED",
     "LEARNED_ENCODER_INPUT_SIZE",
     "PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION",
     "PREVIOUS_PUBLIC_FEEDBACK_SIZE",
     "PUBLIC_INPUT_SIZE",
     "RECURRENT_ACTOR_CRITIC_CONTRACT_VERSION",
+    "RECURRENT_NUMERIC_KERNEL_VERSION",
     "ActionMaskError",
     "ActionSelection",
     "ActorCriticSequenceOutput",
+    "BackendStableGRU",
     "BackendStableLayerNorm",
+    "BackendStableLinear",
+    "GenomeConditioningError",
     "PerAgentRecurrentStateStore",
     "PreviousPublicFeedbackInput",
     "PublicInputError",
@@ -1070,6 +1792,8 @@ __all__ = [
     "RecurrentPolicyContractError",
     "RecurrentStateError",
     "SequenceEvaluation",
+    "VALUE_SHARED_TRUNK_GRADIENT_SHARED",
+    "VALUE_SHARED_TRUNK_GRADIENT_STOP_V1",
     "public_policy_tensor_from_decoded",
     "public_policy_tensor_from_observation_input",
     "previous_public_feedback_tensor",

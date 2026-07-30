@@ -11,7 +11,9 @@ from evolution_sim.env.runtime.action_contract import (
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_SCHEMA_VERSION,
     observation_contract,
+    observation_schema_version,
 )
+from evolution_sim.env.runtime.signals import communication_signal_emission_enabled
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.reproduction import (
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,
@@ -24,6 +26,7 @@ from evolution_sim.genome.recombination import (
 )
 
 TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v1"
+TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION = "mind_trajectory_v3"
 REWARD_SCHEMA_VERSION = "mind_reward_v1"
 ACTION_OUTCOME_SCHEMA_VERSION = "mind_action_outcome_v2"
 REWARD_COMPONENT_BOUNDS: dict[str, tuple[float, float]] = {
@@ -97,8 +100,8 @@ class TrajectoryStateContext:
 
 def trajectory_contract(signal_config: Any | None = None) -> dict[str, object]:
     return {
-        "schema_version": TRAJECTORY_SCHEMA_VERSION,
-        "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+        "schema_version": trajectory_schema_version(signal_config),
+        "observation_schema_version": observation_schema_version(signal_config),
         "policy_interface_version": POLICY_INTERFACE_VERSION,
         "action_contract_version": ACTION_CONTRACT_VERSION,
         "reproductive_group_contract_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
@@ -112,6 +115,15 @@ def trajectory_contract(signal_config: Any | None = None) -> dict[str, object]:
         "observation_contract": observation_contract(signal_config),
         "reward_contract": reward_contract(),
     }
+
+
+def trajectory_schema_version(signal_config: Any | None = None) -> str:
+    if (
+        signal_config is not None
+        and communication_signal_emission_enabled(signal_config)
+    ):
+        return TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION
+    return TRAJECTORY_SCHEMA_VERSION
 
 
 def reward_contract() -> dict[str, object]:
@@ -195,7 +207,9 @@ def build_trajectory_record(
         "lineage_id": agent.lineage_id,
         "runtime_species_id": runtime_species_id,
         "runtime_ecotype_id": runtime_ecotype_id,
-        "observation_schema": OBSERVATION_SCHEMA_VERSION,
+        "observation_schema": str(
+            observation_input.get("schema_version", OBSERVATION_SCHEMA_VERSION)
+        ),
         "observation_metadata": observation_metadata,
         "observation_input": observation_input,
         "observation_digest": observation_digest,

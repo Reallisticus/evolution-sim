@@ -1,10 +1,59 @@
 from __future__ import annotations
 
 from python.tests.runtime_test_helpers import *
+from evolution_sim.env.contracts import (
+    SUMMARY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+)
+from evolution_sim.env.runtime.observations import (
+    TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+    quantized_observation_input_values,
+)
+from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_AGGREGATE_PROJECTION,
+    COMMUNICATION_GLOBAL_REPORTING_POLICY,
+    COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+    COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+    parse_communication_token_field_name,
+)
+from evolution_sim.env.runtime.trajectory import (
+    TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+)
+from evolution_sim.mind.policy_inputs import (
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    ecological_policy_input_values,
+    ecological_policy_values_from_observation,
+)
+
+
+class _AlwaysOpaqueSignalPolicy:
+    policy_id = "test_always_opaque_signal"
+    policy_version = "test_always_opaque_signal_v1"
+
+    def decide(
+        self,
+        observation: dict[str, object],
+        action_mask: dict[str, bool],
+    ) -> ActionDecision:
+        action = (
+            "signal_0_profile_0"
+            if action_mask.get("signal_0_profile_0", False)
+            else "stay"
+        )
+        return ActionDecision(
+            requested_action=action,
+            source=self.policy_id,
+            policy_id=self.policy_id,
+            policy_version=self.policy_version,
+        )
 
 
 class RuntimeSignalContractTests(RuntimeContractTestHelpers):
-    def test_starving_scavenger_moves_to_nearby_low_signal_carrion_before_plant(self) -> None:
+    def test_starving_scavenger_moves_to_nearby_low_signal_carrion_before_plant(
+        self,
+    ) -> None:
         navigation = self._empty_navigation()
         navigation["carrion"] = {"dx": 1, "dy": 0, "distance": 1, "strength": 0.0}
 
@@ -82,14 +131,14 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             },
         )
 
-    def test_action_contract_tracks_signal_config_reserved_communication_slots(self) -> None:
+    def test_action_contract_tracks_signal_config_reserved_communication_slots(
+        self,
+    ) -> None:
         signal_config = SignalConfig(
             communication_token_count=2,
             communication_profiles_per_token=3,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         mask = build_action_mask(world._action_mask_context(agent))
         contract = action_contract(signal_config)
@@ -126,9 +175,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_token_count=2,
             communication_profiles_per_token=2,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
 
         contract = action_contract(signal_config)
@@ -171,9 +218,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_signal_base_intensity=0.0,
             communication_signal_trait_intensity_bonus=0.0,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         agent.genome = replace(
             agent.genome,
@@ -194,7 +239,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertNotIn("signal_0_profile_0", contract["active_action_keys"])
         self.assertFalse(mask["signal_0_profile_0"])
 
-    def test_signal_actions_stay_inactive_without_configured_signal_intensity(self) -> None:
+    def test_signal_actions_stay_inactive_without_configured_signal_intensity(
+        self,
+    ) -> None:
         signal_config = SignalConfig(
             reproductive_signal_base_intensity=0.0,
             reproductive_signal_trait_intensity_bonus=0.0,
@@ -202,9 +249,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             communication_signal_base_intensity=0.0,
             communication_signal_trait_intensity_bonus=0.0,
         )
-        world = SimulationWorld(
-            WorldConfig(seed=7, max_ticks=1, signals=signal_config)
-        )
+        world = SimulationWorld(WorldConfig(seed=7, max_ticks=1, signals=signal_config))
         agent = world.alive_agents()[0]
         agent.genome = replace(
             agent.genome,
@@ -322,12 +367,17 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertAlmostEqual(agent.energy, energy_before - 0.025)
         self.assertAlmostEqual(signal_state.reproductive_signal[2][2], 0.5)
         self.assertGreater(signal_state.reproductive_signal[2][2], 0.0)
-        self.assertGreater(signal_state.reproductive_signal[2][2], signal_state.reproductive_signal[2][3])
+        self.assertGreater(
+            signal_state.reproductive_signal[2][2],
+            signal_state.reproductive_signal[2][3],
+        )
         self.assertEqual(signal_state.communication_signal[2][2], 0.0)
         self.assertGreater(observation["self"]["reproductive_signal"], 0.0)
         self.assertEqual(observation["self"]["communication_signal"], 0.0)
         self.assertTrue(
-            any(cell["reproductive_signal"] > 0.0 for cell in observation["local_patch"])
+            any(
+                cell["reproductive_signal"] > 0.0 for cell in observation["local_patch"]
+            )
         )
         self.assertEqual(len(decoded), OBSERVATION_INPUT_VECTOR_SIZE)
 
@@ -515,9 +565,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             default_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(
-                default_world._action_mask_context(default_agent)
-            )["signal_0_profile_0"]
+            build_action_mask(default_world._action_mask_context(default_agent))[
+                "signal_0_profile_0"
+            ]
         )
 
         enabled_world = SimulationWorld(
@@ -539,9 +589,9 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             enabled_contract["active_action_keys"],
         )
         self.assertFalse(
-            build_action_mask(
-                enabled_world._action_mask_context(gated_agent)
-            )["signal_0_profile_0"]
+            build_action_mask(enabled_world._action_mask_context(gated_agent))[
+                "signal_0_profile_0"
+            ]
         )
 
     def test_communication_signal_action_emits_opaque_numeric_field(self) -> None:
@@ -605,14 +655,927 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
         self.assertEqual(len(world.communication_signal_emissions), 1)
         self.assertEqual(world.tick_signal_totals["communication_emissions"], 1.0)
         self.assertEqual(world.run_signal_totals["communication_emissions"], 1.0)
-        self.assertEqual(event["field_name"], "communication_signal")
+        self.assertEqual(event["field_name"], "communication_signal_token_1")
         self.assertEqual(event["source_agent_id"], agent.agent_id)
         self.assertEqual(event["token_id"], 1)
         self.assertEqual(event["profile_index"], 1)
         self.assertFalse(event["policy_visible"])
         self.assertGreater(signal_state.communication_signal[agent.y][agent.x], 0.0)
+        self.assertEqual(len(signal_state.communication_token_signals), 4)
+        self.assertEqual(
+            signal_state.communication_token_signals[0][agent.y][agent.x],
+            0.0,
+        )
+        self.assertGreater(
+            signal_state.communication_token_signals[1][agent.y][agent.x],
+            0.0,
+        )
         self.assertEqual(signal_state.reproductive_signal[agent.y][agent.x], 0.0)
-        self.assertGreater(observation["self"]["communication_signal"], 0.0)
+        self.assertEqual(observation["self"]["communication_signal"], 0.0)
+        self.assertEqual(
+            observation["self"]["communication_signal_token_0"],
+            0.0,
+        )
+        self.assertEqual(
+            observation["self"]["communication_signal_token_1"],
+            0.0,
+        )
+        self.assertTrue(
+            all(
+                cell["communication_signal"] == 0.0
+                and cell["communication_signal_token_1"] == 0.0
+                for cell in observation["local_patch"]
+            )
+        )
+
+    def test_opaque_communication_sender_never_observes_its_only_emission(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=1,
+            communication_profiles_per_token=1,
+            communication_signal_radius=2,
+            communication_signal_duration_ticks=3,
+            communication_signal_decay_rate=0.5,
+            communication_signal_base_intensity=0.8,
+            communication_signal_trait_intensity_bonus=0.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        emitter = self._place_ready_agent(world, x=2, y=2, genome=genome)
+        mask = build_action_mask(world._action_mask_context(emitter))
+
+        _, outcome = world._resolve_action_with_outcome(
+            emitter,
+            "signal_0_profile_0",
+            observation_action_mask=mask,
+            resolution_action_mask=mask,
+        )
+
+        self.assertTrue(outcome["signal"]["emitted"])
+        self.assertGreater(
+            world._current_signal_state().field("communication_signal_token_0")[
+                emitter.y
+            ][emitter.x],
+            0.0,
+        )
+        for _ in range(2):
+            observation = world._observe_agent(emitter)
+            self.assertEqual(observation["self"]["communication_signal"], 0.0)
+            self.assertEqual(
+                observation["self"]["communication_signal_token_0"],
+                0.0,
+            )
+            self.assertTrue(
+                all(
+                    cell["communication_signal"] == 0.0
+                    and cell["communication_signal_token_0"] == 0.0
+                    for cell in observation["local_patch"]
+                )
+            )
+            runtime_signals.decay_signal_emissions(
+                context=world._signal_runtime_context()
+            )
+
+    def test_opaque_communication_listener_receives_sender_signal(self) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=1,
+            communication_profiles_per_token=1,
+            communication_signal_radius=2,
+            communication_signal_duration_ticks=3,
+            communication_signal_decay_rate=0.5,
+            communication_signal_base_intensity=0.6,
+            communication_signal_trait_intensity_bonus=0.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        emitter = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            lineage_id=1,
+            genome=genome,
+        )
+        listener = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=2,
+            genome=genome,
+        )
+        mask = build_action_mask(world._action_mask_context(emitter))
+        world._resolve_action_with_outcome(
+            emitter,
+            "signal_0_profile_0",
+            observation_action_mask=mask,
+            resolution_action_mask=mask,
+        )
+
+        emitter_observation = world._observe_agent(emitter)
+        listener_observation = world._observe_agent(listener)
+
+        self.assertEqual(
+            emitter_observation["self"]["communication_signal_token_0"],
+            0.0,
+        )
+        self.assertAlmostEqual(
+            listener_observation["self"]["communication_signal_token_0"],
+            0.3,
+        )
+        self.assertAlmostEqual(
+            listener_observation["self"]["communication_signal"],
+            0.3,
+        )
+
+    def test_same_token_multi_emitter_projection_excludes_only_receiver(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=1,
+            communication_profiles_per_token=1,
+            communication_signal_radius=2,
+            communication_signal_duration_ticks=3,
+            communication_signal_decay_rate=0.5,
+            communication_signal_base_intensity=0.8,
+            communication_signal_trait_intensity_bonus=0.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        first = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            lineage_id=1,
+            genome=genome,
+        )
+        second = self._place_ready_agent(
+            world,
+            x=2,
+            y=2,
+            lineage_id=2,
+            genome=genome,
+        )
+        for emitter in (first, second):
+            mask = build_action_mask(world._action_mask_context(emitter))
+            world._resolve_action_with_outcome(
+                emitter,
+                "signal_0_profile_0",
+                observation_action_mask=mask,
+                resolution_action_mask=mask,
+            )
+
+        state = world._current_signal_state()
+        first_observation = world._observe_agent(first)
+        second_observation = world._observe_agent(second)
+
+        self.assertAlmostEqual(
+            state.field("communication_signal_token_0")[first.y][first.x],
+            1.0,
+        )
+        self.assertAlmostEqual(
+            state.field("communication_signal_token_0")[second.y][second.x],
+            1.0,
+        )
+        self.assertAlmostEqual(
+            first_observation["self"]["communication_signal_token_0"],
+            0.4,
+        )
+        self.assertAlmostEqual(
+            second_observation["self"]["communication_signal_token_0"],
+            0.4,
+        )
+        self.assertAlmostEqual(
+            first_observation["self"]["communication_signal"],
+            0.4,
+        )
+        self.assertAlmostEqual(
+            second_observation["self"]["communication_signal"],
+            0.4,
+        )
+
+    def test_receiver_projection_matches_independent_clamp_and_diffusion_model(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=2,
+            communication_profiles_per_token=1,
+            max_intensity=1.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=4,
+                signals=signal_config,
+            )
+        )
+        emissions = [
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-a",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=0,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.8,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-b",
+                source_kind="test",
+                source_agent_id=202,
+                token_id=0,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.7,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_0",
+                profile_id="token-0-c",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=0,
+                profile_index=0,
+                x=2,
+                y=1,
+                intensity=0.9,
+                radius=2,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_1",
+                profile_id="token-1-a",
+                source_kind="test",
+                source_agent_id=101,
+                token_id=1,
+                profile_index=0,
+                x=1,
+                y=1,
+                intensity=0.65,
+                radius=1,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+            runtime_signals.SignalEmission(
+                field_name="communication_signal_token_1",
+                profile_id="token-1-b",
+                source_kind="test",
+                source_agent_id=303,
+                token_id=1,
+                profile_index=0,
+                x=3,
+                y=2,
+                intensity=0.95,
+                radius=3,
+                duration_ticks=3,
+                remaining_ticks=3,
+                decay_rate=0.0,
+                energy_cost=0.0,
+                emitted_tick=0,
+            ),
+        ]
+        world.communication_signal_emissions.extend(emissions)
+        state = runtime_signals.build_signal_state(
+            context=world._signal_runtime_context()
+        )
+
+        def independent_value(
+            field_name: str,
+            *,
+            x: int,
+            y: int,
+            excluded_agent_id: int | None,
+        ) -> float:
+            sources: dict[tuple[int, int, int], float] = {}
+            for emission in emissions:
+                if (
+                    excluded_agent_id is not None
+                    and emission.source_agent_id == excluded_agent_id
+                ):
+                    continue
+                if field_name != "communication_signal" and (
+                    field_name
+                    != f"communication_signal_token_{emission.token_id}"
+                ):
+                    continue
+                key = (emission.radius, emission.x, emission.y)
+                sources[key] = sources.get(key, 0.0) + emission.intensity
+            raw_value = 0.0
+            for (radius, source_x, source_y), intensity in sources.items():
+                distance = abs(x - source_x) + abs(y - source_y)
+                if distance <= radius:
+                    raw_value += min(signal_config.max_intensity, intensity) / (
+                        distance + 1.0
+                    )
+            return min(signal_config.max_intensity, raw_value)
+
+        fields = (
+            "communication_signal",
+            "communication_signal_token_0",
+            "communication_signal_token_1",
+        )
+        receivers = (101, 202, 303, 999)
+        height = len(world.grid)
+        width = len(world.grid[0])
+        for field_name in fields:
+            global_field = state.field(field_name)
+            for y in range(height):
+                for x in range(width):
+                    self.assertAlmostEqual(
+                        global_field[y][x],
+                        independent_value(
+                            field_name,
+                            x=x,
+                            y=y,
+                            excluded_agent_id=None,
+                        ),
+                    )
+                    for receiver_agent_id in receivers:
+                        self.assertAlmostEqual(
+                            state.field_value_for_receiver(
+                                field_name,
+                                x=x,
+                                y=y,
+                                receiver_agent_id=receiver_agent_id,
+                            ),
+                            independent_value(
+                                field_name,
+                                x=x,
+                                y=y,
+                                excluded_agent_id=receiver_agent_id,
+                            ),
+                        )
+
+        projection = state.communication_receiver_projection
+        self.assertIsNotNone(projection)
+        assert projection is not None
+        self.assertGreater(len(projection.receiver_value_cache), 0)
+        self.assertGreater(len(projection.raw_global_value_cache), 0)
+
+        copied_state = copy.deepcopy(state)
+        copied_projection = copied_state.communication_receiver_projection
+        self.assertIsNotNone(copied_projection)
+        assert copied_projection is not None
+        self.assertIsNot(
+            copied_projection.receiver_value_cache,
+            projection.receiver_value_cache,
+        )
+        self.assertIsNot(
+            copied_projection.raw_global_value_cache,
+            projection.raw_global_value_cache,
+        )
+        for field_name in fields:
+            for receiver_agent_id in receivers:
+                for y in range(height):
+                    for x in range(width):
+                        self.assertAlmostEqual(
+                            copied_state.field_value_for_receiver(
+                                field_name,
+                                x=x,
+                                y=y,
+                                receiver_agent_id=receiver_agent_id,
+                            ),
+                            independent_value(
+                                field_name,
+                                x=x,
+                                y=y,
+                                excluded_agent_id=receiver_agent_id,
+                            ),
+                        )
+
+    def test_opaque_communication_radius_timing_and_decay_are_preserved(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=1,
+            communication_profiles_per_token=1,
+            communication_signal_radius=2,
+            communication_signal_duration_ticks=3,
+            communication_signal_decay_rate=0.5,
+            communication_signal_base_intensity=0.6,
+            communication_signal_trait_intensity_bonus=0.0,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=7,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        emitter = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            lineage_id=1,
+            genome=genome,
+        )
+        inner_listener = self._place_ready_agent(
+            world,
+            x=3,
+            y=2,
+            lineage_id=2,
+            genome=genome,
+        )
+        outer_listener = self._place_ready_agent(
+            world,
+            x=4,
+            y=2,
+            lineage_id=3,
+            genome=genome,
+        )
+        mask = build_action_mask(world._action_mask_context(emitter))
+        world._resolve_action_with_outcome(
+            emitter,
+            "signal_0_profile_0",
+            observation_action_mask=mask,
+            resolution_action_mask=mask,
+        )
+
+        self.assertAlmostEqual(
+            world._observe_agent(inner_listener)["self"][
+                "communication_signal_token_0"
+            ],
+            0.2,
+        )
+        self.assertEqual(
+            world._observe_agent(outer_listener)["self"][
+                "communication_signal_token_0"
+            ],
+            0.0,
+        )
+        expected_inner_values = (0.1, 0.05, 0.0)
+        for expected in expected_inner_values:
+            runtime_signals.decay_signal_emissions(
+                context=world._signal_runtime_context()
+            )
+            self.assertAlmostEqual(
+                world._observe_agent(inner_listener)["self"][
+                    "communication_signal_token_0"
+                ],
+                expected,
+            )
+            self.assertEqual(
+                world._observe_agent(emitter)["self"]["communication_signal_token_0"],
+                0.0,
+            )
+
+    def test_active_opaque_communication_full_replay_is_deterministic(
+        self,
+    ) -> None:
+        config = WorldConfig(
+            seed=7,
+            max_ticks=4,
+            initial_agents=4,
+            water_tile_ratio=0.0,
+            signals=SignalConfig(
+                communication_signal_emission_enabled=True,
+                communication_token_count=1,
+                communication_profiles_per_token=1,
+                communication_signal_radius=2,
+                communication_signal_duration_ticks=3,
+                communication_signal_decay_rate=0.5,
+                communication_signal_base_intensity=0.6,
+                communication_signal_trait_intensity_bonus=0.0,
+            ),
+        )
+
+        def run() -> SimulationWorldResult:
+            world = SimulationWorld(
+                copy.deepcopy(config),
+                policy=_AlwaysOpaqueSignalPolicy(),
+            )
+            for agent in world.alive_agents():
+                agent.genome = replace(
+                    agent.genome,
+                    reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+                )
+                agent.genome_vector = genome_vector(agent.genome)
+            return world.run()
+
+        first = run()
+        second = run()
+
+        self.assertGreater(
+            first.summary["signal_end"]["communication_emissions"],
+            0,
+        )
+        self.assertEqual(first.summary, second.summary)
+        self.assertEqual(first.events, second.events)
+        self.assertEqual(first.viewer, second.viewer)
+
+    def test_opaque_communication_tokens_have_distinct_public_spatial_channels(
+        self,
+    ) -> None:
+        signal_config = SignalConfig(
+            communication_signal_emission_enabled=True,
+            communication_token_count=2,
+            communication_profiles_per_token=1,
+            communication_signal_radius=0,
+            communication_signal_duration_ticks=3,
+            communication_signal_base_intensity=0.2,
+            communication_signal_trait_intensity_bonus=0.3,
+        )
+        world = SimulationWorld(
+            self._ready_reproduction_config(
+                width=5,
+                height=5,
+                signals=signal_config,
+            )
+        )
+        genome = replace(
+            self._mixed_genome(),
+            reproductive=ReproductiveGenome(signal_emission_bias=1.0),
+        )
+        token_0_source = self._place_ready_agent(
+            world,
+            x=1,
+            y=2,
+            lineage_id=1,
+            genome=genome,
+        )
+        token_1_source = self._place_ready_agent(
+            world,
+            x=3,
+            y=2,
+            lineage_id=2,
+            genome=genome,
+        )
+
+        for agent, action in (
+            (token_0_source, "signal_0_profile_0"),
+            (token_1_source, "signal_1_profile_0"),
+        ):
+            mask = build_action_mask(world._action_mask_context(agent))
+            _, outcome = world._resolve_action_with_outcome(
+                agent,
+                action,
+                observation_action_mask=mask,
+                resolution_action_mask=mask,
+            )
+            self.assertTrue(outcome["signal"]["emitted"])
+
+        state = world._current_signal_state()
+        observation = build_observation(
+            world,
+            token_0_source,
+            observation_context=world._observation_context(token_0_source),
+        )
+        encoded = encode_observation_input(observation)
+        decoded = decode_observation_input(encoded)
+        direct_values = quantized_observation_input_values(observation)
+        contract = observation_contract(signal_config)
+        policy_input = contract["policy_input"]
+        self_fields = policy_input["self_input_fields"]
+        patch_fields = policy_input["patch_input_fields"]
+        token_1_patch_index = 2 * 5 + 4
+        token_1_value_index = (
+            len(self_fields)
+            + token_1_patch_index * len(patch_fields)
+            + patch_fields.index("communication_signal_token_1")
+        )
+
+        self.assertGreater(state.communication_signal[2][1], 0.0)
+        self.assertGreater(state.communication_signal[2][3], 0.0)
+        self.assertGreater(state.field("communication_signal_token_0")[2][1], 0.0)
+        self.assertEqual(state.field("communication_signal_token_0")[2][3], 0.0)
+        self.assertEqual(state.field("communication_signal_token_1")[2][1], 0.0)
+        self.assertGreater(state.field("communication_signal_token_1")[2][3], 0.0)
+        self.assertEqual(
+            observation["self"]["communication_signal_token_0"],
+            0.0,
+        )
+        self.assertEqual(
+            observation["self"]["communication_signal_token_1"],
+            0.0,
+        )
+        token_1_patch = next(
+            cell
+            for cell in observation["local_patch"]
+            if cell["dx"] == 2 and cell["dy"] == 0
+        )
+        self.assertEqual(token_1_patch["communication_signal_token_0"], 0.0)
+        self.assertGreater(token_1_patch["communication_signal_token_1"], 0.0)
+        self.assertEqual(
+            observation["schema_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            encoded["encoder_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+        )
+        self.assertEqual(encoded["communication_token_count"], 2)
+        self.assertEqual(
+            encoded["communication_token_field_order"],
+            [
+                "communication_signal_token_0",
+                "communication_signal_token_1",
+            ],
+        )
+        self.assertEqual(encoded["shape"], [OBSERVATION_INPUT_VECTOR_SIZE + 52])
+        self.assertEqual(direct_values, decoded)
+        self.assertGreater(decoded[token_1_value_index], 0.0)
+        policy_values = ecological_policy_input_values(encoded)
+        self.assertEqual(
+            ecological_policy_values_from_observation(observation),
+            policy_values,
+        )
+        self.assertEqual(len(policy_values), encoded["shape"][0] - 1)
+        self.assertEqual(
+            policy_values[token_1_value_index - 1],
+            decoded[token_1_value_index],
+        )
+
+    def test_token_observation_encoder_rejects_noncanonical_field_aliases(
+        self,
+    ) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_token_count=2,
+                    communication_profiles_per_token=1,
+                ),
+            )
+        )
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+        observation["self"]["communication_signal_token_00"] = observation["self"].pop(
+            "communication_signal_token_0"
+        )
+        for cell in observation["local_patch"]:
+            cell["communication_signal_token_00"] = cell.pop(
+                "communication_signal_token_0"
+            )
+
+        self.assertIsNone(
+            parse_communication_token_field_name("communication_signal_token_00")
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ) as encoded_error:
+            encode_observation_input(observation)
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ) as direct_error:
+            quantized_observation_input_values(observation)
+        with self.assertRaisesRegex(
+            ValueError,
+            "communication token observation fields must use contiguous token ids",
+        ) as policy_error:
+            ecological_policy_values_from_observation(observation)
+        self.assertEqual(str(direct_error.exception), str(encoded_error.exception))
+        self.assertEqual(str(policy_error.exception), str(encoded_error.exception))
+
+    def test_previous_token_observation_schema_fails_closed(self) -> None:
+        world = SimulationWorld(
+            WorldConfig(
+                seed=7,
+                max_ticks=1,
+                signals=SignalConfig(
+                    communication_signal_emission_enabled=True,
+                    communication_token_count=2,
+                    communication_profiles_per_token=1,
+                ),
+            )
+        )
+        agent = world.alive_agents()[0]
+        observation = build_observation(
+            world,
+            agent,
+            observation_context=world._observation_context(agent),
+        )
+
+        self.assertEqual(
+            observation["schema_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+        )
+        observation["schema_version"] = "mind_observation_v4"
+        with self.assertRaisesRegex(ValueError, "missing or stale"):
+            encode_observation_input(observation)
+        with self.assertRaisesRegex(ValueError, "missing or stale"):
+            quantized_observation_input_values(observation)
+        with self.assertRaisesRegex(ValueError, "missing or stale"):
+            ecological_policy_values_from_observation(observation)
+
+    def test_tokenized_signal_contracts_are_versioned_without_default_drift(
+        self,
+    ) -> None:
+        default_result = SimulationWorld(WorldConfig(seed=7, max_ticks=2)).run()
+        default_signal_contract = default_result.viewer["trajectory"][
+            "observation_contract"
+        ]["signal_contract"]
+        default_signal_fields = default_result.viewer["frames"][0]["signal_fields"]
+        default_record = default_result.viewer["trajectory"]["records"][0]
+
+        self.assertEqual(
+            default_result.summary["summary_schema_version"],
+            SUMMARY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_result.viewer["trajectory"]["schema_version"],
+            TRAJECTORY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_result.viewer["trajectory"]["observation_schema_version"],
+            OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            default_signal_contract["schema_version"],
+            SIGNAL_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+            "foundation_signal_contract_v4",
+        )
+        self.assertEqual(
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+            "mind_observation_v5",
+        )
+        self.assertEqual(
+            TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+            "mind_observation_encoder_v4",
+        )
+        self.assertEqual(
+            TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+            "mind_trajectory_v3",
+        )
+        self.assertEqual(
+            TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+            "mind_ecological_policy_input_v3",
+        )
+        self.assertNotIn(
+            "communication_token_observation",
+            default_signal_contract,
+        )
+        self.assertEqual(
+            set(default_signal_fields),
+            {"reproductive_signal", "communication_signal"},
+        )
+        self.assertEqual(
+            default_record["observation_input"]["shape"],
+            [OBSERVATION_INPUT_VECTOR_SIZE],
+        )
+
+        enabled_config = WorldConfig(
+            seed=7,
+            max_ticks=2,
+            signals=SignalConfig(
+                communication_signal_emission_enabled=True,
+                communication_token_count=2,
+                communication_profiles_per_token=1,
+            ),
+        )
+        first = SimulationWorld(enabled_config).run()
+        second = SimulationWorld(copy.deepcopy(enabled_config)).run()
+        trajectory = first.viewer["trajectory"]
+        tokenized_signal_contract = trajectory["observation_contract"][
+            "signal_contract"
+        ]
+        token_fields = {
+            "communication_signal_token_0",
+            "communication_signal_token_1",
+        }
+
+        self.assertEqual(first.summary, second.summary)
+        self.assertEqual(first.events, second.events)
+        self.assertEqual(first.viewer, second.viewer)
+        self.assertEqual(
+            first.summary["summary_schema_version"],
+            TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            trajectory["schema_version"],
+            TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            trajectory["observation_schema_version"],
+            TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["schema_version"],
+            TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+        )
+        self.assertFalse(
+            tokenized_signal_contract[
+                "communication_tokens_have_simulator_assigned_meaning"
+            ]
+        )
+        self.assertTrue(
+            tokenized_signal_contract["communication_token_observation"][
+                "policy_visible"
+            ]
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"]["aggregation"],
+            COMMUNICATION_AGGREGATE_PROJECTION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "receiver_projection_schema_version"
+            ],
+            COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "receiver_observation_policy"
+            ],
+            COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+        )
+        self.assertEqual(
+            tokenized_signal_contract["communication_token_observation"][
+                "global_reporting_policy"
+            ],
+            COMMUNICATION_GLOBAL_REPORTING_POLICY,
+        )
+        self.assertEqual(
+            trajectory["observation_contract"]["communication_token_channels"][
+                "aggregate_projection"
+            ],
+            COMMUNICATION_AGGREGATE_PROJECTION,
+        )
+        self.assertEqual(
+            set(first.viewer["frames"][0]["signal_fields"]),
+            {
+                "reproductive_signal",
+                "communication_signal",
+                *token_fields,
+            },
+        )
+        self.assertTrue(
+            token_fields.issubset(set(first.summary["signal_field_stats_at_end"]))
+        )
+        self.assertTrue(
+            token_fields.issubset(set(first.viewer["analytics"]["signal_fields"]))
+        )
+        self.assertNotIn(
+            "communication_signal",
+            trajectory["reward_contract"]["component_bounds"],
+        )
 
     def test_signal_contract_declares_debug_only_profile_provenance(self) -> None:
         signal_config = SignalConfig(
@@ -650,9 +1613,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
             contract["reproductive_readiness_profile"]["field_name"],
             "reproductive_signal",
         )
-        self.assertFalse(
-            contract["reproductive_readiness_profile"]["policy_visible"]
-        )
+        self.assertFalse(contract["reproductive_readiness_profile"]["policy_visible"])
         self.assertEqual(contract["communication_token_count"], 2)
         self.assertEqual(contract["communication_profiles_per_token"], 3)
         self.assertEqual(contract["communication_signal_decay_rate"], 0.42)
@@ -895,8 +1856,7 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
                 ]
                 group_summary = first.summary["reproductive_groups_end"]
                 self.assertEqual(
-                    group_summary["asexual_births"]
-                    + group_summary["sexual_births"],
+                    group_summary["asexual_births"] + group_summary["sexual_births"],
                     len(reproduction_events),
                 )
                 self.assertLessEqual(
@@ -905,8 +1865,6 @@ class RuntimeSignalContractTests(RuntimeContractTestHelpers):
                 )
                 if name == "sexual_disabled_low_thresholds":
                     self.assertEqual(
-                        first.summary["reproduction_end"][
-                            "reproductive_stage_counts"
-                        ],
+                        first.summary["reproduction_end"]["reproductive_stage_counts"],
                         {STAGE0_ASEXUAL: first.summary["alive_agents"]},
                     )

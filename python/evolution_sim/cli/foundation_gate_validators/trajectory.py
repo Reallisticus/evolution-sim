@@ -1,24 +1,53 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from math import isfinite
 
-from evolution_sim.env.runtime.action_contract import ACTION_CONTRACT_VERSION
+from evolution_sim.config import SignalConfig
+from evolution_sim.env.runtime.action_contract import (
+    ACTION_CONTRACT_VERSION,
+    action_contract as canonical_action_contract,
+    action_names as canonical_action_names,
+)
 from evolution_sim.env.runtime.observations import (
     OBSERVATION_ENCODER_VERSION,
     OBSERVATION_INPUT_VECTOR_SIZE,
     OBSERVATION_SCHEMA_VERSION,
+    PATCH_FIELDS,
+    PATCH_CELL_COUNT,
+    PATCH_INPUT_FIELDS,
+    SELF_FIELDS,
+    SELF_INPUT_FIELDS,
+    TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION,
+    TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION,
     validate_observation_input_payload,
 )
 from evolution_sim.env.runtime.policy import POLICY_INTERFACE_VERSION
 from evolution_sim.env.runtime.reproduction import (
     REPRODUCTIVE_GROUP_CONTRACT_VERSION,
 )
-from evolution_sim.env.runtime.signals import SIGNAL_CONTRACT_VERSION
+from evolution_sim.env.runtime.signals import (
+    COMMUNICATION_AGGREGATE_PROJECTION,
+    COMMUNICATION_GLOBAL_REPORTING_POLICY,
+    COMMUNICATION_RECEIVER_OBSERVATION_POLICY,
+    COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION,
+    COMMUNICATION_SIGNAL_FIELD,
+    SIGNAL_CONTRACT_VERSION,
+    TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION,
+    TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION,
+)
 from evolution_sim.env.runtime.trajectory import (
     ACTION_OUTCOME_SCHEMA_VERSION,
+    REWARD_COMPONENT_BOUNDS,
     REWARD_SCHEMA_VERSION,
     TRAJECTORY_RECORD_FIELDS,
     TRAJECTORY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION,
+    reward_contract as canonical_reward_contract,
+)
+from evolution_sim.env.contracts import (
+    SUMMARY_SCHEMA_VERSION,
+    TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION,
 )
 from evolution_sim.genome.recombination import (
     GENOME_RECOMBINATION_CONTRACT_VERSION,
@@ -40,6 +69,49 @@ def _mind_contract_flags(
     events: Sequence[object] | None = None,
 ) -> list[dict[str, object]]:
     flags: list[dict[str, object]] = []
+    trajectory_payload = viewer.get("trajectory")
+    tokenized_communication = (
+        isinstance(trajectory_payload, dict)
+        and trajectory_payload.get("schema_version")
+        == TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION
+    )
+    expected_trajectory_schema = (
+        TOKENIZED_COMMUNICATION_TRAJECTORY_SCHEMA_VERSION
+        if tokenized_communication
+        else TRAJECTORY_SCHEMA_VERSION
+    )
+    expected_observation_schema = (
+        TOKENIZED_COMMUNICATION_OBSERVATION_SCHEMA_VERSION
+        if tokenized_communication
+        else OBSERVATION_SCHEMA_VERSION
+    )
+    expected_observation_encoder = (
+        TOKENIZED_COMMUNICATION_OBSERVATION_ENCODER_VERSION
+        if tokenized_communication
+        else OBSERVATION_ENCODER_VERSION
+    )
+    expected_signal_schema = (
+        TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION
+        if tokenized_communication
+        else SIGNAL_CONTRACT_VERSION
+    )
+    expected_summary_schema = (
+        TOKENIZED_COMMUNICATION_SUMMARY_SCHEMA_VERSION
+        if tokenized_communication
+        else SUMMARY_SCHEMA_VERSION
+    )
+    if summary.get("summary_schema_version") != expected_summary_schema:
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "summary.summary_schema_version",
+                (
+                    f"Expected {expected_summary_schema}, found "
+                    f"{summary.get('summary_schema_version')!r}."
+                ),
+            )
+        )
     contracts = summary.get("mind_contracts")
     if not isinstance(contracts, dict):
         flags.append(
@@ -52,9 +124,9 @@ def _mind_contract_flags(
         )
     else:
         expected_versions = {
-            "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+            "observation_schema_version": expected_observation_schema,
             "policy_interface_version": POLICY_INTERFACE_VERSION,
-            "schema_version": TRAJECTORY_SCHEMA_VERSION,
+            "schema_version": expected_trajectory_schema,
             "reward_schema_version": REWARD_SCHEMA_VERSION,
             "action_outcome_schema_version": ACTION_OUTCOME_SCHEMA_VERSION,
             "action_contract_version": ACTION_CONTRACT_VERSION,
@@ -83,7 +155,7 @@ def _mind_contract_flags(
                 )
             )
 
-    trajectory = viewer.get("trajectory")
+    trajectory = trajectory_payload
     if not isinstance(trajectory, dict):
         flags.append(
             _flag(
@@ -95,8 +167,8 @@ def _mind_contract_flags(
         )
         return flags
     expected_trajectory_versions = {
-        "schema_version": TRAJECTORY_SCHEMA_VERSION,
-        "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+        "schema_version": expected_trajectory_schema,
+        "observation_schema_version": expected_observation_schema,
         "policy_interface_version": POLICY_INTERFACE_VERSION,
         "action_contract_version": ACTION_CONTRACT_VERSION,
         "reproductive_group_contract_version": REPRODUCTIVE_GROUP_CONTRACT_VERSION,
@@ -180,10 +252,16 @@ def _mind_contract_flags(
                 events=events,
             )
         )
+    expected_frame_signal_fields = [
+        "reproductive_signal",
+        "communication_signal",
+    ]
+    expected_record_token_fields: tuple[str, ...] = ()
+    expected_observation_size = OBSERVATION_INPUT_VECTOR_SIZE
     observation_contract = trajectory.get("observation_contract")
     if (
         not isinstance(observation_contract, dict)
-        or observation_contract.get("schema_version") != OBSERVATION_SCHEMA_VERSION
+        or observation_contract.get("schema_version") != expected_observation_schema
         or observation_contract.get("privileged_world_state") is not False
         or observation_contract.get("metadata_policy_excluded") is not True
     ):
@@ -197,10 +275,40 @@ def _mind_contract_flags(
         )
     else:
         policy_input = observation_contract.get("policy_input")
+        token_channel_contract = observation_contract.get(
+            "communication_token_channels"
+        )
+        token_fields = (
+            token_channel_contract.get("field_order")
+            if isinstance(token_channel_contract, dict)
+            else None
+        )
+        token_count = (
+            len(token_fields)
+            if tokenized_communication and isinstance(token_fields, list)
+            else 0
+        )
+        if tokenized_communication:
+            expected_record_token_fields = tuple(
+                f"communication_signal_token_{token_index}"
+                for token_index in range(token_count)
+            )
+            expected_frame_signal_fields.extend(
+                expected_record_token_fields
+            )
+        expected_observation_size = (
+            OBSERVATION_INPUT_VECTOR_SIZE
+            + token_count * (1 + PATCH_CELL_COUNT)
+        )
         if (
             not isinstance(policy_input, dict)
-            or policy_input.get("encoder_version") != OBSERVATION_ENCODER_VERSION
-            or policy_input.get("shape") != [OBSERVATION_INPUT_VECTOR_SIZE]
+            or policy_input.get("encoder_version") != expected_observation_encoder
+            or policy_input.get("shape") != [expected_observation_size]
+            or (tokenized_communication and token_count <= 0)
+            or (
+                not tokenized_communication
+                and token_channel_contract is not None
+            )
         ):
             flags.append(
                 _flag(
@@ -241,7 +349,7 @@ def _mind_contract_flags(
         }
         if (
             not isinstance(signal_contract, dict)
-            or signal_contract.get("schema_version") != SIGNAL_CONTRACT_VERSION
+            or signal_contract.get("schema_version") != expected_signal_schema
             or signal_contract.get("profile_metadata_policy_visible") is not False
             or not isinstance(signal_metadata_fields, list)
             or not required_signal_metadata_fields.issubset(signal_metadata_fields)
@@ -264,41 +372,65 @@ def _mind_contract_flags(
                 )
             )
     frames = viewer.get("frames")
-    last_frame = frames[-1] if isinstance(frames, list) and frames else None
-    signal_emissions = (
-        last_frame.get("signal_emissions")
-        if isinstance(last_frame, dict)
-        else None
-    )
-    if (
-        not isinstance(signal_emissions, dict)
-        or signal_emissions.get("schema_version") != SIGNAL_CONTRACT_VERSION
-        or signal_emissions.get("policy_visible") is not False
-        or not isinstance(signal_emissions.get("events"), list)
-        or not isinstance(signal_emissions.get("active_counts"), dict)
-    ):
+    frame_contract_valid = isinstance(frames, list) and bool(frames)
+    if isinstance(frames, list):
+        for frame in frames:
+            signal_emissions = (
+                frame.get("signal_emissions")
+                if isinstance(frame, dict)
+                else None
+            )
+            signal_fields = (
+                frame.get("signal_fields")
+                if isinstance(frame, dict)
+                else None
+            )
+            active_counts = (
+                signal_emissions.get("active_counts")
+                if isinstance(signal_emissions, dict)
+                else None
+            )
+            if (
+                not isinstance(signal_emissions, dict)
+                or signal_emissions.get("schema_version")
+                != expected_signal_schema
+                or signal_emissions.get("policy_visible") is not False
+                or not isinstance(signal_emissions.get("events"), list)
+                or not isinstance(active_counts, dict)
+                or not isinstance(signal_fields, dict)
+                or list(signal_fields) != expected_frame_signal_fields
+                or list(active_counts) != expected_frame_signal_fields
+                or any(
+                    not isinstance(signal_fields[field], list)
+                    for field in expected_frame_signal_fields
+                )
+            ):
+                frame_contract_valid = False
+                break
+    if not frame_contract_valid:
         flags.append(
             _flag(
                 "error",
                 scope,
                 "viewer.frames.signal_emissions",
-                "Full replay frames are missing versioned signal emission debug metadata.",
+                (
+                    "Full replay frames are missing versioned signal emission "
+                    "metadata or canonical signal-field matrices."
+                ),
             )
         )
     records = trajectory.get("records")
-    reward_contract = trajectory.get("reward_contract")
-    if (
-        not isinstance(reward_contract, dict)
-        or reward_contract.get("schema_version") != REWARD_SCHEMA_VERSION
-        or not isinstance(reward_contract.get("component_bounds"), dict)
-        or not isinstance(reward_contract.get("total_bounds"), list)
-    ):
+    declared_reward_contract = trajectory.get("reward_contract")
+    if declared_reward_contract != canonical_reward_contract():
         flags.append(
             _flag(
                 "error",
                 scope,
                 "viewer.trajectory.reward_contract",
-                "Trajectory payload does not declare versioned reward component bounds.",
+                (
+                    "Trajectory payload reward contract does not exactly match "
+                    "the canonical component set and bounds."
+                ),
             )
         )
     if not isinstance(records, list) or not records:
@@ -317,6 +449,10 @@ def _mind_contract_flags(
                 scope=scope,
                 record=record,
                 index=index,
+                expected_observation_schema=expected_observation_schema,
+                expected_observation_encoder=expected_observation_encoder,
+                expected_observation_size=expected_observation_size,
+                expected_token_fields=expected_record_token_fields,
             )
         )
     return flags
@@ -327,6 +463,10 @@ def _trajectory_record_contract_flags(
     scope: str,
     record: object,
     index: int,
+    expected_observation_schema: str = OBSERVATION_SCHEMA_VERSION,
+    expected_observation_encoder: str = OBSERVATION_ENCODER_VERSION,
+    expected_observation_size: int = OBSERVATION_INPUT_VECTOR_SIZE,
+    expected_token_fields: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
     flags: list[dict[str, object]] = []
     required_record_fields = set(TRAJECTORY_RECORD_FIELDS)
@@ -344,7 +484,7 @@ def _trajectory_record_contract_flags(
         )
         return flags
 
-    if record.get("observation_schema") != OBSERVATION_SCHEMA_VERSION:
+    if record.get("observation_schema") != expected_observation_schema:
         flags.append(
             _flag(
                 "error",
@@ -383,6 +523,40 @@ def _trajectory_record_contract_flags(
             )
         )
     else:
+        if (
+            observation_input.get("schema_version")
+            != expected_observation_schema
+            or observation_input.get("encoder_version")
+            != expected_observation_encoder
+            or observation_input.get("shape") != [expected_observation_size]
+            or (
+                bool(expected_token_fields)
+                and (
+                    observation_input.get("communication_token_count")
+                    != len(expected_token_fields)
+                    or observation_input.get("communication_token_field_order")
+                    != list(expected_token_fields)
+                )
+            )
+            or (
+                not expected_token_fields
+                and (
+                    "communication_token_count" in observation_input
+                    or "communication_token_field_order" in observation_input
+                )
+            )
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.trajectory.records.observation_input",
+                    (
+                        f"Trajectory record {index} observation input is not "
+                        "bound to the enclosing observation contract."
+                    ),
+                )
+            )
         validation_errors = validate_observation_input_payload(observation_input)
         if validation_errors:
             flags.append(
@@ -394,9 +568,35 @@ def _trajectory_record_contract_flags(
                 )
             )
     reward = record.get("reward")
+    reward_components = (
+        reward.get("components") if isinstance(reward, dict) else None
+    )
     if (
         not isinstance(reward, dict)
+        or set(reward) != {"schema_version", "components", "total"}
         or reward.get("schema_version") != REWARD_SCHEMA_VERSION
+        or not isinstance(reward_components, dict)
+        or set(reward_components) != set(REWARD_COMPONENT_BOUNDS)
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+            for value in (
+                *reward_components.values(),
+                reward.get("total"),
+            )
+        )
+        or any(
+            not REWARD_COMPONENT_BOUNDS[name][0]
+            <= float(reward_components[name])
+            <= REWARD_COMPONENT_BOUNDS[name][1]
+            for name in REWARD_COMPONENT_BOUNDS
+        )
+        or round(
+            sum(float(reward_components[name]) for name in REWARD_COMPONENT_BOUNDS),
+            4,
+        )
+        != float(reward.get("total"))
     ):
         flags.append(
             _flag(
@@ -479,12 +679,29 @@ def _signal_action_capacity_flags(
                 "Signal contract does not declare communication capacity and enablement.",
             )
         ]
+    try:
+        canonical_signal_config = SignalConfig(
+            communication_token_count=token_count,
+            communication_profiles_per_token=profiles_per_token,
+            communication_signal_emission_enabled=communication_enabled,
+        )
+    except ValueError:
+        return [
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.observation_contract.signal_contract",
+                "Signal contract communication capacity is outside canonical bounds.",
+            )
+        ]
 
     expected_actions = [
         f"signal_{token_index}_profile_{profile_index}"
         for token_index in range(token_count)
         for profile_index in range(profiles_per_token)
     ]
+    expected_action_contract = canonical_action_contract(canonical_signal_config)
+    expected_action_names = list(canonical_action_names(canonical_signal_config))
     if (
         not isinstance(reserved_profiles, list)
         or len(reserved_profiles) != len(expected_actions)
@@ -497,6 +714,173 @@ def _signal_action_capacity_flags(
                 "Signal contract reserved profile count does not match communication capacity.",
             )
         )
+    tokenized_communication = (
+        signal_contract.get("schema_version")
+        == TOKENIZED_COMMUNICATION_SIGNAL_CONTRACT_VERSION
+    )
+    expected_token_fields = [
+        f"communication_signal_token_{token_index}"
+        for token_index in range(token_count)
+    ]
+    signal_token_contract = signal_contract.get(
+        "communication_token_observation"
+    )
+    observation_token_contract = observation_contract.get(
+        "communication_token_channels"
+    )
+    policy_input = observation_contract.get("policy_input")
+    expected_token_order = list(range(token_count))
+    token_fields_are_ordered = (
+        isinstance(policy_input, dict)
+        and policy_input.get("patch_cell_count") == PATCH_CELL_COUNT
+        and observation_contract.get("self_fields")
+        == [*SELF_FIELDS, *expected_token_fields]
+        and observation_contract.get("patch_fields")
+        == [*PATCH_FIELDS, *expected_token_fields]
+        and policy_input.get("self_input_fields")
+        == [*SELF_INPUT_FIELDS, *expected_token_fields]
+        and policy_input.get("patch_input_fields")
+        == [*PATCH_INPUT_FIELDS, *expected_token_fields]
+    )
+    if tokenized_communication:
+        if (
+            communication_enabled is not True
+            or signal_contract.get("policy_semantics") != "opaque"
+            or signal_contract.get(
+                "communication_tokens_have_simulator_assigned_meaning"
+            )
+            is not False
+            or not isinstance(signal_token_contract, dict)
+            or set(signal_token_contract)
+            != {
+                "schema_version",
+                "policy_visible",
+                "spatial",
+                "field_order",
+                "token_order",
+                "aggregate_field",
+                "aggregate_field_retained_for_compatibility",
+                "aggregation",
+                "receiver_projection_schema_version",
+                "receiver_observation_policy",
+                "global_reporting_policy",
+                "simulator_assigned_meanings",
+                "profile_provenance_policy_visible",
+            }
+            or signal_token_contract.get("schema_version")
+            != TOKENIZED_COMMUNICATION_SIGNAL_REPORTING_VERSION
+            or signal_token_contract.get("policy_visible") is not True
+            or signal_token_contract.get("spatial") is not True
+            or signal_token_contract.get("field_order") != expected_token_fields
+            or signal_token_contract.get("token_order") != expected_token_order
+            or signal_token_contract.get("aggregate_field")
+            != COMMUNICATION_SIGNAL_FIELD
+            or signal_token_contract.get(
+                "aggregate_field_retained_for_compatibility"
+            )
+            is not True
+            or signal_token_contract.get("aggregation")
+            != COMMUNICATION_AGGREGATE_PROJECTION
+            or signal_token_contract.get("receiver_projection_schema_version")
+            != COMMUNICATION_RECEIVER_PROJECTION_SCHEMA_VERSION
+            or signal_token_contract.get("receiver_observation_policy")
+            != COMMUNICATION_RECEIVER_OBSERVATION_POLICY
+            or signal_token_contract.get("global_reporting_policy")
+            != COMMUNICATION_GLOBAL_REPORTING_POLICY
+            or signal_token_contract.get("simulator_assigned_meanings") is not False
+            or signal_token_contract.get("profile_provenance_policy_visible")
+            is not False
+            or not isinstance(observation_token_contract, dict)
+            or set(observation_token_contract)
+            != {
+                "policy_visible",
+                "spatial",
+                "field_order",
+                "token_order",
+                "simulator_assigned_meanings",
+                "profile_provenance_policy_visible",
+                "aggregate_communication_field_retained",
+                "aggregate_projection",
+            }
+            or observation_token_contract.get("policy_visible") is not True
+            or observation_token_contract.get("spatial") is not True
+            or observation_token_contract.get("field_order")
+            != expected_token_fields
+            or observation_token_contract.get("token_order")
+            != expected_token_order
+            or observation_token_contract.get("simulator_assigned_meanings")
+            is not False
+            or observation_token_contract.get(
+                "profile_provenance_policy_visible"
+            )
+            is not False
+            or observation_token_contract.get(
+                "aggregate_communication_field_retained"
+            )
+            is not True
+            or observation_token_contract.get("aggregate_projection")
+            != COMMUNICATION_AGGREGATE_PROJECTION
+            or not token_fields_are_ordered
+            or signal_contract.get("fields")
+            != [
+                "reproductive_signal",
+                "communication_signal",
+                *expected_token_fields,
+            ]
+        ):
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.trajectory.observation_contract.communication_token_channels",
+                    (
+                        "Token-aware signal and observation contracts do not "
+                        "declare the same ordered opaque public channels."
+                    ),
+                )
+            )
+        token_profile_fields_match = isinstance(reserved_profiles, list)
+        if isinstance(reserved_profiles, list):
+            for profile_index, profile in enumerate(reserved_profiles):
+                if not isinstance(profile, dict):
+                    token_profile_fields_match = False
+                    break
+                token_id = _as_optional_int(profile.get("token_id"))
+                expected_token_id = profile_index // profiles_per_token
+                expected_profile_index = profile_index % profiles_per_token
+                if (
+                    token_id is None
+                    or token_id < 0
+                    or token_id >= len(expected_token_fields)
+                    or token_id != expected_token_id
+                    or profile.get("profile_index") != expected_profile_index
+                    or profile.get("field_name")
+                    != expected_token_fields[token_id]
+                    or profile.get("policy_visible") is not False
+                ):
+                    token_profile_fields_match = False
+                    break
+        if not token_profile_fields_match:
+            flags.append(
+                _flag(
+                    "error",
+                    scope,
+                    "viewer.trajectory.observation_contract.signal_contract.reserved_profiles",
+                    "Token-aware communication profiles do not target their opaque token channels.",
+                )
+            )
+    elif (
+        signal_token_contract is not None
+        or observation_token_contract is not None
+    ):
+        flags.append(
+            _flag(
+                "error",
+                scope,
+                "viewer.trajectory.observation_contract.communication_token_channels",
+                "Legacy observation contracts must not declare token channels.",
+            )
+        )
 
     for path, action_contract in (
         ("viewer.trajectory.action_contract", trajectory.get("action_contract")),
@@ -505,13 +889,7 @@ def _signal_action_capacity_flags(
             observation_contract.get("action_contract"),
         ),
     ):
-        if not _action_contract_matches_signal_capacity(
-            action_contract,
-            token_count=token_count,
-            profiles_per_token=profiles_per_token,
-            expected_actions=expected_actions,
-            communication_enabled=communication_enabled,
-        ):
+        if action_contract != expected_action_contract:
             flags.append(
                 _flag(
                     "error",
@@ -522,9 +900,7 @@ def _signal_action_capacity_flags(
             )
 
     action_names = observation_contract.get("action_names")
-    if not isinstance(action_names, list) or not set(expected_actions).issubset(
-        set(action_names)
-    ):
+    if action_names != expected_action_names:
         flags.append(
             _flag(
                 "error",
@@ -534,39 +910,3 @@ def _signal_action_capacity_flags(
             )
         )
     return flags
-
-
-def _action_contract_matches_signal_capacity(
-    action_contract: object,
-    *,
-    token_count: int,
-    profiles_per_token: int,
-    expected_actions: list[str],
-    communication_enabled: bool,
-) -> bool:
-    if not isinstance(action_contract, dict):
-        return False
-    communication = action_contract.get("communication")
-    if not isinstance(communication, dict):
-        return False
-    if communication.get("emission_enabled") is not communication_enabled:
-        return False
-    if communication.get("token_count") != token_count:
-        return False
-    if communication.get("profiles_per_token") != profiles_per_token:
-        return False
-    if communication.get("action_keys") != expected_actions:
-        return False
-    reserved_actions = action_contract.get("reserved_action_keys")
-    if not isinstance(reserved_actions, list) or not set(expected_actions).issubset(
-        set(reserved_actions)
-    ):
-        return False
-    active_actions = action_contract.get("active_action_keys")
-    if not isinstance(active_actions, list):
-        return False
-    active_set = set(active_actions)
-    expected_set = set(expected_actions)
-    if communication_enabled:
-        return expected_set.issubset(active_set)
-    return active_set.isdisjoint(expected_set)

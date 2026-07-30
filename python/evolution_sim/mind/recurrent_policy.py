@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -15,10 +15,13 @@ from evolution_sim.env.runtime.action_contract import (
 )
 from evolution_sim.env.runtime.observations import encode_observation_input
 from evolution_sim.env.runtime.policy import ActionDecision
+from evolution_sim.env.runtime.state import empty_mind_inheritance_metadata
 from evolution_sim.mind.recurrent_actor_critic import (
     ACTION_COUNT,
     ActionSelection,
     ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+    GENOME_CONDITIONING_ACTOR_FILM_V1,
+    GENOME_CONDITIONING_DISABLED,
     PREVIOUS_PUBLIC_FEEDBACK_SCHEMA_VERSION,
     PREVIOUS_PUBLIC_FEEDBACK_SIZE,
     PreviousPublicFeedbackInput,
@@ -32,9 +35,15 @@ from evolution_sim.mind.recurrent_actor_critic import (
 from evolution_sim.mind.policy_inputs import (
     ECOLOGICAL_POLICY_INPUT_POLICY,
     ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
     ecological_policy_input_payload,
 )
 from evolution_sim.mind.provenance import stable_payload_digest
+from evolution_sim.mind.recurrent_genome_population import (
+    RecurrentGenomePopulationError,
+    RecurrentGenomePopulationManager,
+    RecurrentGenomePopulationMode,
+)
 from evolution_sim.mind.recurrent_rollout import (
     RECURRENT_ROLLOUT_ACTION_SOURCE,
 )
@@ -43,7 +52,10 @@ from evolution_sim.mind.recurrent_rollout import (
 PUBLIC_RECURRENT_POLICY_ID = "mind_v3_public_recurrent_actor_critic"
 PUBLIC_RECURRENT_POLICY_VERSION = "mind_v3_public_recurrent_actor_critic_v1"
 PUBLIC_RECURRENT_DIAGNOSTIC_SCHEMA_VERSION = (
-    "mind_v3_public_recurrent_actor_critic_decision_v2"
+    "mind_v3_public_recurrent_actor_critic_decision_v3"
+)
+PUBLIC_RECURRENT_GENOME_DIAGNOSTIC_SCHEMA_VERSION = (
+    "mind_v3_public_recurrent_actor_critic_decision_genome_v1"
 )
 PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION = (
     "mind_v3_public_recurrent_masked_distribution_diagnostics_v1"
@@ -58,6 +70,9 @@ RECURRENT_DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION = (
 )
 RECURRENT_PUBLIC_HISTORY_PREFIX_SCHEMA_VERSION = (
     "mind_v3_public_recurrent_history_prefix_v1"
+)
+RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION = (
+    "mind_v3_public_recurrent_genome_world_provenance_v1"
 )
 
 
@@ -106,6 +121,11 @@ def recurrent_model_state_sha256(model: PublicRecurrentActorCritic) -> str:
 
 def validate_public_recurrent_history_prefix(
     prefix: Mapping[str, object],
+    *,
+    expected_public_input_schema_version: str = (
+        ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION
+    ),
+    expected_public_input_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> None:
     """Validate a JSON-safe, actor-public recurrent reconstruction prefix."""
 
@@ -167,6 +187,8 @@ def validate_public_recurrent_history_prefix(
         _validate_public_observation_payload(
             value.get("public_observation"),
             field=f"public history record {index} observation",
+            expected_schema_version=expected_public_input_schema_version,
+            expected_size=expected_public_input_size,
         )
         _validate_public_action_mask_payload(
             value.get("public_action_mask"),
@@ -195,7 +217,11 @@ def reconstruct_current_model_hidden_from_public_prefix(
 
     if not isinstance(model, PublicRecurrentActorCritic):
         raise TypeError("model must be a PublicRecurrentActorCritic")
-    validate_public_recurrent_history_prefix(prefix)
+    validate_public_recurrent_history_prefix(
+        prefix,
+        expected_public_input_schema_version=(model.config.public_input_schema_version),
+        expected_public_input_size=model.config.public_input_size,
+    )
     reference = next(model.parameters())
     state = model.initial_state(1)
     records = prefix["records"]
@@ -211,6 +237,8 @@ def reconstruct_current_model_hidden_from_public_prefix(
                 value["public_observation"],
                 device=reference.device,
                 dtype=reference.dtype,
+                expected_schema_version=model.config.public_input_schema_version,
+                expected_size=model.config.public_input_size,
             )
             action_mask = _public_action_mask_tensor_from_payload(
                 value["public_action_mask"],
@@ -294,9 +322,15 @@ def verified_source_recurrent_state_for_exact_artifact(
 
 @dataclass(frozen=True, slots=True)
 class _PendingInferenceDecision:
+    agent_id: int
     decision_index: int
     requested_action: str
     action_source: str
+    genome_values: tuple[float, ...] | None = None
+    genome_sha256: str | None = None
+    genome_stream_seed: int | None = None
+    genome_population_mode: str | None = None
+    genome_population_binding_sha256: str | None = None
 
 
 class DeterministicPublicRecurrentPolicy:
@@ -352,6 +386,14 @@ class DeterministicPublicRecurrentPolicy:
         self._selection = selection
         self._sampling_seed = sampling_seed
         self._capture_public_history = capture_public_history
+        self._genome_conditioning_mode = model.config.genome_conditioning_mode
+        if self._genome_conditioning_mode not in {
+            GENOME_CONDITIONING_DISABLED,
+            GENOME_CONDITIONING_ACTOR_FILM_V1,
+        }:
+            raise RecurrentPolicyAdapterError(
+                "model genome conditioning mode is unsupported"
+            )
         self._sampling_generator: torch.Generator | None = None
         if sampling_seed is not None:
             reference = next(self.model.parameters())
@@ -362,11 +404,133 @@ class DeterministicPublicRecurrentPolicy:
         self._feedback_by_agent: dict[int, PreviousPublicFeedbackInput] = {}
         self._public_history_by_agent: dict[int, list[dict[str, object]]] = {}
         self._pending_by_agent: dict[int, _PendingInferenceDecision] = {}
+        self._genome_population_manager: RecurrentGenomePopulationManager | None = None
+        self._genome_population_pre_founder_state_sha256: str | None = None
+        self._last_world_genome_provenance: dict[str, object] | None = None
         self._decision_index = 0
         self._model_state_sha256 = recurrent_model_state_sha256(self.model)
         self._parameter_versions = tuple(
             parameter._version for parameter in self.model.parameters()
         )
+        self._buffer_versions = tuple(
+            (name, buffer._version) for name, buffer in self.model.named_buffers()
+        )
+
+    @property
+    def genome_conditioning_mode(self) -> str:
+        return self._genome_conditioning_mode
+
+    @property
+    def last_world_genome_provenance(self) -> dict[str, object] | None:
+        return copy.deepcopy(self._last_world_genome_provenance)
+
+    def start_world(
+        self,
+        *,
+        world_identity: str,
+        genome_stream_seed: int,
+        genome_population_mode: RecurrentGenomePopulationMode | str,
+    ) -> None:
+        """Bind one conditioned evaluator to an exact inherited population."""
+
+        self._assert_model_unchanged()
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            raise RecurrentPolicyAdapterError(
+                "disabled recurrent policy does not accept a genome population"
+            )
+        if self._genome_population_manager is not None:
+            raise RecurrentPolicyAdapterError(
+                "reset the active conditioned world before starting another"
+            )
+        if (
+            self._state_by_agent
+            or self._feedback_by_agent
+            or self._public_history_by_agent
+            or self._pending_by_agent
+            or self._decision_index != 0
+        ):
+            raise RecurrentPolicyAdapterError(
+                "conditioned world binding requires clean reusable policy state"
+            )
+        try:
+            mode = (
+                genome_population_mode
+                if isinstance(
+                    genome_population_mode,
+                    RecurrentGenomePopulationMode,
+                )
+                else RecurrentGenomePopulationMode(genome_population_mode)
+            )
+        except (TypeError, ValueError) as exc:
+            raise RecurrentPolicyAdapterError(
+                "conditioned recurrent policy requires heritable or zero_all "
+                "population mode"
+            ) from exc
+        if mode not in {
+            RecurrentGenomePopulationMode.HERITABLE,
+            RecurrentGenomePopulationMode.ZERO_ALL,
+        }:
+            raise RecurrentPolicyAdapterError(
+                "conditioned recurrent policy requires heritable or zero_all "
+                "population mode"
+            )
+        try:
+            manager = RecurrentGenomePopulationManager(
+                genome_stream_seed=genome_stream_seed,
+                world_identity=world_identity,
+                mode=mode,
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"recurrent genome population setup failed: {exc}"
+            ) from exc
+        self._genome_population_manager = manager
+        self._genome_population_pre_founder_state_sha256 = manager.state_sha256
+        self._last_world_genome_provenance = None
+
+    def contextual_founder_metadata(
+        self,
+        *,
+        agent_id: int,
+        trophic_role: object | None = None,
+        meat_mode: object | None = None,
+    ) -> dict[str, object]:
+        del trophic_role, meat_mode
+        return self.founder_metadata(agent_id=agent_id)
+
+    def founder_metadata(self, *, agent_id: int) -> dict[str, object]:
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.founder_metadata(agent_id=agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"recurrent founder genome registration failed: {exc}"
+            ) from exc
+
+    def child_metadata(
+        self,
+        *,
+        child_agent_id: int,
+        primary_parent_id: int,
+        secondary_parent_id: int | None,
+    ) -> dict[str, object]:
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            return empty_mind_inheritance_metadata()
+        self._require_zero_newborn_runtime_state(child_agent_id)
+        manager = self._require_genome_population_manager()
+        try:
+            return manager.child_metadata(
+                child_agent_id=child_agent_id,
+                primary_parent_id=primary_parent_id,
+                secondary_parent_id=secondary_parent_id,
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"recurrent child genome registration failed: {exc}"
+            ) from exc
 
     def decide(
         self,
@@ -427,6 +591,12 @@ class DeterministicPublicRecurrentPolicy:
 
         self._assert_model_unchanged()
         resolved_agent_id = _positive_int(agent_id, field="checkpoint agent_id")
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1:
+            raise RecurrentPolicyAdapterError(
+                "conditioned diagnostic checkpoint requires a complete validated "
+                "recurrent-genome population snapshot; this checkpoint schema "
+                "cannot represent one"
+            )
         if not self._capture_public_history:
             raise RecurrentPolicyAdapterError(
                 "diagnostic checkpoint requires capture_public_history=True"
@@ -459,7 +629,13 @@ class DeterministicPublicRecurrentPolicy:
                 list(self._public_history_by_agent.get(resolved_agent_id, ()))
             ),
         }
-        validate_public_recurrent_history_prefix(history_prefix)
+        validate_public_recurrent_history_prefix(
+            history_prefix,
+            expected_public_input_schema_version=(
+                self.model.config.public_input_schema_version
+            ),
+            expected_public_input_size=self.model.config.public_input_size,
+        )
         return {
             "schema_version": RECURRENT_DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION,
             "artifact_digest": self._artifact_digest,
@@ -508,6 +684,8 @@ class DeterministicPublicRecurrentPolicy:
         encoded_observation = encode_observation_input(observation)
         public_observation = public_policy_tensor_from_observation_input(
             encoded_observation,
+            expected_schema_version=self.model.config.public_input_schema_version,
+            expected_size=self.model.config.public_input_size,
             device=reference.device,
             dtype=reference.dtype,
         )
@@ -515,9 +693,13 @@ class DeterministicPublicRecurrentPolicy:
             action_mask,
             device=reference.device,
         )
-        feedback = self._feedback_by_agent.get(
-            agent_id,
-            PreviousPublicFeedbackInput.zero(),
+        feedback = (
+            PreviousPublicFeedbackInput.zero()
+            if self._reset_recurrent_state_each_decision
+            else self._feedback_by_agent.get(
+                agent_id,
+                PreviousPublicFeedbackInput.zero(),
+            )
         )
         feedback_tensor = previous_public_feedback_tensor(
             feedback,
@@ -531,15 +713,50 @@ class DeterministicPublicRecurrentPolicy:
         )
         if recurrent_state is None:
             recurrent_state = self.model.initial_state(1)
-        with torch.no_grad():
-            selection = self.model.act(
-                public_observation,
-                public_mask,
-                feedback_tensor,
-                recurrent_state=recurrent_state,
-                deterministic=self._sampling_generator is None,
-                generator=self._sampling_generator,
+        genome_values: tuple[float, ...] | None = None
+        genome_sha256: str | None = None
+        genome_stream_seed: int | None = None
+        genome_population_mode: str | None = None
+        genome_population_binding_sha256: str | None = None
+        genome_tensor: Tensor | None = None
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_ACTOR_FILM_V1:
+            manager = self._require_genome_population_manager()
+            try:
+                binding = manager.genome_binding_for_agent(agent_id)
+            except RecurrentGenomePopulationError as exc:
+                raise RecurrentPolicyAdapterError(
+                    f"recurrent genome lookup failed before decision: {exc}"
+                ) from exc
+            genome_values = binding.genome.values
+            genome_sha256 = binding.genome_sha256
+            genome_stream_seed = manager.genome_stream_seed
+            genome_population_mode = manager.mode.value
+            genome_population_binding_sha256 = manager.binding_sha256
+            genome_tensor = torch.tensor(
+                genome_values,
+                device=reference.device,
+                dtype=reference.dtype,
             )
+        with torch.no_grad():
+            if genome_tensor is None:
+                selection = self.model.act(
+                    public_observation,
+                    public_mask,
+                    feedback_tensor,
+                    recurrent_state=recurrent_state,
+                    deterministic=self._sampling_generator is None,
+                    generator=self._sampling_generator,
+                )
+            else:
+                selection = self.model.act(
+                    public_observation,
+                    public_mask,
+                    feedback_tensor,
+                    genome_values=genome_tensor,
+                    recurrent_state=recurrent_state,
+                    deterministic=self._sampling_generator is None,
+                    generator=self._sampling_generator,
+                )
         natural_action_index = int(selection.actions[0].item())
         natural_requested_action = ACTION_NAMES[natural_action_index]
         if not action_mask[natural_requested_action]:
@@ -587,16 +804,31 @@ class DeterministicPublicRecurrentPolicy:
         if not self._reset_recurrent_state_each_decision:
             self._state_by_agent[agent_id] = selection.next_state.detach().clone()
         self._pending_by_agent[agent_id] = _PendingInferenceDecision(
+            agent_id=agent_id,
             decision_index=decision_index,
             requested_action=requested_action,
             action_source=action_source,
+            genome_values=genome_values,
+            genome_sha256=genome_sha256,
+            genome_stream_seed=genome_stream_seed,
+            genome_population_mode=genome_population_mode,
+            genome_population_binding_sha256=(genome_population_binding_sha256),
         )
         diagnostics: dict[str, object] = {
-            "schema_version": PUBLIC_RECURRENT_DIAGNOSTIC_SCHEMA_VERSION,
+            "schema_version": (
+                PUBLIC_RECURRENT_GENOME_DIAGNOSTIC_SCHEMA_VERSION
+                if genome_values is not None
+                else PUBLIC_RECURRENT_DIAGNOSTIC_SCHEMA_VERSION
+            ),
             "artifact_digest": self._artifact_digest,
             "model_state_sha256": self._model_state_sha256,
             "decision_index": decision_index,
             "agent_id": agent_id,
+            "policy_input_schema_version": (
+                self.model.config.public_input_schema_version
+            ),
+            "policy_input_size": self.model.config.public_input_size,
+            "learned_input_size": self.model.config.learned_encoder_input_size,
             "previous_feedback_available": (feedback.requested_action_id is not None),
             "recurrent_state_reset_each_decision": (
                 self._reset_recurrent_state_each_decision
@@ -607,6 +839,18 @@ class DeterministicPublicRecurrentPolicy:
             "value": round(float(selection.values[0].item()), 12),
             "learned_masked_distribution": learned_distribution,
         }
+        if genome_values is not None:
+            diagnostics.update(
+                {
+                    "genome_conditioning_mode": self._genome_conditioning_mode,
+                    "genome_population_mode": genome_population_mode,
+                    "genome_population_binding_sha256": (
+                        genome_population_binding_sha256
+                    ),
+                    "genome_sha256": genome_sha256,
+                    "genome_stream_seed": genome_stream_seed,
+                }
+            )
         if action_override is not None:
             diagnostics.update(
                 {
@@ -635,8 +879,9 @@ class DeterministicPublicRecurrentPolicy:
         self,
         record: dict[str, object],
     ) -> dict[str, object] | None:
+        self._assert_model_unchanged()
         agent_id = _record_agent_id(record)
-        pending = self._pending_by_agent.pop(agent_id, None)
+        pending = self._pending_by_agent.get(agent_id)
         action_source = record.get("action_source")
         terminated = _record_terminated(record)
         if pending is None:
@@ -644,41 +889,309 @@ class DeterministicPublicRecurrentPolicy:
                 raise RecurrentPolicyAdapterError(
                     "transition has no pending recurrent decision and is not passive"
                 )
+            self._require_live_genome_if_conditioned(agent_id)
         else:
-            if record.get("policy_id") != self.policy_id:
-                raise RecurrentPolicyAdapterError("transition policy_id mismatch")
-            if record.get("policy_version") != self.policy_version:
-                raise RecurrentPolicyAdapterError("transition policy_version mismatch")
-            if action_source != pending.action_source:
-                raise RecurrentPolicyAdapterError("transition action source mismatch")
-            if record.get("requested_action") != pending.requested_action:
-                raise RecurrentPolicyAdapterError(
-                    "transition requested action mismatch"
-                )
+            self._validate_pending_transition(record, pending=pending)
+
+        feedback = (
+            _feedback_from_record(record)
+            if pending is not None and not terminated
+            else None
+        )
+        if pending is not None:
+            removed = self._pending_by_agent.pop(agent_id, None)
+            if removed is not pending:
+                raise AssertionError("validated pending recurrent decision changed")
 
         if terminated:
+            self._discard_terminal_genome(agent_id)
             self._state_by_agent.pop(agent_id, None)
             self._feedback_by_agent.pop(agent_id, None)
             self._public_history_by_agent.pop(agent_id, None)
-        elif pending is not None:
-            self._feedback_by_agent[agent_id] = _feedback_from_record(record)
+        elif pending is not None and not self._reset_recurrent_state_each_decision:
+            assert feedback is not None
+            self._feedback_by_agent[agent_id] = feedback
         return None
 
+    def reconcile_live_agent_ids(
+        self,
+        *,
+        live_agent_ids: Sequence[int],
+    ) -> None:
+        """Drop same-tick dead genome owners after trajectory finalization."""
+
+        self._assert_model_unchanged()
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            return
+        manager = self._require_genome_population_manager()
+        try:
+            planned_dead_agent_ids = manager.reconciliation_dead_agent_ids(
+                live_agent_ids
+            )
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"recurrent genome live-agent reconciliation failed: {exc}"
+            ) from exc
+        pending_dead_agent_ids = tuple(
+            agent_id
+            for agent_id in planned_dead_agent_ids
+            if agent_id in self._pending_by_agent
+        )
+        if pending_dead_agent_ids:
+            raise RecurrentPolicyAdapterError(
+                "recurrent genome reconciliation found dead agents with "
+                f"unfinalized decisions: {list(pending_dead_agent_ids)}"
+            )
+        discarded_agent_ids = manager.reconcile_live_agent_ids(live_agent_ids)
+        if discarded_agent_ids != planned_dead_agent_ids:
+            raise RecurrentPolicyAdapterError(
+                "recurrent genome reconciliation plan changed before apply"
+            )
+        for agent_id in discarded_agent_ids:
+            self._state_by_agent.pop(agent_id, None)
+            self._feedback_by_agent.pop(agent_id, None)
+            self._public_history_by_agent.pop(agent_id, None)
+
     def reset_world(self) -> None:
+        self._assert_model_unchanged()
         if self._pending_by_agent:
             raise RecurrentPolicyAdapterError(
                 "cannot reset a world with unfinalized decisions"
             )
+        manager = self._genome_population_manager
+        if manager is not None:
+            pre_founder_state_sha256 = self._genome_population_pre_founder_state_sha256
+            if pre_founder_state_sha256 is None:
+                raise RecurrentPolicyAdapterError(
+                    "conditioned world is missing pre-founder population provenance"
+                )
+            final_state_sha256 = manager.state_sha256
+            expected_reset_state_sha256 = manager.empty_state_sha256
+            if expected_reset_state_sha256 != pre_founder_state_sha256:
+                raise RecurrentPolicyAdapterError(
+                    "recurrent genome population pre-founder state digest drifted"
+                )
+            provenance: dict[str, object] = {
+                "schema_version": RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION,
+                "genome_conditioning_mode": self._genome_conditioning_mode,
+                "genome_population_mode": manager.mode.value,
+                "action_selection": self._selection,
+                "policy_sampling_seed": self._sampling_seed,
+                "world_identity": manager.world_identity,
+                "genome_stream_seed": manager.genome_stream_seed,
+                "genome_population_binding_sha256": manager.binding_sha256,
+                "genome_population_pre_founder_state_sha256": (
+                    pre_founder_state_sha256
+                ),
+                "genome_population_final_state_sha256": final_state_sha256,
+                "genome_population_reset_state_sha256": (expected_reset_state_sha256),
+            }
+            provenance["provenance_sha256"] = stable_payload_digest(provenance)
+            manager.reset()
+            if manager.state_sha256 != expected_reset_state_sha256:
+                raise RecurrentPolicyAdapterError(
+                    "recurrent genome population reset state digest mismatch"
+                )
+            self._last_world_genome_provenance = provenance
+        if self._sampling_generator is not None:
+            assert self._sampling_seed is not None
+            self._sampling_generator.manual_seed(self._sampling_seed)
         self._state_by_agent.clear()
         self._feedback_by_agent.clear()
         self._public_history_by_agent.clear()
+        self._genome_population_manager = None
+        self._genome_population_pre_founder_state_sha256 = None
         self._decision_index = 0
 
     def _assert_model_unchanged(self) -> None:
+        if self.model.config.genome_conditioning_mode != self._genome_conditioning_mode:
+            raise RecurrentPolicyAdapterError(
+                "frozen evaluation model genome conditioning mode changed"
+            )
         observed = tuple(parameter._version for parameter in self.model.parameters())
         if observed != self._parameter_versions:
             raise RecurrentPolicyAdapterError(
                 "frozen evaluation model parameters changed"
+            )
+        observed_buffer_versions = tuple(
+            (name, buffer._version) for name, buffer in self.model.named_buffers()
+        )
+        if observed_buffer_versions != self._buffer_versions:
+            raise RecurrentPolicyAdapterError("frozen evaluation model buffers changed")
+
+    def _require_genome_population_manager(
+        self,
+    ) -> RecurrentGenomePopulationManager:
+        if self._genome_conditioning_mode != GENOME_CONDITIONING_ACTOR_FILM_V1:
+            raise RecurrentPolicyAdapterError(
+                "genome population is unavailable for a disabled recurrent policy"
+            )
+        manager = self._genome_population_manager
+        if manager is None:
+            raise RecurrentPolicyAdapterError(
+                "actor_film_v1 policy requires start_world before "
+                "SimulationWorld construction"
+            )
+        if manager.mode not in {
+            RecurrentGenomePopulationMode.HERITABLE,
+            RecurrentGenomePopulationMode.ZERO_ALL,
+        }:
+            raise RecurrentPolicyAdapterError(
+                "actor_film_v1 policy has an incompatible genome population mode"
+            )
+        return manager
+
+    def _require_zero_newborn_runtime_state(self, agent_id: int) -> None:
+        resolved_agent_id = _positive_int(agent_id, field="newborn agent_id")
+        if resolved_agent_id in self._state_by_agent:
+            raise RecurrentPolicyAdapterError(
+                f"newborn agent {resolved_agent_id} already has recurrent state"
+            )
+        if resolved_agent_id in self._feedback_by_agent:
+            raise RecurrentPolicyAdapterError(
+                f"newborn agent {resolved_agent_id} already has public feedback"
+            )
+        if resolved_agent_id in self._public_history_by_agent:
+            raise RecurrentPolicyAdapterError(
+                f"newborn agent {resolved_agent_id} already has public history"
+            )
+        if resolved_agent_id in self._pending_by_agent:
+            raise RecurrentPolicyAdapterError(
+                f"newborn agent {resolved_agent_id} already has a pending decision"
+            )
+
+    def _validate_pending_transition(
+        self,
+        record: Mapping[str, object],
+        *,
+        pending: _PendingInferenceDecision,
+    ) -> None:
+        if _record_agent_id(record) != pending.agent_id:
+            raise RecurrentPolicyAdapterError("transition agent_id mismatch")
+        if record.get("policy_id") != self.policy_id:
+            raise RecurrentPolicyAdapterError("transition policy_id mismatch")
+        if record.get("policy_version") != self.policy_version:
+            raise RecurrentPolicyAdapterError("transition policy_version mismatch")
+        if record.get("action_source") != pending.action_source:
+            raise RecurrentPolicyAdapterError("transition action source mismatch")
+        if record.get("requested_action") != pending.requested_action:
+            raise RecurrentPolicyAdapterError("transition requested action mismatch")
+        self._validate_pending_genome(pending)
+        if pending.genome_values is None:
+            return
+        diagnostics = record.get("policy_decision_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            raise RecurrentPolicyAdapterError(
+                "conditioned transition requires decision diagnostics"
+            )
+        expected_genome_diagnostics = {
+            "schema_version": PUBLIC_RECURRENT_GENOME_DIAGNOSTIC_SCHEMA_VERSION,
+            "artifact_digest": self._artifact_digest,
+            "model_state_sha256": self._model_state_sha256,
+            "decision_index": pending.decision_index,
+            "agent_id": pending.agent_id,
+            "genome_conditioning_mode": self._genome_conditioning_mode,
+            "genome_population_mode": pending.genome_population_mode,
+            "genome_population_binding_sha256": (
+                pending.genome_population_binding_sha256
+            ),
+            "genome_sha256": pending.genome_sha256,
+            "genome_stream_seed": pending.genome_stream_seed,
+        }
+        for key, expected_value in expected_genome_diagnostics.items():
+            if diagnostics.get(key) != expected_value:
+                raise RecurrentPolicyAdapterError(
+                    f"transition {key} does not match conditioned decision"
+                )
+
+    def _validate_pending_genome(
+        self,
+        pending: _PendingInferenceDecision,
+    ) -> None:
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            if any(
+                value is not None
+                for value in (
+                    pending.genome_values,
+                    pending.genome_sha256,
+                    pending.genome_stream_seed,
+                    pending.genome_population_mode,
+                    pending.genome_population_binding_sha256,
+                )
+            ):
+                raise RecurrentPolicyAdapterError(
+                    "disabled recurrent policy received a conditioned decision"
+                )
+            return
+        if any(
+            value is None
+            for value in (
+                pending.genome_values,
+                pending.genome_sha256,
+                pending.genome_stream_seed,
+                pending.genome_population_mode,
+                pending.genome_population_binding_sha256,
+            )
+        ):
+            raise RecurrentPolicyAdapterError(
+                "actor_film_v1 decision is missing controller-genome ownership"
+            )
+        manager = self._require_genome_population_manager()
+        if pending.genome_stream_seed != manager.genome_stream_seed:
+            raise RecurrentPolicyAdapterError(
+                "pending controller genome stream seed does not match active world"
+            )
+        if pending.genome_population_mode != manager.mode.value:
+            raise RecurrentPolicyAdapterError(
+                "pending controller genome population mode does not match active world"
+            )
+        if pending.genome_population_binding_sha256 != manager.binding_sha256:
+            raise RecurrentPolicyAdapterError(
+                "pending controller genome population binding does not match "
+                "active world"
+            )
+        try:
+            binding = manager.genome_binding_for_agent(pending.agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"pending controller genome ownership failed: {exc}"
+            ) from exc
+        if (
+            pending.genome_values != binding.genome.values
+            or pending.genome_sha256 != binding.genome_sha256
+        ):
+            raise RecurrentPolicyAdapterError(
+                "pending controller genome does not match active population state"
+            )
+
+    def _require_live_genome_if_conditioned(
+        self,
+        agent_id: int,
+    ) -> RecurrentGenomePopulationManager | None:
+        if self._genome_conditioning_mode == GENOME_CONDITIONING_DISABLED:
+            return None
+        manager = self._require_genome_population_manager()
+        try:
+            manager.genome_binding_for_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        return manager
+
+    def _discard_terminal_genome(self, agent_id: int) -> None:
+        manager = self._require_live_genome_if_conditioned(agent_id)
+        if manager is None:
+            return
+        try:
+            discarded = manager.discard_agent(agent_id)
+        except RecurrentGenomePopulationError as exc:
+            raise RecurrentPolicyAdapterError(
+                f"terminal controller genome cleanup failed: {exc}"
+            ) from exc
+        if not discarded:
+            raise RecurrentPolicyAdapterError(
+                f"terminal controller genome cleanup missed agent {agent_id}"
             )
 
 
@@ -969,24 +1482,29 @@ def _validate_public_observation_payload(
     value: object,
     *,
     field: str,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> tuple[float, ...]:
     if not isinstance(value, Mapping):
         raise RecurrentPolicyAdapterError(f"{field} must be a mapping")
     if set(value) != {"schema_version", "policy", "values", "shape"}:
         raise RecurrentPolicyAdapterError(f"{field} field set drifted")
-    if value.get("schema_version") != ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION:
+    if expected_schema_version not in {
+        ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+        TOKENIZED_ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    }:
+        raise RecurrentPolicyAdapterError(f"{field} expected schema is unsupported")
+    if value.get("schema_version") != expected_schema_version:
         raise RecurrentPolicyAdapterError(f"{field} schema drifted")
     if value.get("policy") != ECOLOGICAL_POLICY_INPUT_POLICY:
         raise RecurrentPolicyAdapterError(f"{field} policy drifted")
     _validate_exact_vector_shape(
         value.get("shape"),
-        expected_size=ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
+        expected_size=expected_size,
         field=f"{field} shape",
     )
     values = value.get("values")
-    if not isinstance(values, list) or len(values) != (
-        ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE
-    ):
+    if not isinstance(values, list) or len(values) != expected_size:
         raise RecurrentPolicyAdapterError(f"{field} values have the wrong size")
     parsed = tuple(_finite_float(item, field=f"{field} value") for item in values)
     if any(item < -1.0 or item > 1.0 for item in parsed):
@@ -1055,9 +1573,16 @@ def _public_observation_tensor_from_payload(
     *,
     device: torch.device,
     dtype: torch.dtype,
+    expected_schema_version: str = ECOLOGICAL_POLICY_INPUT_SCHEMA_VERSION,
+    expected_size: int = ECOLOGICAL_POLICY_INPUT_VECTOR_SIZE,
 ) -> Tensor:
     return torch.tensor(
-        _validate_public_observation_payload(value, field="public observation"),
+        _validate_public_observation_payload(
+            value,
+            field="public observation",
+            expected_schema_version=expected_schema_version,
+            expected_size=expected_size,
+        ),
         device=device,
         dtype=dtype,
     )
@@ -1207,9 +1732,11 @@ __all__ = [
     "PUBLIC_RECURRENT_ARGMAX_SELECTION",
     "PUBLIC_RECURRENT_DIAGNOSTIC_SCHEMA_VERSION",
     "PUBLIC_RECURRENT_DISTRIBUTION_DIAGNOSTIC_SCHEMA_VERSION",
+    "PUBLIC_RECURRENT_GENOME_DIAGNOSTIC_SCHEMA_VERSION",
     "PUBLIC_RECURRENT_POLICY_ID",
     "PUBLIC_RECURRENT_POLICY_VERSION",
     "PUBLIC_RECURRENT_SAMPLED_SELECTION",
+    "RECURRENT_GENOME_WORLD_PROVENANCE_SCHEMA_VERSION",
     "RECURRENT_PUBLIC_HISTORY_PREFIX_SCHEMA_VERSION",
     "RecurrentPolicyAdapterError",
     "frozen_cpu_model_copy",
